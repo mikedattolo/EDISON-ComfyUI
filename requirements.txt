@@ -1,0 +1,26 @@
+# Python dependencies for EDISON-ComfyUI
+
+# Core dependencies - FastAPI instead of Flask
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.0.0
+requests>=2.28.0
+
+# LLM inference
+llama-cpp-python>=0.2.0
+
+# AI/ML dependencies
+torch>=2.0.0
+transformers>=4.30.0
+sentence-transformers>=2.2.0
+
+# RAG dependencies - Qdrant instead of ChromaDB
+qdrant-client>=1.7.0
+
+# Coral TPU
+pycoral
+tflite-runtime
+
+# Utilities
+pyyaml>=6.0
+python-multipart>=0.0.6

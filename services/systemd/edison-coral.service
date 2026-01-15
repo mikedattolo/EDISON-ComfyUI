@@ -1,0 +1,16 @@
+[Unit]
+Description=EDISON Coral Edge TPU Service
+After=network.target
+
+[Service]
+Type=simple
+User=edison
+WorkingDirectory=/opt/edison
+Environment="PATH=/opt/edison/.venv/bin"
+Environment="PYTHONUNBUFFERED=1"
+ExecStart=/opt/edison/.venv/bin/python -m uvicorn services.edison_coral.service:app --host 127.0.0.1 --port 8808 --workers 1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

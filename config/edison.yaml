@@ -1,0 +1,26 @@
+# EDISON Configuration
+
+edison:
+  core:
+    host: "127.0.0.1"
+    port: 8811
+    models_path: "models/llm"
+    fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
+    deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
+  
+  coral:
+    enabled: true
+    host: "127.0.0.1"
+    port: 8808
+    device: "/dev/apex_0"
+    model_path: "models/coral/mobilenet_v2_1.0_224_inat_bird_quant_edgetpu.tflite"
+  
+  comfyui:
+    host: "0.0.0.0"
+    port: 8188
+    auto_start: true
+  
+  logging:
+    level: "INFO"
+    file: "logs/edison.log"
+    file: "logs/edison.log"

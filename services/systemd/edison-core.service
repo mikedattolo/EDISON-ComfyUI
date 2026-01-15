@@ -1,0 +1,18 @@
+[Unit]
+Description=EDISON Core AI Service
+After=network.target edison-coral.service
+Wants=edison-coral.service
+
+[Service]
+Type=simple
+User=edison
+WorkingDirectory=/opt/edison
+Environment="PATH=/opt/edison/.venv/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="CUDA_VISIBLE_DEVICES=0,1,2"
+ExecStart=/opt/edison/.venv/bin/python -m uvicorn services.edison_core.app:app --host 127.0.0.1 --port 8811 --workers 1
+Restart=always
+RestartSec=2
+
+[Install]
+WantedBy=multi-user.target

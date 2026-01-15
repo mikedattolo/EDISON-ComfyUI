@@ -1,0 +1,21 @@
+# GPU Device Mapping Configuration
+
+gpus:
+  - id: 0
+    name: "Primary GPU"
+    memory: "24GB"
+    allocated_services:
+      - comfyui
+      - edison-core
+  
+  - id: 1
+    name: "Secondary GPU"
+    memory: "24GB"
+    allocated_services:
+      - inference
+
+coral_tpu:
+  enabled: true
+  device_path: "/dev/apex_0"
+  allocated_services:
+    - edison-coral
