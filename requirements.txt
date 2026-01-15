@@ -17,10 +17,9 @@ sentence-transformers>=2.2.0
 # RAG dependencies - Qdrant instead of ChromaDB
 qdrant-client>=1.7.0
 
-# Coral TPU
-pycoral
-tflite-runtime
-
 # Utilities
 pyyaml>=6.0
 python-multipart>=0.0.6
+
+# Note: Coral TPU dependencies (pycoral, tflite-runtime) are optional
+# They require Python <3.12 and are installed separately via install_coral.sh

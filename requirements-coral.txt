@@ -1,0 +1,6 @@
+# Optional Coral TPU dependencies
+# Only install if you have a Coral Edge TPU device
+# Requires Python <3.12
+
+# Note: Run install_coral.sh instead, which handles system packages
+# These are kept here for reference only
