@@ -1,0 +1,16 @@
+[Unit]
+Description=EDISON Web UI Service
+After=network.target edison-core.service
+
+[Service]
+Type=simple
+User=edison
+Group=edison
+WorkingDirectory=/opt/edison
+Environment="PATH=/opt/edison/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+ExecStart=/opt/edison/.venv/bin/python -m uvicorn services.edison_web.service:app --host 0.0.0.0 --port 8080
+Restart=on-failure
+RestartSec=10s
+
+[Install]
+WantedBy=multi-user.target

@@ -45,11 +45,19 @@ echo "✓ Python packages installed"
 
 echo ""
 echo "[4/8] Setting up ComfyUI..."
-if [ ! -d "$REPO_ROOT/ComfyUI" ]; then
+if [ ! -d "$REPO_ROOT/ComfyUI" ] || [ ! -f "$REPO_ROOT/ComfyUI/main.py" ]; then
     echo "Cloning ComfyUI..."
     cd "$REPO_ROOT"
+    rm -rf ComfyUI  # Remove if exists but incomplete
     git clone https://github.com/comfyanonymous/ComfyUI.git
     echo "✓ ComfyUI cloned"
+    
+    # Install ComfyUI requirements
+    if [ -f "$REPO_ROOT/ComfyUI/requirements.txt" ]; then
+        echo "Installing ComfyUI requirements..."
+        pip install -r "$REPO_ROOT/ComfyUI/requirements.txt"
+        echo "✓ ComfyUI requirements installed"
+    fi
 else
     echo "✓ ComfyUI already exists"
 fi

@@ -4,13 +4,16 @@ FastAPI server with llama-cpp-python for local LLM inference
 """
 
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Literal
+from typing import Optional, Literal, Iterator
 import logging
 from pathlib import Path
 import yaml
 import sys
 import requests
+import json
 from contextlib import asynccontextmanager
 
 # Configure logging
@@ -206,6 +209,15 @@ app = FastAPI(
     description="Local LLM service with RAG capabilities",
     version="1.0.0",
     lifespan=lifespan
+)
+
+# Add CORS middleware for web UI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
 )
 
 @app.get("/health", response_model=HealthResponse)

@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>EDISON - Offline AI Assistant</title>
+    <link rel="stylesheet" href="styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
+                        <rect width="32" height="32" rx="8" fill="url(#gradient)"/>
+                        <path d="M10 12h12M10 16h12M10 20h8" stroke="white" stroke-width="2" stroke-linecap="round"/>
+                        <defs>
+                            <linearGradient id="gradient" x1="0" y1="0" x2="32" y2="32">
+                                <stop offset="0%" stop-color="#667eea"/>
+                                <stop offset="100%" stop-color="#764ba2"/>
+                            </linearGradient>
+                        </defs>
+                    </svg>
+                    <h1>EDISON</h1>
+                </div>
+                <button class="new-chat-btn" id="newChatBtn">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10 5v10M5 10h10" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                    </svg>
+                    New Chat
+                </button>
+            </div>
+            
+            <div class="chat-history" id="chatHistory">
+                <!-- Chat history items will be inserted here -->
+            </div>
+            
+            <div class="sidebar-footer">
+                <button class="settings-btn" id="settingsBtn">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10 6a4 4 0 100 8 4 4 0 000-8zm0 6a2 2 0 110-4 2 2 0 010 4z"/>
+                        <path d="M10 2a1 1 0 011 1v1a1 1 0 01-2 0V3a1 1 0 011-1zm0 14a1 1 0 011 1v1a1 1 0 01-2 0v-1a1 1 0 011-1z"/>
+                    </svg>
+                    Settings
+                </button>
+            </div>
+        </aside>
+
+        <!-- Main Content -->
+        <main class="main-content">
+            <div class="chat-container">
+                <div class="messages-container" id="messagesContainer">
+                    <div class="welcome-screen" id="welcomeScreen">
+                        <h2>Welcome to EDISON</h2>
+                        <p>Your offline AI assistant for conversations, code, and creative tasks</p>
+                        
+                        <div class="capabilities">
+                            <div class="capability-card">
+                                <div class="capability-icon">💬</div>
+                                <h3>Natural Conversations</h3>
+                                <p>Chat naturally with fast responses using the 14B model</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">🧠</div>
+                                <h3>Deep Thinking</h3>
+                                <p>Get detailed analysis with the powerful 72B model</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">💻</div>
+                                <h3>Code Assistant</h3>
+                                <p>Write, debug, and explain code in multiple languages</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">🤖</div>
+                                <h3>Agent Mode</h3>
+                                <p>Execute complex tasks with tool-using capabilities</p>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="input-container">
+                    <div class="input-wrapper">
+                        <div class="mode-selector">
+                            <button class="mode-btn active" data-mode="auto" title="Auto-detect intent">
+                                <span class="mode-icon">🔮</span>
+                                <span class="mode-label">Auto</span>
+                            </button>
+                            <button class="mode-btn" data-mode="chat" title="Fast responses (14B)">
+                                <span class="mode-icon">💬</span>
+                                <span class="mode-label">Chat</span>
+                            </button>
+                            <button class="mode-btn" data-mode="deep" title="Detailed analysis (72B)">
+                                <span class="mode-icon">🧠</span>
+                                <span class="mode-label">Deep</span>
+                            </button>
+                            <button class="mode-btn" data-mode="code" title="Code assistance">
+                                <span class="mode-icon">💻</span>
+                                <span class="mode-label">Code</span>
+                            </button>
+                            <button class="mode-btn" data-mode="agent" title="Tool-using agent">
+                                <span class="mode-icon">🤖</span>
+                                <span class="mode-label">Agent</span>
+                            </button>
+                        </div>
+                        
+                        <div class="input-area">
+                            <textarea 
+                                id="messageInput" 
+                                placeholder="Message EDISON..." 
+                                rows="1"
+                                maxlength="4000"
+                            ></textarea>
+                            <button class="send-btn" id="sendBtn" disabled>
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M2 10l16-8-8 16-2-8-6-0z"/>
+                                </svg>
+                            </button>
+                        </div>
+                        
+                        <div class="input-footer">
+                            <label class="remember-checkbox">
+                                <input type="checkbox" id="rememberCheckbox">
+                                <span>Remember conversation context</span>
+                            </label>
+                            <span class="char-count" id="charCount">0 / 4000</span>
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </main>
+
+        <!-- Settings Modal -->
+        <div class="modal" id="settingsModal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>Settings</h2>
+                    <button class="close-btn" id="closeSettingsBtn">
+                        <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
+                            <path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                        </svg>
+                    </button>
+                </div>
+                <div class="modal-body">
+                    <div class="setting-group">
+                        <label for="apiEndpoint">API Endpoint</label>
+                        <input type="text" id="apiEndpoint" value="http://192.168.1.26:8811" placeholder="http://localhost:8811">
+                        <p class="setting-description">The URL of your EDISON Core service</p>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label for="defaultMode">Default Mode</label>
+                        <select id="defaultMode">
+                            <option value="auto">Auto (Intent Detection)</option>
+                            <option value="chat">Chat (14B Fast)</option>
+                            <option value="deep">Deep (72B Detailed)</option>
+                            <option value="code">Code Assistant</option>
+                            <option value="agent">Agent Mode</option>
+                        </select>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="streamResponses" checked>
+                            Stream responses (when available)
+                        </label>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="syntaxHighlight" checked>
+                            Enable syntax highlighting for code
+                        </label>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <h3>System Status</h3>
+                        <div class="status-indicator" id="systemStatus">
+                            <span class="status-dot"></span>
+                            <span class="status-text">Checking...</span>
+                        </div>
+                    </div>
+                </div>
+                <div class="modal-footer">
+                    <button class="btn-secondary" id="clearHistoryBtn">Clear Chat History</button>
+                    <button class="btn-primary" id="saveSettingsBtn">Save Settings</button>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="app.js"></script>
+</body>
+</html>
