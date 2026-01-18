@@ -117,6 +117,7 @@ def load_llm_models():
                 model_path=str(fast_model_path),
                 n_ctx=4096,
                 n_gpu_layers=-1,  # Use GPU
+                tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
                 verbose=False
             )
             logger.info("✓ Fast model loaded successfully")
@@ -134,6 +135,7 @@ def load_llm_models():
                 model_path=str(deep_model_path),
                 n_ctx=8192,
                 n_gpu_layers=-1,  # Use GPU
+                tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
                 verbose=False
             )
             logger.info("✓ Deep model loaded successfully")
