@@ -349,19 +349,25 @@ async def chat(request: ChatRequest):
             if "my name" in request.message.lower() or "your name" in request.message.lower():
                 search_queries.append("my name is")
             
-            # Get results from all queries and deduplicate
+            # Get results from each query separately and take best from each
             all_chunks = []
-            seen_texts = set()
             for query in search_queries:
-                chunks = rag_system.get_context(query, n_results=3)
-                for chunk in chunks:
-                    text = chunk[0] if isinstance(chunk, tuple) else chunk
-                    if text not in seen_texts:
-                        seen_texts.add(text)
-                        all_chunks.append(chunk)
+                chunks = rag_system.get_context(query, n_results=2)
+                if chunks:
+                    # Take top 1 from this query
+                    all_chunks.append(chunks[0])
             
-            # Take top 2 most relevant
-            context_chunks = all_chunks[:2]
+            # Deduplicate
+            seen_texts = set()
+            context_chunks = []
+            for chunk in all_chunks:
+                text = chunk[0] if isinstance(chunk, tuple) else chunk
+                if text not in seen_texts:
+                    seen_texts.add(text)
+                    context_chunks.append(chunk)
+            
+            # Limit to 2 total
+            context_chunks = context_chunks[:2]
             
             if context_chunks:
                 logger.info(f"Retrieved {len(context_chunks)} context chunks from RAG")
