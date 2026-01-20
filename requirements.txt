@@ -27,3 +27,6 @@ beautifulsoup4>=4.12.0
 
 # Web search
 ddgs>=1.0.0
+
+# System monitoring
+psutil>=5.9.0

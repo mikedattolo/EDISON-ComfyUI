@@ -11,6 +11,61 @@
 </head>
 <body>
     <div class="app-container">
+        <!-- Hardware Monitor Widget -->
+        <div class="hardware-monitor" id="hardwareMonitor" style="display: none;">
+            <div class="hw-header">
+                <span class="hw-title">System Monitor</span>
+                <button class="hw-close" id="hwCloseBtn">×</button>
+            </div>
+            <div class="hw-stats">
+                <div class="hw-stat">
+                    <span class="hw-label">CPU</span>
+                    <div class="hw-bar"><div class="hw-fill" id="cpuBar"></div></div>
+                    <span class="hw-value" id="cpuValue">0%</span>
+                </div>
+                <div class="hw-stat">
+                    <span class="hw-label">GPU</span>
+                    <div class="hw-bar"><div class="hw-fill" id="gpuBar"></div></div>
+                    <span class="hw-value" id="gpuValue">0%</span>
+                </div>
+                <div class="hw-stat">
+                    <span class="hw-label">RAM</span>
+                    <div class="hw-bar"><div class="hw-fill" id="ramBar"></div></div>
+                    <span class="hw-value" id="ramValue">0GB</span>
+                </div>
+                <div class="hw-stat">
+                    <span class="hw-label">Temp</span>
+                    <span class="hw-temp" id="tempValue">--°C</span>
+                </div>
+            </div>
+        </div>
+
+        <!-- Work Mode Desktop View -->
+        <div class="work-desktop" id="workDesktop" style="display: none;">
+            <div class="work-header">
+                <h2>🖥️ AI Desktop - Task Workspace</h2>
+                <button class="work-close" id="workCloseBtn">×</button>
+            </div>
+            <div class="work-content">
+                <div class="work-panel">
+                    <h3>📋 Current Task</h3>
+                    <div id="currentTask" class="task-display">Waiting for task...</div>
+                </div>
+                <div class="work-panel">
+                    <h3>🔍 Search Results</h3>
+                    <div id="searchResults" class="results-display"></div>
+                </div>
+                <div class="work-panel">
+                    <h3>📄 Documents</h3>
+                    <div id="workDocuments" class="docs-display"></div>
+                </div>
+                <div class="work-panel full-width">
+                    <h3>💭 Thinking Process</h3>
+                    <div id="thinkingLog" class="log-display"></div>
+                </div>
+            </div>
+        </div>
+
         <!-- Sidebar Toggle Button -->
         <button class="sidebar-toggle" id="sidebarToggle" title="Toggle sidebar">
             <svg width="24" height="24" viewBox="0 0 24 24" fill="currentColor">
@@ -42,12 +97,33 @@
                 </button>
             </div>
             
+            <!-- Search bar for chat history -->
+            <div class="chat-search">
+                <input type="text" id="chatSearchInput" placeholder="Search conversations..." />
+                <svg class="search-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                    <circle cx="6.5" cy="6.5" r="5" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                    <path d="M10 10l4 4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>
+                </svg>
+            </div>
+            
             <div class="chat-history" id="chatHistory">
                 <!-- Chat history items will be inserted here -->
             </div>
             
             <div class="sidebar-footer">
                 <button class="settings-btn" id="settingsBtn">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                        <path d="M10 3a7 7 0 100 14 7 7 0 000-14zm0 2a5 5 0 110 10 5 5 0 010-10z"/>
+                    </svg>
+                    Settings
+                </button>
+                <button class="monitor-btn" id="monitorBtn" title="Toggle system monitor">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                        <rect x="2" y="3" width="16" height="11" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
+                        <path d="M7 17h6M10 14v3" stroke="currentColor" stroke-width="1.5"/>
+                    </svg>
+                </button>
+            </div>
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                         <path d="M10 6a4 4 0 100 8 4 4 0 000-8zm0 6a2 2 0 110-4 2 2 0 010 4z"/>
                         <path d="M10 2a1 1 0 011 1v1a1 1 0 01-2 0V3a1 1 0 011-1zm0 14a1 1 0 011 1v1a1 1 0 01-2 0v-1a1 1 0 011-1z"/>
@@ -113,9 +189,19 @@
                                 <span class="mode-icon">🤖</span>
                                 <span class="mode-label">Agent</span>
                             </button>
+                            <button class="mode-btn" data-mode="work" title="Work mode with task visualization">
+                                <span class="mode-icon">🖥️</span>
+                                <span class="mode-label">Work</span>
+                            </button>
                         </div>
                         
                         <div class="input-area">
+                            <input type="file" id="fileInput" multiple style="display: none;" accept=".txt,.pdf,.doc,.docx,.md,.json,.csv,.py,.js,.html,.css" />
+                            <button class="attach-btn" id="attachBtn" title="Upload files">
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
                             <textarea 
                                 id="messageInput" 
                                 placeholder="Message EDISON..." 
@@ -132,6 +218,10 @@
                                     <rect x="5" y="5" width="10" height="10" rx="1"/>
                                 </svg>
                             </button>
+                        </div>
+                        
+                        <div class="attached-files" id="attachedFiles" style="display: none;">
+                            <!-- Attached files will appear here -->
                         </div>
                         
                         <div class="input-footer">
@@ -206,5 +296,6 @@
     </div>
 
     <script src="app_enhanced.js"></script>
+    <script src="app_features.js"></script>
 </body>
 </html>

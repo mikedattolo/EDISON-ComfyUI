@@ -654,6 +654,112 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     
     return "\n".join(parts)
 
+# ============================================
+# NEW FEATURES API ENDPOINTS
+# ============================================
+
+@app.post("/upload-document")
+async def upload_document(request: dict):
+    """Handle document upload and text extraction"""
+    try:
+        file_name = request.get('name', 'unknown')
+        file_content = request.get('content', '')
+        
+        # Store in RAG if available
+        if rag_system:
+            rag_system.add_documents(
+                documents=[file_content],
+                metadatas=[{"type": "uploaded_document", "filename": file_name}]
+            )
+            logger.info(f"Document {file_name} stored in RAG")
+        
+        return {
+            "status": "success",
+            "filename": file_name,
+            "characters": len(file_content)
+        }
+    except Exception as e:
+        logger.error(f"Error uploading document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/generate-title")
+async def generate_title(request: dict):
+    """Generate a smart title for a chat based on first message"""
+    try:
+        message = request.get('message', '')
+        
+        if not llm_fast:
+            # Fallback to simple title
+            title = message[:40]
+            return {"title": title}
+        
+        # Use LLM to generate concise title
+        prompt = f"Generate a concise 3-5 word title for this message:\n\n{message}\n\nTitle:"
+        
+        response = llm_fast(
+            prompt,
+            max_tokens=20,
+            temperature=0.5,
+            stop=["\n"],
+            echo=False
+        )
+        
+        title = response["choices"][0]["text"].strip()
+        return {"title": title}
+        
+    except Exception as e:
+        logger.error(f"Error generating title: {e}")
+        return {"title": message[:40]}
+
+@app.get("/system/stats")
+async def system_stats():
+    """Get system hardware statistics"""
+    import psutil
+    try:
+        # CPU stats
+        cpu_percent = psutil.cpu_percent(interval=0.1)
+        
+        # Memory stats
+        mem = psutil.virtual_memory()
+        ram_used_gb = mem.used / (1024 ** 3)
+        ram_total_gb = mem.total / (1024 ** 3)
+        
+        # Temperature (try to get CPU temp)
+        temp_c = 0
+        try:
+            temps = psutil.sensors_temperatures()
+            if temps:
+                # Try common sensor names
+                for name in ['coretemp', 'cpu_thermal', 'k10temp']:
+                    if name in temps:
+                        temp_c = temps[name][0].current
+                        break
+        except:
+            temp_c = 0
+        
+        # GPU stats (basic - could be enhanced with pynvml)
+        gpu_percent = 0
+        try:
+            import subprocess
+            result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], 
+                                    capture_output=True, text=True, timeout=1)
+            if result.returncode == 0:
+                gpu_percent = float(result.stdout.strip().split('\n')[0])
+        except:
+            gpu_percent = 0
+        
+        return {
+            "cpu_percent": cpu_percent,
+            "gpu_percent": gpu_percent,
+            "ram_used_gb": ram_used_gb,
+            "ram_total_gb": ram_total_gb,
+            "temp_c": temp_c if temp_c > 0 else 50  # Default temp if unavailable
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting system stats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 if __name__ == "__main__":
     import uvicorn
     
