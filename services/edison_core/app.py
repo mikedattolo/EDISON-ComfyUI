@@ -476,7 +476,9 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                     import re
                     match = re.search(r'my name is (\w+)', text.lower())
                     if match:
-                        facts.append(f"The user's name is {match.group(1).title()}")
+                        extracted_fact = f"The user's name is {match.group(1).title()}"
+                        facts.append(extracted_fact)
+                        logger.info(f"Extracted fact: {extracted_fact}")
                 facts.append(text)
         
         if facts:
