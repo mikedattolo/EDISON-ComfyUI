@@ -41,19 +41,38 @@ class WebSearchTool:
             soup = BeautifulSoup(response.text, 'html.parser')
             results = []
             
+            # Parse results - try multiple selectors in case HTML changed
+            result_divs = soup.find_all('div', class_='result')
+            if not result_divs:
+                # Try alternative selector
+                result_divs = soup.find_all('div', class_='results_links')
+            
+            logger.debug(f"Found {len(result_divs)} result divs")
+            
             # Parse results
-            for result_div in soup.find_all('div', class_='result')[:num_results]:
+            for result_div in result_divs[:num_results]:
                 try:
-                    # Get title and URL
+                    # Get title and URL - try multiple selectors
                     title_tag = result_div.find('a', class_='result__a')
+                    if not title_tag:
+                        title_tag = result_div.find('a', class_='large')
+                    if not title_tag:
+                        # Try any link in the result
+                        title_tag = result_div.find('a', href=True)
+                    
                     if not title_tag:
                         continue
                     
                     title = title_tag.get_text(strip=True)
                     url = title_tag.get('href', '')
                     
-                    # Get snippet
+                    # Get snippet - try multiple selectors
                     snippet_tag = result_div.find('a', class_='result__snippet')
+                    if not snippet_tag:
+                        snippet_tag = result_div.find('div', class_='snippet')
+                    if not snippet_tag:
+                        snippet_tag = result_div.find('span', class_='result-snippet')
+                    
                     snippet = snippet_tag.get_text(strip=True) if snippet_tag else ""
                     
                     if title and url:
@@ -62,12 +81,14 @@ class WebSearchTool:
                             'url': url,
                             'snippet': snippet
                         })
+                        logger.debug(f\"Found result: {title[:50]}...\")
                         
                 except Exception as e:
                     logger.debug(f"Error parsing result: {e}")
                     continue
             
-            logger.info(f"Found {len(results)} search results for: {query}")
+            if not results:
+                logger.warning(f\"DuckDuckGo HTML returned no parseable results. HTML length: {len(response.text)}\")\n                logger.debug(f\"First 500 chars: {response.text[:500]}\")\n            \n            logger.info(f"Found {len(results)} search results for: {query}")
             return results
             
         except requests.RequestException as e:

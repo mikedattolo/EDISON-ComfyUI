@@ -153,6 +153,7 @@ def load_llm_models():
             )
             logger.info("✓ Deep model loaded successfully")
         except Exception as e:
+            llm_deep = None  # Explicitly set to None to avoid cleanup errors
             logger.warning(f"Failed to load deep model (will use fast model for reasoning/agent): {e}")
             logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using a smaller model or CPU offloading.")
     else:
@@ -452,13 +453,29 @@ async def chat(request: ChatRequest):
                 search_query = request.message
                 
                 # Remove common prefixes
-                for prefix in ["search the internet for", "search for", "search", "look up", "find", "google"]:
+                for prefix in ["search the internet for", "search the internet about", "search for", "search about", "search", "look up", "find on the internet", "find", "google", "tell me about"]:
                     if prefix in msg_lower:
                         search_query = re.sub(rf"^.*?{prefix}\s+", "", request.message, flags=re.IGNORECASE)
                         break
                 
+                # Remove common suffixes like "and tell me about it"
+                suffixes_to_remove = [
+                    r"\s+and tell me.*",
+                    r"\s+and give.*",
+                    r"\s+and provide.*",
+                    r"\s+and let me know.*"
+                ]
+                for suffix in suffixes_to_remove:
+                    search_query = re.sub(suffix, "", search_query, flags=re.IGNORECASE)
+                
                 # Remove trailing punctuation
                 search_query = search_query.strip().rstrip('?.!')
+                
+                # If query is too long, extract key terms
+                if len(search_query.split()) > 8:
+                    # Try to get the main topic (first few meaningful words)
+                    words = search_query.split()[:5]
+                    search_query = " ".join(words)
                 
                 logger.info(f"Performing web search for: {search_query}")
                 results = search_tool.search(search_query, num_results=3)
