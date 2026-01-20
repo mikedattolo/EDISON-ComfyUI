@@ -117,7 +117,7 @@
                     </svg>
                     Settings
                 </button>
-                <button class="monitor-btn" id="monitorBtn" title="Toggle system monitor">
+                <button class="monitor-btn" id="monitorBtn" title="Toggle system monitor" onclick="window.toggleHardwareMonitor && window.toggleHardwareMonitor()">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                         <rect x="2" y="3" width="16" height="11" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
                         <path d="M7 17h6M10 14v3" stroke="currentColor" stroke-width="1.5"/>
@@ -190,7 +190,7 @@
                         
                         <div class="input-area">
                             <input type="file" id="fileInput" multiple style="display: none;" accept=".txt,.pdf,.doc,.docx,.md,.json,.csv,.py,.js,.html,.css" />
-                            <button class="attach-btn" id="attachBtn" title="Upload files">
+                            <button class="attach-btn" id="attachBtn" title="Upload files" onclick="window.triggerFileUpload && window.triggerFileUpload()">
                                 <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                                     <path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                                 </svg>

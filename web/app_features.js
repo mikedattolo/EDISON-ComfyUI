@@ -9,6 +9,18 @@ let API_ENDPOINT = 'http://192.168.1.26:8811';
 // File Upload Handling
 let uploadedFiles = [];
 
+// Global function to trigger file selection
+window.triggerFileUpload = function() {
+    console.log('triggerFileUpload called');
+    const fileInput = document.getElementById('fileInput');
+    if (fileInput) {
+        console.log('Clicking file input');
+        fileInput.click();
+    } else {
+        console.error('File input not found!');
+    }
+};
+
 function initFileUpload() {
     const attachBtn = document.getElementById('attachBtn');
     const fileInput = document.getElementById('fileInput');
@@ -20,8 +32,8 @@ function initFileUpload() {
     }
 
     attachBtn.addEventListener('click', () => {
-        console.log('Attach button clicked');
-        fileInput.click();
+        console.log('Attach button clicked via event listener');
+        window.triggerFileUpload();
     });
 
     fileInput.addEventListener('change', async (e) => {
@@ -80,6 +92,32 @@ function removeFile(index) {
 // Hardware Monitoring
 let hardwareInterval = null;
 
+// Global function to toggle hardware monitor
+window.toggleHardwareMonitor = function() {
+    console.log('toggleHardwareMonitor called');
+    const hardwareMonitor = document.getElementById('hardwareMonitor');
+    
+    if (!hardwareMonitor) {
+        console.error('Hardware monitor element not found!');
+        return;
+    }
+    
+    console.log('Current display:', hardwareMonitor.style.display);
+    
+    if (hardwareMonitor.style.display === 'none' || !hardwareMonitor.style.display) {
+        console.log('Showing hardware monitor');
+        hardwareMonitor.style.display = 'block';
+        startHardwareMonitoring();
+    } else {
+        console.log('Hiding hardware monitor');
+        hardwareMonitor.style.display = 'none';
+        if (hardwareInterval) {
+            clearInterval(hardwareInterval);
+            hardwareInterval = null;
+        }
+    }
+};
+
 function initHardwareMonitor() {
     const monitorBtn = document.getElementById('monitorBtn');
     const hardwareMonitor = document.getElementById('hardwareMonitor');
@@ -91,8 +129,8 @@ function initHardwareMonitor() {
     }
 
     monitorBtn.addEventListener('click', () => {
-        console.log('Monitor button clicked');
-        toggleHardwareMonitor();
+        console.log('Monitor button clicked via event listener');
+        window.toggleHardwareMonitor();
     });
     if (hwCloseBtn) {
         hwCloseBtn.addEventListener('click', () => {
@@ -102,21 +140,6 @@ function initHardwareMonitor() {
                 hardwareInterval = null;
             }
         });
-    }
-}
-
-function toggleHardwareMonitor() {
-    const hardwareMonitor = document.getElementById('hardwareMonitor');
-    
-    if (hardwareMonitor.style.display === 'none' || !hardwareMonitor.style.display) {
-        hardwareMonitor.style.display = 'block';
-        startHardwareMonitoring();
-    } else {
-        hardwareMonitor.style.display = 'none';
-        if (hardwareInterval) {
-            clearInterval(hardwareInterval);
-            hardwareInterval = null;
-        }
     }
 }
 
