@@ -355,26 +355,31 @@ async def chat(request: ChatRequest):
             what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
             if what_match:
                 topic = what_match.group(1).strip()
-                search_queries.append(topic)
-                # Also search for common keywords related to the topic
+                # Search for STATEMENTS about this topic, not questions
                 if "name" in topic:
-                    search_queries.extend(["mike", "name", "called"])
+                    search_queries.extend(["my name is", "mike", "called", "name is"])
                 elif "color" in topic or "colour" in topic:
-                    search_queries.extend(["color", "blue", "red", "green", "favorite"])
+                    search_queries.extend(["my favorite color", "color is", "blue", "red", "green"])
                 elif "age" in topic:
-                    search_queries.extend(["age", "old", "years"])
+                    search_queries.extend(["I am", "years old", "age is"])
                 else:
-                    # Generic: add the topic word itself
-                    words = topic.split()
-                    search_queries.extend(words[:2])  # Add first 2 words
+                    # Generic: search for "my [topic] is" pattern
+                    search_queries.append(f"my {topic} is")
+                    search_queries.append(f"I {topic}")
             
-            # Pattern: "tell me about X" -> extract X
+            # Pattern: "tell me about X" -> extract X  
             tell_match = re.search(r"tell me about (.+?)(?:\?|$)", msg_lower)
             if tell_match:
                 topic = tell_match.group(1).strip()
-                search_queries.append(topic)
-                words = topic.split()
-                search_queries.extend(words[:2])
+                # Search for statements about this topic
+                if "myself" in topic or "me" == topic:
+                    search_queries.extend(["my name is", "I am", "I like", "my favorite", "I enjoy"])
+                else:
+                    search_queries.append(f"about {topic}")
+            
+            # Pattern: "who am i" -> search for identity statements
+            if "who am i" in msg_lower or "who i am" in msg_lower:
+                search_queries.extend(["my name is", "I am", "my name"])
             
             # Remove duplicates while preserving order
             seen = set()
@@ -393,17 +398,34 @@ async def chat(request: ChatRequest):
                     # Take top 1 from this query
                     all_chunks.append(chunks[0])
             
-            # Deduplicate
+            # Deduplicate and prioritize informative chunks
             seen_texts = set()
-            context_chunks = []
+            informative_chunks = []  # Contains statements like "my name is"
+            question_chunks = []      # Contains questions
+            
             for chunk in all_chunks:
                 text = chunk[0] if isinstance(chunk, tuple) else chunk
                 if text not in seen_texts:
                     seen_texts.add(text)
-                    context_chunks.append(chunk)
+                    
+                    # Check if this chunk has actual information vs just questions
+                    text_lower = text.lower()
+                    has_info = any(phrase in text_lower for phrase in [
+                        "my name is", "i am", "i'm", "my favorite", "i like", 
+                        "i enjoy", "i work", "i live", "called", "years old"
+                    ])
+                    
+                    if has_info:
+                        informative_chunks.append(chunk)
+                    else:
+                        question_chunks.append(chunk)
             
-            # Limit to 2 total
-            context_chunks = context_chunks[:2]
+            # Prioritize informative chunks, fall back to questions if needed
+            context_chunks = informative_chunks[:2]
+            if len(context_chunks) < 2:
+                context_chunks.extend(question_chunks[:2 - len(context_chunks)])
+            
+            logger.info(f"Found {len(informative_chunks)} informative chunks, {len(question_chunks)} question chunks")
             
             if context_chunks:
                 logger.info(f"Retrieved {len(context_chunks)} context chunks from RAG")
@@ -484,7 +506,7 @@ def build_system_prompt(mode: str, has_context: bool = False) -> str:
     
     # Add instruction to use retrieved context if available
     if has_context:
-        base += " CHECK CONTEXT FROM MEMORY for answers about the user and previous conversations. Use that info directly."
+        base += " Use information from previous conversations to answer questions about the user."
     
     prompts = {
         "chat": base + " Respond conversationally.",
