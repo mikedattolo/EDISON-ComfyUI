@@ -597,14 +597,14 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     if has_context:
         base += " Use information from previous conversations to answer questions about the user."
     
-    # Add instruction about web search results
+    # Add instruction about web search results - make it stronger
     if has_search:
-        base += " You have access to current web search results. Use them to provide up-to-date information."
+        base += " IMPORTANT: Web search results are provided below. You MUST use these search results to answer the user's question. Cite specific information from the search results and include the source titles. Do not make up information - only use what's in the search results."
     
     prompts = {
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
-        "agent": base + " You can search the web for current information. Provide detailed, accurate answers.",
+        "agent": base + " You can search the web for current information. Provide detailed, accurate answers based on search results.",
         "code": base + " Generate complete, working code solutions."
     }
     
