@@ -35,7 +35,7 @@ async def startup_event():
     logger.info(f"app_features.js exists: {(WEB_DIR / 'app_features.js').exists()}")
 
 # Mount static files
-app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
 
 @app.get("/")
 async def root():
@@ -73,6 +73,10 @@ async def health():
         "status": "healthy",
         "service": "edison-web"
     }
+
+
+# Mount static files at the end to avoid conflicts with explicit routes
+app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
 if __name__ == "__main__":
     import uvicorn
