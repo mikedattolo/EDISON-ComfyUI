@@ -344,10 +344,11 @@ async def chat(request: ChatRequest):
     context_chunks = []
     if request.remember and rag_system and rag_system.is_ready():
         try:
-            # Expand query to get better context - if asking about name, also search for "my name is"
+            # Expand query to get better context - if asking about name, also search for statements
             search_queries = [request.message]
             if "my name" in request.message.lower() or "your name" in request.message.lower():
-                search_queries.append("my name is")
+                # Search for actual statements like "my name is mike", not questions
+                search_queries.append("User: my name is")
             
             # Get results from each query separately and take best from each
             all_chunks = []
