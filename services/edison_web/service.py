@@ -26,6 +26,14 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# Startup event for logging
+@app.on_event("startup")
+async def startup_event():
+    logger.info(f"EDISON Web UI starting from {WEB_DIR}")
+    logger.info(f"WEB_DIR exists: {WEB_DIR.exists()}")
+    logger.info(f"Files in WEB_DIR: {list(WEB_DIR.glob('*.js'))}")
+    logger.info(f"app_features.js exists: {(WEB_DIR / 'app_features.js').exists()}")
+
 # Mount static files
 app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
 
@@ -69,4 +77,6 @@ async def health():
 if __name__ == "__main__":
     import uvicorn
     logger.info(f"Starting EDISON Web UI from {WEB_DIR}")
+    logger.info(f"Registered routes: {[route.path for route in app.routes]}")
+    logger.info(f"Files in WEB_DIR: {list(WEB_DIR.glob('*'))}")
     uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
