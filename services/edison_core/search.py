@@ -89,7 +89,9 @@ class WebSearchTool:
             
             if not results:
                 logger.warning(f"DuckDuckGo HTML returned no parseable results. HTML length: {len(response.text)}")
-                logger.debug(f"First 500 chars: {response.text[:500]}")\n            \n            logger.info(f"Found {len(results)} search results for: {query}")
+                logger.debug(f"First 500 chars: {response.text[:500]}")
+            
+            logger.info(f"Found {len(results)} search results for: {query}")
             return results
             
         except requests.RequestException as e:
