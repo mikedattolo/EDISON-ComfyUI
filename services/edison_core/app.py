@@ -354,6 +354,9 @@ async def chat(request: ChatRequest):
             for query in search_queries:
                 chunks = rag_system.get_context(query, n_results=2)
                 if chunks:
+                    # Log what we found
+                    text_preview = chunks[0][0][:80] if isinstance(chunks[0], tuple) else chunks[0][:80]
+                    logger.info(f"Query '{query}' top result: {text_preview}")
                     # Take top 1 from this query
                     all_chunks.append(chunks[0])
             
