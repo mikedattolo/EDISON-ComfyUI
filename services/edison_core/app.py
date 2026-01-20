@@ -543,7 +543,10 @@ async def chat(request: ChatRequest):
             max_tokens=2048,
             temperature=0.7,
             top_p=0.9,
-            stop=["User:", "Human:", "\n\n\n"],
+            frequency_penalty=0.3,  # Reduce repetition
+            presence_penalty=0.2,   # Encourage new topics
+            repeat_penalty=1.1,     # Penalize repeated tokens
+            stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
             echo=False
         )
         
