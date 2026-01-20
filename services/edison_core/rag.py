@@ -30,14 +30,17 @@ class RAGSystem:
         """Initialize sentence transformer for embeddings"""
         try:
             from sentence_transformers import SentenceTransformer
-            logger.info("Loading sentence transformer model...")
+            logger.info("Loading sentence transformer model: all-MiniLM-L6-v2")
             self.encoder = SentenceTransformer('all-MiniLM-L6-v2')
-            logger.info("Sentence transformer loaded successfully")
-        except ImportError:
-            logger.error("sentence-transformers not installed")
+            logger.info("✓ Sentence transformer loaded successfully")
+        except ImportError as e:
+            logger.error(f"sentence-transformers package not installed: {e}")
+            logger.error("Install with: pip install sentence-transformers")
             self.encoder = None
         except Exception as e:
-            logger.error(f"Failed to load sentence transformer: {e}")
+            logger.error(f"Failed to load sentence transformer: {type(e).__name__}: {e}")
+            import traceback
+            logger.error(traceback.format_exc())
             self.encoder = None
     
     def _initialize_qdrant(self):
