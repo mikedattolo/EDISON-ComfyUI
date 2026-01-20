@@ -244,6 +244,45 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+@app.post("/rag/search")
+async def rag_search(request: dict):
+    """Search RAG memory for relevant context"""
+    if not rag_system or not rag_system.is_ready():
+        return {"error": "RAG system not ready", "results": []}
+    
+    query = request.get("query", "")
+    top_k = request.get("top_k", 5)
+    results = rag_system.get_context(query, n_results=top_k)
+    
+    # Format results for JSON response
+    formatted_results = []
+    for item in results:
+        if isinstance(item, tuple):
+            text, metadata = item
+            formatted_results.append({"text": text, "metadata": metadata})
+        else:
+            formatted_results.append({"text": item, "metadata": {}})
+    
+    return {"results": formatted_results, "count": len(formatted_results)}
+
+@app.get("/rag/stats")
+async def rag_stats():
+    """Get RAG system statistics"""
+    if not rag_system or not rag_system.is_ready():
+        return {"error": "RAG system not ready", "ready": False}
+    
+    try:
+        collection_info = rag_system.client.get_collection(rag_system.collection_name)
+        return {
+            "ready": True,
+            "collection": rag_system.collection_name,
+            "vectors_count": collection_info.vectors_count,
+            "points_count": collection_info.points_count
+        }
+    except Exception as e:
+        logger.error(f"Error getting RAG stats: {e}")
+        return {"error": str(e), "ready": False}
+
 @app.get("/health", response_model=HealthResponse)
 async def health():
     """Health check endpoint"""
@@ -302,12 +341,15 @@ async def chat(request: ChatRequest):
             detail=f"Required model not available. Mode '{mode}' needs {'deep' if use_deep else 'fast'} model."
         )
     
-    # Retrieve context from RAG if needed
+    # Retrieve context from RAG if remember is enabled
     context_chunks = []
-    if mode in ["reasoning", "agent", "code"] and rag_system:
+    if request.remember and rag_system and rag_system.is_ready():
         try:
             context_chunks = rag_system.get_context(request.message, n_results=3)
-            logger.info(f"Retrieved {len(context_chunks)} context chunks from RAG")
+            if context_chunks:
+                logger.info(f"Retrieved {len(context_chunks)} context chunks from RAG")
+            else:
+                logger.info("No relevant context found in RAG")
         except Exception as e:
             logger.warning(f"RAG retrieval failed: {e}")
     
