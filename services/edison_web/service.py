@@ -41,17 +41,22 @@ async def root():
 @app.get("/styles.css")
 async def styles():
     """Serve CSS file"""
-    return FileResponse(WEB_DIR / "styles.css")
+    return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
 
 @app.get("/app_enhanced.js")
 async def app_enhanced():
     """Serve main JS file"""
-    return FileResponse(WEB_DIR / "app_enhanced.js")
+    return FileResponse(WEB_DIR / "app_enhanced.js", media_type="application/javascript")
 
 @app.get("/app_features.js")
 async def app_features():
     """Serve features JS file"""
-    return FileResponse(WEB_DIR / "app_features.js")
+    file_path = WEB_DIR / "app_features.js"
+    logger.info(f"Serving app_features.js from {file_path}, exists: {file_path.exists()}")
+    if not file_path.exists():
+        logger.error(f"app_features.js not found at {file_path}")
+        logger.error(f"WEB_DIR contents: {list(WEB_DIR.glob('*.js'))}")
+    return FileResponse(file_path, media_type="application/javascript")
 
 @app.get("/health")
 async def health():
