@@ -5,7 +5,6 @@ Provides web search capabilities using DuckDuckGo API
 
 import logging
 from typing import List, Dict
-from duckduckgo_search import DDGS
 
 logger = logging.getLogger(__name__)
 
@@ -14,6 +13,15 @@ class WebSearchTool:
     
     def __init__(self):
         """Initialize the web search tool."""
+        try:
+            # Try new package first
+            from ddgs import DDGS
+            logger.info("Using ddgs package")
+        except ImportError:
+            # Fall back to old package
+            from duckduckgo_search import DDGS
+            logger.info("Using duckduckgo_search package (deprecated)")
+        
         self.ddgs = DDGS()
         logger.info("Web search tool initialized with DuckDuckGo API")
     

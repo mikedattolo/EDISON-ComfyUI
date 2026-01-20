@@ -26,4 +26,4 @@ beautifulsoup4>=4.12.0
 # They require Python <3.12 and are installed separately via install_coral.sh
 
 # Web search
-duckduckgo-search>=4.0.0
+ddgs>=1.0.0
