@@ -140,16 +140,21 @@ def load_llm_models():
     if deep_model_path.exists():
         try:
             logger.info(f"Loading deep model: {deep_model_path}")
+            # Check file size to warn about VRAM requirements
+            file_size_gb = deep_model_path.stat().st_size / (1024**3)
+            logger.info(f"Deep model file size: {file_size_gb:.1f} GB")
+            
             llm_deep = Llama(
                 model_path=str(deep_model_path),
-                n_ctx=8192,
+                n_ctx=4096,  # Reduced from 8192 to save VRAM
                 n_gpu_layers=-1,  # Use GPU
                 tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
                 verbose=False
             )
             logger.info("✓ Deep model loaded successfully")
         except Exception as e:
-            logger.error(f"Failed to load deep model: {e}")
+            logger.warning(f"Failed to load deep model (will use fast model for reasoning/agent): {e}")
+            logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using a smaller model or CPU offloading.")
     else:
         logger.warning(f"Deep model not found at {deep_model_path}")
     
@@ -434,9 +439,37 @@ async def chat(request: ChatRequest):
         except Exception as e:
             logger.warning(f"RAG retrieval failed: {e}")
     
+    # Agent mode: Check if web search is requested
+    search_results = []
+    if mode == "agent" and search_tool:
+        msg_lower = request.message.lower()
+        search_keywords = ["search", "internet", "web", "online", "news", "lookup", "find on", "google", "browse"]
+        if any(keyword in msg_lower for keyword in search_keywords):
+            try:
+                # Extract search query from message
+                import re
+                # Try to extract what to search for
+                search_query = request.message
+                
+                # Remove common prefixes
+                for prefix in ["search the internet for", "search for", "search", "look up", "find", "google"]:
+                    if prefix in msg_lower:
+                        search_query = re.sub(rf"^.*?{prefix}\s+", "", request.message, flags=re.IGNORECASE)
+                        break
+                
+                # Remove trailing punctuation
+                search_query = search_query.strip().rstrip('?.!')
+                
+                logger.info(f"Performing web search for: {search_query}")
+                results = search_tool.search(search_query, num_results=3)
+                search_results = results
+                logger.info(f"Found {len(results)} search results")
+            except Exception as e:
+                logger.error(f"Web search failed: {e}")
+    
     # Build prompt
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0)
-    full_prompt = build_full_prompt(system_prompt, request.message, context_chunks)
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
+    full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results)
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
@@ -500,7 +533,7 @@ async def web_search(request: SearchRequest):
         logger.error(f"Error performing search: {e}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
-def build_system_prompt(mode: str, has_context: bool = False) -> str:
+def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""
     base = "You are EDISON, a helpful AI assistant."
     
@@ -508,18 +541,31 @@ def build_system_prompt(mode: str, has_context: bool = False) -> str:
     if has_context:
         base += " Use information from previous conversations to answer questions about the user."
     
+    # Add instruction about web search results
+    if has_search:
+        base += " You have access to current web search results. Use them to provide up-to-date information."
+    
     prompts = {
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
-        "agent": base + " Plan tasks, execute code, provide results. Break down complex tasks.",
+        "agent": base + " You can search the web for current information. Provide detailed, accurate answers.",
         "code": base + " Generate complete, working code solutions."
     }
     
     return prompts.get(mode, base)
 
-def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list) -> str:
-    """Build the complete prompt with context"""
+def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None) -> str:
+    """Build the complete prompt with context and search results"""
     parts = [system_prompt, ""]
+    
+    # Add web search results if available
+    if search_results:
+        parts.append("WEB SEARCH RESULTS:")
+        for i, result in enumerate(search_results[:3], 1):
+            parts.append(f"{i}. {result.get('title', 'No title')}")
+            parts.append(f"   {result.get('snippet', 'No description')}")
+            parts.append(f"   Source: {result.get('url', 'No URL')}")
+            parts.append("")
     
     # Extract key facts from context if available
     if context_chunks:
