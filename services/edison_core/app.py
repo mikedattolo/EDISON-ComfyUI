@@ -276,7 +276,6 @@ async def rag_stats():
         return {
             "ready": True,
             "collection": rag_system.collection_name,
-            "vectors_count": collection_info.vectors_count,
             "points_count": collection_info.points_count
         }
     except Exception as e:

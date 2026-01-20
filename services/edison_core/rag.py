@@ -134,17 +134,18 @@ class RAGSystem:
             # Generate query embedding
             query_vector = self.encoder.encode([query], show_progress_bar=False)[0]
             
-            # Search in Qdrant
-            search_results = self.client.search(
+            # Search in Qdrant using query method
+            search_results = self.client.query_points(
                 collection_name=self.collection_name,
-                query_vector=query_vector.tolist(),
+                query=query_vector.tolist(),
                 limit=n_results,
                 with_payload=True  # Ensure we get full payload
             )
             
             # Extract text and metadata from results
             contexts = []
-            for result in search_results:
+            points = search_results.points if hasattr(search_results, 'points') else search_results
+            for result in points:
                 if "text" in result.payload:
                     text = result.payload["text"]
                     metadata = {k: v for k, v in result.payload.items() if k != "text"}
