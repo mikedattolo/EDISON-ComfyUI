@@ -113,8 +113,8 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"Error adding documents: {e}")
     
-    def get_context(self, query: str, n_results: int = 3) -> List[str]:
-        """Retrieve relevant context for a query"""
+    def get_context(self, query: str, n_results: int = 3) -> List[tuple]:
+        """Retrieve relevant context for a query - returns list of (text, metadata) tuples"""
         if not self.client or not self.encoder:
             logger.warning("RAG system not fully initialized, returning empty context")
             return []
@@ -127,16 +127,20 @@ class RAGSystem:
             search_results = self.client.search(
                 collection_name=self.collection_name,
                 query_vector=query_vector.tolist(),
-                limit=n_results
+                limit=n_results,
+                with_payload=True  # Ensure we get full payload
             )
             
-            # Extract text from results
+            # Extract text and metadata from results
             contexts = []
             for result in search_results:
                 if "text" in result.payload:
-                    contexts.append(result.payload["text"])
+                    text = result.payload["text"]
+                    metadata = {k: v for k, v in result.payload.items() if k != "text"}
+                    metadata["score"] = result.score  # Add relevance score
+                    contexts.append((text, metadata))
             
-            logger.info(f"Retrieved {len(contexts)} context chunks for query")
+            logger.info(f"Retrieved {len(contexts)} context chunks for query (scores: {[m['score'] for _, m in contexts]})")
             return contexts
             
         except Exception as e:

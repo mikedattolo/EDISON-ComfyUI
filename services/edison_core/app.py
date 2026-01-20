@@ -31,6 +31,7 @@ sys.path.insert(0, str(REPO_ROOT))
 llm_fast = None
 llm_deep = None
 rag_system = None
+search_tool = None
 config = None
 
 # Request/Response models
@@ -49,6 +50,14 @@ class ChatResponse(BaseModel):
     response: str
     mode_used: str
     model_used: str
+
+class SearchRequest(BaseModel):
+    query: str = Field(..., description="Search query")
+    num_results: int = Field(default=5, description="Number of results to return")
+
+class SearchResponse(BaseModel):
+    results: list
+    query: str
 
 class HealthResponse(BaseModel):
     status: str
@@ -163,6 +172,18 @@ def init_rag_system():
         logger.error(f"Failed to initialize RAG system: {e}")
         rag_system = None
 
+def init_search_tool():
+    """Initialize web search tool"""
+    global search_tool
+    
+    try:
+        from services.edison_core.search import WebSearchTool
+        search_tool = WebSearchTool()
+        logger.info("✓ Web search tool initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize search tool: {e}")
+        search_tool = None
+
 def get_intent_from_coral(message: str) -> Optional[str]:
     """Try to get intent from coral service (with timeout fallback)"""
     try:
@@ -197,6 +218,7 @@ async def lifespan(app: FastAPI):
     load_config()
     load_llm_models()
     init_rag_system()
+    init_search_tool()
     logger.info("EDISON Core Service ready")
     logger.info("=" * 50)
     
@@ -329,6 +351,25 @@ async def chat(request: ChatRequest):
         logger.error(f"Error generating response: {e}")
         raise HTTPException(status_code=500, detail=f"Generation error: {str(e)}")
 
+@app.post("/search", response_model=SearchResponse)
+async def web_search(request: SearchRequest):
+    """Web search endpoint"""
+    if not search_tool:
+        raise HTTPException(
+            status_code=503,
+            detail="Web search tool not available"
+        )
+    
+    try:
+        results = search_tool.search(request.query, num_results=request.num_results)
+        return SearchResponse(
+            results=results,
+            query=request.query
+        )
+    except Exception as e:
+        logger.error(f"Error performing search: {e}")
+        raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
+
 def build_system_prompt(mode: str) -> str:
     """Build system prompt based on mode"""
     base = "You are EDISON, a helpful AI assistant running locally."
@@ -347,9 +388,18 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     parts = [system_prompt, ""]
     
     if context_chunks:
-        parts.append("Relevant context from memory:")
-        for i, chunk in enumerate(context_chunks, 1):
-            parts.append(f"{i}. {chunk}")
+        parts.append("=== RELEVANT CONTEXT FROM MEMORY ===")
+        for i, item in enumerate(context_chunks, 1):
+            # Handle both old format (strings) and new format (tuples)
+            if isinstance(item, tuple):
+                text, metadata = item
+                context_type = metadata.get('type', 'memory')
+                score = metadata.get('score', 0)
+                parts.append(f"[{context_type.upper()}] (relevance: {score:.2f}) {text}")
+            else:
+                # Backwards compatibility with old format
+                parts.append(f"{i}. {item}")
+        parts.append("=== END CONTEXT ===")
         parts.append("")
     
     parts.append(f"User: {user_message}")
