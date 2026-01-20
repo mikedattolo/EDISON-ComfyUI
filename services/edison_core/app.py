@@ -29,6 +29,7 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # Global state
 llm_fast = None
+llm_medium = None  # 32B model - fallback for deep mode
 llm_deep = None
 rag_system = None
 search_tool = None
@@ -100,7 +101,7 @@ def load_config():
 
 def load_llm_models():
     """Load GGUF models using llama-cpp-python with absolute paths"""
-    global llm_fast, llm_deep
+    global llm_fast, llm_medium, llm_deep
     
     try:
         from llama_cpp import Llama
@@ -113,6 +114,7 @@ def load_llm_models():
     models_path = REPO_ROOT / models_rel_path
     
     fast_model_name = config.get("edison", {}).get("core", {}).get("fast_model", "qwen2.5-14b-instruct-q4_k_m.gguf")
+    medium_model_name = config.get("edison", {}).get("core", {}).get("medium_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
     deep_model_name = config.get("edison", {}).get("core", {}).get("deep_model", "qwen2.5-72b-instruct-q4_k_m.gguf")
     
     logger.info(f"Looking for models in: {models_path}")
@@ -135,7 +137,29 @@ def load_llm_models():
     else:
         logger.warning(f"Fast model not found at {fast_model_path}")
     
-    # Try to load deep model
+    # Try to load medium model (e.g., 32B - fallback for deep mode)
+    medium_model_path = models_path / medium_model_name
+    if medium_model_path.exists():
+        try:
+            logger.info(f"Loading medium model: {medium_model_path}")
+            file_size_gb = medium_model_path.stat().st_size / (1024**3)
+            logger.info(f"Medium model file size: {file_size_gb:.1f} GB")
+            
+            llm_medium = Llama(
+                model_path=str(medium_model_path),
+                n_ctx=4096,
+                n_gpu_layers=-1,  # Use GPU
+                tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs
+                verbose=False
+            )
+            logger.info("✓ Medium model loaded successfully")
+        except Exception as e:
+            llm_medium = None
+            logger.warning(f"Failed to load medium model: {e}")
+    else:
+        logger.info(f"Medium model not found at {medium_model_path} (optional - will use fast model as fallback)")
+    
+    # Try to load deep model (e.g., 72B)
     deep_model_path = models_path / deep_model_name
     if deep_model_path.exists():
         try:
@@ -154,12 +178,12 @@ def load_llm_models():
             logger.info("✓ Deep model loaded successfully")
         except Exception as e:
             llm_deep = None  # Explicitly set to None to avoid cleanup errors
-            logger.warning(f"Failed to load deep model (will use fast model for reasoning/agent): {e}")
-            logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using a smaller model or CPU offloading.")
+            logger.warning(f"Failed to load deep model (will fall back to medium or fast model): {e}")
+            logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
     else:
         logger.warning(f"Deep model not found at {deep_model_path}")
     
-    if not llm_fast and not llm_deep:
+    if not llm_fast and not llm_medium and not llm_deep:
         logger.error("⚠ No models loaded. Please place GGUF models in the models/llm/ directory.")
         logger.error(f"Expected: {models_path / fast_model_name}")
         logger.error(f"      or: {models_path / deep_model_name}")
@@ -296,6 +320,7 @@ async def health():
         "service": "edison-core",
         "models_loaded": {
             "fast_model": llm_fast is not None,
+            "medium_model": llm_medium is not None,
             "deep_model": llm_deep is not None
         },
         "qdrant_ready": rag_system is not None,
@@ -307,7 +332,7 @@ async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
     
     # Check if any model is loaded
-    if not llm_fast and not llm_deep:
+    if not llm_fast and not llm_medium and not llm_deep:
         raise HTTPException(
             status_code=503,
             detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
@@ -335,15 +360,29 @@ async def chat(request: ChatRequest):
         
         logger.info(f"Auto mode selected: {mode}")
     
-    # Select model based on mode
-    use_deep = mode in ["reasoning", "agent", "code"]
-    llm = llm_deep if (use_deep and llm_deep) else llm_fast
-    model_name = "deep" if (use_deep and llm_deep) else "fast"
+    # Select model based on mode with fallback order: deep → medium → fast
+    use_deep_mode = mode in ["reasoning", "agent", "code"]
+    
+    if use_deep_mode:
+        # Try deep first, then medium, then fast
+        if llm_deep:
+            llm = llm_deep
+            model_name = "deep"
+        elif llm_medium:
+            llm = llm_medium
+            model_name = "medium"
+        else:
+            llm = llm_fast
+            model_name = "fast"
+    else:
+        # Chat mode: use fast model
+        llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
+        model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
     
     if not llm:
         raise HTTPException(
             status_code=503,
-            detail=f"Required model not available. Mode '{mode}' needs {'deep' if use_deep else 'fast'} model."
+            detail=f"No suitable model available for mode '{mode}'."
         )
     
     # Retrieve context from RAG if remember is enabled

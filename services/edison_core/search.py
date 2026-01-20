@@ -81,14 +81,15 @@ class WebSearchTool:
                             'url': url,
                             'snippet': snippet
                         })
-                        logger.debug(f\"Found result: {title[:50]}...\")
+                        logger.debug(f"Found result: {title[:50]}...")
                         
                 except Exception as e:
                     logger.debug(f"Error parsing result: {e}")
                     continue
             
             if not results:
-                logger.warning(f\"DuckDuckGo HTML returned no parseable results. HTML length: {len(response.text)}\")\n                logger.debug(f\"First 500 chars: {response.text[:500]}\")\n            \n            logger.info(f"Found {len(results)} search results for: {query}")
+                logger.warning(f"DuckDuckGo HTML returned no parseable results. HTML length: {len(response.text)}")
+                logger.debug(f"First 500 chars: {response.text[:500]}")\n            \n            logger.info(f"Found {len(results)} search results for: {query}")
             return results
             
         except requests.RequestException as e:
