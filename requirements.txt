@@ -24,3 +24,6 @@ beautifulsoup4>=4.12.0
 
 # Note: Coral TPU dependencies (pycoral, tflite-runtime) are optional
 # They require Python <3.12 and are installed separately via install_coral.sh
+
+# Web search
+duckduckgo-search>=4.0.0
