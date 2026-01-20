@@ -353,7 +353,7 @@ async def chat(request: ChatRequest):
             logger.warning(f"RAG retrieval failed: {e}")
     
     # Build prompt
-    system_prompt = build_system_prompt(mode)
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0)
     full_prompt = build_full_prompt(system_prompt, request.message, context_chunks)
     
     # Generate response
@@ -411,9 +411,13 @@ async def web_search(request: SearchRequest):
         logger.error(f"Error performing search: {e}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
-def build_system_prompt(mode: str) -> str:
+def build_system_prompt(mode: str, has_context: bool = False) -> str:
     """Build system prompt based on mode"""
     base = "You are EDISON, a helpful AI assistant running locally."
+    
+    # Add instruction to use retrieved context if available
+    if has_context:
+        base += " IMPORTANT: Use the information from the 'RELEVANT CONTEXT FROM MEMORY' section below to answer the user's question. This context contains previous conversations and information the user has shared with you. Always check this context first before saying you don't know something."
     
     prompts = {
         "chat": base + " Respond conversationally and concisely.",
