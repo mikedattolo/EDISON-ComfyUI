@@ -760,11 +760,13 @@ body {
     justify-content: center;
     transition: var(--transition);
     opacity: 0;
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
 .sidebar.collapsed ~ .sidebar-toggle,
 .main-content:hover ~ .sidebar-toggle {
     opacity: 1;
+    pointer-events: all;
 }
 
 .sidebar-toggle:hover {
@@ -1014,11 +1016,9 @@ body {
 
 /* File Upload Button */
 .attach-btn {
-    position: absolute;
-    left: 12px;
-    bottom: 12px;
     width: 36px;
     height: 36px;
+    min-width: 36px;
     border: none;
     background: var(--surface-hover);
     color: var(--text-secondary);
@@ -1028,15 +1028,12 @@ body {
     align-items: center;
     justify-content: center;
     transition: var(--transition);
+    margin-right: 8px;
 }
 
 .attach-btn:hover {
     background: var(--border);
     color: var(--primary);
-}
-
-.input-area textarea {
-    padding-left: 52px !important;
 }
 
 /* Attached Files Display */

@@ -225,12 +225,12 @@ function initChatSearch() {
 
     chatSearchInput.addEventListener('input', (e) => {
         const searchTerm = e.target.value.toLowerCase();
-        const historyItems = chatHistory.querySelectorAll('.history-item');
+        const historyItems = chatHistory.querySelectorAll('.chat-history-item');
 
         historyItems.forEach(item => {
             const text = item.textContent.toLowerCase();
             if (text.includes(searchTerm) || searchTerm === '') {
-                item.style.display = 'block';
+                item.style.display = 'flex';
             } else {
                 item.style.display = 'none';
             }
@@ -309,18 +309,35 @@ function updateChatHistoryWithDynamicNames(chatId, messages) {
 // Initialize all features
 function initAllFeatures() {
     // Only initialize if not already done
-    if (window.EDISON_FEATURES_INITIALIZED) return;
+    if (window.EDISON_FEATURES_INITIALIZED) {
+        console.log('✓ Enhanced features already initialized');
+        return;
+    }
+    
+    // Check if main app is ready
+    if (!window.edisonApp) {
+        console.log('⏳ Waiting for main app to initialize...');
+        setTimeout(initAllFeatures, 200);
+        return;
+    }
+    
     window.EDISON_FEATURES_INITIALIZED = true;
     
-    // Wait a bit for main app to initialize
-    setTimeout(() => {
-        initFileUpload();
-        initHardwareMonitor();
-        initWorkMode();
-        initChatSearch();
-        
-        console.log('✓ Enhanced features initialized');
-    }, 500);
+    console.log('🚀 Initializing enhanced features...');
+    
+    initFileUpload();
+    console.log('  ✓ File upload ready');
+    
+    initHardwareMonitor();
+    console.log('  ✓ Hardware monitor ready');
+    
+    initWorkMode();
+    console.log('  ✓ Work mode ready');
+    
+    initChatSearch();
+    console.log('  ✓ Chat search ready');
+    
+    console.log('✅ All enhanced features initialized');
 }
 
 // Auto-initialize when DOM is ready
