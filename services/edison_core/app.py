@@ -387,6 +387,8 @@ async def chat(request: ChatRequest):
     logger.info(f"Prompt length: {len(full_prompt)} chars")
     if context_chunks:
         logger.info(f"Context in prompt: {[c[0][:50] if isinstance(c, tuple) else c[:50] for c in context_chunks]}")
+        # Log first 500 chars of actual prompt to see formatting
+        logger.info(f"Prompt preview: {full_prompt[:500]}")
     
     # Generate response
     try:
