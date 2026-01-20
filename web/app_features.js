@@ -3,6 +3,9 @@
 // File Upload, Hardware Monitor, Work Mode, etc.
 // ===========================================
 
+// Wait for main app to initialize
+let API_ENDPOINT = 'http://192.168.1.26:8811';
+
 // File Upload Handling
 let uploadedFiles = [];
 
@@ -11,6 +14,8 @@ function initFileUpload() {
     const fileInput = document.getElementById('fileInput');
     const attachedFilesDiv = document.getElementById('attachedFiles');
 
+    if (!attachBtn || !fileInput) return;
+
     attachBtn.addEventListener('click', () => fileInput.click());
 
     fileInput.addEventListener('change', async (e) => {
@@ -18,7 +23,7 @@ function initFileUpload() {
         
         for (const file of files) {
             if (file.size > 10 * 1024 * 1024) { // 10MB limit
-                showNotification(`File ${file.name} is too large (max 10MB)`, 'error');
+                console.log(`File ${file.name} is too large (max 10MB)`);
                 continue;
             }
 
@@ -74,14 +79,18 @@ function initHardwareMonitor() {
     const hardwareMonitor = document.getElementById('hardwareMonitor');
     const hwCloseBtn = document.getElementById('hwCloseBtn');
 
+    if (!monitorBtn || !hardwareMonitor) return;
+
     monitorBtn.addEventListener('click', toggleHardwareMonitor);
-    hwCloseBtn.addEventListener('click', () => {
-        hardwareMonitor.style.display = 'none';
-        if (hardwareInterval) {
-            clearInterval(hardwareInterval);
-            hardwareInterval = null;
-        }
-    });
+    if (hwCloseBtn) {
+        hwCloseBtn.addEventListener('click', () => {
+            hardwareMonitor.style.display = 'none';
+            if (hardwareInterval) {
+                clearInterval(hardwareInterval);
+                hardwareInterval = null;
+            }
+        });
+    }
 }
 
 function toggleHardwareMonitor() {
@@ -149,6 +158,8 @@ function initWorkMode() {
     const workCloseBtn = document.getElementById('workCloseBtn');
     const workDesktop = document.getElementById('workDesktop');
 
+    if (!workCloseBtn || !workDesktop) return;
+
     workCloseBtn.addEventListener('click', () => {
         workDesktop.style.display = 'none';
         workModeActive = false;
@@ -209,6 +220,8 @@ function addThinkingLogEntry(entry) {
 function initChatSearch() {
     const chatSearchInput = document.getElementById('chatSearchInput');
     const chatHistory = document.getElementById('chatHistory');
+
+    if (!chatSearchInput || !chatHistory) return;
 
     chatSearchInput.addEventListener('input', (e) => {
         const searchTerm = e.target.value.toLowerCase();
@@ -295,12 +308,19 @@ function updateChatHistoryWithDynamicNames(chatId, messages) {
 
 // Initialize all features
 function initAllFeatures() {
-    initFileUpload();
-    initHardwareMonitor();
-    initWorkMode();
-    initChatSearch();
+    // Only initialize if not already done
+    if (window.EDISON_FEATURES_INITIALIZED) return;
+    window.EDISON_FEATURES_INITIALIZED = true;
     
-    console.log('✓ Enhanced features initialized');
+    // Wait a bit for main app to initialize
+    setTimeout(() => {
+        initFileUpload();
+        initHardwareMonitor();
+        initWorkMode();
+        initChatSearch();
+        
+        console.log('✓ Enhanced features initialized');
+    }, 500);
 }
 
 // Auto-initialize when DOM is ready
