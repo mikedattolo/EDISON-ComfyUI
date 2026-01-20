@@ -344,7 +344,7 @@ async def chat(request: ChatRequest):
     context_chunks = []
     if request.remember and rag_system and rag_system.is_ready():
         try:
-            context_chunks = rag_system.get_context(request.message, n_results=3)
+            context_chunks = rag_system.get_context(request.message, n_results=2)
             if context_chunks:
                 logger.info(f"Retrieved {len(context_chunks)} context chunks from RAG")
             else:
@@ -413,17 +413,17 @@ async def web_search(request: SearchRequest):
 
 def build_system_prompt(mode: str, has_context: bool = False) -> str:
     """Build system prompt based on mode"""
-    base = "You are EDISON, a helpful AI assistant running locally."
+    base = "You are EDISON, a helpful AI assistant."
     
     # Add instruction to use retrieved context if available
     if has_context:
-        base += " You have access to memory from previous conversations. When answering questions, ALWAYS check the RELEVANT CONTEXT FROM MEMORY section for information about the user, previous conversations, and facts they've shared. If the answer is in the context, use it directly. Never say you don't know something that's clearly stated in the context."
+        base += " CHECK CONTEXT FROM MEMORY for answers about the user and previous conversations. Use that info directly."
     
     prompts = {
-        "chat": base + " Respond conversationally and concisely.",
-        "reasoning": base + " Think step-by-step and explain your reasoning clearly.",
-        "agent": base + " You can plan tasks, execute Python code, and provide results. Break complex tasks into steps.",
-        "code": base + " You specialize in code generation and technical solutions. Provide complete, working code."
+        "chat": base + " Respond conversationally.",
+        "reasoning": base + " Think step-by-step and explain clearly.",
+        "agent": base + " Plan tasks, execute code, provide results. Break down complex tasks.",
+        "code": base + " Generate complete, working code solutions."
     }
     
     return prompts.get(mode, base)
@@ -446,7 +446,7 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 parts.append(f"{i}. {item}")
         parts.append("=== END CONTEXT ===")
         parts.append("")
-        parts.append("IMPORTANT REMINDER: The context above contains previous conversations. Use this information to answer the user's question. If the user asks about something mentioned in the context (like their name), reference the context directly.")
+        parts.append("Use the context above to answer. If user asks about info in context, reference it.")
         parts.append("")
     
     parts.append(f"User: {user_message}")
