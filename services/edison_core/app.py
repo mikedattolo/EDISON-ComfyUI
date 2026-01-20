@@ -417,7 +417,7 @@ def build_system_prompt(mode: str, has_context: bool = False) -> str:
     
     # Add instruction to use retrieved context if available
     if has_context:
-        base += " IMPORTANT: Use the information from the 'RELEVANT CONTEXT FROM MEMORY' section below to answer the user's question. This context contains previous conversations and information the user has shared with you. Always check this context first before saying you don't know something."
+        base += " You have access to memory from previous conversations. When answering questions, ALWAYS check the RELEVANT CONTEXT FROM MEMORY section for information about the user, previous conversations, and facts they've shared. If the answer is in the context, use it directly. Never say you don't know something that's clearly stated in the context."
     
     prompts = {
         "chat": base + " Respond conversationally and concisely.",
@@ -445,6 +445,8 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 # Backwards compatibility with old format
                 parts.append(f"{i}. {item}")
         parts.append("=== END CONTEXT ===")
+        parts.append("")
+        parts.append("IMPORTANT REMINDER: The context above contains previous conversations. Use this information to answer the user's question. If the user asks about something mentioned in the context (like their name), reference the context directly.")
         parts.append("")
     
     parts.append(f"User: {user_message}")
