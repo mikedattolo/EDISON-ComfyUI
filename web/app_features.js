@@ -14,9 +14,15 @@ function initFileUpload() {
     const fileInput = document.getElementById('fileInput');
     const attachedFilesDiv = document.getElementById('attachedFiles');
 
-    if (!attachBtn || !fileInput) return;
+    if (!attachBtn || !fileInput) {
+        console.error('File upload elements not found:', { attachBtn: !!attachBtn, fileInput: !!fileInput });
+        return;
+    }
 
-    attachBtn.addEventListener('click', () => fileInput.click());
+    attachBtn.addEventListener('click', () => {
+        console.log('Attach button clicked');
+        fileInput.click();
+    });
 
     fileInput.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
@@ -79,9 +85,15 @@ function initHardwareMonitor() {
     const hardwareMonitor = document.getElementById('hardwareMonitor');
     const hwCloseBtn = document.getElementById('hwCloseBtn');
 
-    if (!monitorBtn || !hardwareMonitor) return;
+    if (!monitorBtn || !hardwareMonitor) {
+        console.error('Hardware monitor elements not found:', { monitorBtn: !!monitorBtn, hardwareMonitor: !!hardwareMonitor });
+        return;
+    }
 
-    monitorBtn.addEventListener('click', toggleHardwareMonitor);
+    monitorBtn.addEventListener('click', () => {
+        console.log('Monitor button clicked');
+        toggleHardwareMonitor();
+    });
     if (hwCloseBtn) {
         hwCloseBtn.addEventListener('click', () => {
             hardwareMonitor.style.display = 'none';
@@ -221,9 +233,13 @@ function initChatSearch() {
     const chatSearchInput = document.getElementById('chatSearchInput');
     const chatHistory = document.getElementById('chatHistory');
 
-    if (!chatSearchInput || !chatHistory) return;
+    if (!chatSearchInput || !chatHistory) {
+        console.error('Chat search elements not found:', { chatSearchInput: !!chatSearchInput, chatHistory: !!chatHistory });
+        return;
+    }
 
     chatSearchInput.addEventListener('input', (e) => {
+        console.log('Chat search input:', e.target.value);
         const searchTerm = e.target.value.toLowerCase();
         const historyItems = chatHistory.querySelectorAll('.chat-history-item');
 

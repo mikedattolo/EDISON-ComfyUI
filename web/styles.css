@@ -759,12 +759,15 @@ body {
     align-items: center;
     justify-content: center;
     transition: var(--transition);
-    opacity: 0;
     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
 }
 
-.sidebar.collapsed ~ .sidebar-toggle,
-.main-content:hover ~ .sidebar-toggle {
+.sidebar:not(.collapsed) ~ .sidebar-toggle {
+    opacity: 0;
+    pointer-events: none;
+}
+
+.sidebar.collapsed ~ .sidebar-toggle {
     opacity: 1;
     pointer-events: all;
 }

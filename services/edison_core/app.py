@@ -38,7 +38,7 @@ config = None
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "agent", "code"] = Field(
+    mode: Literal["auto", "chat", "reasoning", "agent", "code", "work"] = Field(
         default="auto", 
         description="Interaction mode"
     )
@@ -357,6 +357,10 @@ async def chat(request: ChatRequest):
                 mode = "reasoning"
             else:
                 mode = "chat"
+    
+    # Work mode uses agent capabilities
+    if mode == "work":
+        mode = "agent"
         
         logger.info(f"Auto mode selected: {mode}")
     
