@@ -344,16 +344,47 @@ async def chat(request: ChatRequest):
     context_chunks = []
     if request.remember and rag_system and rag_system.is_ready():
         try:
-            # Expand query to get better context - if asking about name, search more broadly
+            # Expand query to get better context - extract key terms from questions
             search_queries = [request.message]
-            if "my name" in request.message.lower() or "your name" in request.message.lower():
-                # Get more results to filter
-                search_queries.append("mike")  # Search for common names
-                search_queries.append("name")
+            msg_lower = request.message.lower()
+            
+            # Detect question patterns and extract key terms
+            import re
+            
+            # Pattern: "what is my X" or "what's my X" -> extract X
+            what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
+            if what_match:
+                topic = what_match.group(1).strip()
+                search_queries.append(topic)
+                # Also search for common keywords related to the topic
+                if "name" in topic:
+                    search_queries.extend(["mike", "name", "called"])
+                elif "color" in topic or "colour" in topic:
+                    search_queries.extend(["color", "blue", "red", "green", "favorite"])
+                elif "age" in topic:
+                    search_queries.extend(["age", "old", "years"])
+                else:
+                    # Generic: add the topic word itself
+                    words = topic.split()
+                    search_queries.extend(words[:2])  # Add first 2 words
+            
+            # Pattern: "tell me about X" -> extract X
+            tell_match = re.search(r"tell me about (.+?)(?:\?|$)", msg_lower)
+            if tell_match:
+                topic = tell_match.group(1).strip()
+                search_queries.append(topic)
+                words = topic.split()
+                search_queries.extend(words[:2])
+            
+            # Remove duplicates while preserving order
+            seen = set()
+            search_queries = [q for q in search_queries if not (q in seen or seen.add(q))]
+            
+            logger.info(f"Expanded search queries: {search_queries}")
             
             # Get results from each query separately and take best from each
             all_chunks = []
-            for query in search_queries:
+            for query in search_queries[:5]:  # Limit to 5 queries max
                 chunks = rag_system.get_context(query, n_results=2)
                 if chunks:
                     # Log what we found

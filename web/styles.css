@@ -178,10 +178,11 @@ body {
 
 .messages-container {
     flex: 1;
-    overflow-y: scroll;
+    overflow-y: auto;
     overflow-x: hidden;
     padding: 32px 24px;
     scroll-behavior: smooth;
+    min-height: 0;
 }
 
 .messages-container::-webkit-scrollbar {
