@@ -72,10 +72,19 @@ class RAGSystem:
             logger.error(f"Failed to initialize Qdrant: {e}")
             self.client = None
     
+    def is_ready(self) -> bool:
+        """Check if RAG system is fully initialized"""
+        ready = self.client is not None and self.encoder is not None
+        if not ready:
+            if self.client is None:
+                logger.warning("RAG system not ready: Qdrant client not initialized")
+            if self.encoder is None:
+                logger.warning("RAG system not ready: Sentence transformer not loaded")
+        return ready
+    
     def add_documents(self, documents: List[str], metadatas: Optional[List[Dict]] = None):
         """Add documents to the knowledge base"""
-        if not self.client or not self.encoder:
-            logger.warning("RAG system not fully initialized, skipping document addition")
+        if not self.is_ready():
             return
         
         if not documents:
@@ -115,8 +124,7 @@ class RAGSystem:
     
     def get_context(self, query: str, n_results: int = 3) -> List[tuple]:
         """Retrieve relevant context for a query - returns list of (text, metadata) tuples"""
-        if not self.client or not self.encoder:
-            logger.warning("RAG system not fully initialized, returning empty context")
+        if not self.is_ready():
             return []
         
         try:
