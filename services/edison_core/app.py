@@ -356,6 +356,11 @@ async def chat(request: ChatRequest):
     system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0)
     full_prompt = build_full_prompt(system_prompt, request.message, context_chunks)
     
+    # Debug: Log the prompt being sent
+    logger.info(f"Prompt length: {len(full_prompt)} chars")
+    if context_chunks:
+        logger.info(f"Context in prompt: {[c[0][:50] if isinstance(c, tuple) else c[:50] for c in context_chunks]}")
+    
     # Generate response
     try:
         logger.info(f"Generating response with {model_name} model in {mode} mode")
@@ -432,22 +437,26 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     """Build the complete prompt with context"""
     parts = [system_prompt, ""]
     
+    # Extract key facts from context if available
     if context_chunks:
-        parts.append("=== RELEVANT CONTEXT FROM MEMORY ===")
-        for i, item in enumerate(context_chunks, 1):
-            # Handle both old format (strings) and new format (tuples)
+        facts = []
+        for item in context_chunks:
             if isinstance(item, tuple):
                 text, metadata = item
-                context_type = metadata.get('type', 'memory')
-                score = metadata.get('score', 0)
-                parts.append(f"[{context_type.upper()}] (relevance: {score:.2f}) {text}")
-            else:
-                # Backwards compatibility with old format
-                parts.append(f"{i}. {item}")
-        parts.append("=== END CONTEXT ===")
-        parts.append("")
-        parts.append("Use the context above to answer. If user asks about info in context, reference it.")
-        parts.append("")
+                # Extract key information from conversation text
+                if "my name is" in text.lower():
+                    # Try to extract the name
+                    import re
+                    match = re.search(r'my name is (\w+)', text.lower())
+                    if match:
+                        facts.append(f"The user's name is {match.group(1).title()}")
+                facts.append(text)
+        
+        if facts:
+            parts.append("FACTS FROM PREVIOUS CONVERSATIONS:")
+            for fact in facts[:2]:  # Limit to 2 facts
+                parts.append(f"- {fact}")
+            parts.append("")
     
     parts.append(f"User: {user_message}")
     parts.append("Assistant:")
