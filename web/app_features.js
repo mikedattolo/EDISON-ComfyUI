@@ -340,6 +340,14 @@ function initAllFeatures() {
     window.EDISON_FEATURES_INITIALIZED = true;
     
     console.log('🚀 Initializing enhanced features...');
+    console.log('DOM elements check:', {
+        attachBtn: !!document.getElementById('attachBtn'),
+        fileInput: !!document.getElementById('fileInput'),
+        monitorBtn: !!document.getElementById('monitorBtn'),
+        hardwareMonitor: !!document.getElementById('hardwareMonitor'),
+        chatSearchInput: !!document.getElementById('chatSearchInput'),
+        chatHistory: !!document.getElementById('chatHistory')
+    });
     
     initFileUpload();
     console.log('  ✓ File upload ready');
@@ -354,6 +362,13 @@ function initAllFeatures() {
     console.log('  ✓ Chat search ready');
     
     console.log('✅ All enhanced features initialized');
+    
+    // Test button clicks manually
+    const testBtn = document.getElementById('attachBtn');
+    if (testBtn) {
+        console.log('Attach button element:', testBtn);
+        console.log('Attach button computed style:', window.getComputedStyle(testBtn).pointerEvents);
+    }
 }
 
 // Auto-initialize when DOM is ready

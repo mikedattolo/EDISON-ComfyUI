@@ -431,6 +431,7 @@ body {
     display: flex;
     gap: 12px;
     align-items: flex-end;
+    position: relative;
 }
 
 #messageInput {
@@ -805,6 +806,7 @@ body {
     align-items: center;
     justify-content: center;
     transition: var(--transition);
+    z-index: 20;
 }
 
 .stop-btn:hover {
@@ -1032,6 +1034,8 @@ body {
     justify-content: center;
     transition: var(--transition);
     margin-right: 8px;
+    position: relative;
+    z-index: 10;
 }
 
 .attach-btn:hover {
@@ -1170,6 +1174,8 @@ body {
     display: flex;
     align-items: center;
     justify-content: center;
+    position: relative;
+    z-index: 10;
 }
 
 .monitor-btn:hover {
