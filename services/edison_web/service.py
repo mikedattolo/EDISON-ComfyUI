@@ -38,6 +38,21 @@ async def root():
         return {"error": "Web UI not found"}
     return FileResponse(index_file)
 
+@app.get("/styles.css")
+async def styles():
+    """Serve CSS file"""
+    return FileResponse(WEB_DIR / "styles.css")
+
+@app.get("/app_enhanced.js")
+async def app_enhanced():
+    """Serve main JS file"""
+    return FileResponse(WEB_DIR / "app_enhanced.js")
+
+@app.get("/app_features.js")
+async def app_features():
+    """Serve features JS file"""
+    return FileResponse(WEB_DIR / "app_features.js")
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
