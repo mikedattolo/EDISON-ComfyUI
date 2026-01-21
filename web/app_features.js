@@ -6,8 +6,8 @@
 // Wait for main app to initialize
 let API_ENDPOINT = 'http://192.168.1.26:8811';
 
-// File Upload Handling
-let uploadedFiles = [];
+// File Upload Handling - make it globally accessible
+window.uploadedFiles = [];
 
 // Global function to trigger file selection
 window.triggerFileUpload = function(event) {
@@ -18,7 +18,7 @@ window.triggerFileUpload = function(event) {
     console.log('📎 triggerFileUpload called');
     const fileInput = document.getElementById('fileInput');
     if (fileInput) {
-        console.log('📎 Clicking file input, current files:', uploadedFiles.length);
+        console.log('📎 Clicking file input, current files:', window.uploadedFiles.length);
         fileInput.click();
     } else {
         console.error('❌ File input not found!');
@@ -60,16 +60,18 @@ function initFileUpload() {
 
             const fileData = await readFileContent(file);
             console.log(`✅ File ${file.name} read, content length: ${fileData.length}`);
-            uploadedFiles.push({
+            window.uploadedFiles.push({
                 name: file.name,
                 type: file.type,
                 content: fileData
             });
         }
 
-        console.log('📎 Total files now:', uploadedFiles.length, uploadedFiles.map(f => f.name));
+        console.log('📎 Total files now:', window.uploadedFiles.length, window.uploadedFiles.map(f => f.name));
         updateAttachedFilesUI();
-        fileInput.value = ''; // Reset input
+        
+        // Don't reset immediately - causes double-click issue
+        // fileInput.value = ''; 
     });
 }
 
@@ -83,7 +85,7 @@ async function readFileContent(file) {
 }
 
 function updateAttachedFilesUI() {
-    console.log('🔄 updateAttachedFilesUI called, files:', uploadedFiles.length);
+    console.log('🔄 updateAttachedFilesUI called, files:', window.uploadedFiles.length);
     const attachedFilesDiv = document.getElementById('attachedFiles');
     
     if (!attachedFilesDiv) {
@@ -91,29 +93,26 @@ function updateAttachedFilesUI() {
         return;
     }
     
-    if (uploadedFiles.length === 0) {
+    if (window.uploadedFiles.length === 0) {
         attachedFilesDiv.style.display = 'none';
         console.log('📎 No files to display');
         return;
     }
 
     attachedFilesDiv.style.display = 'flex';
-    attachedFilesDiv.innerHTML = uploadedFiles.map((file, index) => `
+    attachedFilesDiv.innerHTML = window.uploadedFiles.map((file, index) => `
         <div class="file-chip">
             <span>📄 ${file.name}</span>
             <span class="file-chip-remove" onclick="removeFile(${index})">×</span>
         </div>
     `).join('');
-    console.log('✅ Files displayed:', uploadedFiles.map(f => f.name));
-    
-    // Expose to window for debugging
-    window.EDISON_Features.uploadedFiles = uploadedFiles;
+    console.log('✅ Files displayed:', window.uploadedFiles.map(f => f.name));
 }
 
 function removeFile(index) {
-    console.log('🗑️ Removing file at index:', index, uploadedFiles[index]?.name);
-    uploadedFiles.splice(index, 1);
-    console.log('📎 Files remaining:', uploadedFiles.length);
+    console.log('🗑️ Removing file at index:', index, window.uploadedFiles[index]?.name);
+    window.uploadedFiles.splice(index, 1);
+    console.log('📎 Files remaining:', window.uploadedFiles.length);
     updateAttachedFilesUI();
 }
 
@@ -438,8 +437,6 @@ if (document.readyState === 'loading') {
 
 // Export functions for use in main app
 window.EDISON_Features = {
-    get uploadedFiles() { return uploadedFiles; },
-    set uploadedFiles(value) { uploadedFiles = value; },
     removeFile,
     updateWorkDesktop,
     addThinkingLogEntry,

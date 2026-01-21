@@ -122,7 +122,7 @@ class EdisonApp {
         }
         
         // Get uploaded files if any
-        const attachedFiles = window.EDISON_Features?.uploadedFiles || [];
+        const attachedFiles = window.uploadedFiles || [];
         
         // Add user message to UI (with file indicators)
         let displayMessage = message;
@@ -196,8 +196,8 @@ class EdisonApp {
         
         // Include uploaded files if any
         console.log('📤 Checking for attached files...');
-        console.log('window.EDISON_Features:', window.EDISON_Features);
-        const attachedFiles = window.EDISON_Features?.uploadedFiles || [];
+        console.log('window.uploadedFiles:', window.uploadedFiles);
+        const attachedFiles = window.uploadedFiles || [];
         console.log('📤 Attached files:', attachedFiles.length, attachedFiles.map(f => f.name));
         let enhancedMessage = message;
         
@@ -210,12 +210,13 @@ class EdisonApp {
             });
             console.log('📤 Enhanced message length:', enhancedMessage.length);
             // Clear files after sending
-            if (window.EDISON_Features?.uploadedFiles) {
-                window.EDISON_Features.uploadedFiles.length = 0;
-                const attachedFilesDiv = document.getElementById('attachedFiles');
-                if (attachedFilesDiv) attachedFilesDiv.style.display = 'none';
-                console.log('✅ Files cleared after sending');
-            }
+            window.uploadedFiles.length = 0;
+            const attachedFilesDiv = document.getElementById('attachedFiles');
+            if (attachedFilesDiv) attachedFilesDiv.style.display = 'none';
+            // Reset file input
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput) fileInput.value = '';
+            console.log('✅ Files cleared after sending');
         } else {
             console.log('📤 No files to attach');
         }
