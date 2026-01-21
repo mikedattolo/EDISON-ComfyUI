@@ -37,8 +37,27 @@ def init_comfyui_tools():
 
 # ...existing code...
 
-# After 'app' is defined (with lifespan), add the endpoint:
 
+# ...existing code...
+
+# Initialize FastAPI app
+app = FastAPI(
+    title="EDISON Core Service",
+    description="Local LLM service with RAG capabilities",
+    version="1.0.0",
+    lifespan=lifespan
+)
+
+# Add CORS middleware for web UI
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# /generate-image endpoint (now after app is defined)
 @app.post("/generate-image", response_model=ImageGenResponse)
 async def generate_image(request: ImageGenRequest):
     """Generate image using ComfyUI from prompt"""
