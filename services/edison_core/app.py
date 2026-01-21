@@ -1,3 +1,55 @@
+class ImageGenRequest(BaseModel):
+    prompt: str
+    workflow: Optional[dict] = None  # Optional custom workflow
+
+class ImageGenResponse(BaseModel):
+    image_url: Optional[str] = None
+    image_base64: Optional[str] = None
+    status: str = "pending"
+    error: Optional[str] = None
+
+from services.edison_core.tools import ComfyUITools
+
+# Initialize ComfyUI tools (reuse config)
+comfyui_tools = None
+def init_comfyui_tools():
+    global comfyui_tools
+    try:
+        comfy_config = config.get("edison", {}).get("comfyui", {"host": "127.0.0.1", "port": 8188})
+        comfyui_tools = ComfyUITools(comfy_config)
+        logger.info("✓ ComfyUI tools initialized")
+    except Exception as e:
+        logger.error(f"Failed to initialize ComfyUI tools: {e}")
+        comfyui_tools = None
+
+@app.post("/generate-image", response_model=ImageGenResponse)
+async def generate_image(request: ImageGenRequest):
+    """Generate image using ComfyUI from prompt"""
+    if not comfyui_tools:
+        return ImageGenResponse(status="error", error="ComfyUI tools not initialized")
+    try:
+        # If workflow is provided, use it; else build a default text-to-image workflow
+        workflow = request.workflow or {
+            "prompt": {
+                "type": "text2img",
+                "prompt": request.prompt,
+                "steps": 20,
+                "width": 512,
+                "height": 512
+            }
+        }
+        result = comfyui_tools.execute_workflow(workflow)
+        # Assume result contains image URL or base64
+        image_url = result.get("image_url")
+        image_base64 = result.get("image_base64")
+        return ImageGenResponse(
+            image_url=image_url,
+            image_base64=image_base64,
+            status="success"
+        )
+    except Exception as e:
+        logger.error(f"Image generation failed: {e}")
+        return ImageGenResponse(status="error", error=str(e))
 """
 EDISON Core Service - Main Application
 FastAPI server with llama-cpp-python for local LLM inference
@@ -247,6 +299,7 @@ async def lifespan(app: FastAPI):
     logger.info(f"Repo root: {REPO_ROOT}")
     load_config()
     load_llm_models()
+    init_comfyui_tools()
     init_rag_system()
     init_search_tool()
     logger.info("EDISON Core Service ready")
