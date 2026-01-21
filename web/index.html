@@ -189,8 +189,8 @@
                         </div>
                         
                         <div class="input-area">
-                            <input type="file" id="fileInput" multiple style="display: none;" accept=".txt,.pdf,.doc,.docx,.md,.json,.csv,.py,.js,.html,.css,.xml,.yaml,.yml,.log,.sql,.sh,.bat,.c,.cpp,.h,.java,.go,.rs,.ts,.tsx,.jsx,.vue,.php" />
-                            <button class="attach-btn" id="attachBtn" title="Upload files (text only - no images yet)" onclick="event.stopPropagation(); window.triggerFileUpload && window.triggerFileUpload(event);">
+                            <input type="file" id="fileInput" multiple style="display: none;" accept="*/*" />
+                            <button class="attach-btn" id="attachBtn" title="Upload files (text, code, images)" onclick="event.stopPropagation(); window.triggerFileUpload && window.triggerFileUpload(event);">
                                 <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                                     <path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                                 </svg>
@@ -288,7 +288,7 @@
         </div>
     </div>
 
-    <script src="app_enhanced.js?v=6"></script>
-    <script src="app_features.js?v=6"></script>
+    <script src="app_enhanced.js?v=7"></script>
+    <script src="app_features.js?v=7"></script>
 </body>
 </html>

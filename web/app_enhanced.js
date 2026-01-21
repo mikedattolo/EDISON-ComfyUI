@@ -199,17 +199,36 @@ class EdisonApp {
         console.log('window.uploadedFiles:', window.uploadedFiles);
         const attachedFiles = window.uploadedFiles || [];
         console.log('📤 Attached files:', attachedFiles.length, attachedFiles.map(f => f.name));
+        
         let enhancedMessage = message;
+        let images = [];
         
         if (attachedFiles.length > 0) {
-            console.log('📤 Including files in message');
-            enhancedMessage += '\n\n[Attached files:]\n';
-            attachedFiles.forEach(file => {
-                console.log(`📤 Adding file: ${file.name}, content length: ${file.content?.length || 0}`);
-                enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
-            });
-            console.log('📤 Enhanced message length:', enhancedMessage.length);
-            // Clear files after sending
+            console.log('📤 Processing files...');
+            
+            // Separate images from text files
+            const textFiles = attachedFiles.filter(f => !f.isImage);
+            const imageFiles = attachedFiles.filter(f => f.isImage);
+            
+            // Add text files to message
+            if (textFiles.length > 0) {
+                console.log('📤 Including text files in message');
+                enhancedMessage += '\n\n[Attached files:]\n';
+                textFiles.forEach(file => {
+                    console.log(`📤 Adding file: ${file.name}, content length: ${file.content?.length || 0}`);
+                    enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
+                });
+            }
+            
+            // Collect images
+            if (imageFiles.length > 0) {
+                console.log('📤 Including images for vision');
+                images = imageFiles.map(f => f.content);
+            }
+            
+            console.log('📤 Enhanced message length:', enhancedMessage.length, 'Images:', images.length);
+            
+            // Clear files after preparing
             window.uploadedFiles.length = 0;
             const attachedFilesDiv = document.getElementById('attachedFiles');
             if (attachedFilesDiv) attachedFilesDiv.style.display = 'none';
@@ -229,7 +248,8 @@ class EdisonApp {
             body: JSON.stringify({
                 message: enhancedMessage,
                 mode: mode,
-                remember: remember
+                remember: remember,
+                images: images.length > 0 ? images : undefined
             }),
             signal: this.abortController?.signal
         });

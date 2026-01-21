@@ -31,6 +31,7 @@ sys.path.insert(0, str(REPO_ROOT))
 llm_fast = None
 llm_medium = None  # 32B model - fallback for deep mode
 llm_deep = None
+llm_vision = None  # VLM for image understanding
 rag_system = None
 search_tool = None
 config = None
@@ -45,6 +46,10 @@ class ChatRequest(BaseModel):
     remember: bool = Field(
         default=True, 
         description="Store conversation in memory"
+    )
+    images: Optional[list] = Field(
+        default=None,
+        description="Base64 encoded images for vision"
     )
 
 class ChatResponse(BaseModel):
@@ -66,6 +71,7 @@ class HealthResponse(BaseModel):
     models_loaded: dict
     qdrant_ready: bool
     repo_root: str
+    vision_enabled: bool = False
 
 def load_config():
     """Load EDISON configuration with absolute paths"""
@@ -182,6 +188,35 @@ def load_llm_models():
             logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
     else:
         logger.warning(f"Deep model not found at {deep_model_path}")
+
+    # Try to load vision model (VLM)
+    vision_model_name = config.get("edison", {}).get("core", {}).get("vision_model")
+    vision_clip_name = config.get("edison", {}).get("core", {}).get("vision_clip")
+    
+    if vision_model_name and vision_clip_name:
+        vision_model_path = models_path / vision_model_name
+        vision_clip_path = models_path / vision_clip_name
+        
+        if vision_model_path.exists() and vision_clip_path.exists():
+            try:
+                logger.info(f"Loading vision model: {vision_model_path}")
+                logger.info(f"Loading CLIP projector: {vision_clip_path}")
+                
+                llm_vision = Llama(
+                    model_path=str(vision_model_path),
+                    clip_model_path=str(vision_clip_path),
+                    n_ctx=4096,
+                    n_gpu_layers=-1,
+                    verbose=False
+                )
+                logger.info("✓ Vision model loaded successfully")
+            except Exception as e:
+                llm_vision = None
+                logger.warning(f"Failed to load vision model: {e}")
+        else:
+            logger.info("Vision model or CLIP projector not found (optional - image understanding disabled)")
+    else:
+        logger.info("Vision model not configured (image understanding disabled)")
     
     if not llm_fast and not llm_medium and not llm_deep:
         logger.error("⚠ No models loaded. Please place GGUF models in the models/llm/ directory.")
@@ -321,8 +356,10 @@ async def health():
         "models_loaded": {
             "fast_model": llm_fast is not None,
             "medium_model": llm_medium is not None,
-            "deep_model": llm_deep is not None
+            "deep_model": llm_deep is not None,
+            "vision_model": llm_vision is not None
         },
+        "vision_enabled": llm_vision is not None,
         "qdrant_ready": rag_system is not None,
         "repo_root": str(REPO_ROOT)
     }
@@ -388,6 +425,19 @@ async def chat(request: ChatRequest):
             status_code=503,
             detail=f"No suitable model available for mode '{mode}'."
         )
+    
+    # Check if this is a vision request (has images)
+    has_images = request.images and len(request.images) > 0
+    if has_images:
+        if not llm_vision:
+            raise HTTPException(
+                status_code=503,
+                detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
+            )
+        # Use vision model for image understanding
+        llm = llm_vision
+        model_name = "vision"
+        logger.info("Using vision model for image understanding")
     
     # Retrieve context from RAG if remember is enabled
     context_chunks = []
@@ -529,7 +579,16 @@ async def chat(request: ChatRequest):
     
     # Build prompt
     system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
-    full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results)
+    
+    # For vision requests, handle images differently
+    if has_images:
+        # Vision models use different format with images
+        full_prompt = request.message
+        if context_chunks:
+            context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
+            full_prompt = f"Context: {context_text}\n\n{full_prompt}"
+    else:
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results)
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
@@ -542,19 +601,59 @@ async def chat(request: ChatRequest):
     try:
         logger.info(f"Generating response with {model_name} model in {mode} mode")
         
-        response = llm(
-            full_prompt,
-            max_tokens=2048,
-            temperature=0.7,
-            top_p=0.9,
-            frequency_penalty=0.3,  # Reduce repetition
-            presence_penalty=0.2,   # Encourage new topics
-            repeat_penalty=1.1,     # Penalize repeated tokens
-            stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
-            echo=False
-        )
-        
-        assistant_response = response["choices"][0]["text"].strip()
+        if has_images:
+            # Vision model with images
+            import base64
+            # Decode base64 images
+            image_data_list = []
+            for img_b64 in request.images:
+                if isinstance(img_b64, str):
+                    # Remove data URL prefix if present
+                    if ',' in img_b64:
+                        img_b64 = img_b64.split(',', 1)[1]
+                    image_data_list.append(base64.b64decode(img_b64))
+            
+            logger.info(f"Processing {len(image_data_list)} images with vision model")
+            
+            response = llm.create_chat_completion(
+                messages=[
+                    {
+                        "role": "system",
+                        "content": "You are EDISON, a helpful AI assistant with vision capabilities. Analyze images carefully and provide detailed, accurate descriptions."
+                    },
+                    {
+                        "role": "user",
+                        "content": [
+                            {"type": "text", "text": full_prompt}
+                        ] + [
+                            {
+                                "type": "image_url",
+                                "image_url": {
+                                    "url": f"data:image/jpeg;base64,{request.images[i]}"
+                                }
+                            } for i in range(len(request.images))
+                        ]
+                    }
+                ],
+                max_tokens=2048,
+                temperature=0.7
+            )
+            assistant_response = response["choices"][0]["message"]["content"]
+        else:
+            # Text-only model
+            response = llm(
+                full_prompt,
+                max_tokens=2048,
+                temperature=0.7,
+                top_p=0.9,
+                frequency_penalty=0.3,  # Reduce repetition
+                presence_penalty=0.2,   # Encourage new topics
+                repeat_penalty=1.1,     # Penalize repeated tokens
+                stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                echo=False
+            )
+            
+            assistant_response = response["choices"][0]["text"].strip()
         
         # Store in memory if requested
         if request.remember and rag_system:
