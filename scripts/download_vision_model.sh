@@ -7,6 +7,7 @@ echo "===================================="
 echo ""
 
 MODELS_DIR="/opt/edison/models/llm"
+VENV_DIR="/opt/edison/.venv"
 
 # Create models directory if it doesn't exist
 mkdir -p "$MODELS_DIR"
@@ -15,9 +16,21 @@ echo "📥 Downloading LLaVA-v1.6-Mistral-7B vision model..."
 echo "This will download ~4GB of files"
 echo ""
 
+# Activate virtual environment if it exists
+if [ -f "$VENV_DIR/bin/activate" ]; then
+    source "$VENV_DIR/bin/activate"
+    echo "✓ Using virtual environment at $VENV_DIR"
+elif [ -f "/opt/edison/venv/bin/activate" ]; then
+    source "/opt/edison/venv/bin/activate"
+    echo "✓ Using virtual environment at /opt/edison/venv"
+else
+    echo "⚠️  No virtual environment found, using system Python"
+fi
+
 # Check if huggingface-cli is available
 if command -v huggingface-cli &> /dev/null; then
-    echo "Using huggingface-cli for download..."
+    echo "✓ Using huggingface-cli for download..."
+    echo ""
     
     # Download main model
     if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf" ]; then
@@ -45,21 +58,24 @@ if command -v huggingface-cli &> /dev/null; then
         echo "✅ CLIP projector already exists"
     fi
 else
-    echo "⚠️  huggingface-cli not found. Installing..."
-    pip install -U "huggingface_hub[cli]"
+    echo "⚠️  huggingface-cli not found. Installing in virtual environment..."
+    pip install -q -U "huggingface_hub[cli]"
     
     if command -v huggingface-cli &> /dev/null; then
-        echo "✅ huggingface-cli installed, rerun this script"
-        exit 0
+        echo "✅ huggingface-cli installed successfully"
+        echo ""
+        echo "Rerunning download..."
+        exec bash "$0"
     else
         echo ""
-        echo "❌ Automated download not available"
+        echo "❌ Failed to install huggingface-cli"
         echo ""
         echo "📝 Manual download instructions:"
         echo ""
-        echo "Option 1 - Install huggingface-cli:"
+        echo "Option 1 - Install manually and retry:"
+        echo "  source $VENV_DIR/bin/activate"
         echo "  pip install -U 'huggingface_hub[cli]'"
-        echo "  Then rerun this script"
+        echo "  bash scripts/download_vision_model.sh"
         echo ""
         echo "Option 2 - Manual browser download:"
         echo "  1. Visit: https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/tree/main"
