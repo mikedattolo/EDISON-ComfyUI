@@ -1,10 +1,10 @@
 // ===========================================
 // EDISON Enhanced Features
 // File Upload, Hardware Monitor, Work Mode, etc.
-// Version 5 - Cache bust
+// Version 6 - Image filter
 // ===========================================
 
-console.log('📦 app_features.js v5 loading...');
+console.log('📦 app_features.js v6 loading...');
 
 // Wait for main app to initialize
 let API_ENDPOINT = 'http://192.168.1.26:8811';
@@ -55,9 +55,18 @@ function initFileUpload() {
         }
         
         for (const file of files) {
-            console.log(`📎 Processing file: ${file.name}, size: ${file.size} bytes`);
+            console.log(`📎 Processing file: ${file.name}, size: ${file.size} bytes, type: ${file.type}`);
+            
+            // Check if it's an image file
+            if (file.type.startsWith('image/')) {
+                console.log(`⚠️ Image files not supported - EDISON doesn't have vision capabilities yet`);
+                alert(`⚠️ Image files are not yet supported.\n\nEDISON currently uses a text-only LLM without vision capabilities. Image support will be added when a VLM (Vision Language Model) is integrated.\n\nFor now, please only attach text-based files (.txt, .py, .js, .md, etc.)`);
+                continue;
+            }
+            
             if (file.size > 10 * 1024 * 1024) { // 10MB limit
                 console.log(`❌ File ${file.name} is too large (max 10MB)`);
+                alert(`❌ File too large: ${file.name}\n\nMaximum file size is 10MB.`);
                 continue;
             }
 
