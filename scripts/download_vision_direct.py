@@ -13,22 +13,28 @@ from tqdm import tqdm
 MODELS_DIR = Path("/opt/edison/models/llm")
 MODELS_DIR.mkdir(parents=True, exist_ok=True)
 
-# Model URLs - using direct CDN links
+# Model URLs - using direct CDN links with fallbacks
 MODELS = {
     "llava-v1.6-mistral-7b-q4_k_m.gguf": {
-        "url": "https://huggingface.co/cjpais/llava-v1.6-mistral-7b-gguf/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf",
+        "urls": [
+            "https://huggingface.co/mradermacher/llava-v1.6-mistral-7b-GGUF/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf",
+            "https://huggingface.co/cjpais/llava-v1.6-mistral-7b-gguf/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf",
+        ],
         "size": "3.8GB"
     },
     "llava-v1.6-mistral-7b-mmproj-q4_0.gguf": {
-        "url": "https://huggingface.co/cjpais/llava-v1.6-mistral-7b-gguf/resolve/main/mmproj-model-f16.gguf",
+        "urls": [
+            "https://huggingface.co/cjpais/llava-1.6-mistral-7b-gguf/resolve/main/mmproj-model-f16.gguf",
+            "https://huggingface.co/mys/ggml_llava-v1.6-mistral-7b/resolve/main/mmproj-model-f16.gguf",
+            "https://huggingface.co/jartine/llava-v1.5-7B-GGUF/resolve/main/mmproj-model-f16.gguf",
+        ],
         "size": "634MB"
     }
 }
 
-def download_file(url: str, dest: Path, desc: str):
-    """Download a file with progress bar"""
+def download_file(urls: list, dest: Path, desc: str):
+    """Download a file with progress bar, trying multiple URLs"""
     print(f"\n📥 Downloading {desc}...")
-    print(f"   URL: {url}")
     print(f"   Destination: {dest}")
     
     # Check if file already exists
@@ -36,32 +42,40 @@ def download_file(url: str, dest: Path, desc: str):
         print(f"   ✅ File already exists ({dest.stat().st_size / (1024**3):.2f} GB)")
         return True
     
-    try:
-        # Stream download with progress bar
-        response = requests.get(url, stream=True, timeout=30)
-        response.raise_for_status()
+    # Try each URL
+    for i, url in enumerate(urls if isinstance(urls, list) else [urls]):
+        print(f"   Trying URL {i+1}/{len(urls) if isinstance(urls, list) else 1}: {url}")
         
-        total_size = int(response.headers.get('content-length', 0))
-        
-        with open(dest, 'wb') as f, tqdm(
-            desc=desc,
-            total=total_size,
-            unit='iB',
-            unit_scale=True,
-            unit_divisor=1024,
-        ) as pbar:
-            for chunk in response.iter_content(chunk_size=8192):
-                size = f.write(chunk)
-                pbar.update(size)
-        
-        print(f"   ✅ Downloaded successfully ({dest.stat().st_size / (1024**3):.2f} GB)")
-        return True
-        
-    except Exception as e:
-        print(f"   ❌ Failed to download: {e}")
-        if dest.exists():
-            dest.unlink()  # Remove partial file
-        return False
+        try:
+            # Stream download with progress bar
+            response = requests.get(url, stream=True, timeout=30)
+            response.raise_for_status()
+            
+            total_size = int(response.headers.get('content-length', 0))
+            
+            with open(dest, 'wb') as f, tqdm(
+                desc=desc,
+                total=total_size,
+                unit='iB',
+                unit_scale=True,
+                unit_divisor=1024,
+            ) as pbar:
+                for chunk in response.iter_content(chunk_size=8192):
+                    size = f.write(chunk)
+                    pbar.update(size)
+            
+            print(f"   ✅ Downloaded successfully ({dest.stat().st_size / (1024**3):.2f} GB)")
+            return True
+            
+        except Exception as e:
+            print(f"   ❌ Failed: {e}")
+            if dest.exists():
+                dest.unlink()  # Remove partial file
+            if i < len(urls if isinstance(urls, list) else [urls]) - 1:
+                print(f"   Trying next mirror...")
+            continue
+    
+    return False
 
 def main():
     print("=" * 50)
@@ -90,7 +104,7 @@ def main():
     success = True
     for filename, info in MODELS.items():
         dest = MODELS_DIR / filename
-        if not download_file(info["url"], dest, f"{filename} ({info['size']})"):
+        if not download_file(info["urls"], dest, f"{filename} ({info['size']})"):
             success = False
             break
     
