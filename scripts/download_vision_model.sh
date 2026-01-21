@@ -19,11 +19,14 @@ echo ""
 if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf" ]; then
     echo "Downloading main model (~3.8GB)..."
     cd "$MODELS_DIR"
-    if wget -c "https://huggingface.co/mys/ggml_llava-v1.6-mistral-7b/resolve/main/ggml-model-Q4_K.gguf" \
+    if wget --no-verbose --show-progress -c \
+        "https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/resolve/main/llava-v1.6-mistral-7b-Q4_K_M.gguf" \
         -O llava-v1.6-mistral-7b-q4_k_m.gguf; then
         echo "✅ Main model downloaded successfully"
     else
         echo "❌ Failed to download main model"
+        echo "You can manually download from:"
+        echo "https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/blob/main/llava-v1.6-mistral-7b-Q4_K_M.gguf"
         exit 1
     fi
 else
@@ -34,11 +37,14 @@ fi
 if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf" ]; then
     echo "Downloading CLIP projector (~634MB)..."
     cd "$MODELS_DIR"
-    if wget -c "https://huggingface.co/mys/ggml_llava-v1.6-mistral-7b/resolve/main/mmproj-model-f16.gguf" \
+    if wget --no-verbose --show-progress -c \
+        "https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/resolve/main/mmproj-mistral7b-f16.gguf" \
         -O llava-v1.6-mistral-7b-mmproj-q4_0.gguf; then
         echo "✅ CLIP projector downloaded successfully"
     else
         echo "❌ Failed to download CLIP projector"
+        echo "You can manually download from:"
+        echo "https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/blob/main/mmproj-mistral7b-f16.gguf"
         exit 1
     fi
 else
