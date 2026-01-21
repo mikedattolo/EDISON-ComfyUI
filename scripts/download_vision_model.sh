@@ -15,79 +15,63 @@ echo "📥 Downloading LLaVA-v1.6-Mistral-7B vision model..."
 echo "This will download ~4GB of files"
 echo ""
 
-# Download the main model
-if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf" ] || [ ! -s "$MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf" ]; then
-    echo "Downloading main model (~3.8GB)..."
-    cd "$MODELS_DIR"
+# Check if huggingface-cli is available
+if command -v huggingface-cli &> /dev/null; then
+    echo "Using huggingface-cli for download..."
     
-    # Try direct CDN link first
-    if wget --no-verbose --show-progress -c \
-        "https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/resolve/main/llava-v1.6-mistral-7b-Q4_K_M.gguf?download=true" \
-        -O llava-v1.6-mistral-7b-q4_k_m.gguf.tmp; then
-        mv llava-v1.6-mistral-7b-q4_k_m.gguf.tmp llava-v1.6-mistral-7b-q4_k_m.gguf
-        
-        # Verify it's a valid GGUF file (should start with GGUF magic bytes)
-        if head -c 4 llava-v1.6-mistral-7b-q4_k_m.gguf | grep -q "GGUF"; then
-            echo "✅ Main model downloaded successfully"
-        else
-            echo "❌ Downloaded file is not a valid GGUF file (likely an error page)"
-            rm -f llava-v1.6-mistral-7b-q4_k_m.gguf
-            echo ""
-            echo "Manual download required:"
-            echo "1. Visit: https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/tree/main"
-            echo "2. Download: llava-v1.6-mistral-7b-Q4_K_M.gguf"
-            echo "3. Copy to: $MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf"
-            exit 1
-        fi
+    # Download main model
+    if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf" ]; then
+        echo "Downloading main model (~3.8GB)..."
+        huggingface-cli download bartowski/llava-v1.6-mistral-7b-GGUF \
+            llava-v1.6-mistral-7b-Q4_K_M.gguf \
+            --local-dir "$MODELS_DIR" \
+            --local-dir-use-symlinks False
+        mv "$MODELS_DIR/llava-v1.6-mistral-7b-Q4_K_M.gguf" "$MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf"
+        echo "✅ Main model downloaded"
     else
-        rm -f llava-v1.6-mistral-7b-q4_k_m.gguf.tmp
-        echo "❌ Failed to download main model"
-        echo ""
-        echo "Manual download required:"
-        echo "1. Visit: https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/tree/main"
-        echo "2. Download: llava-v1.6-mistral-7b-Q4_K_M.gguf"
-        echo "3. Copy to: $MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf"
-        exit 1
+        echo "✅ Main model already exists"
+    fi
+    
+    # Download CLIP projector
+    if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf" ]; then
+        echo "Downloading CLIP projector (~634MB)..."
+        huggingface-cli download bartowski/llava-v1.6-mistral-7b-GGUF \
+            mmproj-mistral7b-f16.gguf \
+            --local-dir "$MODELS_DIR" \
+            --local-dir-use-symlinks False
+        mv "$MODELS_DIR/mmproj-mistral7b-f16.gguf" "$MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf"
+        echo "✅ CLIP projector downloaded"
+    else
+        echo "✅ CLIP projector already exists"
     fi
 else
-    echo "✅ Main model already exists"
-fi
-
-# Download the CLIP projector (mmproj)
-if [ ! -f "$MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf" ] || [ ! -s "$MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf" ]; then
-    echo "Downloading CLIP projector (~634MB)..."
-    cd "$MODELS_DIR"
+    echo "⚠️  huggingface-cli not found. Installing..."
+    pip install -U "huggingface_hub[cli]"
     
-    if wget --no-verbose --show-progress -c \
-        "https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/resolve/main/mmproj-mistral7b-f16.gguf?download=true" \
-        -O llava-v1.6-mistral-7b-mmproj-q4_0.gguf.tmp; then
-        mv llava-v1.6-mistral-7b-mmproj-q4_0.gguf.tmp llava-v1.6-mistral-7b-mmproj-q4_0.gguf
-        
-        # Verify it's a valid GGUF file
-        if head -c 4 llava-v1.6-mistral-7b-mmproj-q4_0.gguf | grep -q "GGUF"; then
-            echo "✅ CLIP projector downloaded successfully"
-        else
-            echo "❌ Downloaded file is not a valid GGUF file (likely an error page)"
-            rm -f llava-v1.6-mistral-7b-mmproj-q4_0.gguf
-            echo ""
-            echo "Manual download required:"
-            echo "1. Visit: https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/tree/main"
-            echo "2. Download: mmproj-mistral7b-f16.gguf"
-            echo "3. Copy to: $MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf"
-            exit 1
-        fi
+    if command -v huggingface-cli &> /dev/null; then
+        echo "✅ huggingface-cli installed, rerun this script"
+        exit 0
     else
-        rm -f llava-v1.6-mistral-7b-mmproj-q4_0.gguf.tmp
-        echo "❌ Failed to download CLIP projector"
         echo ""
-        echo "Manual download required:"
-        echo "1. Visit: https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/tree/main"
-        echo "2. Download: mmproj-mistral7b-f16.gguf"
-        echo "3. Copy to: $MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf"
+        echo "❌ Automated download not available"
+        echo ""
+        echo "📝 Manual download instructions:"
+        echo ""
+        echo "Option 1 - Install huggingface-cli:"
+        echo "  pip install -U 'huggingface_hub[cli]'"
+        echo "  Then rerun this script"
+        echo ""
+        echo "Option 2 - Manual browser download:"
+        echo "  1. Visit: https://huggingface.co/bartowski/llava-v1.6-mistral-7b-GGUF/tree/main"
+        echo "  2. Download these files (click the ↓ icon):"
+        echo "     - llava-v1.6-mistral-7b-Q4_K_M.gguf (~3.8GB)"
+        echo "     - mmproj-mistral7b-f16.gguf (~634MB)"
+        echo "  3. Copy/rename them to:"
+        echo "     - $MODELS_DIR/llava-v1.6-mistral-7b-q4_k_m.gguf"
+        echo "     - $MODELS_DIR/llava-v1.6-mistral-7b-mmproj-q4_0.gguf"
+        echo ""
         exit 1
     fi
-else
-    echo "✅ CLIP projector already exists"
 fi
 
 echo ""
