@@ -603,17 +603,26 @@ async def chat(request: ChatRequest):
         
         if has_images:
             # Vision model with images
-            import base64
-            # Decode base64 images
-            image_data_list = []
+            logger.info(f"Processing {len(request.images)} images with vision model")
+            
+            # Build message content with text and images
+            content = [{"type": "text", "text": full_prompt}]
+            
+            # Add each image
             for img_b64 in request.images:
                 if isinstance(img_b64, str):
-                    # Remove data URL prefix if present
+                    # Remove data URL prefix if present (data:image/...;base64,)
                     if ',' in img_b64:
                         img_b64 = img_b64.split(',', 1)[1]
-                    image_data_list.append(base64.b64decode(img_b64))
+                    
+                    content.append({
+                        "type": "image_url",
+                        "image_url": {
+                            "url": f"data:image/jpeg;base64,{img_b64}"
+                        }
+                    })
             
-            logger.info(f"Processing {len(image_data_list)} images with vision model")
+            logger.info(f"Vision request with {len(content)-1} images")
             
             response = llm.create_chat_completion(
                 messages=[
@@ -623,16 +632,7 @@ async def chat(request: ChatRequest):
                     },
                     {
                         "role": "user",
-                        "content": [
-                            {"type": "text", "text": full_prompt}
-                        ] + [
-                            {
-                                "type": "image_url",
-                                "image_url": {
-                                    "url": f"data:image/jpeg;base64,{request.images[i]}"
-                                }
-                            } for i in range(len(request.images))
-                        ]
+                        "content": content
                     }
                 ],
                 max_tokens=2048,
