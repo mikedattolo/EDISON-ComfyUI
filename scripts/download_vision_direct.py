@@ -20,7 +20,7 @@ MODELS = {
         "size": "3.8GB"
     },
     "llava-v1.6-mistral-7b-mmproj-q4_0.gguf": {
-        "url": "https://huggingface.co/mradermacher/llava-v1.6-mistral-7b-GGUF/resolve/main/mmproj-mistral7b-f16.gguf",
+        "url": "https://huggingface.co/mradermacher/llava-v1.6-mistral-7b-GGUF/resolve/main/mmproj-model-f16.gguf",
         "size": "634MB"
     }
 }
