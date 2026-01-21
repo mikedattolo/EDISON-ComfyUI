@@ -10,7 +10,11 @@ let API_ENDPOINT = 'http://192.168.1.26:8811';
 let uploadedFiles = [];
 
 // Global function to trigger file selection
-window.triggerFileUpload = function() {
+window.triggerFileUpload = function(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
     console.log('triggerFileUpload called');
     const fileInput = document.getElementById('fileInput');
     if (fileInput) {
@@ -31,10 +35,11 @@ function initFileUpload() {
         return;
     }
 
-    attachBtn.addEventListener('click', () => {
-        console.log('Attach button clicked via event listener');
-        window.triggerFileUpload();
-    });
+    // Don't add event listener since we're using onclick attribute
+    // attachBtn.addEventListener('click', () => {
+    //     console.log('Attach button clicked via event listener');
+    //     window.triggerFileUpload();
+    // });
 
     fileInput.addEventListener('change', async (e) => {
         const files = Array.from(e.target.files);
@@ -93,7 +98,11 @@ function removeFile(index) {
 let hardwareInterval = null;
 
 // Global function to toggle hardware monitor
-window.toggleHardwareMonitor = function() {
+window.toggleHardwareMonitor = function(event) {
+    if (event) {
+        event.preventDefault();
+        event.stopPropagation();
+    }
     console.log('toggleHardwareMonitor called');
     const hardwareMonitor = document.getElementById('hardwareMonitor');
     
@@ -102,9 +111,10 @@ window.toggleHardwareMonitor = function() {
         return;
     }
     
-    console.log('Current display:', hardwareMonitor.style.display);
+    const currentDisplay = window.getComputedStyle(hardwareMonitor).display;
+    console.log('Current display:', currentDisplay);
     
-    if (hardwareMonitor.style.display === 'none' || !hardwareMonitor.style.display) {
+    if (currentDisplay === 'none') {
         console.log('Showing hardware monitor');
         hardwareMonitor.style.display = 'block';
         startHardwareMonitoring();
@@ -128,10 +138,11 @@ function initHardwareMonitor() {
         return;
     }
 
-    monitorBtn.addEventListener('click', () => {
-        console.log('Monitor button clicked via event listener');
-        window.toggleHardwareMonitor();
-    });
+    // Don't add event listener since we're using onclick attribute
+    // monitorBtn.addEventListener('click', () => {
+    //     console.log('Monitor button clicked via event listener');
+    //     window.toggleHardwareMonitor();
+    // });
     if (hwCloseBtn) {
         hwCloseBtn.addEventListener('click', () => {
             hardwareMonitor.style.display = 'none';
