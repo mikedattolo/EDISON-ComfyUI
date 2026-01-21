@@ -1,7 +1,10 @@
 // ===========================================
 // EDISON Enhanced Features
 // File Upload, Hardware Monitor, Work Mode, etc.
+// Version 5 - Cache bust
 // ===========================================
+
+console.log('📦 app_features.js v5 loading...');
 
 // Wait for main app to initialize
 let API_ENDPOINT = 'http://192.168.1.26:8811';
