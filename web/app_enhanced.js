@@ -121,8 +121,15 @@ class EdisonApp {
             this.createNewChat();
         }
         
-        // Add user message to UI
-        const userMessageEl = this.addMessage('user', message);
+        // Get uploaded files if any
+        const attachedFiles = window.EDISON_Features?.uploadedFiles || [];
+        
+        // Add user message to UI (with file indicators)
+        let displayMessage = message;
+        if (attachedFiles.length > 0) {
+            displayMessage += `\n\n📎 Files attached: ${attachedFiles.map(f => f.name).join(', ')}`;
+        }
+        const userMessageEl = this.addMessage('user', displayMessage);
         userMessageEl.dataset.messageId = Date.now();
         
         // Clear input
@@ -187,13 +194,30 @@ class EdisonApp {
     async callEdisonAPI(message, mode, remember) {
         const endpoint = `${this.settings.apiEndpoint}/chat`;
         
+        // Include uploaded files if any
+        const attachedFiles = window.EDISON_Features?.uploadedFiles || [];
+        let enhancedMessage = message;
+        
+        if (attachedFiles.length > 0) {
+            enhancedMessage += '\n\n[Attached files:]\n';
+            attachedFiles.forEach(file => {
+                enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
+            });
+            // Clear files after sending
+            if (window.EDISON_Features?.uploadedFiles) {
+                window.EDISON_Features.uploadedFiles.length = 0;
+                const attachedFilesDiv = document.getElementById('attachedFiles');
+                if (attachedFilesDiv) attachedFilesDiv.style.display = 'none';
+            }
+        }
+        
         const response = await fetch(endpoint, {
             method: 'POST',
             headers: {
                 'Content-Type': 'application/json',
             },
             body: JSON.stringify({
-                message: message,
+                message: enhancedMessage,
                 mode: mode,
                 remember: remember
             }),

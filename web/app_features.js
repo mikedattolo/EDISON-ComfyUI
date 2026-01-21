@@ -103,23 +103,24 @@ window.toggleHardwareMonitor = function(event) {
         event.preventDefault();
         event.stopPropagation();
     }
-    console.log('toggleHardwareMonitor called');
+    console.log('🖥️ toggleHardwareMonitor called');
     const hardwareMonitor = document.getElementById('hardwareMonitor');
     
     if (!hardwareMonitor) {
-        console.error('Hardware monitor element not found!');
+        console.error('❌ Hardware monitor element not found!');
         return;
     }
     
     const currentDisplay = window.getComputedStyle(hardwareMonitor).display;
-    console.log('Current display:', currentDisplay);
+    console.log('Current display:', currentDisplay, 'Element:', hardwareMonitor);
     
     if (currentDisplay === 'none') {
-        console.log('Showing hardware monitor');
+        console.log('✅ Showing hardware monitor');
         hardwareMonitor.style.display = 'block';
+        console.log('After setting display to block:', hardwareMonitor.style.display);
         startHardwareMonitoring();
     } else {
-        console.log('Hiding hardware monitor');
+        console.log('✅ Hiding hardware monitor');
         hardwareMonitor.style.display = 'none';
         if (hardwareInterval) {
             clearInterval(hardwareInterval);
