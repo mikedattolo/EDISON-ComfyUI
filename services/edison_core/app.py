@@ -18,9 +18,6 @@ class ImageGenResponse(BaseModel):
 
 from services.edison_core.tools import ComfyUITools
 
-## REMOVE THIS: FastAPI app instance
-# app = FastAPI()
-
 # Initialize ComfyUI tools (reuse config)
 comfyui_tools = None
 def init_comfyui_tools():
@@ -32,6 +29,15 @@ def init_comfyui_tools():
     except Exception as e:
         logger.error(f"Failed to initialize ComfyUI tools: {e}")
         comfyui_tools = None
+
+# ...existing code...
+
+# The FastAPI app is initialized below (with lifespan)
+# Place the /generate-image endpoint after app is defined
+
+# ...existing code...
+
+# After 'app' is defined (with lifespan), add the endpoint:
 
 @app.post("/generate-image", response_model=ImageGenResponse)
 async def generate_image(request: ImageGenRequest):
