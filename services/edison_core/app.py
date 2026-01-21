@@ -1,3 +1,7 @@
+
+from pydantic import BaseModel
+from typing import Optional
+
 class ImageGenRequest(BaseModel):
     prompt: str
     workflow: Optional[dict] = None  # Optional custom workflow
