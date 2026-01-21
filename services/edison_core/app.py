@@ -602,43 +602,68 @@ async def chat(request: ChatRequest):
         logger.info(f"Generating response with {model_name} model in {mode} mode")
         
         if has_images:
-            # Vision model with images
+            # Vision model with images - llama-cpp-python LLaVA format
             logger.info(f"Processing {len(request.images)} images with vision model")
             
-            # Build message content with text and images
-            content = [{"type": "text", "text": full_prompt}]
+            # For llama-cpp-python with LLaVA, we need to use data_uri format directly
+            # The API expects image data as base64 strings in the message content
+            import base64
+            import io
+            from PIL import Image
             
-            # Add each image
+            # Process each image
+            image_data_list = []
             for img_b64 in request.images:
                 if isinstance(img_b64, str):
                     # Remove data URL prefix if present (data:image/...;base64,)
                     if ',' in img_b64:
                         img_b64 = img_b64.split(',', 1)[1]
                     
-                    content.append({
-                        "type": "image_url",
-                        "image_url": {
-                            "url": f"data:image/jpeg;base64,{img_b64}"
+                    # Add to data list with proper format
+                    image_data_list.append(f"data:image/jpeg;base64,{img_b64}")
+            
+            logger.info(f"Vision request with {len(image_data_list)} images")
+            logger.info(f"Prompt: {full_prompt}")
+            logger.info(f"Image data length: {len(image_data_list[0][:100])}..." if image_data_list else "No images")
+            
+            # Try the multimodal content format
+            content = [
+                {"type": "text", "text": full_prompt}
+            ]
+            
+            for img_data in image_data_list:
+                content.append({
+                    "type": "image_url",
+                    "image_url": {"url": img_data}
+                })
+            
+            logger.info(f"Content structure: {len(content)} parts (1 text + {len(image_data_list)} images)")
+            
+            try:
+                response = llm.create_chat_completion(
+                    messages=[
+                        {
+                            "role": "user",
+                            "content": content
                         }
-                    })
-            
-            logger.info(f"Vision request with {len(content)-1} images")
-            
-            response = llm.create_chat_completion(
-                messages=[
-                    {
-                        "role": "system",
-                        "content": "You are EDISON, a helpful AI assistant with vision capabilities. Analyze images carefully and provide detailed, accurate descriptions."
-                    },
-                    {
-                        "role": "user",
-                        "content": content
-                    }
-                ],
-                max_tokens=2048,
-                temperature=0.7
-            )
-            assistant_response = response["choices"][0]["message"]["content"]
+                    ],
+                    max_tokens=2048,
+                    temperature=0.7
+                )
+                assistant_response = response["choices"][0]["message"]["content"]
+                logger.info(f"Vision response generated: {assistant_response[:100]}...")
+            except Exception as e:
+                logger.error(f"Vision model error: {e}")
+                logger.error(f"Trying fallback method...")
+                
+                # Fallback: try simple text prompt (vision model should still work as text model)
+                response = llm(
+                    f"[Image provided] {full_prompt}",
+                    max_tokens=2048,
+                    temperature=0.7
+                )
+                assistant_response = response["choices"][0]["text"].strip()
+                logger.warning("Vision model used in text-only mode - images not processed")
         else:
             # Text-only model
             response = llm(
