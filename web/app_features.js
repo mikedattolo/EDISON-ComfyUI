@@ -15,13 +15,13 @@ window.triggerFileUpload = function(event) {
         event.preventDefault();
         event.stopPropagation();
     }
-    console.log('triggerFileUpload called');
+    console.log('📎 triggerFileUpload called');
     const fileInput = document.getElementById('fileInput');
     if (fileInput) {
-        console.log('Clicking file input');
+        console.log('📎 Clicking file input, current files:', uploadedFiles.length);
         fileInput.click();
     } else {
-        console.error('File input not found!');
+        console.error('❌ File input not found!');
     }
 };
 
@@ -42,15 +42,24 @@ function initFileUpload() {
     // });
 
     fileInput.addEventListener('change', async (e) => {
+        console.log('📎 File input change event triggered');
         const files = Array.from(e.target.files);
+        console.log('📎 Files selected:', files.length, files.map(f => f.name));
+        
+        if (files.length === 0) {
+            console.log('⚠️ No files selected');
+            return;
+        }
         
         for (const file of files) {
+            console.log(`📎 Processing file: ${file.name}, size: ${file.size} bytes`);
             if (file.size > 10 * 1024 * 1024) { // 10MB limit
-                console.log(`File ${file.name} is too large (max 10MB)`);
+                console.log(`❌ File ${file.name} is too large (max 10MB)`);
                 continue;
             }
 
             const fileData = await readFileContent(file);
+            console.log(`✅ File ${file.name} read, content length: ${fileData.length}`);
             uploadedFiles.push({
                 name: file.name,
                 type: file.type,
@@ -58,6 +67,7 @@ function initFileUpload() {
             });
         }
 
+        console.log('📎 Total files now:', uploadedFiles.length, uploadedFiles.map(f => f.name));
         updateAttachedFilesUI();
         fileInput.value = ''; // Reset input
     });
@@ -73,10 +83,17 @@ async function readFileContent(file) {
 }
 
 function updateAttachedFilesUI() {
+    console.log('🔄 updateAttachedFilesUI called, files:', uploadedFiles.length);
     const attachedFilesDiv = document.getElementById('attachedFiles');
+    
+    if (!attachedFilesDiv) {
+        console.error('❌ attachedFiles div not found!');
+        return;
+    }
     
     if (uploadedFiles.length === 0) {
         attachedFilesDiv.style.display = 'none';
+        console.log('📎 No files to display');
         return;
     }
 
@@ -87,10 +104,16 @@ function updateAttachedFilesUI() {
             <span class="file-chip-remove" onclick="removeFile(${index})">×</span>
         </div>
     `).join('');
+    console.log('✅ Files displayed:', uploadedFiles.map(f => f.name));
+    
+    // Expose to window for debugging
+    window.EDISON_Features.uploadedFiles = uploadedFiles;
 }
 
 function removeFile(index) {
+    console.log('🗑️ Removing file at index:', index, uploadedFiles[index]?.name);
     uploadedFiles.splice(index, 1);
+    console.log('📎 Files remaining:', uploadedFiles.length);
     updateAttachedFilesUI();
 }
 
@@ -415,7 +438,8 @@ if (document.readyState === 'loading') {
 
 // Export functions for use in main app
 window.EDISON_Features = {
-    uploadedFiles,
+    get uploadedFiles() { return uploadedFiles; },
+    set uploadedFiles(value) { uploadedFiles = value; },
     removeFile,
     updateWorkDesktop,
     addThinkingLogEntry,

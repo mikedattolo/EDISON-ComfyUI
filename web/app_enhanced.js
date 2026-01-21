@@ -195,20 +195,29 @@ class EdisonApp {
         const endpoint = `${this.settings.apiEndpoint}/chat`;
         
         // Include uploaded files if any
+        console.log('📤 Checking for attached files...');
+        console.log('window.EDISON_Features:', window.EDISON_Features);
         const attachedFiles = window.EDISON_Features?.uploadedFiles || [];
+        console.log('📤 Attached files:', attachedFiles.length, attachedFiles.map(f => f.name));
         let enhancedMessage = message;
         
         if (attachedFiles.length > 0) {
+            console.log('📤 Including files in message');
             enhancedMessage += '\n\n[Attached files:]\n';
             attachedFiles.forEach(file => {
+                console.log(`📤 Adding file: ${file.name}, content length: ${file.content?.length || 0}`);
                 enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
             });
+            console.log('📤 Enhanced message length:', enhancedMessage.length);
             // Clear files after sending
             if (window.EDISON_Features?.uploadedFiles) {
                 window.EDISON_Features.uploadedFiles.length = 0;
                 const attachedFilesDiv = document.getElementById('attachedFiles');
                 if (attachedFilesDiv) attachedFilesDiv.style.display = 'none';
+                console.log('✅ Files cleared after sending');
             }
+        } else {
+            console.log('📤 No files to attach');
         }
         
         const response = await fetch(endpoint, {
