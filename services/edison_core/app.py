@@ -107,7 +107,7 @@ def load_config():
 
 def load_llm_models():
     """Load GGUF models using llama-cpp-python with absolute paths"""
-    global llm_fast, llm_medium, llm_deep
+    global llm_fast, llm_medium, llm_deep, llm_vision
     
     try:
         from llama_cpp import Llama
