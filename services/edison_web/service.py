@@ -16,9 +16,16 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
-# Get repo root
+
+# Get repo root and log it
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 WEB_DIR = REPO_ROOT / "web"
+logger.info(f"[DEBUG] __file__ = {__file__}")
+logger.info(f"[DEBUG] REPO_ROOT = {REPO_ROOT}")
+logger.info(f"[DEBUG] WEB_DIR = {WEB_DIR}")
+logger.info(f"[DEBUG] WEB_DIR exists: {WEB_DIR.exists()}")
+if not WEB_DIR.exists():
+    logger.error(f"[DEBUG] WEB_DIR does not exist! Contents of REPO_ROOT: {list(REPO_ROOT.iterdir())}")
 
 app = FastAPI(
     title="EDISON Web UI",
@@ -56,14 +63,19 @@ async def app_enhanced():
     """Serve main JS file"""
     return FileResponse(WEB_DIR / "app_enhanced.js", media_type="application/javascript")
 
+
 @app.get("/app_features.js")
 async def app_features():
     """Serve features JS file"""
     file_path = WEB_DIR / "app_features.js"
-    logger.info(f"Serving app_features.js from {file_path}, exists: {file_path.exists()}")
+    logger.info(f"[DEBUG] Attempting to serve app_features.js from {file_path}")
+    logger.info(f"[DEBUG] file_path.exists(): {file_path.exists()}")
+    logger.info(f"[DEBUG] WEB_DIR contents: {[str(p) for p in WEB_DIR.glob('*')]}")
     if not file_path.exists():
-        logger.error(f"app_features.js not found at {file_path}")
-        logger.error(f"WEB_DIR contents: {list(WEB_DIR.glob('*.js'))}")
+        logger.error(f"[DEBUG] app_features.js not found at {file_path}")
+        logger.error(f"[DEBUG] WEB_DIR contents: {[str(p) for p in WEB_DIR.glob('*')]}")
+        logger.error(f"[DEBUG] REPO_ROOT contents: {[str(p) for p in REPO_ROOT.glob('*')]}")
+        return {"error": "app_features.js not found", "path": str(file_path)}
     return FileResponse(file_path, media_type="application/javascript")
 
 @app.get("/health")
