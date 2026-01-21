@@ -1,43 +1,3 @@
-.top-tabs {
-    width: 100vw;
-    background: var(--surface);
-    display: flex;
-    justify-content: flex-start;
-    align-items: center;
-    border-bottom: 1px solid var(--border);
-    padding: 0 0 0 16px;
-    height: 48px;
-    z-index: 10;
-}
-.tab-btn {
-    background: none;
-    border: none;
-    color: var(--text-primary);
-    font-size: 1.1rem;
-    font-weight: 500;
-    padding: 0 24px;
-    height: 100%;
-    cursor: pointer;
-    transition: var(--transition);
-    border-bottom: 2px solid transparent;
-}
-.tab-btn.active {
-    color: var(--primary);
-    border-bottom: 2px solid var(--primary);
-}
-.tab-content {
-    display: none;
-    width: 100vw;
-    height: calc(100vh - 48px);
-    position: absolute;
-    top: 48px;
-    left: 0;
-    background: var(--background);
-    z-index: 5;
-}
-.tab-content[style*="display: block"] {
-    display: block;
-}
 :root {
     --primary: #667eea;
     --primary-dark: #5568d3;
@@ -1369,24 +1329,4 @@ body {
         right: 20px;
         left: 20px;
     }
-}
-
-/* Image Loading Spinner */
-.image-loading-spinner {
-    display: inline-block;
-    min-width: 120px;
-    color: var(--primary);
-    font-weight: 500;
-    font-size: 1.1rem;
-    padding: 12px 0;
-}
-
-/* Generated Images in Chat */
-.generated-image {
-    display: block;
-    max-width: 320px;
-    max-height: 320px;
-    margin: 16px auto;
-    border-radius: 12px;
-    box-shadow: 0 2px 12px rgba(0,0,0,0.25);
 }

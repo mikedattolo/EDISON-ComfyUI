@@ -144,49 +144,20 @@ class EdisonApp {
             this.isStreaming = true;
             this.abortController = new AbortController();
             
-            // Detect image generation intent
-            const imageGenKeywords = ["generate an image", "generate a picture", "create an image", "draw", "generate a photo", "image of", "picture of", "generate a "];
-            const lowerMsg = message.toLowerCase();
-            const wantsImage = imageGenKeywords.some(k => lowerMsg.includes(k));
-            if (wantsImage) {
-                // Show loading spinner in assistant message
-                this.updateMessage(assistantMessageEl, '<span class="image-loading-spinner">Generating image...</span>', 'image');
-                
-                // Call image generation endpoint
-                const imgRes = await fetch(`${this.settings.apiEndpoint}/generate-image`, {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({ prompt: message }),
-                });
-                let imgData = await imgRes.json();
-                if (imgData.status === 'success' && (imgData.image_url || imgData.image_base64)) {
-                    let imgTag = '';
-                    if (imgData.image_url) {
-                        imgTag = `<img src="${imgData.image_url}" alt="Generated image" class="generated-image" />`;
-                    } else if (imgData.image_base64) {
-                        imgTag = `<img src="data:image/png;base64,${imgData.image_base64}" alt="Generated image" class="generated-image" />`;
-                    }
-                    this.updateMessage(assistantMessageEl, imgTag, 'image');
-                    this.saveMessageToChat(message, '[Image generated]', 'image');
-                } else {
-                    this.updateMessage(assistantMessageEl, `⚠️ Image generation failed: ${imgData.error || 'Unknown error'}`, 'error');
-                }
-            } else {
-                // Normal chat response
-                const response = await this.callEdisonAPI(message, mode, remember);
-                
-                // Update assistant message
-                this.updateMessage(assistantMessageEl, response.response, response.mode_used);
-                
-                // Save to chat history
-                this.saveMessageToChat(message, response.response, response.mode_used);
-                
-                // Generate smart title if first message
-                const chat = this.chats.find(c => c.id === this.currentChatId);
-                if (chat && chat.messages.length === 2) {
-                    this.generateChatTitle(chat, message, response.response);
-                }
+            const response = await this.callEdisonAPI(message, mode, remember);
+            
+            // Update assistant message
+            this.updateMessage(assistantMessageEl, response.response, response.mode_used);
+            
+            // Save to chat history
+            this.saveMessageToChat(message, response.response, response.mode_used);
+            
+            // Generate smart title if first message
+            const chat = this.chats.find(c => c.id === this.currentChatId);
+            if (chat && chat.messages.length === 2) {
+                this.generateChatTitle(chat, message, response.response);
             }
+            
         } catch (error) {
             if (error.name === 'AbortError') {
                 this.updateMessage(assistantMessageEl, '⚠️ Response generation stopped by user.', 'stopped');
@@ -649,38 +620,4 @@ class EdisonApp {
 // Initialize app when DOM is ready
 document.addEventListener('DOMContentLoaded', () => {
     window.edisonApp = new EdisonApp();
-
-    // Tab switching logic
-    const tabChat = document.getElementById('tabChat');
-    const tabVideo = document.getElementById('tabVideo');
-    const tabHardware = document.getElementById('tabHardware');
-    const tabContentChat = document.getElementById('tabContentChat');
-    const tabContentVideo = document.getElementById('tabContentVideo');
-    const tabContentHardware = document.getElementById('tabContentHardware');
-    const mainContentChat = document.getElementById('mainContentChat');
-
-    function showTab(tab) {
-        tabChat.classList.remove('active');
-        tabVideo.classList.remove('active');
-        tabHardware.classList.remove('active');
-        tabContentChat.style.display = 'none';
-        tabContentVideo.style.display = 'none';
-        tabContentHardware.style.display = 'none';
-        mainContentChat.style.display = 'none';
-        if (tab === 'chat') {
-            tabChat.classList.add('active');
-            tabContentChat.style.display = 'block';
-            mainContentChat.style.display = 'block';
-        } else if (tab === 'video') {
-            tabVideo.classList.add('active');
-            tabContentVideo.style.display = 'block';
-        } else if (tab === 'hardware') {
-            tabHardware.classList.add('active');
-            tabContentHardware.style.display = 'block';
-        }
-    }
-    tabChat.addEventListener('click', () => showTab('chat'));
-    tabVideo.addEventListener('click', () => showTab('video'));
-    tabHardware.addEventListener('click', () => showTab('hardware'));
-    showTab('chat');
 });
