@@ -16,11 +16,11 @@ MODELS_DIR.mkdir(parents=True, exist_ok=True)
 # Model URLs - using direct CDN links
 MODELS = {
     "llava-v1.6-mistral-7b-q4_k_m.gguf": {
-        "url": "https://huggingface.co/mradermacher/llava-v1.6-mistral-7b-GGUF/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf",
+        "url": "https://huggingface.co/cjpais/llava-v1.6-mistral-7b-gguf/resolve/main/llava-v1.6-mistral-7b.Q4_K_M.gguf",
         "size": "3.8GB"
     },
     "llava-v1.6-mistral-7b-mmproj-q4_0.gguf": {
-        "url": "https://huggingface.co/mradermacher/llava-v1.6-mistral-7b-GGUF/resolve/main/mmproj-model-f16.gguf",
+        "url": "https://huggingface.co/cjpais/llava-v1.6-mistral-7b-gguf/resolve/main/mmproj-model-f16.gguf",
         "size": "634MB"
     }
 }
