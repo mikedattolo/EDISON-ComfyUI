@@ -14,6 +14,9 @@ class ImageGenResponse(BaseModel):
 
 from services.edison_core.tools import ComfyUITools
 
+# FastAPI app instance
+app = FastAPI()
+
 # Initialize ComfyUI tools (reuse config)
 comfyui_tools = None
 def init_comfyui_tools():
