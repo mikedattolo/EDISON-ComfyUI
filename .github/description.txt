@@ -1,0 +1,1 @@
+Complete offline AI platform with local LLMs (Qwen 2.5), vision models (LLaVA), RAG memory (Qdrant), modern web UI, and ComfyUI integration. Production-ready with systemd services, multi-GPU support, and zero API costs. 100% private and self-hosted.

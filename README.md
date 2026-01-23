@@ -2,75 +2,146 @@
 
 <div align="center">
 
-**Fully offline AI system with modern web UI, local LLMs, and ComfyUI integration**
+<img src="logo.png" alt="EDISON Logo" width="200"/>
+
+**Your Complete Offline AI Platform**
+
+*Enterprise-grade local LLM system with modern web UI, vision capabilities, RAG memory, and ComfyUI integration*
 
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Python 3.9+](https://img.shields.io/badge/python-3.9+-blue.svg)](https://www.python.org/downloads/)
 [![Ubuntu 22.04+](https://img.shields.io/badge/ubuntu-22.04%2B-orange.svg)](https://ubuntu.com/)
+[![CUDA 12+](https://img.shields.io/badge/CUDA-12%2B-green.svg)](https://developer.nvidia.com/cuda-downloads)
 
-[Features](#features) • [Installation](#quick-start) • [Documentation](#documentation) • [Troubleshooting](#troubleshooting)
+[Features](#features) • [Quick Start](#quick-start) • [Documentation](#documentation) • [Troubleshooting](#troubleshooting)
 
 </div>
 
 ---
 
-## Features
+## 🎯 Why EDISON?
 
-### 🚀 **Modern Web UI**
-- Clean, responsive interface inspired by Claude/ChatGPT
-- Real-time chat with conversation history
-- Multiple AI modes: Chat, Deep Thinking, Code Assistant, Agent
-- Auto-intent detection
-- Settings management and health monitoring
+**EDISON** (Enhanced Distributed Intelligence System for Offline Networks) is a production-ready, fully offline AI platform that brings enterprise-level capabilities to your local infrastructure:
 
-### 🧠 **Powerful AI Models**
-- **Fast mode**: Qwen 2.5 14B for quick responses
-- **Deep mode**: Qwen 2.5 72B for detailed analysis
-- **Code mode**: Specialized for programming tasks
-- **Agent mode**: Tool-using capabilities
-- Full GPU acceleration with CUDA
-
-### 🔌 **Easy Deployment**
-- One-command installation
-- Systemd services for auto-start
-- Network-accessible from any device
-- Production-ready configuration
-
-### 🛠️ **Advanced Features**
-- RAG (Retrieval Augmented Generation) with Qdrant
-- Intent classification with optional Coral TPU
-- ComfyUI integration for image generation
-- Multi-GPU support
-- Comprehensive logging and monitoring
+- ✅ **100% Private** - All processing happens on your hardware
+- ✅ **No API Costs** - One-time setup, unlimited usage
+- ✅ **Multi-Modal** - Text, images, code, and vision understanding
+- ✅ **Production Ready** - Systemd services, logging, monitoring
+- ✅ **Multi-GPU Support** - Efficient tensor splitting across GPUs
+- ✅ **Memory System** - RAG-powered long-term context retention
 
 ---
 
-## Quick Start
+## ✨ Features
+
+### 🚀 **Modern Web Interface**
+- **Claude/ChatGPT-inspired UI** with real-time streaming responses
+- **Conversation Management** - Save, load, and organize chat histories
+- **File Upload Support** - Attach documents and images to conversations
+- **Multiple AI Modes** - Chat, Deep Thinking, Reasoning, Code, Agent
+- **Auto-Intent Detection** - Automatically selects optimal model and mode
+- **Hardware Monitoring** - Real-time GPU, CPU, and memory stats
+- **Work Mode** - Dedicated interface for complex multi-step tasks
+- **Settings Panel** - Configure models, memory, and behavior
+
+### 🧠 **Powerful AI Models**
+- **Fast Mode (Qwen 2.5 14B)** - Instant responses for quick questions
+- **Deep Mode (Qwen 2.5 72B)** - Comprehensive analysis and reasoning
+- **Vision Model (LLaVA 1.6)** - Image understanding and description
+- **Code Assistant** - Specialized for programming and technical tasks
+- **Agent Mode** - Web search, tool use, and multi-step problem solving
+- **Full GPU Acceleration** - CUDA-optimized inference with tensor splitting
+
+### 🎨 **Image Generation**
+- **ComfyUI Integration** - Professional node-based workflow system
+- **Custom EDISON Nodes** - Direct chat interface within ComfyUI
+- **Workflow Library** - Pre-configured templates for common tasks
+- **Real-time Generation** - Streaming progress updates
+
+### 🧩 **Advanced Capabilities**
+- **RAG Memory System** - Vector-based long-term context with Qdrant
+- **Web Search** - Agent mode with DuckDuckGo integration
+- **File Processing** - Upload and analyze documents, images, and code
+- **Intent Classification** - Optional Google Coral TPU acceleration
+- **Multi-GPU Support** - Automatic load balancing across devices
+- **Conversation Memory** - Remember facts, preferences, and context
+- **Smart Prompting** - Context-aware system prompts per mode
+
+### 🔌 **Enterprise Deployment**
+- **One-Command Install** - Automated setup with dependency management
+- **Systemd Services** - Auto-start on boot with crash recovery
+- **Production Logging** - Structured logs with journalctl integration
+- **Health Monitoring** - Endpoints for uptime and status checks
+- **Network Access** - Secure LAN-accessible from any device
+- **Zero Configuration** - Intelligent defaults with optional customization
+
+---
+
+## 🚀 Quick Start
+
+### Prerequisites
+- Ubuntu 22.04+ or Debian-based Linux
+- NVIDIA GPU with 12GB+ VRAM (16GB+ recommended)
+- CUDA 12.0+ drivers installed
+- 100GB+ free disk space for models
+
+### Installation (5 minutes)
 
 ```bash
-# 1. Check system requirements
+# 1. Clone repository
 git clone https://github.com/mikedattolo/EDISON-ComfyUI.git
 cd EDISON-ComfyUI
+
+# 2. Check system requirements
 ./scripts/check_system.sh
 
-# 2. Run installation
+# 3. Run automated installation (installs all dependencies)
 ./scripts/setup_ubuntu.sh
 
-# 3. Download AI models
+# 4. Download AI models (~50GB)
 python3 scripts/download_models.py
 
-# 4. Install as system services
+# 5. Install as system services (auto-start on boot)
 sudo ./scripts/enable_services.sh
 
-# 5. Access web UI
-# Open browser: http://YOUR_IP:8080
+# 6. Access web interface
+# Open browser: http://YOUR_SERVER_IP:8080
 ```
 
-**That's it!** EDISON is now running with:
-- 🌐 Web UI on port **8080**
-- 🤖 API on port **8811**  
-- 🎨 ComfyUI on port **8188**
-- 🧭 Intent API on port **8808**
+### What Gets Installed
+
+| Service | Port | Description | Auto-Start |
+|---------|------|-------------|------------|
+| **edison-web** | 8080 | Modern web UI for chat | ✅ Yes |
+| **edison-core** | 8811 | LLM inference API | ✅ Yes |
+| **edison-coral** | 8808 | Intent classification | ✅ Yes |
+| **edison-comfyui** | 8188 | ComfyUI image generation | ✅ Yes |
+
+### First Steps
+
+1. **Open Web UI** - Navigate to `http://YOUR_IP:8080`
+2. **Try Chat Mode** - Ask: "What can you help me with?"
+3. **Test Deep Mode** - Ask: "Explain quantum computing in detail"
+4. **Upload Files** - Click 📎 to attach documents or images
+5. **Try Vision** - Upload an image and ask "What's in this image?"
+6. **Enable Memory** - Toggle "Remember" to store conversations
+
+---
+
+## 📊 EDISON vs Cloud AI
+
+| Feature | EDISON | ChatGPT/Claude | Local Alternatives |
+|---------|--------|----------------|-------------------|
+| **Privacy** | 100% offline | Cloud-based | Varies |
+| **Cost** | One-time hardware | $20-200/month | Varies |
+| **Latency** | <1s local | 1-5s network | <1s local |
+| **Customization** | Full control | Limited | Limited |
+| **Multi-modal** | Text + Vision + Image Gen | Text + Vision | Often separate |
+| **Memory/RAG** | Built-in Qdrant | Token-limited | Often missing |
+| **Production Ready** | Systemd services | N/A | Manual setup |
+| **Multi-GPU** | Tensor splitting | N/A | Rarely supported |
+| **Web Interface** | Modern, responsive | Excellent | Basic |
+| **API Access** | OpenAI-compatible | Yes | Varies |
 
 ---
 
@@ -78,7 +149,7 @@ sudo ./scripts/enable_services.sh
 
 ```
 ┌─────────────────────────────────────────────────┐
-│                  Web Browser                    │
+│              Web Browser (Any Device)           │
 │            http://YOUR_IP:8080                  │
 └────────────────┬────────────────────────────────┘
                  │
@@ -87,6 +158,9 @@ sudo ./scripts/enable_services.sh
 ┌──────▼───────┐   ┌────────▼────────┐
 │  EDISON Web  │   │    ComfyUI      │
 │   (8080)     │   │    (8188)       │
+│  - Chat UI   │   │  - Node Editor  │
+│  - File Up   │   │  - Workflows    │
+│  - Settings  │   │  - Generation   │
 └──────┬───────┘   └────────┬────────┘
        │                    │
        │           ┌────────▼────────┐
@@ -102,45 +176,61 @@ sudo ./scripts/enable_services.sh
 │   │   LLM Inference Engine      │   │
 │   │  - Qwen 2.5 14B (Fast)      │   │
 │   │  - Qwen 2.5 72B (Deep)      │   │
-│   │  - llama-cpp-python         │   │
+│   │  - LLaVA 1.6 (Vision)       │   │
+│   │  - llama-cpp-python + CUDA  │   │
 │   └───────────┬─────────────────┘   │
 │               │                     │
 │   ┌───────────▼─────────────────┐   │
 │   │   RAG System (Qdrant)       │   │
 │   │  - Vector embeddings        │   │
 │   │  - Conversation memory      │   │
+│   │  - Document storage         │   │
+│   └───────────┬─────────────────┘   │
+│               │                     │
+│   ┌───────────▼─────────────────┐   │
+│   │   Tool System               │   │
+│   │  - Web Search (DuckDuckGo)  │   │
+│   │  - Code execution           │   │
 │   └─────────────────────────────┘   │
 └──────┬──────────────────────────────┘
        │
 ┌──────▼───────────────────────────────┐
 │   EDISON Coral (8808)                │
 │   Intent Classification              │
-│   - Heuristic patterns (default)    │
+│   - Auto mode detection             │
 │   - Coral TPU acceleration (opt)    │
 └──────────────────────────────────────┘
 ```
 
 ---
 
-## System Requirements
+## 💻 System Requirements
 
 ### Minimum Configuration
-| Component | Requirement |
-|-----------|-------------|
-| **OS** | Ubuntu 22.04 or 24.04 LTS |
-| **CPU** | 8+ cores |
-| **RAM** | 32GB |
-| **Storage** | 50GB+ free |
-| **Python** | 3.9+ |
+| Component | Requirement | Notes |
+|-----------|-------------|-------|
+| **OS** | Ubuntu 22.04+ | Debian-based Linux |
+| **CPU** | 8+ cores | Intel/AMD x86_64 |
+| **RAM** | 32GB | For 14B models |
+| **Storage** | 100GB free | For models + system |
+| **GPU** | 12GB VRAM | RTX 3060 12GB minimum |
+| **Python** | 3.9+ | Installed by setup script |
 
 ### Recommended Configuration
-| Component | Requirement |
-|-----------|-------------|
-| **RAM** | 64GB+ |
-| **Storage** | 200GB+ NVMe SSD |
-| **GPU** | NVIDIA RTX 3090/4080/4090 (8GB+ VRAM) |
-| **CUDA** | 12.0+ |
-| **Optional** | Google Coral M.2 Edge TPU |
+| Component | Requirement | Notes |
+|-----------|-------------|-------|
+| **RAM** | 64GB+ | For 72B deep model |
+| **Storage** | 200GB+ NVMe | Faster model loading |
+| **GPU** | 16GB+ VRAM | RTX 4080/4090/A5000 |
+| **CUDA** | 12.0+ | Latest drivers |
+| **Network** | Gigabit LAN | For remote access |
+| **Optional** | Coral M.2 TPU | Intent classification |
+
+### Multi-GPU Support
+EDISON automatically splits models across multiple GPUs:
+- **3x GPU Setup**: 50% / 25% / 25% tensor split
+- **2x GPU Setup**: 60% / 40% tensor split  
+- **1x GPU**: Full model on single GPU
 
 ---
 
