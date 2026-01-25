@@ -22,7 +22,6 @@ class EdisonApp {
         this.sendBtn = document.getElementById('sendBtn');
         this.stopBtn = document.getElementById('stopBtn');
         this.charCount = document.getElementById('charCount');
-        this.rememberCheckbox = document.getElementById('rememberCheckbox');
         this.welcomeScreen = document.getElementById('welcomeScreen');
         
         // Sidebar elements
@@ -137,7 +136,6 @@ class EdisonApp {
         this.handleInputChange();
         
         // Prepare request
-        const remember = this.rememberCheckbox.checked;
         const mode = this.currentMode === 'auto' ? 'auto' : this.currentMode;
         
         // Add assistant message placeholder
@@ -151,7 +149,7 @@ class EdisonApp {
             this.isStreaming = true;
             this.abortController = new AbortController();
             
-            const response = await this.callEdisonAPI(message, mode, remember);
+            const response = await this.callEdisonAPI(message, mode);
             
             // Update assistant message
             this.updateMessage(assistantMessageEl, response.response, response.mode_used);
@@ -191,9 +189,11 @@ class EdisonApp {
         }
     }
 
-    async callEdisonAPI(message, mode, remember) {
+    async callEdisonAPI(message, mode) {
         const endpoint = `${this.settings.apiEndpoint}/chat`;
         
+        // Get recent conversation history for context
+        const conversationHistory = this.getRecentMessages(5);
         // Include uploaded files if any
         console.log('📤 Checking for attached files...');
         console.log('window.uploadedFiles:', window.uploadedFiles);
@@ -248,7 +248,8 @@ class EdisonApp {
             body: JSON.stringify({
                 message: enhancedMessage,
                 mode: mode,
-                remember: remember,
+                remember: null,  // Auto-detected by backend
+                conversation_history: conversationHistory,
                 images: images.length > 0 ? images : undefined
             }),
             signal: this.abortController?.signal
@@ -259,6 +260,16 @@ class EdisonApp {
         }
         
         return await response.json();
+    }
+
+    getRecentMessages(count = 5) {
+        const messages = Array.from(this.messagesContainer.querySelectorAll('.message:not(.streaming)'));
+        const recent = messages.slice(-count * 2); // Get last N exchanges (user + assistant pairs)
+        
+        return recent.map(msg => ({
+            role: msg.classList.contains('user') ? 'user' : 'assistant',
+            content: msg.querySelector('.message-content')?.textContent || ''
+        }));
     }
 
     addMessage(role, content, isStreaming = false) {
