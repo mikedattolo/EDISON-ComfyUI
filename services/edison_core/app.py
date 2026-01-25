@@ -692,13 +692,13 @@ async def chat(request: ChatRequest):
     work_steps = []
     if original_mode == "work" and not has_images:
         try:
-            task_analysis_prompt = f\"\"\"You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+            task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
 
 Task: {request.message}
 
 Provide a numbered list of specific steps. Be concise and action-oriented.
 
-Steps:\"\"\"
+Steps:"""
             
             task_response = llm(
                 task_analysis_prompt,
