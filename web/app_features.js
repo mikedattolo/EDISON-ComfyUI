@@ -268,6 +268,8 @@ function updateWorkDesktop(task, searchResults, documents, thinkingLog) {
                 <div class="result-snippet">${result.snippet}</div>
             </div>
         `).join('');
+    } else {
+        searchResultsDiv.innerHTML = '<div class="result-item" style="opacity: 0.5;">No search results yet</div>';
     }
     
     // Update documents
@@ -279,6 +281,8 @@ function updateWorkDesktop(task, searchResults, documents, thinkingLog) {
                 <span class="doc-name">${doc.name}</span>
             </div>
         `).join('');
+    } else {
+        docsDiv.innerHTML = '<div class="doc-item" style="opacity: 0.5;">No documents loaded</div>';
     }
     
     // Update thinking log
@@ -292,10 +296,14 @@ function addThinkingLogEntry(entry) {
     const timestamp = new Date().toLocaleTimeString();
     const logEntry = document.createElement('div');
     logEntry.className = 'log-entry';
-    logEntry.textContent = `[${timestamp}] ${entry}`;
+    logEntry.innerHTML = `<span style="opacity: 0.6;">[${timestamp}]</span> ${entry}`;
     logDiv.appendChild(logEntry);
     logDiv.scrollTop = logDiv.scrollHeight;
 }
+
+// Make functions globally available
+window.updateWorkDesktop = updateWorkDesktop;
+window.addThinkingLogEntry = addThinkingLogEntry;
 
 // Chat Search Functionality
 function initChatSearch() {

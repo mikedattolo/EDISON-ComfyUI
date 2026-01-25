@@ -484,18 +484,20 @@ body {
     font-size: 13px;
 }
 
-.remember-checkbox {
+.auto-memory-indicator {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     color: var(--text-secondary);
-    cursor: pointer;
+    font-size: 12px;
+    padding: 4px 8px;
+    background: rgba(102, 126, 234, 0.1);
+    border-radius: 6px;
+    border: 1px solid rgba(102, 126, 234, 0.2);
 }
 
-.remember-checkbox input[type="checkbox"] {
-    width: 16px;
-    height: 16px;
-    cursor: pointer;
+.auto-memory-indicator svg {
+    flex-shrink: 0;
 }
 
 .char-count {
@@ -1318,11 +1320,45 @@ body {
     font-size: 16px;
 }
 
-/* Responsive adjustments */
-@media (max-width: 768px) {
-    .work-content {
-        grid-template-columns: 1fr;
-    }
+/* Work Steps Display */
+.work-steps {
+    background: linear-gradient(135deg, rgba(102, 126, 234, 0.1), rgba(118, 75, 162, 0.1));
+    border: 1px solid rgba(102, 126, 234, 0.3);
+    border-radius: 12px;
+    padding: 16px;
+    margin-bottom: 16px;
+}
+
+.work-steps-header {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--primary);
+    margin-bottom: 12px;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+.work-steps-list {
+    list-style-position: inside;
+    padding-left: 0;
+    margin: 0;
+}
+
+.work-steps-list li {
+    padding: 8px 12px;
+    margin: 4px 0;
+    background: rgba(255, 255, 255, 0.05);
+    border-radius: 6px;
+    border-left: 3px solid var(--primary);
+    transition: var(--transition);
+}
+
+.work-steps-list li:hover {
+    background: rgba(255, 255, 255, 0.08);
+    transform: translateX(4px);
+}
+
     
     .hardware-monitor {
         width: calc(100% - 40px);

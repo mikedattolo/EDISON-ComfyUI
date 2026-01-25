@@ -19,7 +19,34 @@
 
 ---
 
-## 🎯 Why EDISON?
+## � What's New (v1.3.0)
+
+### 🧠 **Intelligent Memory System**
+- **Auto-Remember**: EDISON now automatically detects and stores important conversations without manual checkboxes! Personal info, preferences, goals, and reminders are stored automatically.
+- **Explicit Recall**: Search your entire conversation history with natural commands like "recall our chat about Python" or "what did we discuss about movies?"
+- **Cross-Chat Memory**: Access information from any previous conversation, not just the current one.
+
+### 💬 **Enhanced Conversation Intelligence**
+- **Context Awareness**: EDISON maintains context across messages and understands follow-up questions using pronouns like "it", "that", "her", etc.
+- **Smart Intent Detection**: 40+ patterns for accurate mode selection, including dedicated work mode detection for complex tasks.
+- **Fact Extraction**: Automatically extracts and stores personal details, preferences, and important information for better recall.
+
+### 🖥️ **Complete Work Mode**
+- **Task Breakdown**: Automatically breaks complex tasks into 3-7 actionable steps
+- **Visual Progress**: See your task plan in a beautiful UI with numbered steps
+- **Enhanced Responses**: Larger token limits (3072 vs 2048) for comprehensive task completion
+
+### 📊 **Better User Experience**
+- Removed manual "remember" checkbox - memory is now intelligent and automatic
+- Improved conversation flow with better pronoun and reference understanding
+- Enhanced RAG retrieval with multi-query expansion
+- Cleaner UI with auto-memory indicator
+
+**📖 Full Documentation**: See [AI_ENHANCEMENTS.md](AI_ENHANCEMENTS.md), [AUTO_REMEMBER.md](AUTO_REMEMBER.md), and [CONVERSATION_CONTEXT.md](CONVERSATION_CONTEXT.md)
+
+---
+
+## �🎯 Why EDISON?
 
 **EDISON** (Enhanced Distributed Intelligence System for Offline Networks) is a production-ready, fully offline AI platform that brings enterprise-level capabilities to your local infrastructure:
 
@@ -60,11 +87,16 @@
 
 ### 🧩 **Advanced Capabilities**
 - **RAG Memory System** - Vector-based long-term context with Qdrant
+- **Auto-Remember** 🆕 - Intelligently detects and stores important conversations without manual checkboxes
+- **Explicit Recall** 🆕 - Search previous conversations with natural language ("recall our chat about X")
+- **Conversation Context** 🆕 - Maintains context across messages, understands follow-up questions and pronouns
+- **Enhanced Intent Detection** 🆕 - 40+ patterns for accurate mode selection and recall detection
+- **Fact Extraction** 🆕 - Automatically extracts and stores personal information, preferences, and important details
+- **Work Mode** 🆕 - Breaks down complex tasks into actionable steps with visual progress tracking
 - **Web Search** - Agent mode with DuckDuckGo integration
 - **File Processing** - Upload and analyze documents, images, and code
 - **Intent Classification** - Optional Google Coral TPU acceleration
 - **Multi-GPU Support** - Automatic load balancing across devices
-- **Conversation Memory** - Remember facts, preferences, and context
 - **Smart Prompting** - Context-aware system prompts per mode
 
 ### 🔌 **Enterprise Deployment**

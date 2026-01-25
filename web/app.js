@@ -19,7 +19,6 @@ class EdisonApp {
         this.messageInput = document.getElementById('messageInput');
         this.sendBtn = document.getElementById('sendBtn');
         this.charCount = document.getElementById('charCount');
-        this.rememberCheckbox = document.getElementById('rememberCheckbox');
         this.welcomeScreen = document.getElementById('welcomeScreen');
         
         // Sidebar elements
@@ -115,8 +114,7 @@ class EdisonApp {
         this.messageInput.value = '';
         this.handleInputChange();
         
-        // Prepare request
-        const remember = this.rememberCheckbox.checked;
+        // Prepare request - remember is now auto-detected by backend
         const mode = this.currentMode === 'auto' ? 'auto' : this.currentMode;
         
         // Add assistant message placeholder
@@ -126,10 +124,25 @@ class EdisonApp {
             this.isStreaming = true;
             this.sendBtn.disabled = true;
             
-            const response = await this.callEdisonAPI(message, mode, remember);
+            const response = await this.callEdisonAPI(message, mode);
             
             // Update assistant message
             this.updateMessage(assistantMessageEl, response.response, response.mode_used);
+            
+            // Handle work mode - display task steps
+            if (response.mode_used === 'work' && response.work_steps) {
+                this.displayWorkSteps(response.work_steps, assistantMessageEl);
+                
+                // Update work desktop if visible
+                if (window.workModeActive) {
+                    window.updateWorkDesktop(
+                        message, 
+                        response.search_results || [], 
+                        [], 
+                        `Task broken into ${response.work_steps.length} steps`
+                    );
+                }
+            }
             
             // Save to chat history
             this.saveMessageToChat(message, response.response, response.mode_used);
@@ -147,8 +160,11 @@ class EdisonApp {
         }
     }
 
-    async callEdisonAPI(message, mode, remember) {
+    async callEdisonAPI(message, mode) {
         const endpoint = `${this.settings.apiEndpoint}/chat`;
+        
+        // Get recent conversation history for context
+        const conversationHistory = this.getRecentMessages(5);
         
         const response = await fetch(endpoint, {
             method: 'POST',
@@ -158,7 +174,8 @@ class EdisonApp {
             body: JSON.stringify({
                 message: message,
                 mode: mode,
-                remember: remember
+                remember: null,  // Auto-detected by backend
+                conversation_history: conversationHistory
             })
         });
         
@@ -236,6 +253,40 @@ class EdisonApp {
 
     scrollToBottom() {
         this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+    }
+    
+    getRecentMessages(count = 5) {
+        /**Get recent messages from current chat for conversation context*/
+        if (!this.currentChatId) return [];
+        
+        const currentChat = this.chats.find(c => c.id === this.currentChatId);
+        if (!currentChat || !currentChat.messages) return [];
+        
+        // Get last N messages (excluding the current one being sent)
+        const recentMessages = currentChat.messages.slice(-count).map(msg => ({
+            role: msg.role,
+            content: msg.content
+        }));
+        
+        return recentMessages;
+    }
+    
+    displayWorkSteps(steps, messageEl) {
+        /**Display work mode task breakdown steps in the message*/
+        if (!steps || steps.length === 0) return;
+        
+        const contentEl = messageEl.querySelector('.message-content');
+        const stepsHTML = `
+            <div class="work-steps">
+                <div class="work-steps-header">📋 Task Breakdown</div>
+                <ol class="work-steps-list">
+                    ${steps.map(step => `<li>${this.escapeHtml(step)}</li>`).join('')}
+                </ol>
+            </div>
+        `;
+        
+        // Prepend steps before the main response
+        contentEl.innerHTML = stepsHTML + contentEl.innerHTML;
     }
 
     createNewChat() {

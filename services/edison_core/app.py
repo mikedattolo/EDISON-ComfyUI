@@ -51,11 +51,18 @@ class ChatRequest(BaseModel):
         default=None,
         description="Base64 encoded images for vision"
     )
+    conversation_history: Optional[list] = Field(
+        default=None,
+        description="Recent conversation history for context (last 5 messages)"
+    )
 
 class ChatResponse(BaseModel):
     response: str
     mode_used: str
     model_used: str
+    work_steps: Optional[list] = None
+    context_used: Optional[int] = None
+    search_results_count: Optional[int] = None
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
@@ -375,34 +382,91 @@ async def chat(request: ChatRequest):
             detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
         )
     
+    # Auto-detect if this conversation should be remembered
+    auto_remember = should_remember_conversation(request.message)
+    remember = request.remember if request.remember is not None else auto_remember
+    
+    # Check if this is a recall request
+    is_recall, recall_query = detect_recall_intent(request.message)
+    
+    logger.info(f"Auto-remember: {auto_remember}, Remember: {remember}, Recall request: {is_recall}")
+    
     # Determine which mode to use
     mode = request.mode
+    
+    # Auto mode: Detect intent from message with enhanced patterns
     if mode == "auto":
+        msg_lower = request.message.lower()
+        
         # Try to get intent from coral service
         intent = get_intent_from_coral(request.message)
         
-        # Map intent to mode (simple heuristic)
-        if intent in ["analyze_image", "system_status", "help"]:
-            mode = "chat"
-        elif intent in ["generate_image", "text_to_image", "modify_workflow"]:
-            mode = "reasoning"
-        elif intent in ["agent", "code"]:
-            mode = intent
-        else:
-            # Fallback heuristic based on message length
-            if len(request.message) > 200 or any(word in request.message.lower() for word in ["explain", "how", "why", "analyze"]):
+        # Enhanced fallback heuristics with better patterns
+        if intent:
+            logger.info(f"Intent from coral: {intent}")
+            # Map coral intent to mode
+            if intent in ["analyze_image", "system_status", "help"]:
+                mode = "chat"
+            elif intent in ["generate_image", "text_to_image", "modify_workflow"]:
                 mode = "reasoning"
+            elif intent in ["agent", "code"]:
+                mode = intent
             else:
                 mode = "chat"
+        else:
+            # Multi-step reasoning patterns
+            reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
+                                 "understand", "break down", "elaborate", "clarify", "reasoning",
+                                 "think through", "step by step", "logic", "rationale"]
+            
+            # Code generation patterns
+            code_patterns = ["code", "program", "function", "implement", "script", "write",
+                            "create a", "build", "develop", "algorithm", "class", "method",
+                            "debug", "fix this", "syntax", "refactor"]
+            
+            # Web search / agent patterns
+            agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
+                             "current", "latest", "news about", "information on",
+                             "tell me about", "research", "browse"]
+            
+            # Work mode patterns (complex multi-step tasks)
+            work_patterns = ["create a project", "build an app", "design a system", "plan",
+                            "multi-step", "workflow", "organize", "manage",
+                            "help me with", "work on", "collaborate", "break down this"]
+            
+            # Question patterns (recall from memory)
+            recall_patterns = ["my name", "my favorite", "what did i", "do you remember",
+                              "what's my", "tell me about myself", "who am i"]
+            
+            # Check patterns in priority order
+            if any(pattern in msg_lower for pattern in work_patterns):
+                mode = "work"
+            elif any(pattern in msg_lower for pattern in recall_patterns):
+                mode = "chat"  # Use chat for recall with memory
+            elif any(pattern in msg_lower for pattern in agent_patterns):
+                mode = "agent"
+            elif any(pattern in msg_lower for pattern in code_patterns):
+                mode = "code"
+            elif any(pattern in msg_lower for pattern in reasoning_patterns):
+                mode = "reasoning"
+            else:
+                # Check message length and complexity for reasoning
+                words = msg_lower.split()
+                if len(words) > 15 or '?' in request.message:
+                    mode = "reasoning"
+                else:
+                    mode = "chat"
     
-    # Work mode uses agent capabilities
+    # Keep work mode separate for special handling
+    original_mode = mode
     if mode == "work":
-        mode = "agent"
+        logger.info(f"Work mode activated for complex task")
+        # Work mode will use reasoning capabilities but with special handling
+        use_deep_mode = True
+    else:
+        use_deep_mode = mode in ["reasoning", "agent", "code"]
         
-        logger.info(f"Auto mode selected: {mode}")
-    
-    # Select model based on mode with fallback order: deep → medium → fast
-    use_deep_mode = mode in ["reasoning", "agent", "code"]
+    logger.info(f"Mode selected: {mode} (from {request.mode})\")
     
     if use_deep_mode:
         # Try deep first, then medium, then fast
@@ -439,13 +503,57 @@ async def chat(request: ChatRequest):
         model_name = "vision"
         logger.info("Using vision model for image understanding")
     
-    # Retrieve context from RAG if remember is enabled
+    # Retrieve context from RAG - always check for recall requests or follow-ups
     context_chunks = []
-    if request.remember and rag_system and rag_system.is_ready():
+    if rag_system and rag_system.is_ready():
         try:
+            # Handle explicit recall requests
+            if is_recall:
+                logger.info(f"Recall request detected, searching for: {recall_query}")
+                # Do extensive search across all conversations
+                recall_chunks = rag_system.get_context(recall_query, n_results=5)
+                if recall_chunks:
+                    context_chunks.extend(recall_chunks)
+                    logger.info(f"Retrieved {len(recall_chunks)} chunks for recall request")
+                
+                # Also search with original message
+                additional_chunks = rag_system.get_context(request.message, n_results=3)
+                if additional_chunks:
+                    context_chunks.extend(additional_chunks)
+            
+            # First, check if this is a follow-up question (uses pronouns or context words)
+            msg_lower = request.message.lower()
+            is_followup = any(word in msg_lower for word in [
+                'that', 'it', 'this', 'the book', 'the page', 'her', 'his', 'their',
+                'what page', 'which', 'where in', 'from that', 'about that'
+            ])
+            
+            # If it's a follow-up and we have conversation history, use that context
+            if is_followup and request.conversation_history and len(request.conversation_history) > 0:
+                # Get the last few messages from conversation history
+                recent_context = []
+                for msg in request.conversation_history[-3:]:
+                    if msg.get('role') == 'user':
+                        recent_context.append(msg.get('content', ''))
+                    elif msg.get('role') == 'assistant':
+                        # Include last assistant response for context
+                        recent_context.append(msg.get('content', ''))
+                
+                # Search RAG using recent conversation context as queries
+                logger.info(f"Follow-up detected, searching with conversation context")
+                for context_msg in recent_context:
+                    if len(context_msg) > 10:  # Skip very short messages
+                        chunks = rag_system.get_context(context_msg[:200], n_results=2)
+                        if chunks:
+                            context_chunks.extend(chunks[:1])  # Take top result from each
+                
+                # Also search with current message
+                chunks = rag_system.get_context(request.message, n_results=2)
+                if chunks:
+                    context_chunks.extend(chunks)
+            
             # Expand query to get better context - extract key terms from questions
             search_queries = [request.message]
-            msg_lower = request.message.lower()
             
             # Detect question patterns and extract key terms
             import re
@@ -535,7 +643,7 @@ async def chat(request: ChatRequest):
     
     # Agent mode: Check if web search is requested
     search_results = []
-    if mode == "agent" and search_tool:
+    if mode in ["agent", "work"] and search_tool:
         msg_lower = request.message.lower()
         search_keywords = ["search", "internet", "web", "online", "news", "lookup", "find on", "google", "browse"]
         if any(keyword in msg_lower for keyword in search_keywords):
@@ -580,6 +688,41 @@ async def chat(request: ChatRequest):
     # Build prompt
     system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
     
+    # Work mode: Break down task into actionable steps
+    work_steps = []
+    if original_mode == "work" and not has_images:
+        try:
+            task_analysis_prompt = f\"\"\"You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+
+Task: {request.message}
+
+Provide a numbered list of specific steps. Be concise and action-oriented.
+
+Steps:\"\"\"
+            
+            task_response = llm(
+                task_analysis_prompt,
+                max_tokens=400,
+                temperature=0.3,
+                stop=["Task:", "\\n\\n\\n"],
+                echo=False
+            )
+            
+            task_breakdown = task_response["choices"][0]["text"].strip()
+            # Parse numbered steps
+            import re
+            work_steps = [s.strip() for s in re.findall(r'\\d+\\.\\s*(.+?)(?=\\n\\d+\\.|$)', task_breakdown, re.DOTALL)]
+            work_steps = [s.replace('\\n', ' ').strip() for s in work_steps if s.strip()]
+            
+            if work_steps:
+                logger.info(f"Task broken down into {len(work_steps)} steps")
+                # Add steps to prompt context
+                steps_text = "\\n".join([f"{i+1}. {step}" for i, step in enumerate(work_steps)])
+                system_prompt += f"\\n\\nTask Plan:\\n{steps_text}\\n\\nFollow these steps to complete the task thoroughly."
+            
+        except Exception as e:
+            logger.warning(f"Task breakdown failed: {e}")
+    
     # For vision requests, handle images differently
     if has_images:
         # Vision models use different format with images
@@ -588,7 +731,7 @@ async def chat(request: ChatRequest):
             context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
             full_prompt = f"Context: {context_text}\n\n{full_prompt}"
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
@@ -666,9 +809,10 @@ async def chat(request: ChatRequest):
                 logger.warning("Vision model used in text-only mode - images not processed")
         else:
             # Text-only model
+            max_tokens = 3072 if original_mode == "work" else 2048  # More tokens for work mode
             response = llm(
                 full_prompt,
-                max_tokens=2048,
+                max_tokens=max_tokens,
                 temperature=0.7,
                 top_p=0.9,
                 frequency_penalty=0.3,  # Reduce repetition
@@ -680,22 +824,45 @@ async def chat(request: ChatRequest):
             
             assistant_response = response["choices"][0]["text"].strip()
         
-        # Store in memory if requested
-        if request.remember and rag_system:
+        # Store in memory if auto-detected or requested
+        if remember and rag_system:
             try:
+                # Extract facts from conversation
+                facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
+                
+                # Store full conversation
                 rag_system.add_documents(
                     documents=[f"User: {request.message}\nAssistant: {assistant_response}"],
                     metadatas=[{"type": "conversation", "mode": mode}]
                 )
-                logger.info("Conversation stored in memory")
+                
+                # Store extracted facts separately for better retrieval
+                if facts_extracted:
+                    for fact in facts_extracted:
+                        rag_system.add_documents(
+                            documents=[fact],
+                            metadatas=[{"type": "fact", "source": "conversation"}]
+                        )
+                    logger.info(f"Conversation + {len(facts_extracted)} facts stored in memory")
+                else:
+                    logger.info("Conversation stored in memory")
             except Exception as e:
                 logger.warning(f"Failed to store conversation: {e}")
         
-        return ChatResponse(
-            response=assistant_response,
-            mode_used=mode,
-            model_used=model_name
-        )
+        # Build response with work mode metadata
+        response_data = {
+            "response": assistant_response,
+            "mode_used": original_mode,
+            "model_used": model_name
+        }
+        
+        # Add work mode specific data
+        if original_mode == "work" and work_steps:
+            response_data["work_steps"] = work_steps
+            response_data["context_used"] = len(context_chunks)
+            response_data["search_results_count"] = len(search_results) if search_results else 0
+        
+        return ChatResponse(**response_data)
         
     except Exception as e:
         logger.error(f"Error generating response: {e}")
@@ -732,18 +899,34 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     if has_search:
         base += " IMPORTANT: Web search results are provided below. You MUST use these search results to answer the user's question. Cite specific information from the search results and include the source titles. Do not make up information - only use what's in the search results."
     
+    # Add conversation awareness instruction
+    base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
+    
     prompts = {
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
         "agent": base + " You can search the web for current information. Provide detailed, accurate answers based on search results.",
-        "code": base + " Generate complete, working code solutions."
+        "code": base + " Generate complete, working code solutions with explanations.",
+        "work": base + " You are helping with a complex multi-step task. Follow the task plan provided, work through each step methodically, and provide comprehensive results. Be thorough and detail-oriented."
     }
     
     return prompts.get(mode, base)
 
-def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None) -> str:
-    """Build the complete prompt with context and search results"""
+def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None) -> str:
+    """Build the complete prompt with context, search results, and conversation history"""
     parts = [system_prompt, ""]
+    
+    # Add recent conversation history for context
+    if conversation_history and len(conversation_history) > 0:
+        parts.append("RECENT CONVERSATION:")
+        for msg in conversation_history[-5:]:
+            role = msg.get("role", "user")
+            content = msg.get("content", "")
+            if role == "user":
+                parts.append(f"User: {content}")
+            elif role == "assistant":
+                parts.append(f"Assistant: {content}")
+        parts.append("")
     
     # Add web search results if available
     if search_results:
@@ -887,6 +1070,166 @@ async def system_stats():
     except Exception as e:
         logger.error(f"Error getting system stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+def should_remember_conversation(message: str) -> bool:
+    """Determine if conversation should be stored based on content intent"""
+    msg_lower = message.lower()
+    
+    # Personal information patterns (should remember)
+    remember_patterns = [
+        # Identity
+        r"my name is", r"i'm called", r"call me", r"i am",
+        # Preferences
+        r"my favorite", r"i like", r"i love", r"i enjoy", r"i prefer",
+        r"i hate", r"i dislike", r"i don't like",
+        # Personal facts
+        r"i live in", r"i'm from", r"i work", r"my job", r"my age",
+        r"my birthday", r"i was born", r"my hobby", r"my hobbies",
+        # Goals and plans
+        r"i want to", r"i'm planning", r"i need to", r"my goal",
+        r"i'm working on", r"i'm learning",
+        # Relationships
+        r"my wife", r"my husband", r"my partner", r"my friend",
+        r"my family", r"my children", r"my parents",
+        # Context-rich statements
+        r"remind me", r"remember that", r"don't forget", r"keep in mind",
+    ]
+    
+    # Check if message contains memorable content
+    import re
+    for pattern in remember_patterns:
+        if re.search(pattern, msg_lower):
+            return True
+    
+    # Don't remember simple queries or commands without personal context
+    query_patterns = [
+        r"^what is", r"^what's", r"^how do", r"^how to",
+        r"^explain", r"^tell me about", r"^search for",
+        r"^show me", r"^give me", r"^can you"
+    ]
+    
+    for pattern in query_patterns:
+        if re.match(pattern, msg_lower):
+            # It's a query - only remember if it's about personal topics
+            if any(word in msg_lower for word in ["my", "i", "myself", "me"]):
+                return True
+            return False
+    
+    # Default: remember substantive conversations (not too short)
+    words = message.split()
+    if len(words) > 8:
+        return True
+    
+    return False
+
+def detect_recall_intent(message: str) -> tuple[bool, str]:
+    """Detect if user is asking to recall previous conversations
+    Returns: (is_recall_request, search_query)
+    """
+    msg_lower = message.lower()
+    
+    # Explicit recall patterns
+    recall_patterns = [
+        (r"what did (we|i) (talk|discuss|say) about (.+)", 3),
+        (r"recall (our|my) conversation about (.+)", 2),
+        (r"remember when (we|i) (talked|discussed) about (.+)", 3),
+        (r"search (my|our) (conversations|chats|history) for (.+)", 3),
+        (r"find (the conversation|when we talked) about (.+)", 2),
+        (r"what did you (say|tell me) about (.+)", 2),
+        (r"did (we|i) (discuss|talk about|mention) (.+)", 3),
+    ]
+    
+    import re
+    for pattern, group_idx in recall_patterns:
+        match = re.search(pattern, msg_lower)
+        if match:
+            search_query = match.group(group_idx) if match.lastindex >= group_idx else message
+            return (True, search_query)
+    
+    # Simple recall keywords
+    recall_keywords = [
+        "recall", "remember when", "what did we", "our conversation",
+        "search my chats", "find in history", "previous conversation",
+        "earlier we talked", "you mentioned", "we discussed"
+    ]
+    
+    if any(keyword in msg_lower for keyword in recall_keywords):
+        # Extract the topic after the recall keyword
+        for keyword in recall_keywords:
+            if keyword in msg_lower:
+                parts = msg_lower.split(keyword, 1)
+                if len(parts) > 1:
+                    search_query = parts[1].strip()
+                    # Clean up common words
+                    search_query = re.sub(r'^(about|that|the)\s+', '', search_query)
+                    return (True, search_query if search_query else message)
+        return (True, message)
+    
+    return (False, "")
+
+def extract_facts_from_conversation(user_message: str, assistant_response: str) -> List[str]:
+    """Extract factual statements from conversation for better memory"""
+    facts = []
+    
+    # Extract personal information patterns
+    import re
+    
+    # Name patterns
+    name_patterns = [
+        r"my name is (\w+)",
+        r"i'm (\w+)",
+        r"i am (\w+)",
+        r"call me (\w+)"
+    ]
+    
+    combined_text = f"{user_message.lower()} {assistant_response.lower()}"
+    
+    for pattern in name_patterns:
+        matches = re.findall(pattern, combined_text)
+        for match in matches:
+            if len(match) > 1 and match.isalpha():  # Valid name
+                facts.append(f"The user's name is {match.title()}.")
+    
+    # Favorite/preference patterns
+    pref_patterns = [
+        (r"my favorite (\w+) is ([^.!?]+)", "The user's favorite {} is {}."),
+        (r"i like (\w+)", "The user likes {}."),
+        (r"i love (\w+)", "The user loves {}."),
+        (r"i enjoy (\w+)", "The user enjoys {}."),
+    ]
+    
+    for pattern, template in pref_patterns:
+        matches = re.findall(pattern, user_message.lower())
+        for match in matches:
+            if isinstance(match, tuple):
+                fact = template.format(*match)
+            else:
+                fact = template.format(match)
+            facts.append(fact.strip())
+    
+    # Age pattern
+    age_match = re.search(r"i am (\d+) years old|i'm (\d+)", user_message.lower())
+    if age_match:
+        age = age_match.group(1) or age_match.group(2)
+        facts.append(f"The user is {age} years old.")
+    
+    # Location patterns
+    location_patterns = [
+        r"i live in ([^.!?]+)",
+        r"i'm from ([^.!?]+)",
+        r"i am from ([^.!?]+)"
+    ]
+    
+    for pattern in location_patterns:
+        match = re.search(pattern, user_message.lower())
+        if match:
+            location = match.group(1).strip()
+            facts.append(f"The user lives in {location.title()}.")
+    
+    # Remove duplicates
+    facts = list(dict.fromkeys(facts))
+    
+    return facts[:5]  # Limit to 5 facts per conversation
 
 if __name__ == "__main__":
     import uvicorn
