@@ -40,6 +40,7 @@ class EdisonApp {
         this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
         this.clearHistoryBtn = document.getElementById('clearHistoryBtn');
         this.apiEndpointInput = document.getElementById('apiEndpoint');
+        this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
         this.systemStatus = document.getElementById('systemStatus');
     }
@@ -491,7 +492,7 @@ class EdisonApp {
             
             this.updateMessage(assistantMessageEl, '🎨 Generating image, please wait...', 'image');
             
-            // Call image generation API
+            // Call image generation API with ComfyUI endpoint
             const response = await fetch(`${this.settings.apiEndpoint}/generate-image`, {
                 method: 'POST',
                 headers: {
@@ -500,7 +501,8 @@ class EdisonApp {
                 body: JSON.stringify({
                     prompt: imagePrompt,
                     width: 1024,
-                    height: 1024
+                    height: 1024,
+                    comfyui_url: this.settings.comfyuiEndpoint
                 })
             });
             
@@ -732,6 +734,7 @@ class EdisonApp {
 
     openSettings() {
         this.apiEndpointInput.value = this.settings.apiEndpoint;
+        this.comfyuiEndpointInput.value = this.settings.comfyuiEndpoint;
         this.defaultModeSelect.value = this.settings.defaultMode;
         this.settingsModal.classList.add('open');
         this.checkSystemStatus();
@@ -743,6 +746,7 @@ class EdisonApp {
 
     saveSettings() {
         this.settings.apiEndpoint = this.apiEndpointInput.value.trim();
+        this.settings.comfyuiEndpoint = this.comfyuiEndpointInput.value.trim();
         this.settings.defaultMode = this.defaultModeSelect.value;
         
         localStorage.setItem('edison_settings', JSON.stringify(this.settings));
@@ -802,6 +806,7 @@ class EdisonApp {
         const saved = localStorage.getItem('edison_settings');
         const defaults = {
             apiEndpoint: 'http://192.168.1.26:8811',
+            comfyuiEndpoint: 'http://192.168.1.26:8188',
             defaultMode: 'auto',
             streamResponses: true,
             syntaxHighlight: true

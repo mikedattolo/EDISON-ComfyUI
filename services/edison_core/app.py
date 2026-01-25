@@ -898,20 +898,28 @@ async def generate_image(request: dict):
         height = request.get('height', 1024)
         steps = request.get('steps', 20)
         guidance_scale = request.get('guidance_scale', 3.5)
+        comfyui_url_override = request.get('comfyui_url')
         
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
         
         logger.info(f"Generating image: '{prompt}' ({width}x{height})")
         
-        # Get ComfyUI config
-        comfyui_config = config.get("edison", {}).get("comfyui", {})
-        comfyui_host = comfyui_config.get("host", "127.0.0.1")
-        # Never use 0.0.0.0 for client connections
-        if comfyui_host == "0.0.0.0":
-            comfyui_host = "127.0.0.1"
-        comfyui_port = comfyui_config.get("port", 8188)
-        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        # Use provided ComfyUI URL or fall back to config
+        if comfyui_url_override:
+            comfyui_url = comfyui_url_override.rstrip('/')
+            logger.info(f"Using provided ComfyUI URL: {comfyui_url}")
+        else:
+            # Get ComfyUI config
+            comfyui_config = config.get("edison", {}).get("comfyui", {})
+            comfyui_host = comfyui_config.get("host", "127.0.0.1")
+            # Never use 0.0.0.0 for client connections
+            if comfyui_host == "0.0.0.0":
+                comfyui_host = "127.0.0.1"
+            comfyui_port = comfyui_config.get("port", 8188)
+            comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        
+        logger.info(f"Connecting to ComfyUI at: {comfyui_url}")
         
         # Create a simple FLUX workflow
         workflow = {
