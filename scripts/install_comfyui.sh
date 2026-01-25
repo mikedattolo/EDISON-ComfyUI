@@ -28,9 +28,6 @@ fi
 echo "📥 Cloning ComfyUI repository..."
 git clone https://github.com/comfyanonymous/ComfyUI.git
 
-# Change ownership to edison user
-sudo chown -R edison:edison ComfyUI
-
 cd ComfyUI
 
 # Create virtual environment
