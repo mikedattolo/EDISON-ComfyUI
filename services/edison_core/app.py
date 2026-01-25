@@ -43,9 +43,9 @@ class ChatRequest(BaseModel):
         default="auto", 
         description="Interaction mode"
     )
-    remember: bool = Field(
-        default=True, 
-        description="Store conversation in memory"
+    remember: Optional[bool] = Field(
+        default=None, 
+        description="Store conversation in memory (None = auto-detect)"
     )
     images: Optional[list] = Field(
         default=None,
@@ -374,6 +374,8 @@ async def health():
 @app.post("/chat", response_model=ChatResponse)
 async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
+    
+    logger.info(f"=== Chat request received: '{request.message}' (mode: {request.mode}) ===")
     
     # Check if any model is loaded
     if not llm_fast and not llm_medium and not llm_deep:
