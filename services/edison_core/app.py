@@ -466,7 +466,7 @@ async def chat(request: ChatRequest):
     else:
         use_deep_mode = mode in ["reasoning", "agent", "code"]
         
-    logger.info(f"Mode selected: {mode} (from {request.mode})\")
+    logger.info(f"Mode selected: {mode} (from {request.mode})")
     
     if use_deep_mode:
         # Try deep first, then medium, then fast
