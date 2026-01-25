@@ -1000,29 +1000,54 @@ async def generate_title(request: dict):
     """Generate a smart title for a chat based on first message"""
     try:
         message = request.get('message', '')
+        response = request.get('response', '')
         
         if not llm_fast:
             # Fallback to simple title
-            title = message[:40]
-            return {"title": title}
+            words = message.split()[:5]
+            title = ' '.join(words)
+            return {"title": title if len(title) <= 50 else title[:47] + "..."}
         
-        # Use LLM to generate concise title
-        prompt = f"Generate a concise 3-5 word title for this message:\n\n{message}\n\nTitle:"
+        # Use LLM to generate concise, descriptive title
+        prompt = f"""Generate a short, descriptive title (3-6 words) for this conversation:
+
+User: {message[:200]}
+Assistant: {response[:200]}
+
+Create a concise title that captures the main topic or question. Do not use quotes.
+
+Title:"""
         
-        response = llm_fast(
+        result = llm_fast(
             prompt,
-            max_tokens=20,
-            temperature=0.5,
-            stop=["\n"],
+            max_tokens=30,
+            temperature=0.3,
+            stop=["\n", "User:", "Assistant:"],
             echo=False
         )
         
-        title = response["choices"][0]["text"].strip()
+        title = result["choices"][0]["text"].strip()
+        
+        # Clean up the title
+        title = title.strip('"\'.,;:')
+        
+        # Ensure reasonable length
+        if len(title) > 50:
+            words = title.split()[:5]
+            title = ' '.join(words)
+        
+        # Fallback if empty or too short
+        if len(title) < 3:
+            words = message.split()[:5]
+            title = ' '.join(words)
+        
         return {"title": title}
         
     except Exception as e:
         logger.error(f"Error generating title: {e}")
-        return {"title": message[:40]}
+        words = message.split()[:5]
+        title = ' '.join(words)
+        return {"title": title if len(title) <= 50 else title[:47] + "..."}
 
 @app.get("/system/stats")
 async def system_stats():

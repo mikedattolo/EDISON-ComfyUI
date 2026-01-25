@@ -434,15 +434,34 @@ class EdisonApp {
 
     async generateChatTitle(chat, firstMessage, firstResponse) {
         try {
-            // Use a simple heuristic to generate a short title
-            const combined = firstMessage + ' ' + firstResponse;
-            const words = combined.split(/\s+/).slice(0, 6);
-            chat.title = words.join(' ').substring(0, 40) + '...';
+            // Call backend API to generate a smart, concise title
+            const response = await fetch(`${this.settings.apiEndpoint}/generate-title`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    message: firstMessage,
+                    response: firstResponse
+                })
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                chat.title = data.title || firstMessage.substring(0, 40);
+            } else {
+                // Fallback to simple truncation
+                chat.title = firstMessage.substring(0, 40);
+            }
             
             this.saveChats();
             this.renderChatHistory();
         } catch (error) {
             console.error('Error generating title:', error);
+            // Fallback to simple truncation
+            chat.title = firstMessage.substring(0, 40);
+            this.saveChats();
+            this.renderChatHistory();
         }
     }
 
