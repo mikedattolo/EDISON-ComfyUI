@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, Iterator
+from typing import Optional, Literal, Iterator, List
 import logging
 from pathlib import Path
 import yaml
