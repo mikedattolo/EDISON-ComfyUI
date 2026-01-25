@@ -1,12 +1,29 @@
 #!/bin/bash
 set -e
 
-echo "FLUX Model Download Options"
-echo "============================"
+echo "FLUX Model Download for ComfyUI"
+echo "================================"
+echo ""
+echo "Both FLUX models now require HuggingFace authentication."
+echo ""
+echo "Setup steps:"
+echo "1. Create account at https://huggingface.co/join (if you don't have one)"
+echo "2. Get your token at https://huggingface.co/settings/tokens"
+echo "3. Accept the model license:"
+echo "   - FLUX.1-schnell: https://huggingface.co/black-forest-labs/FLUX.1-schnell"
+echo "   - FLUX.1-dev: https://huggingface.co/black-forest-labs/FLUX.1-dev"
+echo ""
+read -p "Enter your HuggingFace token: " HF_TOKEN
+
+if [ -z "$HF_TOKEN" ]; then
+    echo "❌ Error: Token cannot be empty"
+    exit 1
+fi
+
 echo ""
 echo "Choose a model:"
-echo "1. FLUX.1-schnell (Recommended - No auth required, faster, 23GB)"
-echo "2. FLUX.1-dev (Requires HuggingFace token, better quality, 23GB)"
+echo "1. FLUX.1-schnell (Recommended - Faster, 4-step generation, 23GB)"
+echo "2. FLUX.1-dev (Better quality, more steps required, 23GB)"
 echo ""
 read -p "Enter choice (1 or 2): " choice
 
@@ -16,30 +33,18 @@ case $choice in
     1)
         echo ""
         echo "Downloading FLUX.1-schnell..."
-        echo "This is the faster, distilled version - no authentication needed."
+        echo "This is the faster, distilled version (4-step generation)."
         echo ""
-        wget -c https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors
+        wget -c --header="Authorization: Bearer $HF_TOKEN" \
+            https://huggingface.co/black-forest-labs/FLUX.1-schnell/resolve/main/flux1-schnell.safetensors
         echo ""
         echo "✅ FLUX.1-schnell downloaded successfully!"
         ;;
     2)
         echo ""
-        echo "FLUX.1-dev requires a HuggingFace account and token."
+        echo "Downloading FLUX.1-dev..."
+        echo "This version produces higher quality but requires more steps."
         echo ""
-        echo "Setup steps:"
-        echo "1. Create account at https://huggingface.co/join"
-        echo "2. Accept FLUX.1-dev license at https://huggingface.co/black-forest-labs/FLUX.1-dev"
-        echo "3. Get token at https://huggingface.co/settings/tokens"
-        echo ""
-        read -p "Enter your HuggingFace token: " HF_TOKEN
-        
-        if [ -z "$HF_TOKEN" ]; then
-            echo "❌ Error: Token cannot be empty"
-            exit 1
-        fi
-        
-        echo ""
-        echo "Downloading FLUX.1-dev with authentication..."
         wget -c --header="Authorization: Bearer $HF_TOKEN" \
             https://huggingface.co/black-forest-labs/FLUX.1-dev/resolve/main/flux1-dev.safetensors
         echo ""
