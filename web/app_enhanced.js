@@ -149,18 +149,25 @@ class EdisonApp {
             this.isStreaming = true;
             this.abortController = new AbortController();
             
-            const response = await this.callEdisonAPI(message, mode);
+            // Check if this is an image generation request
+            const isImageRequest = this.detectImageGenerationRequest(message);
             
-            // Update assistant message
-            this.updateMessage(assistantMessageEl, response.response, response.mode_used);
-            
-            // Save to chat history
-            this.saveMessageToChat(message, response.response, response.mode_used);
-            
-            // Generate smart title if first message
-            const chat = this.chats.find(c => c.id === this.currentChatId);
-            if (chat && chat.messages.length === 2) {
-                this.generateChatTitle(chat, message, response.response);
+            if (isImageRequest) {
+                await this.handleImageGeneration(message, assistantMessageEl);
+            } else {
+                const response = await this.callEdisonAPI(message, mode);
+                
+                // Update assistant message
+                this.updateMessage(assistantMessageEl, response.response, response.mode_used);
+                
+                // Save to chat history
+                this.saveMessageToChat(message, response.response, response.mode_used);
+                
+                // Generate smart title if first message
+                const chat = this.chats.find(c => c.id === this.currentChatId);
+                if (chat && chat.messages.length === 2) {
+                    this.generateChatTitle(chat, message, response.response);
+                }
             }
             
         } catch (error) {
@@ -463,6 +470,109 @@ class EdisonApp {
             this.saveChats();
             this.renderChatHistory();
         }
+    }
+
+    detectImageGenerationRequest(message) {
+        const lowerMessage = message.toLowerCase();
+        const imageKeywords = [
+            'generate image', 'create image', 'make image', 'draw', 'generate a picture',
+            'create a picture', 'make a picture', 'generate an image', 'create an image',
+            'make an image', 'paint', 'illustrate', 'visualize', 'generate art', 'create art',
+            'make art', 'flux', 'stable diffusion', 'text to image', 'text2img'
+        ];
+        
+        return imageKeywords.some(keyword => lowerMessage.includes(keyword));
+    }
+
+    async handleImageGeneration(message, assistantMessageEl) {
+        try {
+            // Extract the actual image prompt from the message
+            const imagePrompt = this.extractImagePrompt(message);
+            
+            this.updateMessage(assistantMessageEl, '🎨 Generating image, please wait...', 'image');
+            
+            // Call image generation API
+            const response = await fetch(`${this.settings.apiEndpoint}/generate-image`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    prompt: imagePrompt,
+                    width: 1024,
+                    height: 1024
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error(`Image generation failed: ${response.statusText}`);
+            }
+            
+            const result = await response.json();
+            const promptId = result.prompt_id;
+            
+            // Poll for completion
+            let attempts = 0;
+            const maxAttempts = 60; // 60 seconds timeout
+            
+            while (attempts < maxAttempts) {
+                await new Promise(resolve => setTimeout(resolve, 1000));
+                
+                const statusResponse = await fetch(`${this.settings.apiEndpoint}/image-status/${promptId}`);
+                const status = await statusResponse.json();
+                
+                if (status.status === 'completed') {
+                    // Display the generated image
+                    const imageHtml = `
+                        <p>✅ Image generated successfully!</p>
+                        <div class="generated-image">
+                            <img src="${status.image_url}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px;">
+                        </div>
+                        <p style="margin-top: 10px;"><strong>Prompt:</strong> ${imagePrompt}</p>
+                    `;
+                    this.updateMessage(assistantMessageEl, imageHtml, 'image');
+                    
+                    // Save to chat history
+                    this.saveMessageToChat(message, `Image generated: ${imagePrompt}\n[Image: ${status.image_url}]`, 'image');
+                    
+                    break;
+                } else if (status.status === 'error') {
+                    throw new Error(status.message || 'Image generation failed');
+                } else if (status.status === 'not_found') {
+                    throw new Error('Generation job not found');
+                }
+                
+                // Update progress
+                this.updateMessage(assistantMessageEl, `🎨 Generating image... (${attempts + 1}s)`, 'image');
+                attempts++;
+            }
+            
+            if (attempts >= maxAttempts) {
+                throw new Error('Image generation timed out');
+            }
+            
+        } catch (error) {
+            console.error('Image generation error:', error);
+            this.updateMessage(
+                assistantMessageEl,
+                `⚠️ Error generating image: ${error.message}. Make sure ComfyUI is running and FLUX model is installed.`,
+                'error'
+            );
+        }
+    }
+
+    extractImagePrompt(message) {
+        // Remove common prefixes to extract the actual prompt
+        let prompt = message
+            .replace(/^(generate|create|make|draw|paint|illustrate|visualize)\s+(an?\s+)?(image|picture|art|photo)\s+(of\s+)?/i, '')
+            .replace(/^(generate|create|make)\s+/i, '')
+            .trim();
+        
+        if (!prompt) {
+            prompt = message; // Fallback to original message
+        }
+        
+        return prompt;
     }
 
     createNewChat() {

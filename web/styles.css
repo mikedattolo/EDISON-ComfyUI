@@ -368,6 +368,29 @@ body {
     50% { opacity: 0; }
 }
 
+/* Generated Image Styles */
+.generated-image {
+    margin: 16px 0;
+    border-radius: 8px;
+    overflow: hidden;
+    background: var(--surface);
+    padding: 8px;
+}
+
+.generated-image img {
+    display: block;
+    width: 100%;
+    height: auto;
+    border-radius: 4px;
+    box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+    transition: transform 0.2s;
+}
+
+.generated-image img:hover {
+    transform: scale(1.02);
+    cursor: pointer;
+}
+
 /* Input Container */
 .input-container {
     padding: 24px;

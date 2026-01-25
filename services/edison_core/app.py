@@ -889,6 +889,173 @@ async def web_search(request: SearchRequest):
         logger.error(f"Error performing search: {e}")
         raise HTTPException(status_code=500, detail=f"Search error: {str(e)}")
 
+@app.post("/generate-image")
+async def generate_image(request: dict):
+    """Generate an image using ComfyUI with FLUX"""
+    try:
+        prompt = request.get('prompt', '')
+        width = request.get('width', 1024)
+        height = request.get('height', 1024)
+        steps = request.get('steps', 20)
+        guidance_scale = request.get('guidance_scale', 3.5)
+        
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+        
+        logger.info(f"Generating image: '{prompt}' ({width}x{height})")
+        
+        # Get ComfyUI config
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        
+        # Create a simple FLUX workflow
+        workflow = {
+            "3": {
+                "inputs": {
+                    "seed": -1,
+                    "steps": steps,
+                    "cfg": guidance_scale,
+                    "sampler_name": "euler",
+                    "scheduler": "simple",
+                    "denoise": 1,
+                    "model": ["4", 0],
+                    "positive": ["6", 0],
+                    "negative": ["7", 0],
+                    "latent_image": ["5", 0]
+                },
+                "class_type": "KSampler"
+            },
+            "4": {
+                "inputs": {
+                    "ckpt_name": "flux1-dev.safetensors"
+                },
+                "class_type": "CheckpointLoaderSimple"
+            },
+            "5": {
+                "inputs": {
+                    "width": width,
+                    "height": height,
+                    "batch_size": 1
+                },
+                "class_type": "EmptyLatentImage"
+            },
+            "6": {
+                "inputs": {
+                    "text": prompt,
+                    "clip": ["4", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "7": {
+                "inputs": {
+                    "text": "",
+                    "clip": ["4", 1]
+                },
+                "class_type": "CLIPTextEncode"
+            },
+            "8": {
+                "inputs": {
+                    "samples": ["3", 0],
+                    "vae": ["4", 2]
+                },
+                "class_type": "VAEDecode"
+            },
+            "9": {
+                "inputs": {
+                    "filename_prefix": "EDISON",
+                    "images": ["8", 0]
+                },
+                "class_type": "SaveImage"
+            }
+        }
+        
+        # Submit workflow to ComfyUI
+        response = requests.post(
+            f"{comfyui_url}/prompt",
+            json={"prompt": workflow},
+            timeout=5
+        )
+        
+        if not response.ok:
+            raise HTTPException(status_code=503, detail=f"ComfyUI returned {response.status_code}")
+        
+        result = response.json()
+        prompt_id = result.get("prompt_id")
+        
+        if not prompt_id:
+            raise HTTPException(status_code=500, detail="No prompt_id returned from ComfyUI")
+        
+        logger.info(f"Image generation started, prompt_id: {prompt_id}")
+        
+        return {
+            "status": "generating",
+            "prompt_id": prompt_id,
+            "message": "Image generation started. Check status with /image-status endpoint.",
+            "comfyui_url": comfyui_url
+        }
+        
+    except requests.RequestException as e:
+        logger.error(f"ComfyUI connection error: {e}")
+        raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
+    except Exception as e:
+        logger.error(f"Error generating image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/image-status/{prompt_id}")
+async def image_status(prompt_id: str):
+    """Check the status of an image generation"""
+    try:
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        
+        # Check history for this prompt
+        response = requests.get(f"{comfyui_url}/history/{prompt_id}", timeout=5)
+        
+        if not response.ok:
+            return {"status": "unknown", "message": "Could not fetch status"}
+        
+        history = response.json()
+        
+        if prompt_id not in history:
+            # Check queue
+            queue_response = requests.get(f"{comfyui_url}/queue", timeout=5)
+            if queue_response.ok:
+                queue_data = queue_response.json()
+                # Check if in queue
+                in_queue = any(item[1] == prompt_id for item in queue_data.get("queue_running", []) + queue_data.get("queue_pending", []))
+                if in_queue:
+                    return {"status": "queued", "message": "Image is in queue"}
+            
+            return {"status": "not_found", "message": "Prompt not found"}
+        
+        prompt_data = history[prompt_id]
+        outputs = prompt_data.get("outputs", {})
+        
+        # Find the SaveImage node output
+        for node_id, node_output in outputs.items():
+            if "images" in node_output:
+                images = node_output["images"]
+                if images:
+                    image_info = images[0]
+                    image_url = f"{comfyui_url}/view?filename={image_info['filename']}&subfolder={image_info.get('subfolder', '')}&type={image_info.get('type', 'output')}"
+                    
+                    return {
+                        "status": "completed",
+                        "image_url": image_url,
+                        "filename": image_info['filename'],
+                        "message": "Image generated successfully"
+                    }
+        
+        return {"status": "processing", "message": "Still generating..."}
+        
+    except Exception as e:
+        logger.error(f"Error checking image status: {e}")
+        return {"status": "error", "message": str(e)}
+
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""
     base = "You are EDISON, a helpful AI assistant."
