@@ -18,7 +18,7 @@ edison:
     model_path: "models/coral/mobilenet_v2_1.0_224_inat_bird_quant_edgetpu.tflite"
   
   comfyui:
-    host: "0.0.0.0"
+    host: "127.0.0.1"
     port: 8188
     auto_start: true
   

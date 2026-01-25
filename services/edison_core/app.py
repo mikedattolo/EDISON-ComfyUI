@@ -907,6 +907,9 @@ async def generate_image(request: dict):
         # Get ComfyUI config
         comfyui_config = config.get("edison", {}).get("comfyui", {})
         comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        # Never use 0.0.0.0 for client connections
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
         comfyui_port = comfyui_config.get("port", 8188)
         comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
         
@@ -1009,6 +1012,9 @@ async def image_status(prompt_id: str):
     try:
         comfyui_config = config.get("edison", {}).get("comfyui", {})
         comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        # Never use 0.0.0.0 for client connections
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
         comfyui_port = comfyui_config.get("port", 8188)
         comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
         
