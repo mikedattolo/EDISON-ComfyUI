@@ -1,18 +1,17 @@
 [Unit]
-Description=EDISON ComfyUI Service
-After=network.target edison-core.service
-Wants=edison-core.service
+Description=EDISON ComfyUI Image Generation Service
+After=network.target
+Before=edison-core.service
 
 [Service]
 Type=simple
 User=edison
 WorkingDirectory=/opt/edison/ComfyUI
-Environment="PATH=/opt/edison/.venv/bin"
+Environment="PATH=/opt/edison/ComfyUI/venv/bin"
 Environment="PYTHONUNBUFFERED=1"
-Environment="CUDA_VISIBLE_DEVICES=0,1,2"
-ExecStart=/opt/edison/.venv/bin/python main.py --listen 0.0.0.0 --port 8188
+ExecStart=/opt/edison/ComfyUI/venv/bin/python main.py --listen 0.0.0.0 --port 8188
 Restart=always
-RestartSec=2
+RestartSec=3
 
 [Install]
 WantedBy=multi-user.target
