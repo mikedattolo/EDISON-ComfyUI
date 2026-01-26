@@ -38,6 +38,9 @@ config = None
 
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024) -> dict:
     """Create a FLUX workflow for image generation"""
+    import random
+    seed = random.randint(0, 2**32 - 1)  # Generate valid random seed
+    
     return {
         "6": {
             "inputs": {
@@ -125,7 +128,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024) -> 
         },
         "25": {
             "inputs": {
-                "noise_seed": -1
+                "noise_seed": seed
             },
             "class_type": "RandomNoise",
             "_meta": {"title": "RandomNoise"}
