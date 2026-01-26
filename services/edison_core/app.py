@@ -1127,12 +1127,15 @@ async def image_status(prompt_id: str):
                 images = node_output["images"]
                 if images:
                     image_info = images[0]
-                    image_url = f"{comfyui_url}/view?filename={image_info['filename']}&subfolder={image_info.get('subfolder', '')}&type={image_info.get('type', 'output')}"
+                    filename = image_info['filename']
+                    subfolder = image_info.get('subfolder', '')
+                    filetype = image_info.get('type', 'output')
                     
+                    # Return relative URL that will be proxied through EDISON
                     return {
                         "status": "completed",
-                        "image_url": image_url,
-                        "filename": image_info['filename'],
+                        "image_url": f"/proxy-image?filename={filename}&subfolder={subfolder}&type={filetype}",
+                        "filename": filename,
                         "message": "Image generated successfully"
                     }
         
@@ -1141,6 +1144,38 @@ async def image_status(prompt_id: str):
     except Exception as e:
         logger.error(f"Error checking image status: {e}")
         return {"status": "error", "message": str(e)}
+
+@app.get("/proxy-image")
+async def proxy_image(filename: str, subfolder: str = "", type: str = "output"):
+    """Proxy images from ComfyUI to handle remote access"""
+    try:
+        # Get ComfyUI config
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        
+        # Fetch image from ComfyUI
+        image_url = f"{comfyui_url}/view?filename={filename}&subfolder={subfolder}&type={type}"
+        response = requests.get(image_url, stream=True)
+        
+        if not response.ok:
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Return image with proper headers
+        from fastapi.responses import Response
+        return Response(
+            content=response.content,
+            media_type=response.headers.get('content-type', 'image/png'),
+            headers={
+                "Content-Disposition": f'inline; filename="{filename}"'
+            }
+        )
+    except Exception as e:
+        logger.error(f"Error proxying image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""

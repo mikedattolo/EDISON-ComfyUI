@@ -530,13 +530,19 @@ class EdisonApp {
                 const status = await statusResponse.json();
                 
                 if (status.status === 'completed') {
-                    // Display the generated image
+                    // Display the generated image with download button
+                    const fullImageUrl = `${this.settings.apiEndpoint}${status.image_url}`;
                     const imageHtml = `
                         <p>✅ Image generated successfully!</p>
                         <div class="generated-image">
-                            <img src="${status.image_url}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px;">
+                            <img src="${fullImageUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px;">
                         </div>
-                        <p style="margin-top: 10px;"><strong>Prompt:</strong> ${imagePrompt}</p>
+                        <div style="margin-top: 10px;">
+                            <button onclick="window.open('${fullImageUrl}', '_blank')" style="padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 8px;">
+                                📥 Download Image
+                            </button>
+                            <span style="color: #888;"><strong>Prompt:</strong> ${imagePrompt}</span>
+                        </div>
                     `;
                     this.updateMessage(assistantMessageEl, imageHtml, 'image');
                     
