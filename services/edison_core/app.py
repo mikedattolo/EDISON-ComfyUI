@@ -36,6 +36,111 @@ rag_system = None
 search_tool = None
 config = None
 
+def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024) -> dict:
+    """Create a FLUX workflow for image generation"""
+    return {
+        "6": {
+            "inputs": {
+                "text": prompt,
+                "clip": ["11", 0]
+            },
+            "class_type": "CLIPTextEncode",
+            "_meta": {"title": "CLIP Text Encode (Positive Prompt)"}
+        },
+        "8": {
+            "inputs": {
+                "samples": ["13", 0],
+                "vae": ["10", 0]
+            },
+            "class_type": "VAEDecode",
+            "_meta": {"title": "VAE Decode"}
+        },
+        "9": {
+            "inputs": {
+                "filename_prefix": "EDISON",
+                "images": ["8", 0]
+            },
+            "class_type": "SaveImage",
+            "_meta": {"title": "Save Image"}
+        },
+        "10": {
+            "inputs": {
+                "vae_name": "ae.safetensors"
+            },
+            "class_type": "VAELoader",
+            "_meta": {"title": "Load VAE"}
+        },
+        "11": {
+            "inputs": {
+                "clip_name1": "t5xxl_fp16.safetensors",
+                "clip_name2": "clip_l.safetensors",
+                "type": "flux"
+            },
+            "class_type": "DualCLIPLoader",
+            "_meta": {"title": "DualCLIPLoader"}
+        },
+        "12": {
+            "inputs": {
+                "unet_name": "flux1-schnell.safetensors",
+                "weight_dtype": "default"
+            },
+            "class_type": "UNETLoader",
+            "_meta": {"title": "Load Diffusion Model"}
+        },
+        "13": {
+            "inputs": {
+                "noise": ["25", 0],
+                "guider": ["22", 0],
+                "sampler": ["16", 0],
+                "sigmas": ["17", 0],
+                "latent_image": ["5", 0]
+            },
+            "class_type": "SamplerCustomAdvanced",
+            "_meta": {"title": "SamplerCustomAdvanced"}
+        },
+        "16": {
+            "inputs": {
+                "sampler_name": "euler"
+            },
+            "class_type": "KSamplerSelect",
+            "_meta": {"title": "KSamplerSelect"}
+        },
+        "17": {
+            "inputs": {
+                "scheduler": "simple",
+                "steps": 4,
+                "denoise": 1.0,
+                "model": ["12", 0]
+            },
+            "class_type": "BasicScheduler",
+            "_meta": {"title": "BasicScheduler"}
+        },
+        "22": {
+            "inputs": {
+                "model": ["12", 0],
+                "conditioning": ["6", 0]
+            },
+            "class_type": "BasicGuider",
+            "_meta": {"title": "BasicGuider"}
+        },
+        "25": {
+            "inputs": {
+                "noise_seed": -1
+            },
+            "class_type": "RandomNoise",
+            "_meta": {"title": "RandomNoise"}
+        },
+        "5": {
+            "inputs": {
+                "width": width,
+                "height": height,
+                "batch_size": 1
+            },
+            "class_type": "EmptyLatentImage",
+            "_meta": {"title": "Empty Latent Image"}
+        }
+    }
+
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
@@ -392,6 +497,84 @@ async def chat(request: ChatRequest):
     is_recall, recall_query = detect_recall_intent(request.message)
     
     logger.info(f"Auto-remember: {auto_remember}, Remember: {remember}, Recall request: {is_recall}")
+    
+    # Try to get intent from coral service first
+    intent = get_intent_from_coral(request.message)
+    
+    # Check for image generation intent and redirect
+    if intent in ["generate_image", "text_to_image", "create_image"]:
+        logger.info(f"Image generation intent detected, redirecting to image generation endpoint")
+        # Extract prompt from message
+        msg_lower = request.message.lower()
+        # Remove common prefixes
+        for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of"]:
+            msg_lower = msg_lower.replace(prefix, "").strip()
+        
+        # Call image generation
+        try:
+            from fastapi import Request as FastAPIRequest
+            from starlette.datastructures import Headers
+            
+            # Create image generation request
+            image_request = {
+                "prompt": msg_lower,
+                "width": 1024,
+                "height": 1024
+            }
+            
+            # Get ComfyUI URL from config
+            comfyui_config = config.get("edison", {}).get("comfyui", {})
+            comfyui_host = comfyui_config.get("host", "127.0.0.1")
+            if comfyui_host == "0.0.0.0":
+                comfyui_host = "127.0.0.1"
+            comfyui_port = comfyui_config.get("port", 8188)
+            comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+            
+            logger.info(f"Generating image with prompt: '{msg_lower}'")
+            
+            # Submit workflow to ComfyUI
+            workflow = create_flux_workflow(msg_lower, 1024, 1024)
+            response = requests.post(
+                f"{comfyui_url}/prompt",
+                json={"prompt": workflow},
+                timeout=5
+            )
+            
+            if not response.ok:
+                error_msg = f"ComfyUI error: {response.status_code}"
+                logger.error(error_msg)
+                return StreamingResponse(
+                    iter([f"data: {json.dumps({'error': error_msg})}\n\n"]),
+                    media_type="text/event-stream"
+                )
+            
+            result = response.json()
+            prompt_id = result.get("prompt_id")
+            
+            if not prompt_id:
+                error_msg = "No prompt_id returned from ComfyUI"
+                logger.error(error_msg)
+                return StreamingResponse(
+                    iter([f"data: {json.dumps({'error': error_msg})}\n\n"]),
+                    media_type="text/event-stream"
+                )
+            
+            # Return image generation response
+            return StreamingResponse(
+                iter([
+                    f"data: {json.dumps({'type': 'image_generation', 'prompt_id': prompt_id, 'status': 'queued'})}\n\n",
+                    f"data: {json.dumps({'text': f'🎨 Generating image: \"{msg_lower}\"...', 'done': False})}\n\n",
+                    f"data: {json.dumps({'done': True})}\n\n"
+                ]),
+                media_type="text/event-stream"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error triggering image generation: {e}")
+            return StreamingResponse(
+                iter([f"data: {json.dumps({'error': f'Image generation failed: {str(e)}'})}\n\n"]),
+                media_type="text/event-stream"
+            )
     
     # Determine which mode to use
     mode = request.mode
