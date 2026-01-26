@@ -313,6 +313,17 @@
                 })
                 .catch(error => console.error('Download failed:', error));
         }
+
+        // Global function to regenerate images
+        function regenerateImage(prompt) {
+            // Access the app instance and trigger regeneration
+            if (window.edisonApp) {
+                // Set the message input to the prompt
+                window.edisonApp.messageInput.value = `generate an image of ${prompt}`;
+                // Trigger send
+                window.edisonApp.sendMessage();
+            }
+        }
     </script>
 
     <script src="app_enhanced.js?v=7"></script>

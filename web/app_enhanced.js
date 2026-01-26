@@ -8,6 +8,7 @@ class EdisonApp {
         this.isStreaming = false;
         this.abortController = null;
         this.sidebarCollapsed = false;
+        this.lastImagePrompt = null; // Track last image generation prompt for regeneration
         
         this.initializeElements();
         this.attachEventListeners();
@@ -150,11 +151,16 @@ class EdisonApp {
             this.isStreaming = true;
             this.abortController = new AbortController();
             
-            // Check if this is an image generation request
+            // Check if this is an image generation or regeneration request
             const isImageRequest = this.detectImageGenerationRequest(message);
+            const isRegenerateRequest = this.detectImageRegenerationRequest(message);
             
-            if (isImageRequest) {
-                await this.handleImageGeneration(message, assistantMessageEl);
+            if (isImageRequest || isRegenerateRequest) {
+                // Use previous prompt if regenerating, otherwise extract new prompt
+                const promptToUse = isRegenerateRequest && this.lastImagePrompt 
+                    ? this.combinePrompts(this.lastImagePrompt, message)
+                    : message;
+                await this.handleImageGeneration(promptToUse, assistantMessageEl);
             } else {
                 const response = await this.callEdisonAPI(message, mode);
                 
@@ -491,6 +497,49 @@ class EdisonApp {
         return imageKeywords.some(keyword => lowerMessage.includes(keyword));
     }
 
+    detectImageRegenerationRequest(message) {
+        // Only consider regeneration if we have a previous image prompt
+        if (!this.lastImagePrompt) return false;
+        
+        const lowerMessage = message.toLowerCase();
+        const regenerateKeywords = [
+            'try again', 'regenerate', 'make another', 'do it again', 'retry',
+            'redo', 'one more', 'again', 'remake', 'recreate', 'generate another',
+            'make a new one', 'new one'
+        ];
+        
+        // Also check if message is modifying the image ("but with", "except", "instead", etc.)
+        const modificationKeywords = [
+            'but with', 'except', 'instead', 'change', 'modify', 'different',
+            'with', 'add', 'remove', 'without', 'replace'
+        ];
+        
+        return regenerateKeywords.some(keyword => lowerMessage.includes(keyword)) ||
+               modificationKeywords.some(keyword => lowerMessage.includes(keyword));
+    }
+
+    combinePrompts(originalPrompt, modificationMessage) {
+        // If the modification message contains explicit prompt details, combine them
+        const lowerMessage = modificationMessage.toLowerCase();
+        
+        // Extract any specific modifications from the message
+        if (lowerMessage.includes('with') || lowerMessage.includes('but') || 
+            lowerMessage.includes('instead') || lowerMessage.includes('change')) {
+            // Try to extract the modification part
+            const modifiers = modificationMessage
+                .replace(/^(try again|regenerate|remake|redo|again)/i, '')
+                .replace(/^(but|with|except|instead|change to|modify to)/i, '')
+                .trim();
+            
+            if (modifiers.length > 0) {
+                return `${this.extractImagePrompt(originalPrompt)}, ${modifiers}`;
+            }
+        }
+        
+        // Otherwise, just use the original prompt
+        return originalPrompt;
+    }
+
     async handleImageGeneration(message, assistantMessageEl) {
         try {
             // Extract the actual image prompt from the message
@@ -546,7 +595,10 @@ class EdisonApp {
                 const status = await statusResponse.json();
                 
                 if (status.status === 'completed') {
-                    // Display the generated image with download button
+                    // Store the prompt for regeneration
+                    this.lastImagePrompt = message;
+                    
+                    // Display the generated image with download and regenerate buttons
                     const fullImageUrl = `${this.settings.apiEndpoint}${status.image_url}`;
                     const imageHtml = `
                         <p>✅ Image generated successfully!</p>
@@ -556,6 +608,10 @@ class EdisonApp {
                         <div style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
                             <button onclick="downloadImage('${fullImageUrl}', 'EDISON_${Date.now()}.png')" style="padding: 10px 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 20px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Download Image">
                                 📥
+                            </button>
+                            <button onclick="regenerateImage('${imagePrompt.replace(/'/g, "\\'")}')
+" style="padding: 10px 14px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 18px; box-shadow: 0 2px 8px rgba(240, 147, 251, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Regenerate Image">
+                                🔄
                             </button>
                             <span style="color: #888; font-size: 14px;"><strong>Prompt:</strong> ${imagePrompt}</span>
                         </div>
