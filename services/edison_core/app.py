@@ -15,6 +15,7 @@ import sys
 import requests
 import json
 from contextlib import asynccontextmanager
+import re
 
 # Configure logging
 logging.basicConfig(
@@ -26,6 +27,58 @@ logger = logging.getLogger(__name__)
 # Get repo root - works regardless of CWD
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 sys.path.insert(0, str(REPO_ROOT))
+
+
+# Helper functions for RAG context management
+def normalize_chunk(text: str) -> str:
+    """Normalize chunk text for deduplication by stripping whitespace and collapsing spaces"""
+    if isinstance(text, tuple):
+        text = text[0]
+    return ' '.join(text.strip().split())
+
+
+def merge_chunks(existing: list, new: list, max_total: int = 4, source_name: str = "") -> list:
+    """
+    Merge new chunks into existing list with deduplication and priority ordering.
+    
+    Args:
+        existing: List of existing chunks (tuples or strings)
+        new: List of new chunks to add
+        max_total: Maximum number of chunks to keep
+        source_name: Name of source for logging
+    
+    Returns:
+        Merged and deduplicated list of chunks, prioritized and limited to max_total
+    """
+    # Track normalized text for deduplication
+    seen_normalized = set()
+    merged = []
+    
+    # Add existing chunks first (maintain priority)
+    for chunk in existing:
+        text = chunk[0] if isinstance(chunk, tuple) else chunk
+        normalized = normalize_chunk(text)
+        if normalized and normalized not in seen_normalized:
+            seen_normalized.add(normalized)
+            merged.append(chunk)
+    
+    # Add new chunks
+    added_count = 0
+    for chunk in new:
+        text = chunk[0] if isinstance(chunk, tuple) else chunk
+        normalized = normalize_chunk(text)
+        if normalized and normalized not in seen_normalized:
+            seen_normalized.add(normalized)
+            merged.append(chunk)
+            added_count += 1
+    
+    deduped_count = len(new) - added_count
+    if source_name:
+        logger.info(f"Merged {source_name}: added {added_count} new, deduped {deduped_count}, total {len(merged)}")
+    
+    # Limit to max_total
+    return merged[:max_total]
+
 
 # Global state
 llm_fast = None
@@ -637,6 +690,11 @@ async def chat(request: ChatRequest):
     
     # Retrieve context from RAG - always check for recall requests or follow-ups
     context_chunks = []
+    recall_count = 0
+    followup_count = 0
+    expanded_count = 0
+    main_count = 0
+    
     if rag_system and rag_system.is_ready():
         try:
             # Handle explicit recall requests
@@ -645,13 +703,14 @@ async def chat(request: ChatRequest):
                 # Do extensive search across all conversations
                 recall_chunks = rag_system.get_context(recall_query, n_results=5)
                 if recall_chunks:
-                    context_chunks.extend(recall_chunks)
+                    context_chunks = merge_chunks(context_chunks, recall_chunks, max_total=8, source_name="recall")
+                    recall_count = len([c for c in recall_chunks if normalize_chunk(c) not in [normalize_chunk(e) for e in context_chunks[:-len(recall_chunks)]]])
                     logger.info(f"Retrieved {len(recall_chunks)} chunks for recall request")
                 
                 # Also search with original message
                 additional_chunks = rag_system.get_context(request.message, n_results=3)
                 if additional_chunks:
-                    context_chunks.extend(additional_chunks)
+                    context_chunks = merge_chunks(context_chunks, additional_chunks, max_total=8, source_name="additional")
             
             # First, check if this is a follow-up question (uses pronouns or context words)
             msg_lower = request.message.lower()
@@ -673,16 +732,23 @@ async def chat(request: ChatRequest):
                 
                 # Search RAG using recent conversation context as queries
                 logger.info(f"Follow-up detected, searching with conversation context")
+                followup_chunks_all = []
                 for context_msg in recent_context:
                     if len(context_msg) > 10:  # Skip very short messages
                         chunks = rag_system.get_context(context_msg[:200], n_results=2)
                         if chunks:
-                            context_chunks.extend(chunks[:1])  # Take top result from each
+                            followup_chunks_all.extend(chunks[:1])  # Take top result from each
                 
-                # Also search with current message
-                chunks = rag_system.get_context(request.message, n_results=2)
-                if chunks:
-                    context_chunks.extend(chunks)
+                # Merge follow-up chunks
+                if followup_chunks_all:
+                    context_chunks = merge_chunks(context_chunks, followup_chunks_all, max_total=8, source_name="follow-up")
+                    followup_count = len(followup_chunks_all)
+                
+                # Also search with current message - treat as main query
+                main_chunks = rag_system.get_context(request.message, n_results=2)
+                if main_chunks:
+                    context_chunks = merge_chunks(context_chunks, main_chunks, max_total=8, source_name="main")
+                    main_count = len(main_chunks)
             
             # Expand query to get better context - extract key terms from questions
             search_queries = [request.message]
@@ -727,7 +793,7 @@ async def chat(request: ChatRequest):
             logger.info(f"Expanded search queries: {search_queries}")
             
             # Get results from each query separately and take best from each
-            all_chunks = []
+            expanded_chunks_raw = []
             for query in search_queries[:5]:  # Limit to 5 queries max
                 chunks = rag_system.get_context(query, n_results=2)
                 if chunks:
@@ -735,36 +801,47 @@ async def chat(request: ChatRequest):
                     text_preview = chunks[0][0][:80] if isinstance(chunks[0], tuple) else chunks[0][:80]
                     logger.info(f"Query '{query}' top result: {text_preview}")
                     # Take top 1 from this query
-                    all_chunks.append(chunks[0])
+                    expanded_chunks_raw.append(chunks[0])
             
-            # Deduplicate and prioritize informative chunks
-            seen_texts = set()
+            # Separate informative vs question chunks for prioritization
             informative_chunks = []  # Contains statements like "my name is"
             question_chunks = []      # Contains questions
             
-            for chunk in all_chunks:
+            for chunk in expanded_chunks_raw:
                 text = chunk[0] if isinstance(chunk, tuple) else chunk
-                if text not in seen_texts:
-                    seen_texts.add(text)
-                    
-                    # Check if this chunk has actual information vs just questions
-                    text_lower = text.lower()
-                    has_info = any(phrase in text_lower for phrase in [
-                        "my name is", "i am", "i'm", "my favorite", "i like", 
-                        "i enjoy", "i work", "i live", "called", "years old"
-                    ])
-                    
-                    if has_info:
-                        informative_chunks.append(chunk)
-                    else:
-                        question_chunks.append(chunk)
+                
+                # Check if this chunk has actual information vs just questions
+                text_lower = text.lower()
+                has_info = any(phrase in text_lower for phrase in [
+                    "my name is", "i am", "i'm", "my favorite", "i like", 
+                    "i enjoy", "i work", "i live", "called", "years old"
+                ])
+                
+                if has_info:
+                    informative_chunks.append(chunk)
+                else:
+                    question_chunks.append(chunk)
             
-            # Prioritize informative chunks, fall back to questions if needed
-            context_chunks = informative_chunks[:2]
-            if len(context_chunks) < 2:
-                context_chunks.extend(question_chunks[:2 - len(context_chunks)])
+            logger.info(f"Expanded queries found: {len(informative_chunks)} informative, {len(question_chunks)} question chunks")
             
-            logger.info(f"Found {len(informative_chunks)} informative chunks, {len(question_chunks)} question chunks")
+            # Merge with priority: informative first, then questions
+            # Priority 1: Merge informative chunks (highest priority from expanded queries)
+            if informative_chunks:
+                old_len = len(context_chunks)
+                context_chunks = merge_chunks(context_chunks, informative_chunks, max_total=4, source_name="informative")
+                expanded_count += len(context_chunks) - old_len
+            
+            # Priority 2: If still have room, add question chunks
+            if len(context_chunks) < 4 and question_chunks:
+                old_len = len(context_chunks)
+                context_chunks = merge_chunks(context_chunks, question_chunks, max_total=4, source_name="question")
+                expanded_count += len(context_chunks) - old_len
+            
+            # Final summary logging
+            logger.info(
+                f"RAG context summary: {len(context_chunks)} total chunks - "
+                f"recall: {recall_count}, followup: {followup_count}, main: {main_count}, expanded: {expanded_count}"
+            )
             
             if context_chunks:
                 logger.info(f"Retrieved {len(context_chunks)} context chunks from RAG")
