@@ -125,9 +125,15 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"Error adding documents: {e}")
     
-    def get_context(self, query: str, n_results: int = 3) -> List[tuple]:
+    def get_context(self, query: str, n_results: int = 3, chat_id: Optional[str] = None, global_search: bool = False) -> List[tuple]:
         """
         Retrieve relevant context for a query - returns list of (text, metadata) tuples.
+        
+        Args:
+            query: Search query text
+            n_results: Maximum number of results to return
+            chat_id: Filter by specific chat ID (if provided and global_search=False)
+            global_search: If True, search across all chats; if False, limit to chat_id
         
         Backward compatible: Handles both old entries (only text field) and new entries
         (with role, chat_id, timestamp, tags, fact_type fields).
@@ -136,29 +142,75 @@ class RAGSystem:
             return []
         
         try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            
             # Generate query embedding
             query_vector = self.encoder.encode([query], show_progress_bar=False)[0]
+            
+            # Build filter for chat-scoped search
+            query_filter = None
+            if not global_search and chat_id:
+                # Filter by chat_id - only get results from this specific chat
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="chat_id",
+                            match=MatchValue(value=chat_id)
+                        )
+                    ]
+                )
+                logger.info(f"Chat-scoped search: filtering by chat_id={chat_id}")
+            elif global_search:
+                logger.info("Global search: searching across all chats")
             
             # Search in Qdrant using query method
             search_results = self.client.query_points(
                 collection_name=self.collection_name,
                 query=query_vector.tolist(),
                 limit=n_results,
+                query_filter=query_filter,  # Apply filter if not global search
                 with_payload=True  # Ensure we get full payload
             )
             
             # Extract text and metadata from results
             # Backward compatible: works with old entries that only have "text" field
+            import time
+            
+            current_time = int(time.time())
             contexts = []
             points = search_results.points if hasattr(search_results, 'points') else search_results
+            
             for result in points:
                 if "text" in result.payload:
                     text = result.payload["text"]
                     metadata = {k: v for k, v in result.payload.items() if k != "text"}
-                    metadata["score"] = result.score  # Add relevance score
+                    
+                    # Recency-aware scoring
+                    base_score = result.score  # Qdrant similarity score
+                    timestamp = metadata.get("timestamp", 0)  # If missing, treat as old
+                    
+                    # Compute recency boost
+                    if timestamp > 0:
+                        age_days = (current_time - timestamp) / 86400
+                        recency_boost = max(0, min(1, 1 - (age_days / 30)))  # clamp(0, 1)
+                    else:
+                        recency_boost = 0  # Treat as old if no timestamp
+                    
+                    # Final score: 85% similarity, 15% recency
+                    final_score = 0.85 * base_score + 0.15 * recency_boost
+                    
+                    # Add scoring metadata for debugging
+                    metadata["base_score"] = base_score
+                    metadata["recency_boost"] = recency_boost
+                    metadata["final_score"] = final_score
+                    metadata["score"] = final_score  # Primary score field
+                    
                     contexts.append((text, metadata))
             
-            logger.info(f"Retrieved {len(contexts)} context chunks for query (scores: {[m['score'] for _, m in contexts]})")
+            # Sort by final_score (descending)
+            contexts.sort(key=lambda x: x[1]["final_score"], reverse=True)
+            
+            logger.info(f"Retrieved {len(contexts)} context chunks for query (final_scores: {[m['final_score'] for _, m in contexts]})")
             return contexts
             
         except Exception as e:

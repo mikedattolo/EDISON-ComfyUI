@@ -17,6 +17,7 @@ import json
 from contextlib import asynccontextmanager
 import re
 import time
+import threading
 
 # Configure logging
 logging.basicConfig(
@@ -81,6 +82,124 @@ def merge_chunks(existing: list, new: list, max_total: int = 4, source_name: str
     return merged[:max_total]
 
 
+def route_mode(user_message: str, requested_mode: str, has_image: bool, 
+               coral_intent: Optional[str] = None) -> Dict[str, any]:
+    """
+    Consolidated routing function to determine mode, tools, and model target.
+    Single source of truth for all routing logic.
+    
+    Args:
+        user_message: The user's message text
+        requested_mode: User's requested mode ("auto" or specific mode)
+        has_image: Whether the request includes images
+        coral_intent: Intent detected by coral service (optional)
+    
+    Returns:
+        Dictionary with routing decision:
+        {
+            "mode": str,                    # "chat" | "code" | "agent" | "image" | "reasoning" | "work"
+            "tools_allowed": bool,          # Whether agent tools can be used
+            "model_target": str,            # "fast" | "medium" | "deep" | "vision"
+            "reasons": List[str]           # Explanation of routing decision
+        }
+    """
+    reasons = []
+    mode = requested_mode
+    tools_allowed = False
+    model_target = "fast"
+    
+    # Rule 1: If has_image, always use image mode (highest priority)
+    if has_image:
+        mode = "image"
+        model_target = "vision"
+        reasons.append("Image input detected → image mode with vision model")
+    # Rule 2: If requested_mode is not "auto", respect it
+    elif requested_mode != "auto":
+        reasons.append(f"User explicitly requested mode: {requested_mode}")
+        mode = requested_mode
+    else:
+        # Rule 3: Check coral_intent for specific routing
+        if coral_intent:
+            if coral_intent in ["generate_image", "text_to_image", "create_image"]:
+                mode = "image"
+                model_target = "vision"
+                reasons.append(f"Coral intent '{coral_intent}' → image mode with vision model")
+            elif coral_intent in ["code", "write", "implement", "debug"]:
+                mode = "code"
+                reasons.append(f"Coral intent '{coral_intent}' → code mode")
+            elif coral_intent in ["agent", "search", "web", "research"]:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append(f"Coral intent '{coral_intent}' → agent mode with tools")
+            else:
+                # Map other intents to chat
+                mode = "chat"
+                reasons.append(f"Coral intent '{coral_intent}' → chat mode")
+        else:
+            # Rule 4: Heuristic pattern matching
+            msg_lower = user_message.lower()
+            
+            # Check patterns in priority order
+            work_patterns = ["create a project", "build an app", "design a system", "plan",
+                            "multi-step", "workflow", "organize", "manage",
+                            "help me with", "work on", "collaborate", "break down this"]
+            
+            code_patterns = ["code", "program", "function", "implement", "script", "write",
+                            "create a", "build", "develop", "algorithm", "class", "method",
+                            "debug", "fix this", "syntax", "refactor"]
+            
+            agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
+                             "current", "latest", "news about", "information on",
+                             "tell me about", "research", "browse"]
+            
+            reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
+                                 "understand", "break down", "elaborate", "clarify", "reasoning",
+                                 "think through", "step by step", "logic", "rationale"]
+            
+            if any(pattern in msg_lower for pattern in work_patterns):
+                mode = "work"
+                reasons.append("Work patterns detected → work mode")
+            elif any(pattern in msg_lower for pattern in code_patterns):
+                mode = "code"
+                reasons.append("Code patterns detected → code mode")
+            elif any(pattern in msg_lower for pattern in agent_patterns):
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("Agent patterns detected → agent mode with tools")
+            elif any(pattern in msg_lower for pattern in reasoning_patterns):
+                mode = "reasoning"
+                reasons.append("Reasoning patterns detected → reasoning mode")
+            else:
+                # Default to chat
+                mode = "chat"
+                words = len(msg_lower.split())
+                has_question = '?' in user_message
+                if words > 15 or has_question:
+                    mode = "reasoning"
+                    reasons.append("Complex/question-based message → reasoning mode")
+                else:
+                    reasons.append("No patterns matched → default chat mode")
+    
+    # Determine model target based on mode (only if not already set to vision)
+    if model_target != "vision":
+        if mode in ["work", "reasoning", "code", "agent"]:
+            model_target = "deep"  # Use deep model for complex tasks
+            reasons.append(f"Mode '{mode}' requires deep model")
+        else:
+            model_target = "fast"  # Chat mode uses fast model
+            reasons.append(f"Mode '{mode}' uses fast model")
+    
+    # Log routing decision once
+    logger.info(f"ROUTING: mode={mode}, model={model_target}, tools={tools_allowed}, reasons={reasons}")
+    
+    return {
+        "mode": mode,
+        "tools_allowed": tools_allowed,
+        "model_target": model_target,
+        "reasons": reasons
+    }
+
+
 # Global state
 llm_fast = None
 llm_medium = None  # 32B model - fallback for deep mode
@@ -90,10 +209,29 @@ rag_system = None
 search_tool = None
 config = None
 
-def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024) -> dict:
-    """Create a FLUX workflow for image generation"""
+# Thread locks for concurrent model access safety
+lock_fast = threading.Lock()
+lock_medium = threading.Lock()
+lock_deep = threading.Lock()
+lock_vision = threading.Lock()
+
+def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
+                         steps: int = 20, guidance_scale: float = 3.5) -> dict:
+    """Create a FLUX workflow for image generation
+    
+    Args:
+        prompt: Image generation prompt
+        width: Image width in pixels
+        height: Image height in pixels
+        steps: Number of sampling steps (controls quality vs speed)
+        guidance_scale: Classifier-free guidance scale (0-10, higher = more prompt adherence)
+    """
     import random
     seed = random.randint(0, 2**32 - 1)  # Generate valid random seed
+    
+    # Validate parameters
+    steps = max(1, min(steps, 200))  # Clamp steps to 1-200
+    guidance_scale = max(0, min(guidance_scale, 20))  # Clamp guidance to 0-20
     
     return {
         "6": {
@@ -165,7 +303,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024) -> 
         "17": {
             "inputs": {
                 "scheduler": "simple",
-                "steps": 4,
+                "steps": steps,  # ← USER PARAMETER: Number of sampling steps
                 "denoise": 1.0,
                 "model": ["12", 0]
             },
@@ -175,7 +313,8 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024) -> 
         "22": {
             "inputs": {
                 "model": ["12", 0],
-                "conditioning": ["6", 0]
+                "conditioning": ["6", 0],
+                "guidance": guidance_scale  # ← USER PARAMETER: CFG scale
             },
             "class_type": "BasicGuider",
             "_meta": {"title": "BasicGuider"}
@@ -216,6 +355,14 @@ class ChatRequest(BaseModel):
     conversation_history: Optional[list] = Field(
         default=None,
         description="Recent conversation history for context (last 5 messages)"
+    )
+    chat_id: Optional[str] = Field(
+        default=None,
+        description="Unique chat/conversation ID for scoped memory retrieval"
+    )
+    global_memory_search: Optional[bool] = Field(
+        default=False,
+        description="If True, search across all chats; if False, scope to chat_id"
     )
 
 class ChatResponse(BaseModel):
@@ -486,7 +633,10 @@ async def rag_search(request: dict):
     
     query = request.get("query", "")
     top_k = request.get("top_k", 5)
-    results = rag_system.get_context(query, n_results=top_k)
+    chat_id = request.get("chat_id")  # Optional chat_id for scoped search
+    global_search = request.get("global_search", False)  # Default to chat-scoped if chat_id provided
+    
+    results = rag_system.get_context(query, n_results=top_k, chat_id=chat_id, global_search=global_search)
     
     # Format results for JSON response
     formatted_results = []
@@ -532,6 +682,17 @@ async def health():
         "qdrant_ready": rag_system is not None,
         "repo_root": str(REPO_ROOT)
     }
+
+def get_lock_for_model(model) -> threading.Lock:
+    """Get the appropriate lock for a given model instance"""
+    if model is llm_vision:
+        return lock_vision
+    elif model is llm_deep:
+        return lock_deep
+    elif model is llm_medium:
+        return lock_medium
+    else:  # llm_fast or other
+        return lock_fast
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -593,84 +754,51 @@ async def chat(request: ChatRequest):
             }
         }
     
-    # Determine which mode to use
-    mode = request.mode
+    # Determine which mode to use - SINGLE ROUTING FUNCTION
+    has_images = request.images and len(request.images) > 0
     
-    # Auto mode: Detect intent from message with enhanced patterns
-    if mode == "auto":
+    # Get intent from coral service first
+    coral_intent = get_intent_from_coral(request.message)
+    
+    # Check for image generation intent and redirect (before routing)
+    if coral_intent in ["generate_image", "text_to_image", "create_image"]:
+        logger.info(f"Image generation intent detected via Coral, returning JSON response for frontend handling")
+        # Extract prompt from message
         msg_lower = request.message.lower()
+        # Remove common prefixes
+        for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
+            msg_lower = msg_lower.replace(prefix, "").strip()
         
-        # Try to get intent from coral service
-        intent = get_intent_from_coral(request.message)
-        
-        # Enhanced fallback heuristics with better patterns
-        if intent:
-            logger.info(f"Intent from coral: {intent}")
-            # Map coral intent to mode
-            if intent in ["analyze_image", "system_status", "help"]:
-                mode = "chat"
-            elif intent in ["generate_image", "text_to_image", "modify_workflow"]:
-                mode = "reasoning"
-            elif intent in ["agent", "code"]:
-                mode = intent
-            else:
-                mode = "chat"
-        else:
-            # Multi-step reasoning patterns
-            reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
-                                 "understand", "break down", "elaborate", "clarify", "reasoning",
-                                 "think through", "step by step", "logic", "rationale"]
-            
-            # Code generation patterns
-            code_patterns = ["code", "program", "function", "implement", "script", "write",
-                            "create a", "build", "develop", "algorithm", "class", "method",
-                            "debug", "fix this", "syntax", "refactor"]
-            
-            # Web search / agent patterns
-            agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
-                             "current", "latest", "news about", "information on",
-                             "tell me about", "research", "browse"]
-            
-            # Work mode patterns (complex multi-step tasks)
-            work_patterns = ["create a project", "build an app", "design a system", "plan",
-                            "multi-step", "workflow", "organize", "manage",
-                            "help me with", "work on", "collaborate", "break down this"]
-            
-            # Question patterns (recall from memory)
-            recall_patterns = ["my name", "my favorite", "what did i", "do you remember",
-                              "what's my", "tell me about myself", "who am i"]
-            
-            # Check patterns in priority order
-            if any(pattern in msg_lower for pattern in work_patterns):
-                mode = "work"
-            elif any(pattern in msg_lower for pattern in recall_patterns):
-                mode = "chat"  # Use chat for recall with memory
-            elif any(pattern in msg_lower for pattern in agent_patterns):
-                mode = "agent"
-            elif any(pattern in msg_lower for pattern in code_patterns):
-                mode = "code"
-            elif any(pattern in msg_lower for pattern in reasoning_patterns):
-                mode = "reasoning"
-            else:
-                # Check message length and complexity for reasoning
-                words = msg_lower.split()
-                if len(words) > 15 or '?' in request.message:
-                    mode = "reasoning"
-                else:
-                    mode = "chat"
+        # Return a response that tells the frontend to generate an image
+        return {
+            "response": f"🎨 Generating image: \"{msg_lower}\"...",
+            "mode_used": "image",
+            "image_generation": {
+                "prompt": msg_lower,
+                "trigger": "coral_intent"
+            }
+        }
     
-    # Keep work mode separate for special handling
+    # Use consolidated routing function
+    routing = route_mode(request.message, request.mode, has_images, coral_intent)
+    mode = routing["mode"]
+    tools_allowed = routing["tools_allowed"]
+    model_target = routing["model_target"]
+    
+    # Keep original_mode for special handling (like work mode with steps)
     original_mode = mode
-    if mode == "work":
-        logger.info(f"Work mode activated for complex task")
-        # Work mode will use reasoning capabilities but with special handling
-        use_deep_mode = True
-    else:
-        use_deep_mode = mode in ["reasoning", "agent", "code"]
-        
-    logger.info(f"Mode selected: {mode} (from {request.mode})")
     
-    if use_deep_mode:
+    # Select model based on target
+    if model_target == "vision":
+        if not llm_vision:
+            raise HTTPException(
+                status_code=503,
+                detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
+            )
+        llm = llm_vision
+        model_name = "vision"
+        logger.info("Using vision model for image understanding")
+    elif model_target == "deep":
         # Try deep first, then medium, then fast
         if llm_deep:
             llm = llm_deep
@@ -681,8 +809,7 @@ async def chat(request: ChatRequest):
         else:
             llm = llm_fast
             model_name = "fast"
-    else:
-        # Chat mode: use fast model
+    else:  # fast
         llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
         model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
     
@@ -691,19 +818,7 @@ async def chat(request: ChatRequest):
             status_code=503,
             detail=f"No suitable model available for mode '{mode}'."
         )
-    
-    # Check if this is a vision request (has images)
-    has_images = request.images and len(request.images) > 0
-    if has_images:
-        if not llm_vision:
-            raise HTTPException(
-                status_code=503,
-                detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
-            )
-        # Use vision model for image understanding
-        llm = llm_vision
-        model_name = "vision"
-        logger.info("Using vision model for image understanding")
+
     
     # Retrieve context from RAG - always check for recall requests or follow-ups
     context_chunks = []
@@ -712,20 +827,30 @@ async def chat(request: ChatRequest):
     expanded_count = 0
     main_count = 0
     
+    # Determine if this should be a global search
+    # Global search if: explicit recall request OR user toggled global_memory_search OR no chat_id provided
+    current_chat_id = request.chat_id
+    global_search = is_recall or request.global_memory_search or not current_chat_id
+    
+    if global_search:
+        logger.info(f"Using GLOBAL memory search (recall={is_recall}, toggle={request.global_memory_search}, no_chat_id={not current_chat_id})")
+    elif current_chat_id:
+        logger.info(f"Using CHAT-SCOPED memory search for chat_id={current_chat_id}")
+    
     if rag_system and rag_system.is_ready():
         try:
-            # Handle explicit recall requests
+            # Handle explicit recall requests (always global)
             if is_recall:
                 logger.info(f"Recall request detected, searching for: {recall_query}")
-                # Do extensive search across all conversations
-                recall_chunks = rag_system.get_context(recall_query, n_results=5)
+                # Do extensive search across all conversations (force global)
+                recall_chunks = rag_system.get_context(recall_query, n_results=5, chat_id=current_chat_id, global_search=True)
                 if recall_chunks:
                     context_chunks = merge_chunks(context_chunks, recall_chunks, max_total=8, source_name="recall")
                     recall_count = len([c for c in recall_chunks if normalize_chunk(c) not in [normalize_chunk(e) for e in context_chunks[:-len(recall_chunks)]]])
                     logger.info(f"Retrieved {len(recall_chunks)} chunks for recall request")
                 
-                # Also search with original message
-                additional_chunks = rag_system.get_context(request.message, n_results=3)
+                # Also search with original message (global)
+                additional_chunks = rag_system.get_context(request.message, n_results=3, chat_id=current_chat_id, global_search=True)
                 if additional_chunks:
                     context_chunks = merge_chunks(context_chunks, additional_chunks, max_total=8, source_name="additional")
             
@@ -747,12 +872,12 @@ async def chat(request: ChatRequest):
                         # Include last assistant response for context
                         recent_context.append(msg.get('content', ''))
                 
-                # Search RAG using recent conversation context as queries
+                # Search RAG using recent conversation context as queries (chat-scoped unless global)
                 logger.info(f"Follow-up detected, searching with conversation context")
                 followup_chunks_all = []
                 for context_msg in recent_context:
                     if len(context_msg) > 10:  # Skip very short messages
-                        chunks = rag_system.get_context(context_msg[:200], n_results=2)
+                        chunks = rag_system.get_context(context_msg[:200], n_results=2, chat_id=current_chat_id, global_search=global_search)
                         if chunks:
                             followup_chunks_all.extend(chunks[:1])  # Take top result from each
                 
@@ -761,8 +886,8 @@ async def chat(request: ChatRequest):
                     context_chunks = merge_chunks(context_chunks, followup_chunks_all, max_total=8, source_name="follow-up")
                     followup_count = len(followup_chunks_all)
                 
-                # Also search with current message - treat as main query
-                main_chunks = rag_system.get_context(request.message, n_results=2)
+                # Also search with current message - treat as main query (chat-scoped unless global)
+                main_chunks = rag_system.get_context(request.message, n_results=2, chat_id=current_chat_id, global_search=global_search)
                 if main_chunks:
                     context_chunks = merge_chunks(context_chunks, main_chunks, max_total=8, source_name="main")
                     main_count = len(main_chunks)
@@ -809,10 +934,10 @@ async def chat(request: ChatRequest):
             
             logger.info(f"Expanded search queries: {search_queries}")
             
-            # Get results from each query separately and take best from each
+            # Get results from each query separately and take best from each (chat-scoped unless global)
             expanded_chunks_raw = []
             for query in search_queries[:5]:  # Limit to 5 queries max
-                chunks = rag_system.get_context(query, n_results=2)
+                chunks = rag_system.get_context(query, n_results=2, chat_id=current_chat_id, global_search=global_search)
                 if chunks:
                     # Log what we found
                     text_preview = chunks[0][0][:80] if isinstance(chunks[0], tuple) else chunks[0][:80]
@@ -926,13 +1051,16 @@ Provide a numbered list of specific steps. Be concise and action-oriented.
 
 Steps:"""
             
-            task_response = llm(
-                task_analysis_prompt,
-                max_tokens=400,
-                temperature=0.3,
-                stop=["Task:", "\\n\\n\\n"],
-                echo=False
-            )
+            # Acquire lock for model inference
+            task_lock = get_lock_for_model(llm)
+            with task_lock:
+                task_response = llm(
+                    task_analysis_prompt,
+                    max_tokens=400,
+                    temperature=0.3,
+                    stop=["Task:", "\\n\\n\\n"],
+                    echo=False
+                )
             
             task_breakdown = task_response["choices"][0]["text"].strip()
             # Parse numbered steps
@@ -1009,16 +1137,19 @@ Steps:"""
             logger.info(f"Content structure: {len(content)} parts (1 text + {len(image_data_list)} images)")
             
             try:
-                response = llm.create_chat_completion(
-                    messages=[
-                        {
-                            "role": "user",
-                            "content": content
-                        }
-                    ],
-                    max_tokens=2048,
-                    temperature=0.7
-                )
+                # Acquire lock for vision model inference
+                vision_lock = get_lock_for_model(llm)
+                with vision_lock:
+                    response = llm.create_chat_completion(
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": content
+                            }
+                        ],
+                        max_tokens=2048,
+                        temperature=0.7
+                    )
                 assistant_response = response["choices"][0]["message"]["content"]
                 logger.info(f"Vision response generated: {assistant_response[:100]}...")
             except Exception as e:
@@ -1026,27 +1157,31 @@ Steps:"""
                 logger.error(f"Trying fallback method...")
                 
                 # Fallback: try simple text prompt (vision model should still work as text model)
-                response = llm(
-                    f"[Image provided] {full_prompt}",
-                    max_tokens=2048,
-                    temperature=0.7
-                )
+                fallback_lock = get_lock_for_model(llm)
+                with fallback_lock:
+                    response = llm(
+                        f"[Image provided] {full_prompt}",
+                        max_tokens=2048,
+                        temperature=0.7
+                    )
                 assistant_response = response["choices"][0]["text"].strip()
                 logger.warning("Vision model used in text-only mode - images not processed")
         else:
             # Text-only model
             max_tokens = 3072 if original_mode == "work" else 2048  # More tokens for work mode
-            response = llm(
-                full_prompt,
-                max_tokens=max_tokens,
-                temperature=0.7,
-                top_p=0.9,
-                frequency_penalty=0.3,  # Reduce repetition
-                presence_penalty=0.2,   # Encourage new topics
-                repeat_penalty=1.1,     # Penalize repeated tokens
-                stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
-                echo=False
-            )
+            text_lock = get_lock_for_model(llm)
+            with text_lock:
+                response = llm(
+                    full_prompt,
+                    max_tokens=max_tokens,
+                    temperature=0.7,
+                    top_p=0.9,
+                    frequency_penalty=0.3,  # Reduce repetition
+                    presence_penalty=0.2,   # Encourage new topics
+                    repeat_penalty=1.1,     # Penalize repeated tokens
+                    stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                    echo=False
+                )
             
             assistant_response = response["choices"][0]["text"].strip()
         
@@ -1157,7 +1292,16 @@ async def web_search(request: SearchRequest):
 
 @app.post("/generate-image")
 async def generate_image(request: dict):
-    """Generate an image using ComfyUI with FLUX"""
+    """Generate an image using ComfyUI with FLUX
+    
+    Parameters:
+        - prompt (str): Image generation prompt (required)
+        - width (int): Image width in pixels (default: 1024)
+        - height (int): Image height in pixels (default: 1024)
+        - steps (int): Number of sampling steps, 1-200 (default: 20)
+        - guidance_scale (float): Classifier-free guidance scale, 0-20 (default: 3.5)
+        - comfyui_url (str): Optional ComfyUI server URL
+    """
     try:
         prompt = request.get('prompt', '')
         width = request.get('width', 1024)
@@ -1169,7 +1313,14 @@ async def generate_image(request: dict):
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
         
-        logger.info(f"Generating image: '{prompt}' ({width}x{height})")
+        # Validate parameter ranges
+        if not isinstance(steps, int) or steps < 1 or steps > 200:
+            raise HTTPException(status_code=400, detail="steps must be 1-200")
+        
+        if not isinstance(guidance_scale, (int, float)) or guidance_scale < 0 or guidance_scale > 20:
+            raise HTTPException(status_code=400, detail="guidance_scale must be 0-20")
+        
+        logger.info(f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale})")
         
         # Use provided ComfyUI URL or fall back to config
         if comfyui_url_override:
@@ -1187,8 +1338,12 @@ async def generate_image(request: dict):
         
         logger.info(f"Connecting to ComfyUI at: {comfyui_url}")
         
-        # Use the shared FLUX workflow function
-        workflow = create_flux_workflow(prompt, width, height)
+        # Create workflow with user parameters
+        workflow = create_flux_workflow(prompt, width, height, steps, guidance_scale)
+        
+        # Log the workflow parameters for debugging
+        logger.debug(f"Workflow BasicScheduler steps: {workflow['17']['inputs']['steps']}")
+        logger.debug(f"Workflow BasicGuider guidance: {workflow['22']['inputs'].get('guidance', 'not set')}")
         
         # Submit workflow to ComfyUI
         response = requests.post(
@@ -1448,13 +1603,16 @@ Create a concise title that captures the main topic or question. Do not use quot
 
 Title:"""
         
-        result = llm_fast(
-            prompt,
-            max_tokens=30,
-            temperature=0.3,
-            stop=["\n", "User:", "Assistant:"],
-            echo=False
-        )
+        # Acquire lock for title generation
+        title_lock = get_lock_for_model(llm_fast)
+        with title_lock:
+            result = llm_fast(
+                prompt,
+                max_tokens=30,
+                temperature=0.3,
+                stop=["\n", "User:", "Assistant:"],
+                echo=False
+            )
         
         title = result["choices"][0]["text"].strip()
         
