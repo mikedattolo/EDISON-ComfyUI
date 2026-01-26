@@ -8,9 +8,16 @@
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+    <script src="theme-device.js"></script>
 </head>
 <body>
     <div class="app-container">
+        <!-- Mobile Header (hidden on desktop) -->
+        <div class="mobile-header" id="mobileHeader" style="display: none;">
+            <button class="mobile-menu-btn" id="mobileMenuBtn">☰</button>
+            <h1>EDISON</h1>
+            <button class="mobile-settings-btn" id="mobileSettingsBtn">⚙️</button>
+        </div>
         <!-- Hardware Monitor Widget -->
         <div class="hardware-monitor" id="hardwareMonitor" style="display: none;">
             <div class="hw-header">
@@ -291,6 +298,48 @@
                 <div class="modal-footer">
                     <button class="btn-secondary" id="clearHistoryBtn">Clear Chat History</button>
                     <button class="btn-primary" id="saveSettingsBtn">Save Settings</button>
+                </div>
+            </div>
+        </div>
+
+        <!-- Settings Panel -->
+        <div class="settings-panel" id="settingsPanel">
+            <div class="settings-header">
+                <h2>⚙️ Settings</h2>
+                <button class="settings-close-btn" id="settingCloseBtn">×</button>
+            </div>
+            <div class="settings-content">
+                <!-- Theme Selection -->
+                <div class="settings-group">
+                    <label class="settings-group-label">Theme</label>
+                    <div class="theme-toggle">
+                        <button class="theme-btn active" data-theme="dark" id="darkThemeBtn">🌙 Dark</button>
+                        <button class="theme-btn" data-theme="light" id="lightThemeBtn">☀️ Light</button>
+                    </div>
+                </div>
+
+                <!-- Color Selection -->
+                <div class="settings-group">
+                    <label class="settings-group-label">Color Scheme</label>
+                    <div class="color-palette">
+                        <button class="color-btn default active" data-color="default" title="Default (Indigo)"></button>
+                        <button class="color-btn blue" data-color="blue" title="Blue"></button>
+                        <button class="color-btn purple" data-color="purple" title="Purple"></button>
+                        <button class="color-btn cyan" data-color="cyan" title="Cyan"></button>
+                        <button class="color-btn emerald" data-color="emerald" title="Emerald"></button>
+                        <button class="color-btn rose" data-color="rose" title="Rose"></button>
+                    </div>
+                </div>
+
+                <!-- Device Info -->
+                <div class="settings-group">
+                    <label class="settings-group-label">Device Info</label>
+                    <div style="padding: 12px; background: var(--surface-hover); border-radius: 8px; font-size: 13px; color: var(--text-secondary);">
+                        <div style="margin-bottom: 6px;"><strong>Type:</strong> <span id="deviceType">Loading...</span></div>
+                        <div style="margin-bottom: 6px;"><strong>Screen:</strong> <span id="screenSize">Loading...</span></div>
+                        <div style="margin-bottom: 6px;"><strong>Orientation:</strong> <span id="deviceOrientation">Loading...</span></div>
+                        <div><strong>API:</strong> <span id="apiEndpoint">Loading...</span></div>
+                    </div>
                 </div>
             </div>
         </div>
