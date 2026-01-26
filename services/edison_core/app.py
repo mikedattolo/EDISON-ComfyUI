@@ -479,7 +479,7 @@ async def health():
         "repo_root": str(REPO_ROOT)
     }
 
-@app.post("/chat", response_model=ChatResponse)
+@app.post("/chat")
 async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
     
@@ -506,78 +506,22 @@ async def chat(request: ChatRequest):
     
     # Check for image generation intent and redirect
     if intent in ["generate_image", "text_to_image", "create_image"]:
-        logger.info(f"Image generation intent detected, redirecting to image generation endpoint")
+        logger.info(f"Image generation intent detected via Coral, returning JSON response for frontend handling")
         # Extract prompt from message
         msg_lower = request.message.lower()
         # Remove common prefixes
-        for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of"]:
+        for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
             msg_lower = msg_lower.replace(prefix, "").strip()
         
-        # Call image generation
-        try:
-            from fastapi import Request as FastAPIRequest
-            from starlette.datastructures import Headers
-            
-            # Create image generation request
-            image_request = {
+        # Return a response that tells the frontend to generate an image
+        return {
+            "response": f"🎨 Generating image: \"{msg_lower}\"...",
+            "mode_used": "image",
+            "image_generation": {
                 "prompt": msg_lower,
-                "width": 1024,
-                "height": 1024
+                "trigger": "coral_intent"
             }
-            
-            # Get ComfyUI URL from config
-            comfyui_config = config.get("edison", {}).get("comfyui", {})
-            comfyui_host = comfyui_config.get("host", "127.0.0.1")
-            if comfyui_host == "0.0.0.0":
-                comfyui_host = "127.0.0.1"
-            comfyui_port = comfyui_config.get("port", 8188)
-            comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
-            
-            logger.info(f"Generating image with prompt: '{msg_lower}'")
-            
-            # Submit workflow to ComfyUI
-            workflow = create_flux_workflow(msg_lower, 1024, 1024)
-            response = requests.post(
-                f"{comfyui_url}/prompt",
-                json={"prompt": workflow},
-                timeout=5
-            )
-            
-            if not response.ok:
-                error_msg = f"ComfyUI error: {response.status_code}"
-                logger.error(error_msg)
-                return StreamingResponse(
-                    iter([f"data: {json.dumps({'error': error_msg})}\n\n"]),
-                    media_type="text/event-stream"
-                )
-            
-            result = response.json()
-            prompt_id = result.get("prompt_id")
-            
-            if not prompt_id:
-                error_msg = "No prompt_id returned from ComfyUI"
-                logger.error(error_msg)
-                return StreamingResponse(
-                    iter([f"data: {json.dumps({'error': error_msg})}\n\n"]),
-                    media_type="text/event-stream"
-                )
-            
-            # Return image generation response
-            return StreamingResponse(
-                iter([
-                    f"data: {json.dumps({'type': 'image_generation', 'prompt_id': prompt_id, 'status': 'queued'})}\n\n",
-                    f"data: {json.dumps({'text': f'🎨 Generating image: \"{msg_lower}\"...', 'done': False})}\n\n",
-                    f"data: {json.dumps({'done': True})}\n\n"
-                ]),
-                media_type="text/event-stream"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error triggering image generation: {e}")
-            return StreamingResponse(
-                iter([f"data: {json.dumps({'error': f'Image generation failed: {str(e)}'})}\n\n"]),
-                media_type="text/event-stream"
-            )
+        }
     
     # Determine which mode to use
     mode = request.mode

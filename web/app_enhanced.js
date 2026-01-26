@@ -158,16 +158,22 @@ class EdisonApp {
             } else {
                 const response = await this.callEdisonAPI(message, mode);
                 
-                // Update assistant message
-                this.updateMessage(assistantMessageEl, response.response, response.mode_used);
-                
-                // Save to chat history
-                this.saveMessageToChat(message, response.response, response.mode_used);
-                
-                // Generate smart title if first message
-                const chat = this.chats.find(c => c.id === this.currentChatId);
-                if (chat && chat.messages.length === 2) {
-                    this.generateChatTitle(chat, message, response.response);
+                // Check if response contains image generation trigger from backend
+                if (response.image_generation && response.image_generation.prompt) {
+                    console.log('🎨 Backend triggered image generation via Coral');
+                    await this.handleImageGeneration(response.image_generation.prompt, assistantMessageEl);
+                } else {
+                    // Update assistant message
+                    this.updateMessage(assistantMessageEl, response.response, response.mode_used);
+                    
+                    // Save to chat history
+                    this.saveMessageToChat(message, response.response, response.mode_used);
+                    
+                    // Generate smart title if first message
+                    const chat = this.chats.find(c => c.id === this.currentChatId);
+                    if (chat && chat.messages.length === 2) {
+                        this.generateChatTitle(chat, message, response.response);
+                    }
                 }
             }
             
