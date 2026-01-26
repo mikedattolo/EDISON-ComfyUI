@@ -286,7 +286,7 @@ class EdisonApp {
         }));
     }
 
-    addMessage(role, content, isStreaming = false) {
+    addMessage(role, content, isStreaming = false, isHtml = false) {
         const messageEl = document.createElement('div');
         messageEl.className = `message ${role}`;
         if (isStreaming) messageEl.classList.add('streaming');
@@ -325,7 +325,7 @@ class EdisonApp {
                 <span class="message-role">${roleName}</span>
                 <span class="message-mode" style="display: none;"></span>
             </div>
-            <div class="message-content">${this.formatMessage(content)}</div>
+            <div class="message-content">${isHtml ? content : this.formatMessage(content)}</div>
             ${actionButtons}
         `;
         
@@ -562,8 +562,8 @@ class EdisonApp {
                     `;
                     this.updateMessage(assistantMessageEl, imageHtml, 'image');
                     
-                    // Save to chat history
-                    this.saveMessageToChat(message, `Image generated: ${imagePrompt}\n[Image: ${fullImageUrl}]`, 'image');
+                    // Save to chat history with HTML so it persists after refresh
+                    this.saveMessageToChat(message, imageHtml, 'image');
                     
                     break;
                 } else if (status.status === 'error') {
@@ -722,7 +722,9 @@ class EdisonApp {
         }
         
         messages.forEach(msg => {
-            const messageEl = this.addMessage(msg.role, msg.content);
+            // Check if this is an image message with HTML content
+            const isImageMessage = msg.mode === 'image' && msg.content.includes('<img src=');
+            const messageEl = this.addMessage(msg.role, msg.content, false, isImageMessage);
             if (msg.mode && msg.role === 'assistant') {
                 const modeEl = messageEl.querySelector('.message-mode');
                 modeEl.textContent = msg.mode.toUpperCase();
