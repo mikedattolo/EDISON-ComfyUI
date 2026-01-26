@@ -546,8 +546,24 @@ async def chat(request: ChatRequest):
         )
     
     # Auto-detect if this conversation should be remembered
-    auto_remember = should_remember_conversation(request.message)
+    remember_result = should_remember_conversation(request.message)
+    auto_remember = remember_result["remember"]
     remember = request.remember if request.remember is not None else auto_remember
+    
+    # Log remember decision
+    if remember_result["score"] != 0 or remember_result["reasons"]:
+        logger.info(
+            f"Remember decision: {remember} (score: {remember_result['score']}, "
+            f"reasons: {', '.join(remember_result['reasons'])})"
+        )
+    
+    # Warn if redaction needed
+    if remember_result["redaction_needed"] and request.remember:
+        logger.warning(
+            f"Sensitive data detected in message. Blocking storage even with explicit request. "
+            f"Consider asking user to provide redacted version."
+        )
+        remember = False  # Override even explicit requests for sensitive data
     
     # Check if this is a recall request
     is_recall, recall_query = detect_recall_intent(request.message)
@@ -1476,56 +1492,219 @@ async def system_stats():
         logger.error(f"Error getting system stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-def should_remember_conversation(message: str) -> bool:
-    """Determine if conversation should be stored based on content intent"""
+def should_remember_conversation(message: str) -> Dict:
+    """
+    Determine if conversation should be stored using scoring system with strict thresholds.
+    
+    Returns:
+        {
+            "remember": bool,
+            "score": int,
+            "reasons": [str],
+            "redaction_needed": bool
+        }
+    """
+    import re
+    
+    score = 0
+    reasons = []
+    redaction_needed = False
     msg_lower = message.lower()
     
-    # Personal information patterns (should remember)
-    remember_patterns = [
-        # Identity
-        r"my name is", r"i'm called", r"call me", r"i am",
-        # Preferences
-        r"my favorite", r"i like", r"i love", r"i enjoy", r"i prefer",
-        r"i hate", r"i dislike", r"i don't like",
-        # Personal facts
-        r"i live in", r"i'm from", r"i work", r"my job", r"my age",
-        r"my birthday", r"i was born", r"my hobby", r"my hobbies",
-        # Goals and plans
-        r"i want to", r"i'm planning", r"i need to", r"my goal",
-        r"i'm working on", r"i'm learning",
-        # Relationships
-        r"my wife", r"my husband", r"my partner", r"my friend",
-        r"my family", r"my children", r"my parents",
-        # Context-rich statements
-        r"remind me", r"remember that", r"don't forget", r"keep in mind",
+    # EXPLICIT OVERRIDE: User explicitly requests remembering (+3 points)
+    explicit_patterns = [
+        r"remember this", r"remember that", r"save this", r"add to memory", 
+        r"don't forget", r"keep this", r"store this", r"make a note"
+    ]
+    explicit_request = any(re.search(pattern, msg_lower) for pattern in explicit_patterns)
+    if explicit_request:
+        score += 3
+        reasons.append("+3: Explicit remember request")
+    
+    # SENSITIVE DATA CHECK (-3 points, blocks even explicit requests)
+    sensitive_patterns = [
+        (r"password[:\s]+\S+", "password"),
+        (r"api[_\s]?key[:\s]+\S+", "API key"),
+        (r"\b[A-Z0-9]{20,}\b", "API token"),
+        (r"\d{3}-\d{2}-\d{4}", "SSN-like pattern"),
+        (r"\d+\s+[a-zA-Z]+\s+(?:street|st|avenue|ave|road|rd|lane|ln|drive|dr)", "street address"),
+        (r"credit\s*card", "credit card"),
+        (r"(?:pin|cvv)[:\s]+\d+", "PIN/CVV"),
     ]
     
-    # Check if message contains memorable content
-    import re
-    for pattern in remember_patterns:
+    for pattern, name in sensitive_patterns:
         if re.search(pattern, msg_lower):
-            return True
+            score -= 3
+            reasons.append(f"-3: Contains {name}")
+            redaction_needed = True
     
-    # Don't remember simple queries or commands without personal context
-    query_patterns = [
-        r"^what is", r"^what's", r"^how do", r"^how to",
-        r"^explain", r"^tell me about", r"^search for",
-        r"^show me", r"^give me", r"^can you"
+    # IDENTITY INFO (+2 points): name, identity
+    identity_patterns = [
+        (r"my name is \w+", "name declaration"),
+        (r"call me \w+", "name preference"),
+        (r"you can call me \w+", "name preference"),
+        (r"i'm called \w+", "name declaration"),
     ]
     
-    for pattern in query_patterns:
-        if re.match(pattern, msg_lower):
-            # It's a query - only remember if it's about personal topics
-            if any(word in msg_lower for word in ["my", "i", "myself", "me"]):
-                return True
-            return False
+    for pattern, name in identity_patterns:
+        if re.search(pattern, msg_lower):
+            score += 2
+            reasons.append(f"+2: Contains {name}")
+            break  # Only count once
     
-    # Default: remember substantive conversations (not too short)
-    words = message.split()
-    if len(words) > 8:
-        return True
+    # STABLE PREFERENCES (+2 points)
+    preference_patterns = [
+        (r"my favorite .+ is", "stable preference"),
+        (r"i (?:prefer|like|love|enjoy) (?!to\s)", "preference"),  # Exclude "like to do"
+        (r"i (?:hate|dislike|don't like)", "negative preference"),
+    ]
     
-    return False
+    for pattern, name in preference_patterns:
+        if re.search(pattern, msg_lower):
+            score += 2
+            reasons.append(f"+2: Contains {name}")
+            break  # Only count once
+    
+    # LONG-TERM PROJECTS (+2 points)
+    project_patterns = [
+        (r"i'm (?:building|working on|developing|creating) (?:a |an )?[\w\s]+", "long-term project"),
+        (r"my project is", "project declaration"),
+        (r"i'm making (?:a |an )?[\w\s]+", "project creation"),
+    ]
+    
+    for pattern, name in project_patterns:
+        if re.search(pattern, msg_lower):
+            score += 2
+            reasons.append(f"+2: Contains {name}")
+            break
+    
+    # RECURRING SCHEDULE (+2 points)
+    schedule_patterns = [
+        (r"(?:every|each) (?:day|week|month|monday|tuesday|wednesday|thursday|friday)", "recurring schedule"),
+        (r"i (?:usually|always|typically|normally) ", "habitual pattern"),
+    ]
+    
+    for pattern, name in schedule_patterns:
+        if re.search(pattern, msg_lower):
+            score += 2
+            reasons.append(f"+2: Contains {name}")
+            break
+    
+    # DURABLE BUSINESS INFO (+1 point)
+    business_patterns = [
+        (r"(?:store|shop|restaurant|office) (?:hours|open|close)", "business hours"),
+        (r"(?:policy|procedure|rule) (?:is|states)", "policy"),
+        (r"(?:phone|email|contact)", "contact info"),
+    ]
+    
+    for pattern, name in business_patterns:
+        if re.search(pattern, msg_lower):
+            score += 1
+            reasons.append(f"+1: Contains {name}")
+            break
+    
+    # DURABLE SYSTEM CONFIG (+1 point, but not secrets)
+    config_patterns = [
+        (r"server (?:ip|address) (?:range|is)", "server config"),
+        (r"port \d+", "port config"),
+        (r"hostname is", "hostname"),
+    ]
+    
+    for pattern, name in config_patterns:
+        if re.search(pattern, msg_lower) and not redaction_needed:
+            score += 1
+            reasons.append(f"+1: Contains {name}")
+            break
+    
+    # QUESTIONS (-2 points)
+    if message.strip().endswith('?'):
+        score -= 2
+        reasons.append("-2: Is a question")
+    elif any(q in msg_lower[:30] for q in ['should i', 'can i', 'what is', 'how do', 'why ', 'when ']):
+        score -= 2
+        reasons.append("-2: Starts with question")
+    
+    # TROUBLESHOOTING TRANSIENT ISSUES (-2 points, unless explicit)
+    troubleshooting_patterns = [
+        r"error code", r"not working", r"crashed", r"broken", r"failed",
+        r"won't start", r"can't connect", r"timeout", r"exception"
+    ]
+    
+    if not explicit_request:
+        if any(re.search(pattern, msg_lower) for pattern in troubleshooting_patterns):
+            score -= 2
+            reasons.append("-2: Troubleshooting transient issue")
+    
+    # DECISION LOGIC
+    # Never remember if sensitive data detected (even with explicit request)
+    if redaction_needed:
+        remember = False
+        reasons.append("❌ BLOCKED: Sensitive data detected")
+    # Remember if explicit request OR score >= 2
+    elif explicit_request or score >= 2:
+        remember = True
+    else:
+        remember = False
+    
+    return {
+        "remember": remember,
+        "score": score,
+        "reasons": reasons,
+        "redaction_needed": redaction_needed
+    }
+
+
+def test_should_remember():
+    """Test cases for auto-remember scoring"""
+    
+    # Test 1: "remember that my dad's pizzeria is Adoro Pizza" => remember true
+    result = should_remember_conversation("remember that my dad's pizzeria is Adoro Pizza")
+    assert result["remember"] == True, "Should remember explicit request about business"
+    assert result["score"] >= 2, f"Score should be >= 2, got {result['score']}"
+    print(f"✓ Test 1 passed: Explicit + business info (score: {result['score']})")
+    
+    # Test 2: "my laptop crashed again" => remember false
+    result = should_remember_conversation("my laptop crashed again")
+    assert result["remember"] == False, "Should not remember transient troubleshooting"
+    print(f"✓ Test 2 passed: Transient issue not remembered (score: {result['score']})")
+    
+    # Test 3: "my password is abc123" => remember false with redaction_needed true
+    result = should_remember_conversation("my password is abc123")
+    assert result["remember"] == False, "Should not remember passwords"
+    assert result["redaction_needed"] == True, "Should flag redaction needed"
+    print(f"✓ Test 3 passed: Password blocked (score: {result['score']})")
+    
+    # Test 4: "my name is Alice" => remember true (identity info)
+    result = should_remember_conversation("my name is Alice")
+    assert result["remember"] == True, "Should remember identity"
+    assert result["score"] >= 2, f"Score should be >= 2, got {result['score']}"
+    print(f"✓ Test 4 passed: Identity info (score: {result['score']})")
+    
+    # Test 5: "what is the weather?" => remember false (question)
+    result = should_remember_conversation("what is the weather?")
+    assert result["remember"] == False, "Should not remember simple questions"
+    print(f"✓ Test 5 passed: Question not remembered (score: {result['score']})")
+    
+    # Test 6: "my favorite pizza is thin crust" => remember true (preference)
+    result = should_remember_conversation("my favorite pizza is thin crust")
+    assert result["remember"] == True, "Should remember preferences"
+    assert result["score"] >= 2, f"Score should be >= 2, got {result['score']}"
+    print(f"✓ Test 6 passed: Preference remembered (score: {result['score']})")
+    
+    # Test 7: "remember this: my password is xyz" => remember false (sensitive override)
+    result = should_remember_conversation("remember this: my password is xyz")
+    assert result["remember"] == False, "Should NOT remember even with explicit request if sensitive"
+    assert result["redaction_needed"] == True, "Should flag redaction"
+    print(f"✓ Test 7 passed: Sensitive data blocks even explicit (score: {result['score']})")
+    
+    # Test 8: "I'm building a chatbot" => remember true (project)
+    result = should_remember_conversation("I'm building a chatbot")
+    assert result["remember"] == True, "Should remember projects"
+    print(f"✓ Test 8 passed: Project remembered (score: {result['score']})")
+    
+    print(f"\n✅ All {8} auto-remember tests passed!")
+
+
 
 def detect_recall_intent(message: str) -> tuple[bool, str]:
     """Detect if user is asking to recall previous conversations
