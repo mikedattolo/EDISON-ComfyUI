@@ -296,6 +296,25 @@
         </div>
     </div>
 
+    <script>
+        // Global function to download images
+        function downloadImage(url, filename) {
+            fetch(url)
+                .then(response => response.blob())
+                .then(blob => {
+                    const blobUrl = window.URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = blobUrl;
+                    a.download = filename;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    window.URL.revokeObjectURL(blobUrl);
+                })
+                .catch(error => console.error('Download failed:', error));
+        }
+    </script>
+
     <script src="app_enhanced.js?v=7"></script>
     <script src="app_features.js?v=7"></script>
 </body>
