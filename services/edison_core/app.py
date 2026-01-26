@@ -921,28 +921,99 @@ async def generate_image(request: dict):
         
         logger.info(f"Connecting to ComfyUI at: {comfyui_url}")
         
-        # Create a simple FLUX workflow
+        # Create a FLUX workflow (schnell variant)
+        # FLUX uses a simpler sampler and doesn't need negative prompts
         workflow = {
-            "3": {
+            "6": {
                 "inputs": {
-                    "seed": -1,
-                    "steps": steps,
-                    "cfg": guidance_scale,
-                    "sampler_name": "euler",
-                    "scheduler": "simple",
-                    "denoise": 1,
-                    "model": ["4", 0],
-                    "positive": ["6", 0],
-                    "negative": ["7", 0],
+                    "text": prompt,
+                    "clip": ["11", 0]
+                },
+                "class_type": "CLIPTextEncode",
+                "_meta": {"title": "CLIP Text Encode (Positive Prompt)"}
+            },
+            "8": {
+                "inputs": {
+                    "samples": ["13", 0],
+                    "vae": ["10", 0]
+                },
+                "class_type": "VAEDecode",
+                "_meta": {"title": "VAE Decode"}
+            },
+            "9": {
+                "inputs": {
+                    "filename_prefix": "EDISON",
+                    "images": ["8", 0]
+                },
+                "class_type": "SaveImage",
+                "_meta": {"title": "Save Image"}
+            },
+            "10": {
+                "inputs": {
+                    "vae_name": "ae.safetensors"
+                },
+                "class_type": "VAELoader",
+                "_meta": {"title": "Load VAE"}
+            },
+            "11": {
+                "inputs": {
+                    "clip_name1": "t5xxl_fp16.safetensors",
+                    "clip_name2": "clip_l.safetensors",
+                    "type": "flux"
+                },
+                "class_type": "DualCLIPLoader",
+                "_meta": {"title": "DualCLIPLoader"}
+            },
+            "12": {
+                "inputs": {
+                    "unet_name": "flux1-schnell.safetensors",
+                    "weight_dtype": "default"
+                },
+                "class_type": "UNETLoader",
+                "_meta": {"title": "Load Diffusion Model"}
+            },
+            "13": {
+                "inputs": {
+                    "noise": ["25", 0],
+                    "guider": ["22", 0],
+                    "sampler": ["16", 0],
+                    "sigmas": ["17", 0],
                     "latent_image": ["5", 0]
                 },
-                "class_type": "KSampler"
+                "class_type": "SamplerCustomAdvanced",
+                "_meta": {"title": "SamplerCustomAdvanced"}
             },
-            "4": {
+            "16": {
                 "inputs": {
-                    "ckpt_name": "flux1-dev.safetensors"
+                    "sampler_name": "euler"
                 },
-                "class_type": "CheckpointLoaderSimple"
+                "class_type": "KSamplerSelect",
+                "_meta": {"title": "KSamplerSelect"}
+            },
+            "17": {
+                "inputs": {
+                    "scheduler": "simple",
+                    "steps": 4,
+                    "denoise": 1.0,
+                    "model": ["12", 0]
+                },
+                "class_type": "BasicScheduler",
+                "_meta": {"title": "BasicScheduler"}
+            },
+            "22": {
+                "inputs": {
+                    "model": ["12", 0],
+                    "conditioning": ["6", 0]
+                },
+                "class_type": "BasicGuider",
+                "_meta": {"title": "BasicGuider"}
+            },
+            "25": {
+                "inputs": {
+                    "noise_seed": -1
+                },
+                "class_type": "RandomNoise",
+                "_meta": {"title": "RandomNoise"}
             },
             "5": {
                 "inputs": {
@@ -950,35 +1021,8 @@ async def generate_image(request: dict):
                     "height": height,
                     "batch_size": 1
                 },
-                "class_type": "EmptyLatentImage"
-            },
-            "6": {
-                "inputs": {
-                    "text": prompt,
-                    "clip": ["4", 1]
-                },
-                "class_type": "CLIPTextEncode"
-            },
-            "7": {
-                "inputs": {
-                    "text": "",
-                    "clip": ["4", 1]
-                },
-                "class_type": "CLIPTextEncode"
-            },
-            "8": {
-                "inputs": {
-                    "samples": ["3", 0],
-                    "vae": ["4", 2]
-                },
-                "class_type": "VAEDecode"
-            },
-            "9": {
-                "inputs": {
-                    "filename_prefix": "EDISON",
-                    "images": ["8", 0]
-                },
-                "class_type": "SaveImage"
+                "class_type": "EmptyLatentImage",
+                "_meta": {"title": "Empty Latent Image"}
             }
         }
         
