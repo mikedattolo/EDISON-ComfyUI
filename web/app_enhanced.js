@@ -156,10 +156,20 @@ class EdisonApp {
             const isRegenerateRequest = this.detectImageRegenerationRequest(message);
             
             if (isImageRequest || isRegenerateRequest) {
-                // Use previous prompt if regenerating, otherwise extract new prompt
-                const promptToUse = isRegenerateRequest && this.lastImagePrompt 
-                    ? this.combinePrompts(this.lastImagePrompt, message)
-                    : message;
+                // Determine the prompt to use
+                let promptToUse;
+                
+                if (isRegenerateRequest && this.lastImagePrompt) {
+                    // Regenerating with modifications
+                    promptToUse = this.combinePrompts(this.lastImagePrompt, message);
+                } else if (isImageRequest && this.hasRecentImageContext()) {
+                    // New image request with context - build prompt from recent conversation
+                    promptToUse = this.buildPromptFromContext(message);
+                } else {
+                    // Direct image generation request
+                    promptToUse = message;
+                }
+                
                 await this.handleImageGeneration(promptToUse, assistantMessageEl);
             } else {
                 const response = await this.callEdisonAPI(message, mode);
@@ -486,7 +496,9 @@ class EdisonApp {
     }
 
     detectImageGenerationRequest(message) {
-        const lowerMessage = message.toLowerCase();
+        const lowerMessage = message.toLowerCase().trim();
+        
+        // Check for explicit image generation keywords
         const imageKeywords = [
             'generate image', 'create image', 'make image', 'draw', 'generate a picture',
             'create a picture', 'make a picture', 'generate an image', 'create an image',
@@ -494,25 +506,117 @@ class EdisonApp {
             'make art', 'flux', 'stable diffusion', 'text to image', 'text2img'
         ];
         
-        return imageKeywords.some(keyword => lowerMessage.includes(keyword));
+        if (imageKeywords.some(keyword => lowerMessage.includes(keyword))) {
+            return true;
+        }
+        
+        // Check for contextual follow-up commands when there's image context
+        if (this.hasRecentImageContext()) {
+            const followUpKeywords = [
+                'generate it', 'create it', 'make it', 'do it', 'go ahead',
+                'yes', 'yeah', 'sure', 'okay', 'ok', 'both', 'all of them',
+                'that one', 'those', 'them'
+            ];
+            
+            // For very short messages, be more aggressive with context
+            if (lowerMessage.length <= 10) {
+                return followUpKeywords.some(keyword => lowerMessage === keyword || lowerMessage.includes(keyword));
+            }
+        }
+        
+        return false;
+    }
+
+    hasRecentImageContext() {
+        // Check if any of the last 3 user messages mentioned images
+        const messages = Array.from(this.messagesContainer.querySelectorAll('.message.user:not(.streaming)'));
+        const recentMessages = messages.slice(-3);
+        
+        return recentMessages.some(msg => {
+            const content = msg.querySelector('.message-content')?.textContent || '';
+            const lowerContent = content.toLowerCase();
+            return lowerContent.includes('image') || 
+                   lowerContent.includes('picture') || 
+                   lowerContent.includes('draw') ||
+                   lowerContent.includes('heart') ||
+                   lowerContent.includes('cartoon') ||
+                   lowerContent.includes('generate');
+        });
+    }
+
+    buildPromptFromContext(message) {
+        // Build a prompt by combining recent conversation context
+        const messages = Array.from(this.messagesContainer.querySelectorAll('.message:not(.streaming)'));
+        const recentMessages = messages.slice(-6); // Last 3 exchanges
+        
+        let promptParts = [];
+        
+        // Extract relevant details from recent messages
+        recentMessages.forEach(msg => {
+            const content = msg.querySelector('.message-content')?.textContent || '';
+            const lowerContent = content.toLowerCase();
+            
+            // Skip messages that are just responses or questions
+            if (msg.classList.contains('assistant')) return;
+            if (lowerContent.includes('?') && lowerContent.length < 50) return;
+            
+            // Look for descriptive content
+            if (lowerContent.includes('heart') || 
+                lowerContent.includes('cartoon') ||
+                lowerContent.includes('cute') ||
+                lowerContent.includes('name')) {
+                promptParts.push(content.trim());
+            }
+            
+            // Extract names mentioned
+            const nameMatches = content.match(/\b([A-Z][a-z]+)\b/g);
+            if (nameMatches) {
+                nameMatches.forEach(name => {
+                    if (name.length > 2 && !['You', 'EDISON', 'The', 'For', 'Image'].includes(name)) {
+                        promptParts.push(name);
+                    }
+                });
+            }
+        });
+        
+        // If the current message is just a command like "generate it", use the context
+        const simpleCommands = ['generate it', 'create it', 'make it', 'do it', 'both', 'yes', 'okay', 'sure'];
+        const lowerMessage = message.toLowerCase().trim();
+        
+        if (simpleCommands.some(cmd => lowerMessage.includes(cmd) || lowerMessage === cmd)) {
+            // Build from context only
+            const uniqueParts = [...new Set(promptParts)];
+            if (uniqueParts.length > 0) {
+                return uniqueParts.join(', ');
+            }
+        }
+        
+        // Otherwise, combine message with context
+        return message + (promptParts.length > 0 ? ', ' + promptParts.join(', ') : '');
     }
 
     detectImageRegenerationRequest(message) {
         // Only consider regeneration if we have a previous image prompt
         if (!this.lastImagePrompt) return false;
         
-        const lowerMessage = message.toLowerCase();
+        const lowerMessage = message.toLowerCase().trim();
         const regenerateKeywords = [
             'try again', 'regenerate', 'make another', 'do it again', 'retry',
             'redo', 'one more', 'again', 'remake', 'recreate', 'generate another',
-            'make a new one', 'new one'
+            'make a new one', 'new one', 'another one'
         ];
         
         // Also check if message is modifying the image ("but with", "except", "instead", etc.)
         const modificationKeywords = [
             'but with', 'except', 'instead', 'change', 'modify', 'different',
-            'with', 'add', 'remove', 'without', 'replace'
+            'with', 'add', 'remove', 'without', 'replace', 'this time'
         ];
+        
+        // Check for simple follow-ups that suggest regeneration
+        const simpleRegenerateWords = ['again', 'retry', 'redo', 'another'];
+        if (simpleRegenerateWords.some(word => lowerMessage === word)) {
+            return true;
+        }
         
         return regenerateKeywords.some(keyword => lowerMessage.includes(keyword)) ||
                modificationKeywords.some(keyword => lowerMessage.includes(keyword));
@@ -520,16 +624,38 @@ class EdisonApp {
 
     combinePrompts(originalPrompt, modificationMessage) {
         // If the modification message contains explicit prompt details, combine them
-        const lowerMessage = modificationMessage.toLowerCase();
+        const lowerMessage = modificationMessage.toLowerCase().trim();
+        
+        // If message is very short and doesn't contain modifications, just use original
+        const simpleCommands = ['again', 'retry', 'redo', 'another', 'try again', 'do it again'];
+        if (simpleCommands.includes(lowerMessage)) {
+            return originalPrompt;
+        }
         
         // Extract any specific modifications from the message
         if (lowerMessage.includes('with') || lowerMessage.includes('but') || 
-            lowerMessage.includes('instead') || lowerMessage.includes('change')) {
+            lowerMessage.includes('instead') || lowerMessage.includes('change') ||
+            lowerMessage.includes('add') || lowerMessage.includes('both')) {
             // Try to extract the modification part
-            const modifiers = modificationMessage
-                .replace(/^(try again|regenerate|remake|redo|again)/i, '')
-                .replace(/^(but|with|except|instead|change to|modify to)/i, '')
+            let modifiers = modificationMessage
+                .replace(/^(try again|regenerate|remake|redo|again|please)/i, '')
+                .replace(/^(but|with|except|instead|change to|modify to|and|also)/i, '')
                 .trim();
+            
+            // Handle "both" as a special case to include previous context
+            if (lowerMessage === 'both' || lowerMessage.includes('both')) {
+                // Get the last few messages to understand context
+                const recentMsgs = this.getRecentMessages(3);
+                const contextNames = [];
+                recentMsgs.forEach(msg => {
+                    // Extract potential names or subjects from context
+                    const matches = msg.content.match(/\b[A-Z][a-z]+\b/g);
+                    if (matches) contextNames.push(...matches);
+                });
+                if (contextNames.length > 0) {
+                    modifiers = contextNames.join(' and ');
+                }
+            }
             
             if (modifiers.length > 0) {
                 return `${this.extractImagePrompt(originalPrompt)}, ${modifiers}`;
