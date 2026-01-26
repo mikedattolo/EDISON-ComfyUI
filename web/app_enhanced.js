@@ -519,9 +519,25 @@ class EdisonApp {
             const result = await response.json();
             const promptId = result.prompt_id;
             
+            // Show loading animation
+            const loadingHtml = `
+                <div style="text-align: center; padding: 20px;">
+                    <div style="display: inline-block; width: 300px; height: 300px; background: linear-gradient(135deg, rgba(102, 126, 234, 0.1) 0%, rgba(118, 75, 162, 0.1) 100%); border-radius: 12px; position: relative; overflow: hidden;">
+                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
+                            <div style="width: 60px; height: 60px; border: 4px solid rgba(102, 126, 234, 0.3); border-top-color: #667eea; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
+                            <div style="font-size: 16px; color: #667eea; font-weight: 500;">Generating Image...</div>
+                            <div id="progress-text" style="font-size: 14px; color: #888; margin-top: 8px;">Initializing...</div>
+                        </div>
+                    </div>
+                    <p style="margin-top: 16px; color: #888;"><strong>Prompt:</strong> ${imagePrompt}</p>
+                </div>
+            `;
+            this.updateMessage(assistantMessageEl, loadingHtml, 'image');
+            
             // Poll for completion
             let attempts = 0;
-            const maxAttempts = 60; // 60 seconds timeout
+            const maxAttempts = 120; // 2 minutes timeout for first generation
+            let lastStatus = 'queued';
             
             while (attempts < maxAttempts) {
                 await new Promise(resolve => setTimeout(resolve, 1000));
@@ -535,19 +551,19 @@ class EdisonApp {
                     const imageHtml = `
                         <p>✅ Image generated successfully!</p>
                         <div class="generated-image">
-                            <img src="${fullImageUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px;">
+                            <img src="${fullImageUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
                         </div>
-                        <div style="margin-top: 10px;">
-                            <button onclick="window.open('${fullImageUrl}', '_blank')" style="padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 6px; cursor: pointer; font-size: 14px; margin-right: 8px;">
+                        <div style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
+                            <button onclick="window.open('${fullImageUrl}', '_blank')" style="padding: 10px 20px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 14px; font-weight: 500; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: transform 0.2s;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'">
                                 📥 Download Image
                             </button>
-                            <span style="color: #888;"><strong>Prompt:</strong> ${imagePrompt}</span>
+                            <span style="color: #888; font-size: 14px;"><strong>Prompt:</strong> ${imagePrompt}</span>
                         </div>
                     `;
                     this.updateMessage(assistantMessageEl, imageHtml, 'image');
                     
                     // Save to chat history
-                    this.saveMessageToChat(message, `Image generated: ${imagePrompt}\n[Image: ${status.image_url}]`, 'image');
+                    this.saveMessageToChat(message, `Image generated: ${imagePrompt}\n[Image: ${fullImageUrl}]`, 'image');
                     
                     break;
                 } else if (status.status === 'error') {
@@ -556,8 +572,19 @@ class EdisonApp {
                     throw new Error('Generation job not found');
                 }
                 
-                // Update progress
-                this.updateMessage(assistantMessageEl, `🎨 Generating image... (${attempts + 1}s)`, 'image');
+                // Update progress text
+                const progressEl = document.getElementById('progress-text');
+                if (progressEl) {
+                    let progressMsg = 'Processing...';
+                    if (attempts < 5) {
+                        progressMsg = 'Loading models...';
+                    } else if (attempts < 30) {
+                        progressMsg = 'Generating image (4 steps)...';
+                    } else {
+                        progressMsg = `Still generating... (${attempts}s)`;
+                    }
+                    progressEl.textContent = progressMsg;
+                }
                 attempts++;
             }
             
