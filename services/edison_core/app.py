@@ -16,6 +16,7 @@ import requests
 import json
 from contextlib import asynccontextmanager
 import re
+import time
 
 # Configure logging
 logging.basicConfig(
@@ -1052,38 +1053,67 @@ Steps:"""
         # Store in memory if auto-detected or requested
         if remember and rag_system:
             try:
+                # Generate chat_id for this conversation exchange
+                chat_id = str(int(time.time() * 1000))  # millisecond timestamp as chat_id
+                current_timestamp = int(time.time())
+                
                 # Extract facts from conversation (returns list of dicts)
                 facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
                 
-                # Store full conversation
+                # Store user message separately
                 rag_system.add_documents(
-                    documents=[f"User: {request.message}\nAssistant: {assistant_response}"],
-                    metadatas=[{"type": "conversation", "mode": mode}]
+                    documents=[request.message],
+                    metadatas=[{
+                        "role": "user",
+                        "chat_id": chat_id,
+                        "timestamp": current_timestamp,
+                        "tags": ["conversation", mode],
+                        "type": "message"  # For backward compatibility
+                    }]
                 )
                 
-                # Store extracted facts separately for better retrieval
+                # Store assistant response separately
+                rag_system.add_documents(
+                    documents=[assistant_response],
+                    metadatas=[{
+                        "role": "assistant",
+                        "chat_id": chat_id,
+                        "timestamp": current_timestamp,
+                        "tags": ["conversation", mode],
+                        "type": "message",
+                        "mode": mode
+                    }]
+                )
+                
+                # Store extracted facts separately with proper metadata
                 # Only store high-confidence facts (>= 0.85)
+                facts_stored = 0
                 if facts_extracted:
-                    fact_texts = []
                     for fact in facts_extracted:
                         if fact["confidence"] >= 0.85:
                             # Format fact as natural text
                             fact_text = f"User {fact['value']}"
-                            fact_texts.append(fact_text)
-                    
-                    if fact_texts:
-                        rag_system.add_documents(
-                            documents=fact_texts,
-                            metadatas=[{
-                                "type": "fact",
-                                "fact_type": facts_extracted[i]["type"],
-                                "confidence": facts_extracted[i]["confidence"],
-                                "source": "conversation"
-                            } for i in range(len(fact_texts))]
-                        )
-                        logger.info(f"Conversation + {len(fact_texts)} high-confidence facts stored in memory")
+                            
+                            rag_system.add_documents(
+                                documents=[fact_text],
+                                metadatas=[{
+                                    "role": "fact",
+                                    "fact_type": fact["type"],
+                                    "confidence": fact["confidence"],
+                                    "chat_id": chat_id,
+                                    "timestamp": current_timestamp,
+                                    "tags": ["fact", fact["type"]],
+                                    "type": "fact",  # For backward compatibility
+                                    "source": "conversation"
+                                }]
+                            )
+                            facts_stored += 1
+                
+                if facts_stored > 0:
+                    logger.info(f"Stored user message, assistant response, and {facts_stored} facts with chat_id {chat_id}")
                 else:
-                    logger.info("Conversation stored in memory (no facts extracted)")
+                    logger.info(f"Stored user message and assistant response with chat_id {chat_id}")
+                    
             except Exception as e:
                 logger.warning(f"Failed to store conversation: {e}")
         
@@ -1376,7 +1406,13 @@ async def upload_document(request: dict):
         if rag_system:
             rag_system.add_documents(
                 documents=[file_content],
-                metadatas=[{"type": "uploaded_document", "filename": file_name}]
+                metadatas=[{
+                    "role": "document",
+                    "type": "uploaded_document",
+                    "filename": file_name,
+                    "timestamp": int(time.time()),
+                    "tags": ["document", "upload"]
+                }]
             )
             logger.info(f"Document {file_name} stored in RAG")
         

@@ -126,7 +126,12 @@ class RAGSystem:
             logger.error(f"Error adding documents: {e}")
     
     def get_context(self, query: str, n_results: int = 3) -> List[tuple]:
-        """Retrieve relevant context for a query - returns list of (text, metadata) tuples"""
+        """
+        Retrieve relevant context for a query - returns list of (text, metadata) tuples.
+        
+        Backward compatible: Handles both old entries (only text field) and new entries
+        (with role, chat_id, timestamp, tags, fact_type fields).
+        """
         if not self.is_ready():
             return []
         
@@ -143,6 +148,7 @@ class RAGSystem:
             )
             
             # Extract text and metadata from results
+            # Backward compatible: works with old entries that only have "text" field
             contexts = []
             points = search_results.points if hasattr(search_results, 'points') else search_results
             for result in points:
