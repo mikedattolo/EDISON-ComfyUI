@@ -3,7 +3,7 @@ EDISON Core Service - Main Application
 FastAPI server with llama-cpp-python for local LLM inference
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -15,9 +15,13 @@ import sys
 import requests
 import json
 from contextlib import asynccontextmanager
+import asyncio
 import re
 import time
 import threading
+import uuid
+import os
+import shutil
 
 # Configure logging
 logging.basicConfig(
@@ -215,6 +219,10 @@ lock_medium = threading.Lock()
 lock_deep = threading.Lock()
 lock_vision = threading.Lock()
 
+# Active request tracking for server-side cancellation
+active_requests = {}  # {request_id: {"cancelled": bool, "timestamp": float}}
+active_requests_lock = threading.Lock()
+
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
                          steps: int = 20, guidance_scale: float = 3.5) -> dict:
     """Create a FLUX workflow for image generation
@@ -388,6 +396,341 @@ class HealthResponse(BaseModel):
     qdrant_ready: bool
     repo_root: str
     vision_enabled: bool = False
+
+# Structured tool registry for agent/work modes
+TOOL_REGISTRY = {
+    "web_search": {
+        "args": {
+            "query": {"type": str, "required": True},
+            "max_results": {"type": int, "required": False, "default": 5}
+        }
+    },
+    "rag_search": {
+        "args": {
+            "query": {"type": str, "required": True},
+            "limit": {"type": int, "required": False, "default": 3},
+            "global": {"type": bool, "required": False, "default": False}
+        }
+    },
+    "generate_image": {
+        "args": {
+            "prompt": {"type": str, "required": True},
+            "width": {"type": int, "required": False, "default": 1024},
+            "height": {"type": int, "required": False, "default": 1024},
+            "steps": {"type": int, "required": False, "default": 20},
+            "guidance_scale": {"type": float, "required": False, "default": 3.5}
+        }
+    },
+    "system_stats": {
+        "args": {}
+    }
+}
+
+TOOL_LOOP_MAX_STEPS = 5
+TOOL_CALL_TIMEOUT_SEC = 12
+TOOL_RESULT_CHAR_LIMIT = 900
+
+
+def _coerce_int(val):
+    return isinstance(val, int) and not isinstance(val, bool)
+
+
+def _validate_and_normalize_tool_call(payload: dict):
+    """Validate tool call JSON strictly against registry schema."""
+    if not isinstance(payload, dict):
+        return False, "Payload must be an object", None, None
+    if set(payload.keys()) != {"tool", "args"}:
+        return False, "Payload must contain exactly 'tool' and 'args' keys", None, None
+
+    tool_name = payload.get("tool")
+    args = payload.get("args")
+
+    if not isinstance(tool_name, str):
+        return False, "'tool' must be a string", None, None
+    if tool_name not in TOOL_REGISTRY:
+        return False, f"Unknown tool '{tool_name}'", tool_name, None
+    if not isinstance(args, dict):
+        return False, "'args' must be an object", tool_name, None
+
+    schema = TOOL_REGISTRY[tool_name]["args"]
+    normalized = {}
+    for arg_name, meta in schema.items():
+        if arg_name in args:
+            value = args[arg_name]
+            expected_type = meta["type"]
+            if expected_type is int and not _coerce_int(value):
+                return False, f"{arg_name} must be int", tool_name, None
+            if expected_type is float and not isinstance(value, (int, float)):
+                return False, f"{arg_name} must be float", tool_name, None
+            if expected_type is bool and not isinstance(value, bool):
+                return False, f"{arg_name} must be bool", tool_name, None
+            if expected_type is str and not isinstance(value, str):
+                return False, f"{arg_name} must be string", tool_name, None
+            normalized[arg_name] = value
+        else:
+            if meta.get("required"):
+                return False, f"Missing required arg '{arg_name}'", tool_name, None
+            if "default" in meta:
+                normalized[arg_name] = meta["default"]
+
+    # Drop unknown args but keep validation strict to registry
+    return True, None, tool_name, normalized
+
+
+def _summarize_tool_result(tool_name: str, result: dict) -> str:
+    """Create a concise summary string for model consumption."""
+    if not result.get("ok"):
+        return f"{tool_name} failed: {result.get('error', 'unknown error')}"
+
+    data = result.get("data")
+    if tool_name == "web_search" and isinstance(data, list):
+        snippets = []
+        for item in data[:3]:
+            title = item.get("title", "")
+            url = item.get("url", "")
+            snippet = item.get("snippet", "")
+            piece = " ".join([part for part in [title, url, snippet] if part])
+            if piece:
+                snippets.append(piece[:200])
+        return "Web search results: " + " | ".join(snippets) if snippets else "Web search returned no details"
+
+    if tool_name == "rag_search" and isinstance(data, list):
+        summaries = []
+        for chunk in data[:3]:
+            text = chunk[0] if isinstance(chunk, tuple) else chunk
+            summaries.append(text[:200])
+        return "RAG search results: " + " | ".join(summaries) if summaries else "RAG search returned no chunks"
+
+    if tool_name == "generate_image":
+        return result.get("message", "Image generation handled")
+
+    if tool_name == "system_stats" and isinstance(data, dict):
+        return "System stats: " + ", ".join([f"{k}={v}" for k, v in data.items()])
+
+    return f"{tool_name} completed"
+
+
+async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
+    """Execute a registered tool with timeout handling."""
+    try:
+        if tool_name == "web_search":
+            if not search_tool:
+                return {"ok": False, "error": "web_search unavailable"}
+            query = args.get("query", "").strip()
+            max_results = args.get("max_results", 5)
+            results = await asyncio.to_thread(search_tool.search, query, max_results)
+            return {"ok": True, "data": results}
+
+        if tool_name == "rag_search":
+            if not rag_system or not rag_system.is_ready():
+                return {"ok": False, "error": "RAG not available"}
+            query = args.get("query", "").strip()
+            limit = args.get("limit", 3)
+            use_global = args.get("global", False)
+            chunks = await asyncio.to_thread(
+                rag_system.get_context,
+                query,
+                limit,
+                chat_id,
+                use_global
+            )
+            return {"ok": True, "data": chunks}
+
+        if tool_name == "generate_image":
+            # Keep lightweight: return instruction for user/frontend
+            return {
+                "ok": True,
+                "message": "Image generation requested. Use /generate-image endpoint to render.",
+                "data": args
+            }
+
+        if tool_name == "system_stats":
+            stats = {}
+            try:
+                load1, load5, load15 = os.getloadavg()
+                stats["loadavg"] = f"{load1:.2f}/{load5:.2f}/{load15:.2f}"
+            except Exception:
+                stats["loadavg"] = "unavailable"
+            try:
+                import psutil  # type: ignore
+                vm = psutil.virtual_memory()
+                stats["memory"] = f"{vm.percent:.1f}% used"
+                cpu = psutil.cpu_percent(interval=0.1)
+                stats["cpu"] = f"{cpu:.1f}%"
+            except Exception:
+                stats.setdefault("memory", "unavailable")
+            try:
+                du = shutil.disk_usage(REPO_ROOT)
+                stats["disk"] = f"{du.used//(1024**3)}G/{du.total//(1024**3)}G"
+            except Exception:
+                stats.setdefault("disk", "unavailable")
+            return {"ok": True, "data": stats}
+
+        return {"ok": False, "error": f"Unhandled tool '{tool_name}'"}
+    except Exception as e:
+        return {"ok": False, "error": str(e)}
+
+
+async def run_structured_tool_loop(llm, user_message: str, context_note: str, model_name: str, chat_id: Optional[str] = None, request_id: Optional[str] = None):
+    """Orchestrate structured tool calling loop and return final answer with citations."""
+    tool_events = []
+    correction_attempted = False
+    final_answer = None
+
+    def cancelled() -> bool:
+        if not request_id:
+            return False
+        with active_requests_lock:
+            return request_id in active_requests and active_requests[request_id].get("cancelled", False)
+
+    async def call_llm(prompt: str) -> str:
+        lock = get_lock_for_model(llm)
+        def _run():
+            with lock:
+                response = llm(
+                    prompt,
+                    max_tokens=512,
+                    temperature=0.4,
+                    top_p=0.9,
+                    echo=False
+                )
+            return response["choices"][0]["text"]
+        return await asyncio.to_thread(_run)
+
+    base_instructions = (
+        "You can call structured tools before answering. "
+        "Reply with either a final answer in plain text (include citations like [source:web_search]) "
+        "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
+        "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
+        "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats()."
+    )
+
+    context_snippet = context_note[:2000] if context_note else ""
+
+    step = 0
+    while step < TOOL_LOOP_MAX_STEPS and not final_answer:
+        step += 1
+        if cancelled():
+            return "Generation cancelled", tool_events
+
+        history_lines = [f"User: {user_message}"]
+        if context_snippet:
+            history_lines.append(f"Context: {context_snippet}")
+        for idx, event in enumerate(tool_events, 1):
+            history_lines.append(f"Tool {idx} [{event['tool']}]: {event['summary']}")
+
+        prompt = (
+            f"{base_instructions}\n\n"
+            f"Step {step} of {TOOL_LOOP_MAX_STEPS}. Provide JSON to call a tool or final answer now.\n"
+            + "\n".join(history_lines)
+        )
+
+        raw_output = await call_llm(prompt)
+        raw_output = raw_output.strip()
+
+        # Attempt to parse JSON
+        parsed = None
+        try:
+            parsed = json.loads(raw_output)
+        except Exception:
+            parsed = None
+
+        if parsed:
+            valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
+            if not valid:
+                if correction_attempted:
+                    final_answer = f"Tool call rejected: {error}." if not final_answer else final_answer
+                    break
+                correction_attempted = True
+                correction_prompt = (
+                    f"Previous tool JSON was invalid ({error}). Return ONLY valid JSON with keys tool and args conforming to schema."
+                )
+                raw_output = await call_llm(correction_prompt)
+                try:
+                    parsed = json.loads(raw_output)
+                    valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
+                except Exception:
+                    final_answer = f"Tool call failed to validate: {raw_output}"
+                    break
+                if not valid:
+                    final_answer = f"Tool call rejected: {error}."
+                    break
+            # Execute tool
+            tool_result = await asyncio.wait_for(_execute_tool(tool_name, normalized_args, chat_id), timeout=TOOL_CALL_TIMEOUT_SEC)
+            summary = _summarize_tool_result(tool_name, tool_result)
+            tool_events.append({
+                "tool": tool_name,
+                "args": normalized_args,
+                "result": tool_result,
+                "summary": summary
+            })
+            continue
+
+        # If not JSON, treat as final answer
+        final_answer = raw_output
+        break
+
+    # If no final answer yet, ask for final answer using gathered evidence
+    if not final_answer:
+        history_lines = [f"User: {user_message}"]
+        for idx, event in enumerate(tool_events, 1):
+            history_lines.append(f"Tool {idx} [{event['tool']}]: {event['summary']}")
+        prompt = (
+            f"Use the gathered tool evidence to answer. Cite sources as [source:TOOLNAME].\n" + "\n".join(history_lines)
+        )
+        final_answer = await call_llm(prompt)
+
+    if tool_events:
+        sources = ", ".join([event["tool"] for event in tool_events])
+        final_answer = f"{final_answer}\n\nSources: {sources}"
+
+    return final_answer.strip(), tool_events
+
+# OpenAI-Compatible Models for /v1/chat/completions endpoint
+class OpenAIMessage(BaseModel):
+    role: str = Field(..., description="Role: user, assistant, or system")
+    content: str = Field(..., description="Message content")
+    name: Optional[str] = Field(default=None, description="Optional name for the message author")
+
+class OpenAITool(BaseModel):
+    type: str = Field(default="function", description="Tool type")
+    function: Optional[dict] = Field(default=None, description="Function definition")
+
+class OpenAIChatCompletionRequest(BaseModel):
+    model: str = Field(default="qwen2.5-14b", description="Model ID (fast, medium, deep, or gpt-3.5-turbo)")
+    messages: List[OpenAIMessage] = Field(..., description="Conversation messages")
+    temperature: Optional[float] = Field(default=0.7, description="Sampling temperature (0-2)")
+    top_p: Optional[float] = Field(default=0.9, description="Top-p nucleus sampling")
+    max_tokens: Optional[int] = Field(default=2048, description="Maximum tokens to generate")
+    stream: Optional[bool] = Field(default=False, description="Stream response tokens")
+    tools: Optional[List[OpenAITool]] = Field(default=None, description="Optional tools/functions")
+    tool_choice: Optional[str] = Field(default=None, description="Tool selection strategy")
+
+class OpenAIChoice(BaseModel):
+    index: int = Field(description="Choice index")
+    message: Optional[dict] = Field(default=None, description="Message content (for non-streaming)")
+    delta: Optional[dict] = Field(default=None, description="Delta content (for streaming)")
+    finish_reason: Optional[str] = Field(default="stop", description="Finish reason")
+
+class OpenAIUsage(BaseModel):
+    prompt_tokens: int
+    completion_tokens: int
+    total_tokens: int
+
+class OpenAIChatCompletionResponse(BaseModel):
+    id: str = Field(description="Completion ID")
+    object: str = Field(default="chat.completion", description="Object type")
+    created: int = Field(description="Creation timestamp")
+    model: str = Field(description="Model used")
+    choices: List[OpenAIChoice] = Field(description="Completion choices")
+    usage: Optional[OpenAIUsage] = Field(default=None, description="Token usage")
+
+class OpenAIStreamResponse(BaseModel):
+    id: str
+    object: str = "chat.completion.chunk"
+    created: int
+    model: str
+    choices: List[OpenAIChoice]
 
 def load_config():
     """Load EDISON configuration with absolute paths"""
@@ -694,6 +1037,61 @@ def get_lock_for_model(model) -> threading.Lock:
     else:  # llm_fast or other
         return lock_fast
 
+def store_conversation_exchange(request: ChatRequest, assistant_response: str, mode: str, remember: bool):
+    """Persist user/assistant messages and extracted facts when enabled."""
+    if not remember or not rag_system:
+        return
+    try:
+        chat_id = str(int(time.time() * 1000))
+        current_timestamp = int(time.time())
+        facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
+        rag_system.add_documents(
+            documents=[request.message],
+            metadatas=[{
+                "role": "user",
+                "chat_id": chat_id,
+                "timestamp": current_timestamp,
+                "tags": ["conversation", mode],
+                "type": "message"
+            }]
+        )
+        rag_system.add_documents(
+            documents=[assistant_response],
+            metadatas=[{
+                "role": "assistant",
+                "chat_id": chat_id,
+                "timestamp": current_timestamp,
+                "tags": ["conversation", mode],
+                "type": "message",
+                "mode": mode
+            }]
+        )
+        facts_stored = 0
+        if facts_extracted:
+            for fact in facts_extracted:
+                if fact.get("confidence", 0) >= 0.85:
+                    fact_text = f"User {fact['value']}"
+                    rag_system.add_documents(
+                        documents=[fact_text],
+                        metadatas=[{
+                            "role": "fact",
+                            "fact_type": fact.get("type"),
+                            "confidence": fact.get("confidence"),
+                            "chat_id": chat_id,
+                            "timestamp": current_timestamp,
+                            "tags": ["fact", fact.get("type")],
+                            "type": "fact",
+                            "source": "conversation"
+                        }]
+                    )
+                    facts_stored += 1
+        if facts_stored > 0:
+            logger.info(f"Stored user message, assistant response, and {facts_stored} facts with chat_id {chat_id}")
+        else:
+            logger.info(f"Stored user message and assistant response with chat_id {chat_id}")
+    except Exception as e:
+        logger.warning(f"Memory storage failed: {e}")
+
 @app.post("/chat")
 async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
@@ -994,6 +1392,42 @@ async def chat(request: ChatRequest):
     
     # Agent mode: Check if web search is requested
     search_results = []
+    
+    # If agent/work mode with tools_allowed, use structured tool loop
+    if mode in ["agent", "work"] and tools_allowed:
+        logger.info(f"Using structured tool loop for {mode} mode")
+        context_note = ""
+        if context_chunks:
+            context_note = "\n".join([
+                (chunk[0] if isinstance(chunk, tuple) else chunk)[:150] 
+                for chunk in context_chunks[:3]
+            ])
+        
+        # Run structured tool loop (returns final answer with citations)
+        assistant_response, tool_events = await run_structured_tool_loop(
+            llm,
+            request.message,
+            context_note,
+            model_name,
+            chat_id=request.chat_id,
+            request_id=None  # Will add request_id tracking when integrated with /chat/stream
+        )
+        
+        # Log tool usage
+        if tool_events:
+            logger.info(f"Tool loop executed {len(tool_events)} steps: {[e['tool'] for e in tool_events]}")
+        
+        # Store response
+        store_conversation_exchange(request, assistant_response, original_mode, remember)
+        
+        return {
+            "response": assistant_response,
+            "mode_used": original_mode,
+            "model_used": model_name,
+            "tools_used": [e["tool"] for e in tool_events] if tool_events else []
+        }
+    
+    # Fallback: old heuristic-based search for non-agent modes or when tools_allowed is False
     if mode in ["agent", "work"] and search_tool:
         msg_lower = request.message.lower()
         search_keywords = ["search", "internet", "web", "online", "news", "lookup", "find on", "google", "browse"]
@@ -1186,71 +1620,7 @@ Steps:"""
             assistant_response = response["choices"][0]["text"].strip()
         
         # Store in memory if auto-detected or requested
-        if remember and rag_system:
-            try:
-                # Generate chat_id for this conversation exchange
-                chat_id = str(int(time.time() * 1000))  # millisecond timestamp as chat_id
-                current_timestamp = int(time.time())
-                
-                # Extract facts from conversation (returns list of dicts)
-                facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
-                
-                # Store user message separately
-                rag_system.add_documents(
-                    documents=[request.message],
-                    metadatas=[{
-                        "role": "user",
-                        "chat_id": chat_id,
-                        "timestamp": current_timestamp,
-                        "tags": ["conversation", mode],
-                        "type": "message"  # For backward compatibility
-                    }]
-                )
-                
-                # Store assistant response separately
-                rag_system.add_documents(
-                    documents=[assistant_response],
-                    metadatas=[{
-                        "role": "assistant",
-                        "chat_id": chat_id,
-                        "timestamp": current_timestamp,
-                        "tags": ["conversation", mode],
-                        "type": "message",
-                        "mode": mode
-                    }]
-                )
-                
-                # Store extracted facts separately with proper metadata
-                # Only store high-confidence facts (>= 0.85)
-                facts_stored = 0
-                if facts_extracted:
-                    for fact in facts_extracted:
-                        if fact["confidence"] >= 0.85:
-                            # Format fact as natural text
-                            fact_text = f"User {fact['value']}"
-                            
-                            rag_system.add_documents(
-                                documents=[fact_text],
-                                metadatas=[{
-                                    "role": "fact",
-                                    "fact_type": fact["type"],
-                                    "confidence": fact["confidence"],
-                                    "chat_id": chat_id,
-                                    "timestamp": current_timestamp,
-                                    "tags": ["fact", fact["type"]],
-                                    "type": "fact",  # For backward compatibility
-                                    "source": "conversation"
-                                }]
-                            )
-                            facts_stored += 1
-                
-                if facts_stored > 0:
-                    logger.info(f"Stored user message, assistant response, and {facts_stored} facts with chat_id {chat_id}")
-                else:
-                    logger.info(f"Stored user message and assistant response with chat_id {chat_id}")
-                    
-            except Exception as e:
-                logger.warning(f"Failed to store conversation: {e}")
+        store_conversation_exchange(request, assistant_response, original_mode, remember)
         
         # Build response with work mode metadata
         response_data = {
@@ -1270,6 +1640,580 @@ Steps:"""
     except Exception as e:
         logger.error(f"Error generating response: {e}")
         raise HTTPException(status_code=500, detail=f"Generation error: {str(e)}")
+
+@app.post("/chat/stream")
+async def chat_stream(raw_request: Request, request: ChatRequest):
+    """Streaming chat endpoint using SSE."""
+    # Generate unique request ID for cancellation tracking
+    request_id = str(uuid.uuid4())
+    
+    # Register request as active
+    with active_requests_lock:
+        active_requests[request_id] = {"cancelled": False, "timestamp": time.time()}
+    
+    logger.info(f"=== Chat stream request received: '{request.message}' (mode: {request.mode}, request_id: {request_id}) ===")
+
+    if not llm_fast and not llm_medium and not llm_deep:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
+        )
+
+    remember_result = should_remember_conversation(request.message)
+    auto_remember = remember_result["remember"]
+    remember = request.remember if request.remember is not None else auto_remember
+
+    if remember_result["score"] != 0 or remember_result["reasons"]:
+        logger.info(
+            f"Remember decision: {remember} (score: {remember_result['score']}, "
+            f"reasons: {', '.join(remember_result['reasons'])})"
+        )
+
+    if remember_result["redaction_needed"] and request.remember:
+        logger.warning("Sensitive data detected; blocking storage even with explicit request.")
+        remember = False
+
+    is_recall, recall_query = detect_recall_intent(request.message)
+    intent = get_intent_from_coral(request.message)
+
+    # Precompute image intent response so the outer handler stays non-generator
+    image_intent_payload = None
+    if intent in ["generate_image", "text_to_image", "create_image"]:
+        msg_lower = request.message.lower()
+        for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
+            msg_lower = msg_lower.replace(prefix, "").strip()
+        image_intent_payload = {
+            "ok": True,
+            "response": f"🎨 Generating image: \"{msg_lower}\"...",
+            "mode_used": "image",
+            "image_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
+        }
+
+    has_images = request.images and len(request.images) > 0
+    coral_intent = intent
+
+    routing = route_mode(request.message, request.mode, has_images, coral_intent)
+    mode = routing["mode"]
+    tools_allowed = routing["tools_allowed"]
+    model_target = routing["model_target"]
+    original_mode = mode
+
+    if model_target == "vision":
+        if not llm_vision:
+            raise HTTPException(status_code=503, detail="Vision model not loaded. Please download LLaVA model to enable image understanding.")
+        llm = llm_vision
+        model_name = "vision"
+    elif model_target == "deep":
+        if llm_deep:
+            llm = llm_deep
+            model_name = "deep"
+        elif llm_medium:
+            llm = llm_medium
+            model_name = "medium"
+        else:
+            llm = llm_fast
+            model_name = "fast"
+    else:
+        llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
+        model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
+
+    if not llm:
+        raise HTTPException(status_code=503, detail=f"No suitable model available for mode '{mode}'.")
+
+    context_chunks = []
+    recall_count = 0
+    followup_count = 0
+    expanded_count = 0
+    main_count = 0
+    current_chat_id = request.chat_id
+    global_search = is_recall or request.global_memory_search or not current_chat_id
+
+    if rag_system and rag_system.is_ready():
+        try:
+            msg_lower = request.message.lower()
+            if is_recall:
+                recall_chunks = rag_system.get_context(recall_query, n_results=5, chat_id=current_chat_id, global_search=True)
+                if recall_chunks:
+                    context_chunks = merge_chunks(context_chunks, recall_chunks, max_total=8, source_name="recall")
+                    recall_count = len([c for c in recall_chunks if normalize_chunk(c) not in [normalize_chunk(e) for e in context_chunks[:-len(recall_chunks)]]])
+                additional_chunks = rag_system.get_context(request.message, n_results=3, chat_id=current_chat_id, global_search=True)
+                if additional_chunks:
+                    context_chunks = merge_chunks(context_chunks, additional_chunks, max_total=8, source_name="additional")
+
+            is_followup = any(word in msg_lower for word in ['that', 'it', 'this', 'the book', 'the page', 'her', 'his', 'their', 'what page', 'which', 'where in', 'from that', 'about that'])
+            if is_followup and request.conversation_history and len(request.conversation_history) > 0:
+                recent_context = []
+                for msg in request.conversation_history[-3:]:
+                    if msg.get('role') == 'user':
+                        recent_context.append(msg.get('content', ''))
+                    elif msg.get('role') == 'assistant':
+                        recent_context.append(msg.get('content', ''))
+                followup_chunks_all = []
+                for context_msg in recent_context:
+                    if len(context_msg) > 10:
+                        chunks = rag_system.get_context(context_msg[:200], n_results=2, chat_id=current_chat_id, global_search=global_search)
+                        if chunks:
+                            followup_chunks_all.extend(chunks[:1])
+                if followup_chunks_all:
+                    context_chunks = merge_chunks(context_chunks, followup_chunks_all, max_total=8, source_name="follow-up")
+                    followup_count = len(followup_chunks_all)
+                main_chunks = rag_system.get_context(request.message, n_results=2, chat_id=current_chat_id, global_search=global_search)
+                if main_chunks:
+                    context_chunks = merge_chunks(context_chunks, main_chunks, max_total=8, source_name="main")
+                    main_count = len(main_chunks)
+
+            search_queries = [request.message]
+            import re
+            what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
+            if what_match:
+                topic = what_match.group(1).strip()
+                if "name" in topic:
+                    search_queries.extend(["my name is", "mike", "called", "name is"])
+                elif "color" in topic or "colour" in topic:
+                    search_queries.extend(["my favorite color", "color is", "blue", "red", "green"])
+                elif "age" in topic:
+                    search_queries.extend(["I am", "years old", "age is"])
+                else:
+                    search_queries.append(f"my {topic} is")
+                    search_queries.append(f"I {topic}")
+            tell_match = re.search(r"tell me about (.+?)(?:\?|$)", msg_lower)
+            if tell_match:
+                topic = tell_match.group(1).strip()
+                if "myself" in topic or "me" == topic:
+                    search_queries.extend(["my name is", "I am", "I like", "my favorite", "I enjoy"])
+                else:
+                    search_queries.append(f"about {topic}")
+            if "who am i" in msg_lower or "who i am" in msg_lower:
+                search_queries.extend(["my name is", "I am", "my name"])
+            seen = set()
+            search_queries = [q for q in search_queries if not (q in seen or seen.add(q))]
+            expanded_chunks_raw = []
+            for query in search_queries[:5]:
+                chunks = rag_system.get_context(query, n_results=2, chat_id=current_chat_id, global_search=global_search)
+                if chunks:
+                    expanded_chunks_raw.append(chunks[0])
+            informative_chunks = []
+            question_chunks = []
+            for chunk in expanded_chunks_raw:
+                text = chunk[0] if isinstance(chunk, tuple) else chunk
+                text_lower = text.lower()
+                has_info = any(phrase in text_lower for phrase in ["my name is", "i am", "i'm", "my favorite", "i like", "i enjoy", "i work", "i live", "called", "years old"])
+                if has_info:
+                    informative_chunks.append(chunk)
+                else:
+                    question_chunks.append(chunk)
+            if informative_chunks:
+                old_len = len(context_chunks)
+                context_chunks = merge_chunks(context_chunks, informative_chunks, max_total=4, source_name="informative")
+                expanded_count += len(context_chunks) - old_len
+            if len(context_chunks) < 4 and question_chunks:
+                old_len = len(context_chunks)
+                context_chunks = merge_chunks(context_chunks, question_chunks, max_total=4, source_name="question")
+                expanded_count += len(context_chunks) - old_len
+        except Exception as e:
+            logger.warning(f"RAG retrieval failed: {e}")
+
+    search_results = []
+    if mode in ["agent", "work"] and search_tool:
+        msg_lower = request.message.lower()
+        search_keywords = ["search", "internet", "web", "online", "news", "lookup", "find on", "google", "browse"]
+        if any(keyword in msg_lower for keyword in search_keywords):
+            try:
+                import re
+                search_query = request.message
+                for prefix in ["search the internet for", "search the internet about", "search for", "search about", "search", "look up", "find on the internet", "find", "google", "tell me about"]:
+                    if prefix in msg_lower:
+                        search_query = re.sub(rf"^.*?{prefix}\s+", "", request.message, flags=re.IGNORECASE)
+                        break
+                suffixes_to_remove = [r"\s+and tell me.*", r"\s+and give.*", r"\s+and provide.*", r"\s+and let me know.*"]
+                for suffix in suffixes_to_remove:
+                    search_query = re.sub(suffix, "", search_query, flags=re.IGNORECASE)
+                search_query = search_query.strip().rstrip('?.!')
+                if len(search_query.split()) > 8:
+                    words = search_query.split()[:5]
+                    search_query = " ".join(words)
+                results = search_tool.search(search_query, num_results=3)
+                search_results = results
+            except Exception as e:
+                logger.error(f"Web search failed: {e}")
+
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
+    work_steps = []
+    if original_mode == "work" and not has_images:
+        try:
+            task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+
+Task: {request.message}
+
+Provide a numbered list of specific steps. Be concise and action-oriented.
+
+Steps:"""
+            task_lock = get_lock_for_model(llm)
+            with task_lock:
+                task_response = llm(
+                    task_analysis_prompt,
+                    max_tokens=400,
+                    temperature=0.3,
+                    stop=["Task:", "\\n\\n\\n"],
+                    echo=False
+                )
+            task_breakdown = task_response["choices"][0]["text"].strip()
+            import re
+            work_steps = [s.strip() for s in re.findall(r'\\d+\\.\\s*(.+?)(?=\\n\\d+\\.|$)', task_breakdown, re.DOTALL)]
+            work_steps = [s.replace('\\n', ' ').strip() for s in work_steps if s.strip()]
+            if work_steps:
+                steps_text = "\\n".join([f"{i+1}. {step}" for i, step in enumerate(work_steps)])
+                system_prompt += f"\\n\\nTask Plan:\\n{steps_text}\\n\\nFollow these steps to complete the task thoroughly."
+        except Exception as e:
+            logger.warning(f"Task breakdown failed: {e}")
+
+    if has_images:
+        full_prompt = request.message
+        if context_chunks:
+            context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
+            full_prompt = f"Context: {context_text}\n\n{full_prompt}"
+    else:
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
+
+    logger.info(f"Prompt length: {len(full_prompt)} chars")
+
+    async def sse_generator():
+        if image_intent_payload is not None:
+            yield f"event: done\ndata: {json.dumps(image_intent_payload)}\n\n"
+            return
+        # Send request_id as first event
+        yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
+        
+        assistant_response = ""
+        client_disconnected = False
+        try:
+            if has_images:
+                content = [{"type": "text", "text": full_prompt}]
+                if request.images:
+                    for img_b64 in request.images:
+                        if isinstance(img_b64, str):
+                            if ',' in img_b64:
+                                img_b64 = img_b64.split(',', 1)[1]
+                            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+                lock = get_lock_for_model(llm)
+                with lock:
+                    stream = llm.create_chat_completion(
+                        messages=[{"role": "user", "content": content}],
+                        max_tokens=2048,
+                        temperature=0.7,
+                        stream=True
+                    )
+                    for chunk in stream:
+                        # Check for cancellation
+                        with active_requests_lock:
+                            if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                                logger.info(f"Request {request_id} cancelled by user")
+                                client_disconnected = True
+                                break
+                        
+                        if await raw_request.is_disconnected():
+                            logger.info(f"Client disconnected for request {request_id}")
+                            with active_requests_lock:
+                                if request_id in active_requests:
+                                    active_requests[request_id]["cancelled"] = True
+                            client_disconnected = True
+                            break
+                        delta = chunk["choices"][0].get("delta", {})
+                        token = delta.get("content") if isinstance(delta, dict) else None
+                        if token:
+                            assistant_response += token
+                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+            else:
+                max_tokens = 3072 if original_mode == "work" else 2048
+                lock = get_lock_for_model(llm)
+                with lock:
+                    stream = llm(
+                        full_prompt,
+                        max_tokens=max_tokens,
+                        temperature=0.7,
+                        top_p=0.9,
+                        frequency_penalty=0.3,
+                        presence_penalty=0.2,
+                        repeat_penalty=1.1,
+                        stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                        echo=False,
+                        stream=True
+                    )
+                    for chunk in stream:
+                        # Check for cancellation
+                        with active_requests_lock:
+                            if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                                logger.info(f"Request {request_id} cancelled by user")
+                                client_disconnected = True
+                                break
+                        
+                        if await raw_request.is_disconnected():
+                            logger.info(f"Client disconnected for request {request_id}")
+                            with active_requests_lock:
+                                if request_id in active_requests:
+                                    active_requests[request_id]["cancelled"] = True
+                            client_disconnected = True
+                            break
+                        token = chunk["choices"][0].get("text", "")
+                        if token:
+                            assistant_response += token
+                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+        except Exception as e:
+            logger.error(f"Streaming generation failed: {e}")
+            # Cleanup
+            with active_requests_lock:
+                if request_id in active_requests:
+                    del active_requests[request_id]
+            yield f"event: done\ndata: {json.dumps({'ok': False, 'error': str(e)})}\n\n"
+            return
+
+        if client_disconnected:
+            logger.info("Client disconnected or cancelled; stopping generation")
+            # Cleanup
+            with active_requests_lock:
+                if request_id in active_requests:
+                    del active_requests[request_id]
+            yield f"event: done\ndata: {json.dumps({'ok': False, 'stopped': True})}\n\n"
+            return
+
+        store_conversation_exchange(request, assistant_response, original_mode, remember)
+        done_payload = {
+            "ok": True,
+            "mode_used": original_mode,
+            "model_used": model_name,
+            "work_steps": work_steps,
+            "search_results": search_results if search_results else [],
+            "response": assistant_response
+        }
+        # Cleanup
+        with active_requests_lock:
+            if request_id in active_requests:
+                del active_requests[request_id]
+        yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+
+    return StreamingResponse(
+        sse_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no",
+            "X-Request-ID": request_id
+        }
+    )
+
+@app.post("/chat/cancel")
+async def cancel_chat(request: dict):
+    """Cancel an active streaming chat request."""
+    request_id = request.get("request_id")
+    if not request_id:
+        raise HTTPException(status_code=400, detail="request_id is required")
+    
+    with active_requests_lock:
+        if request_id in active_requests:
+            active_requests[request_id]["cancelled"] = True
+            logger.info(f"Marked request {request_id} as cancelled")
+            return {"status": "cancelled", "request_id": request_id}
+        else:
+            # Request may have already completed
+            return {"status": "not_found", "request_id": request_id}
+
+@app.post("/v1/chat/completions")
+async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompletionRequest):
+    """OpenAI-compatible chat completions endpoint for drop-in client support."""
+    logger.info(f"=== OpenAI /v1/chat/completions request: model={request.model}, stream={request.stream} ===")
+    
+    # Map OpenAI model names to EDISON models
+    model_map = {
+        "gpt-3.5-turbo": "fast",
+        "gpt-4": "deep",
+        "qwen2.5-14b": "fast",
+        "qwen2.5-72b": "deep",
+        "fast": "fast",
+        "medium": "medium",
+        "deep": "deep"
+    }
+    model_target = model_map.get(request.model, "fast")
+    
+    # Validate model availability
+    if model_target == "deep" and not llm_deep:
+        if llm_medium:
+            model_target = "medium"
+        elif llm_fast:
+            model_target = "fast"
+    if model_target == "medium" and not llm_medium:
+        if llm_fast:
+            model_target = "fast"
+        elif llm_deep:
+            model_target = "deep"
+    if model_target == "fast" and not llm_fast:
+        if llm_medium:
+            model_target = "medium"
+        elif llm_deep:
+            model_target = "deep"
+    
+    # Select model
+    if model_target == "deep" and llm_deep:
+        llm = llm_deep
+        model_name = "deep"
+    elif model_target == "medium" and llm_medium:
+        llm = llm_medium
+        model_name = "medium"
+    else:
+        llm = llm_fast
+        model_name = "fast"
+    
+    if not llm:
+        raise HTTPException(status_code=503, detail="No suitable model available")
+    
+    # Convert OpenAI messages to internal prompt format
+    system_prompt = "You are a helpful assistant."
+    user_message = ""
+    
+    for msg in request.messages:
+        if msg.role == "system":
+            system_prompt = msg.content
+        elif msg.role == "user":
+            user_message = msg.content
+        # Assistant messages are used for context but not regenerated
+    
+    # Build prompt
+    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
+    
+    if request.stream:
+        # Streaming response
+        return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
+    else:
+        # Non-streaming response
+        return await openai_non_stream_completions(llm, model_name, full_prompt, request)
+
+async def openai_stream_completions(raw_request: Request, llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
+    """Generate OpenAI-compatible streaming response."""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created_time = int(time.time())
+    
+    # Generate request_id for cancellation
+    request_id = str(uuid.uuid4())
+    with active_requests_lock:
+        active_requests[request_id] = {"cancelled": False, "timestamp": created_time}
+    
+    async def stream_generator():
+        prompt_tokens = len(full_prompt.split())  # Approximate
+        completion_tokens = 0
+        assistant_response = ""
+        
+        try:
+            lock = get_lock_for_model(llm)
+            with lock:
+                stream = llm(
+                    full_prompt,
+                    max_tokens=request.max_tokens or 2048,
+                    temperature=request.temperature or 0.7,
+                    top_p=request.top_p or 0.9,
+                    echo=False,
+                    stream=True
+                )
+                
+                for chunk in stream:
+                    # Check cancellation
+                    with active_requests_lock:
+                        if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                            logger.info(f"OpenAI request {request_id} cancelled")
+                            break
+                    
+                    # Check client disconnect
+                    if await raw_request.is_disconnected():
+                        logger.info(f"OpenAI client disconnected for request {request_id}")
+                        with active_requests_lock:
+                            if request_id in active_requests:
+                                active_requests[request_id]["cancelled"] = True
+                        break
+                    
+                    token = chunk["choices"][0].get("text", "")
+                    if token:
+                        assistant_response += token
+                        completion_tokens += 1
+                        
+                        # Stream chunk in OpenAI format
+                        stream_response = OpenAIStreamResponse(
+                            id=completion_id,
+                            created=created_time,
+                            model=f"qwen2.5-{model_name}",
+                            choices=[OpenAIChoice(
+                                index=0,
+                                delta={"role": "assistant" if len(assistant_response) == len(token) else None, "content": token},
+                                finish_reason=None
+                            )]
+                        )
+                        # Clean up None values
+                        response_dict = stream_response.dict(exclude_none=True)
+                        if "choices" in response_dict and len(response_dict["choices"]) > 0:
+                            if response_dict["choices"][0].get("delta") and "role" not in response_dict["choices"][0]["delta"]:
+                                pass
+                        yield f"data: {json.dumps(response_dict)}\n\n"
+        
+        except Exception as e:
+            logger.error(f"OpenAI streaming error: {e}")
+        
+        finally:
+            # Cleanup
+            with active_requests_lock:
+                if request_id in active_requests:
+                    del active_requests[request_id]
+        
+        # Send [DONE] sentinel
+        yield "data: [DONE]\n\n"
+    
+    return StreamingResponse(
+        stream_generator(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache",
+            "X-Accel-Buffering": "no"
+        }
+    )
+
+async def openai_non_stream_completions(llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
+    """Generate OpenAI-compatible non-streaming response."""
+    completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+    created_time = int(time.time())
+    
+    try:
+        lock = get_lock_for_model(llm)
+        with lock:
+            response = llm(
+                full_prompt,
+                max_tokens=request.max_tokens or 2048,
+                temperature=request.temperature or 0.7,
+                top_p=request.top_p or 0.9,
+                echo=False
+            )
+        
+        assistant_response = response["choices"][0]["text"].strip()
+        
+        # Approximate token counts
+        prompt_tokens = len(full_prompt.split())
+        completion_tokens = len(assistant_response.split())
+        
+        # Format response in OpenAI format
+        return OpenAIChatCompletionResponse(
+            id=completion_id,
+            created=created_time,
+            model=f"qwen2.5-{model_name}",
+            choices=[OpenAIChoice(
+                index=0,
+                message={"role": "assistant", "content": assistant_response},
+                finish_reason="stop"
+            )],
+            usage=OpenAIUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens
+            )
+        )
+    
+    except Exception as e:
+        logger.error(f"OpenAI completion error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search", response_model=SearchResponse)
 async def web_search(request: SearchRequest):

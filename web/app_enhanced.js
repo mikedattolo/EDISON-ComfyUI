@@ -7,6 +7,7 @@ class EdisonApp {
         this.settings = this.loadSettings();
         this.isStreaming = false;
         this.abortController = null;
+        this.currentRequestId = null;  // Track current streaming request for cancellation
         this.sidebarCollapsed = false;
         this.lastImagePrompt = null; // Track last image generation prompt for regeneration
         
@@ -171,7 +172,11 @@ class EdisonApp {
                 }
                 
                 await this.handleImageGeneration(promptToUse, assistantMessageEl);
+            } else if (this.settings.streamResponses) {
+                // Use streaming endpoint
+                await this.callEdisonAPIStream(message, mode, assistantMessageEl);
             } else {
+                // Use non-streaming endpoint
                 const response = await this.callEdisonAPI(message, mode);
                 
                 // Check if response contains image generation trigger from backend
@@ -213,7 +218,23 @@ class EdisonApp {
         }
     }
 
-    stopGeneration() {
+    async stopGeneration() {
+        // Cancel server-side generation if we have a request ID
+        if (this.currentRequestId) {
+            try {
+                await fetch(`${this.settings.apiEndpoint}/chat/cancel`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ request_id: this.currentRequestId })
+                });
+                console.log(`✅ Cancelled request ${this.currentRequestId} on server`);
+            } catch (error) {
+                console.warn('Failed to cancel request on server:', error);
+            }
+            this.currentRequestId = null;
+        }
+        
+        // Also abort the client-side fetch
         if (this.abortController) {
             this.abortController.abort();
         }
@@ -290,6 +311,151 @@ class EdisonApp {
         }
         
         return await response.json();
+    }
+
+    async callEdisonAPIStream(message, mode, assistantMessageEl) {
+        const endpoint = `${this.settings.apiEndpoint}/chat/stream`;
+        
+        // Get recent conversation history for context
+        const conversationHistory = this.getRecentMessages(5);
+        
+        // Include uploaded files if any
+        console.log('📤 Checking for attached files...');
+        console.log('window.uploadedFiles:', window.uploadedFiles);
+        const attachedFiles = window.uploadedFiles || [];
+        console.log('📤 Attached files:', attachedFiles.length, attachedFiles.map(f => f.name));
+        
+        let enhancedMessage = message;
+        let images = [];
+        
+        if (attachedFiles.length > 0) {
+            console.log('📤 Processing files...');
+            
+            // Separate images from text files
+            const textFiles = attachedFiles.filter(f => !f.isImage);
+            const imageFiles = attachedFiles.filter(f => f.isImage);
+            
+            // Add text files to message
+            if (textFiles.length > 0) {
+                console.log('📤 Including text files in message');
+                enhancedMessage += '\n\n[Attached files:]\n';
+                textFiles.forEach(file => {
+                    console.log(`📤 Adding file: ${file.name}, content length: ${file.content?.length || 0}`);
+                    enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
+                });
+            }
+            
+            // Collect images
+            if (imageFiles.length > 0) {
+                console.log('📤 Including images for vision');
+                images = imageFiles.map(f => f.content);
+            }
+            
+            console.log('📤 Enhanced message length:', enhancedMessage.length, 'Images:', images.length);
+            
+            // Clear files after preparing
+            window.uploadedFiles.length = 0;
+            const attachedFilesDiv = document.getElementById('attachedFiles');
+            if (attachedFilesDiv) attachedFilesDiv.style.display = 'none';
+            // Reset file input
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput) fileInput.value = '';
+            console.log('✅ Files cleared after sending');
+        } else {
+            console.log('📤 No files to attach');
+        }
+        
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+            },
+            body: JSON.stringify({
+                message: enhancedMessage,
+                mode: mode,
+                remember: null,  // Auto-detected by backend
+                conversation_history: conversationHistory,
+                images: images.length > 0 ? images : undefined
+            }),
+            signal: this.abortController?.signal
+        });
+        
+        if (!response.ok) {
+            throw new Error(`API returned ${response.status}: ${response.statusText}`);
+        }
+        
+        // Read SSE stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let buffer = '';
+        let accumulatedResponse = '';
+        
+        try {
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                
+                buffer += decoder.decode(value, { stream: true });
+                const lines = buffer.split('\n');
+                buffer = lines.pop() || ''; // Keep incomplete line in buffer
+                
+                for (const line of lines) {
+                    if (!line.trim()) continue;
+                    
+                    if (line.startsWith('event: ')) {
+                        const eventType = line.substring(7).trim();
+                        continue;
+                    }
+                    
+                    if (line.startsWith('data: ')) {
+                        const dataStr = line.substring(6).trim();
+                        try {
+                            const data = JSON.parse(dataStr);
+                            
+                            if (data.request_id) {
+                                // Init event with request_id
+                                this.currentRequestId = data.request_id;
+                                console.log(`📡 Streaming request started: ${this.currentRequestId}`);
+                            } else if (data.t) {
+                                // Token event
+                                accumulatedResponse += data.t;
+                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
+                            } else if (data.ok !== undefined) {
+                                // Done event
+                                this.currentRequestId = null;  // Clear request ID
+                                if (data.ok) {
+                                    // Success
+                                    this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
+                                    assistantMessageEl.classList.remove('streaming');
+                                    
+                                    // Save to chat history
+                                    this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode);
+                                    
+                                    // Generate smart title if first message
+                                    const chat = this.chats.find(c => c.id === this.currentChatId);
+                                    if (chat && chat.messages.length === 2) {
+                                        this.generateChatTitle(chat, message, accumulatedResponse);
+                                    }
+                                } else if (data.error) {
+                                    // Error
+                                    throw new Error(data.error);
+                                } else if (data.stopped) {
+                                    // Stopped by user
+                                    this.updateMessage(assistantMessageEl, '⚠️ Response generation stopped by user.', 'stopped');
+                                    assistantMessageEl.classList.remove('streaming');
+                                }
+                                return; // Exit stream processing
+                            }
+                        } catch (e) {
+                            console.warn('Failed to parse SSE data:', dataStr, e);
+                        }
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+            this.currentRequestId = null;  // Always clear request ID when done
+        }
     }
 
     getRecentMessages(count = 5) {
