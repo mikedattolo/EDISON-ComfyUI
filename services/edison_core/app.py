@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, Iterator, List
+from typing import Optional, Literal, Iterator, List, Dict
 import logging
 from pathlib import Path
 import yaml
@@ -1036,7 +1036,7 @@ Steps:"""
         # Store in memory if auto-detected or requested
         if remember and rag_system:
             try:
-                # Extract facts from conversation
+                # Extract facts from conversation (returns list of dicts)
                 facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
                 
                 # Store full conversation
@@ -1046,15 +1046,28 @@ Steps:"""
                 )
                 
                 # Store extracted facts separately for better retrieval
+                # Only store high-confidence facts (>= 0.85)
                 if facts_extracted:
+                    fact_texts = []
                     for fact in facts_extracted:
+                        if fact["confidence"] >= 0.85:
+                            # Format fact as natural text
+                            fact_text = f"User {fact['value']}"
+                            fact_texts.append(fact_text)
+                    
+                    if fact_texts:
                         rag_system.add_documents(
-                            documents=[fact],
-                            metadatas=[{"type": "fact", "source": "conversation"}]
+                            documents=fact_texts,
+                            metadatas=[{
+                                "type": "fact",
+                                "fact_type": facts_extracted[i]["type"],
+                                "confidence": facts_extracted[i]["confidence"],
+                                "source": "conversation"
+                            } for i in range(len(fact_texts))]
                         )
-                    logger.info(f"Conversation + {len(facts_extracted)} facts stored in memory")
+                        logger.info(f"Conversation + {len(fact_texts)} high-confidence facts stored in memory")
                 else:
-                    logger.info("Conversation stored in memory")
+                    logger.info("Conversation stored in memory (no facts extracted)")
             except Exception as e:
                 logger.warning(f"Failed to store conversation: {e}")
         
@@ -1559,69 +1572,173 @@ def detect_recall_intent(message: str) -> tuple[bool, str]:
     
     return (False, "")
 
-def extract_facts_from_conversation(user_message: str, assistant_response: str) -> List[str]:
-    """Extract factual statements from conversation for better memory"""
+def extract_facts_from_conversation(user_message: str, assistant_response: str) -> List[Dict[str, any]]:
+    """
+    Extract factual statements from USER messages ONLY with high precision.
+    
+    Returns list of dicts: {"type": "name|preference|project|other", "value": "...", "confidence": 0-1}
+    Only facts with confidence >= 0.85 should be persisted.
+    """
     facts = []
     
-    # Extract personal information patterns
+    # Only process user message (ignore assistant to avoid hallucinations)
+    text = user_message.lower().strip()
+    
+    # Skip if message is a question or too short
+    if len(text) < 5 or text.endswith('?') or any(q in text[:15] for q in ['should i', 'can i', 'what is', 'how do', 'why']):
+        return facts
+    
     import re
     
-    # Name patterns
+    # Blacklist: common false positives for names
+    NAME_BLACKLIST = {
+        'sorry', 'here', 'fine', 'ok', 'okay', 'good', 'great', 'tired', 'busy',
+        'happy', 'sad', 'ready', 'done', 'working', 'thinking', 'sure', 'yes', 'no'
+    }
+    
+    # Pattern 1: Name extraction (high precision anchors only)
     name_patterns = [
-        r"my name is (\w+)",
-        r"i'm (\w+)",
-        r"i am (\w+)",
-        r"call me (\w+)"
+        (r"my name is (\w+)", 0.95),
+        (r"call me (\w+)", 0.90),
+        (r"you can call me (\w+)", 0.90),
+        (r"i'm called (\w+)", 0.85),
     ]
     
-    combined_text = f"{user_message.lower()} {assistant_response.lower()}"
+    for pattern, confidence in name_patterns:
+        match = re.search(pattern, text)
+        if match:
+            name = match.group(1)
+            # Validate: must be alpha, >1 char, not in blacklist
+            if (len(name) > 1 and name.isalpha() and 
+                name.lower() not in NAME_BLACKLIST):
+                facts.append({
+                    "type": "name",
+                    "value": name.title(),
+                    "confidence": confidence
+                })
+                break  # Only take first name match
     
-    for pattern in name_patterns:
-        matches = re.findall(pattern, combined_text)
-        for match in matches:
-            if len(match) > 1 and match.isalpha():  # Valid name
-                facts.append(f"The user's name is {match.title()}.")
-    
-    # Favorite/preference patterns
+    # Pattern 2: Preferences (likes/dislikes)
     pref_patterns = [
-        (r"my favorite (\w+) is ([^.!?]+)", "The user's favorite {} is {}."),
-        (r"i like (\w+)", "The user likes {}."),
-        (r"i love (\w+)", "The user loves {}."),
-        (r"i enjoy (\w+)", "The user enjoys {}."),
+        (r"i prefer ([^.!?,]+?)(?:\.|!|,|$)", "prefers {}", 0.90),
+        (r"my favorite (\w+) is ([^.!?,]+?)(?:\.|!|,|$)", "favorite {} is {}", 0.95),
+        (r"i like ([^.!?,]+?)(?:\.|!|,|$)", "likes {}", 0.85),
+        (r"i love ([^.!?,]+?)(?:\.|!|,|$)", "loves {}", 0.85),
+        (r"i hate ([^.!?,]+?)(?:\.|!|,|$)", "hates {}", 0.85),
+        (r"i enjoy ([^.!?,]+?)(?:\.|!|,|$)", "enjoys {}", 0.85),
     ]
     
-    for pattern, template in pref_patterns:
-        matches = re.findall(pattern, user_message.lower())
-        for match in matches:
-            if isinstance(match, tuple):
-                fact = template.format(*match)
+    for pattern, template, confidence in pref_patterns:
+        match = re.search(pattern, text)
+        if match:
+            # Skip generic feelings
+            captured = match.group(1) if match.lastindex == 1 else match.group(2)
+            if captured.strip().lower() in ['it', 'that', 'this', 'fine', 'good', 'okay']:
+                continue
+            
+            if match.lastindex == 2:
+                value = template.format(match.group(1), match.group(2).strip())
             else:
-                fact = template.format(match)
-            facts.append(fact.strip())
+                value = template.format(captured.strip())
+            
+            facts.append({
+                "type": "preference",
+                "value": value,
+                "confidence": confidence
+            })
     
-    # Age pattern
-    age_match = re.search(r"i am (\d+) years old|i'm (\d+)", user_message.lower())
-    if age_match:
-        age = age_match.group(1) or age_match.group(2)
-        facts.append(f"The user is {age} years old.")
-    
-    # Location patterns
-    location_patterns = [
-        r"i live in ([^.!?]+)",
-        r"i'm from ([^.!?]+)",
-        r"i am from ([^.!?]+)"
+    # Pattern 3: Projects/Work
+    project_patterns = [
+        (r"i'm working on ([^.!?,]+?)(?:\.|!|,|$)", "working on {}", 0.90),
+        (r"my project is ([^.!?,]+?)(?:\.|!|,|$)", "project: {}", 0.90),
+        (r"i'm building ([^.!?,]+?)(?:\.|!|,|$)", "building {}", 0.85),
     ]
     
-    for pattern in location_patterns:
-        match = re.search(pattern, user_message.lower())
+    for pattern, template, confidence in project_patterns:
+        match = re.search(pattern, text)
+        if match:
+            value = template.format(match.group(1).strip())
+            facts.append({
+                "type": "project",
+                "value": value,
+                "confidence": confidence
+            })
+    
+    # Pattern 4: Location (vague only, no addresses)
+    location_patterns = [
+        (r"i live in ([^.!?,]+?)(?:\.|!|,|$)", "lives in {}", 0.90),
+        (r"i'm in ([a-zA-Z\s]+?)(?:\.|!|,|$)", "in {}", 0.75),  # Lower confidence for "i'm in"
+    ]
+    
+    for pattern, template, confidence in location_patterns:
+        match = re.search(pattern, text)
         if match:
             location = match.group(1).strip()
-            facts.append(f"The user lives in {location.title()}.")
+            # Skip if contains numbers (likely address)
+            if not any(char.isdigit() for char in location):
+                value = template.format(location.title())
+                facts.append({
+                    "type": "location",
+                    "value": value,
+                    "confidence": confidence
+                })
+                break
     
-    # Remove duplicates
-    facts = list(dict.fromkeys(facts))
+    # Deduplicate by value (keep highest confidence)
+    seen = {}
+    for fact in facts:
+        key = fact["value"].lower()
+        if key not in seen or fact["confidence"] > seen[key]["confidence"]:
+            seen[key] = fact
     
-    return facts[:5]  # Limit to 5 facts per conversation
+    # Return only high-confidence facts (>= 0.85)
+    high_confidence_facts = [f for f in seen.values() if f["confidence"] >= 0.85]
+    
+    logger.info(f"Extracted {len(high_confidence_facts)} high-confidence facts from user message")
+    return high_confidence_facts[:5]  # Limit to 5 facts max
+
+
+def test_extract_facts():
+    """Test cases for fact extraction"""
+    
+    # Test 1: "I'm sorry" should NOT extract name
+    facts = extract_facts_from_conversation("I'm sorry about that", "No problem")
+    assert not any(f["type"] == "name" for f in facts), "Should not extract 'sorry' as name"
+    print("✓ Test 1 passed: 'I'm sorry' does not extract name")
+    
+    # Test 2: "my name is Michael" should extract name
+    facts = extract_facts_from_conversation("my name is Michael", "Nice to meet you")
+    assert any(f["type"] == "name" and f["value"] == "Michael" for f in facts), "Should extract 'Michael'"
+    print("✓ Test 2 passed: 'my name is Michael' extracts name")
+    
+    # Test 3: "call me mike" should extract name
+    facts = extract_facts_from_conversation("call me mike", "Sure thing")
+    assert any(f["type"] == "name" and f["value"] == "Mike" for f in facts), "Should extract 'Mike'"
+    print("✓ Test 3 passed: 'call me mike' extracts name")
+    
+    # Test 4: "I like thin crust pizza" should extract preference
+    facts = extract_facts_from_conversation("I like thin crust pizza", "Great choice")
+    assert any(f["type"] == "preference" and "thin crust pizza" in f["value"] for f in facts), "Should extract pizza preference"
+    print("✓ Test 4 passed: 'I like thin crust pizza' extracts preference")
+    
+    # Test 5: Questions should not extract facts
+    facts = extract_facts_from_conversation("Should I use Python?", "Yes")
+    assert len(facts) == 0, "Questions should not extract facts"
+    print("✓ Test 5 passed: Questions do not extract facts")
+    
+    # Test 6: Generic feelings should not extract
+    facts = extract_facts_from_conversation("I'm fine", "Good to hear")
+    assert not any(f["type"] == "name" for f in facts), "Should not extract 'fine' as name"
+    print("✓ Test 6 passed: Generic feelings not extracted as names")
+    
+    # Test 7: Confidence threshold
+    facts = extract_facts_from_conversation("my name is Alice and I like coding", "Cool")
+    assert all(f["confidence"] >= 0.85 for f in facts), "All facts should have confidence >= 0.85"
+    print("✓ Test 7 passed: All facts meet confidence threshold")
+    
+    print(f"\n✅ All {7} fact extraction tests passed!")
+
+
 
 if __name__ == "__main__":
     import uvicorn
