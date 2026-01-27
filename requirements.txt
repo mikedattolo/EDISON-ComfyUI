@@ -30,10 +30,6 @@ ddgs>=1.0.0
 
 # System monitoring
 psutil>=5.9.0
-
-# Voice mode dependencies
-faster-whisper>=0.10.0  # Fast STT with GPU support
-TTS>=0.22.0  # Coqui TTS for XTTS v2
 numpy>=1.24.0  # Audio processing
 soundfile>=0.12.1  # Audio file I/O (optional)
 webrtcvad>=2.0.10  # Alternative VAD (optional)

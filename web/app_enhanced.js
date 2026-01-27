@@ -42,7 +42,6 @@ class EdisonApp {
         this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
         this.clearHistoryBtn = document.getElementById('clearHistoryBtn');
         this.apiEndpointInput = document.getElementById('apiEndpoint');
-        this.voiceApiEndpointInput = document.getElementById('voiceApiEndpoint');
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
         this.systemStatus = document.getElementById('systemStatus');
@@ -1145,7 +1144,6 @@ class EdisonApp {
 
     openSettings() {
         this.apiEndpointInput.value = this.settings.apiEndpoint;
-        this.voiceApiEndpointInput.value = this.settings.voiceApiEndpoint || '';
         this.comfyuiEndpointInput.value = this.settings.comfyuiEndpoint;
         this.defaultModeSelect.value = this.settings.defaultMode;
         this.settingsModal.classList.add('open');
@@ -1158,24 +1156,15 @@ class EdisonApp {
 
     saveSettings() {
         this.settings.apiEndpoint = this.apiEndpointInput.value.trim();
-        this.settings.voiceApiEndpoint = this.voiceApiEndpointInput.value.trim();
         this.settings.comfyuiEndpoint = this.comfyuiEndpointInput.value.trim();
         this.settings.defaultMode = this.defaultModeSelect.value;
         
         localStorage.setItem('edison_settings', JSON.stringify(this.settings));
         
-        // Also save voice endpoint to its specific key (for app_voice.js)
-        if (this.settings.voiceApiEndpoint) {
-            localStorage.setItem('voiceApiEndpoint', this.settings.voiceApiEndpoint);
-        }
-        
         // Update current mode if needed
         this.setMode(this.settings.defaultMode);
         
         // Reinitialize voice mode if endpoint changed (call global function)
-        if (window.initVoiceMode) {
-            window.initVoiceMode();
-        }
         
         this.closeSettings();
     }
@@ -1229,7 +1218,6 @@ class EdisonApp {
         const saved = localStorage.getItem('edison_settings');
         const defaults = {
             apiEndpoint: 'http://192.168.1.26:8811',
-            voiceApiEndpoint: '',
             comfyuiEndpoint: 'http://192.168.1.26:8188',
             defaultMode: 'auto',
             streamResponses: true,

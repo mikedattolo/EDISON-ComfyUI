@@ -204,11 +204,6 @@
                                     <path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
                                 </svg>
                             </button>
-                            <button class="voice-btn" id="voiceBtn" title="Voice mode (push to talk)">
-                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
-                                    <path d="M10 2c-1.1 0-2 .9-2 2v6c0 1.1.9 2 2 2s2-.9 2-2V4c0-1.1-.9-2-2-2zm4.5 6c0 2.5-2 4.5-4.5 4.5S5.5 10.5 5.5 8H4c0 3.1 2.4 5.6 5.5 6v2.5h1V14c3.1-.4 5.5-2.9 5.5-6h-1.5z"/>
-                                </svg>
-                            </button>
                             <textarea 
                                 id="messageInput" 
                                 placeholder="Message EDISON..." 
@@ -226,21 +221,6 @@
                                 </svg>
                             </button>
                         </div>
-                        
-                        <!-- Voice Mode Panel -->
-                        <div class="voice-panel" id="voicePanel" style="display: none;">
-                            <div class="voice-status">
-                                <div class="voice-indicator" id="voiceIndicator">
-                                    <div class="pulse"></div>
-                                </div>
-                                <span class="voice-state" id="voiceState">Ready</span>
-                            </div>
-                            <div class="voice-transcript" id="voiceTranscript"></div>
-                            <div class="voice-controls">
-                                <button class="voice-cancel-btn" id="voiceCancelBtn">Cancel</button>
-                            </div>
-                        </div>
-                        
                         <div class="attached-files" id="attachedFiles" style="display: none;">
                             <!-- Attached files will appear here -->
                         </div>
@@ -275,12 +255,6 @@
                         <label for="apiEndpoint">API Endpoint</label>
                         <input type="text" id="apiEndpoint" value="http://192.168.1.26:8811" placeholder="http://localhost:8811">
                         <p class="setting-description">The URL of your EDISON Core service</p>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label for="voiceApiEndpoint">Voice Mode API Endpoint</label>
-                        <input type="text" id="voiceApiEndpoint" placeholder="Same as API Endpoint">
-                        <p class="setting-description">Voice mode endpoint (leave empty to use main API endpoint)</p>
                     </div>
                     
                     <div class="setting-group">
@@ -424,6 +398,5 @@
 
     <script src="app_enhanced.js?v=10"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_voice.js?v=6"></script>
 </body>
 </html>
