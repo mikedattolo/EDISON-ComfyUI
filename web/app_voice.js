@@ -482,6 +482,10 @@ function initVoiceMode() {
     
     if (!isSecureContext) {
         console.warn('⚠️ Voice mode disabled: Requires HTTPS or localhost for microphone access');
+        console.info('💡 To enable voice mode:');
+        console.info('   1. Generate SSL certificate: scripts/generate_ssl_cert.sh');
+        console.info('   2. Restart web service: sudo systemctl restart edison-web.service');
+        console.info('   3. Access via https://your-ip:8080 (accept self-signed cert warning)');
         if (voiceBtn) {
             voiceBtn.style.display = 'none';
         }
@@ -491,6 +495,7 @@ function initVoiceMode() {
     // Show voice button on secure contexts
     if (voiceBtn) {
         voiceBtn.style.display = 'flex';
+        console.log('🎙️ Voice mode enabled - microphone access available');
     }
     
     // Priority: voiceApiEndpoint > apiEndpoint > hostname detection
@@ -503,9 +508,10 @@ function initVoiceMode() {
     
     // If still not set or localhost, try to detect from current page
     if (!apiEndpoint || apiEndpoint.includes('localhost') || apiEndpoint.includes('127.0.0.1')) {
-        // Use current host with port 8811
+        // Use current host with port 8811 and match protocol (http/https)
+        const protocol = window.location.protocol;
         const currentHost = window.location.hostname;
-        apiEndpoint = `http://${currentHost}:8811`;
+        apiEndpoint = `${protocol}//${currentHost}:8811`;
         console.log('Voice mode: Using detected API endpoint:', apiEndpoint);
     } else {
         console.log('Voice mode: Using configured endpoint:', apiEndpoint);
