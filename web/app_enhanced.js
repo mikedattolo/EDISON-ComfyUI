@@ -1164,8 +1164,6 @@ class EdisonApp {
         // Update current mode if needed
         this.setMode(this.settings.defaultMode);
         
-        // Reinitialize voice mode if endpoint changed (call global function)
-        
         this.closeSettings();
     }
 
