@@ -82,6 +82,19 @@ body {
     width: 100vw;
 }
 
+/* Mobile Backdrop */
+.mobile-backdrop {
+    display: none;
+    position: fixed;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: rgba(0, 0, 0, 0.5);
+    z-index: 99;
+    backdrop-filter: blur(2px);
+}
+
 /* Sidebar Styles */
 .sidebar {
     width: var(--sidebar-width);
@@ -781,10 +794,22 @@ body {
         left: -280px;
         z-index: 100;
         transition: var(--transition);
+        width: 280px;
     }
     
     .sidebar.open {
         left: 0;
+        box-shadow: 4px 0 12px rgba(0, 0, 0, 0.3);
+    }
+    
+    .chat-history {
+        max-height: calc(100vh - 200px);
+        overflow-y: auto;
+    }
+    
+    .chat-history-item {
+        padding: 14px 16px;
+        font-size: 15px;
     }
     
     .capabilities {
@@ -793,6 +818,23 @@ body {
     
     .mode-label {
         display: none;
+    }
+    
+    /* Make settings modal more mobile-friendly */
+    .settings-modal .modal-content {
+        width: 95%;
+        max-width: 95%;
+        margin: 20px auto;
+        max-height: 90vh;
+        overflow-y: auto;
+    }
+    
+    .modal-body .input-group {
+        margin-bottom: 20px;
+    }
+    
+    .theme-controls, .color-palette {
+        gap: 12px;
     }
 }
 

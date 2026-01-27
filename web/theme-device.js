@@ -108,6 +108,12 @@ class ThemeManager {
         if (mobileMenuBtn) {
             mobileMenuBtn.addEventListener('click', () => this.toggleMobileSidebar());
         }
+        
+        // Mobile backdrop to close sidebar
+        const mobileBackdrop = document.getElementById('mobileBackdrop');
+        if (mobileBackdrop) {
+            mobileBackdrop.addEventListener('click', () => this.toggleMobileSidebar());
+        }
 
         // Window resize handler
         window.addEventListener('resize', () => this.handleWindowResize());
@@ -160,9 +166,13 @@ class ThemeManager {
      */
     toggleMobileSidebar() {
         const sidebar = document.querySelector('.sidebar');
+        const backdrop = document.getElementById('mobileBackdrop');
         if (sidebar) {
-            sidebar.classList.toggle('mobile-open');
-            console.log('📱 Mobile sidebar toggled');
+            const isOpen = sidebar.classList.toggle('open');
+            if (backdrop) {
+                backdrop.style.display = isOpen ? 'block' : 'none';
+            }
+            console.log('📱 Mobile sidebar toggled:', isOpen ? 'open' : 'closed');
         }
     }
 

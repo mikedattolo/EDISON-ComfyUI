@@ -4,14 +4,17 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=3">
+    <link rel="stylesheet" href="styles.css?v=4">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="theme-device.js?v=2"></script>
+    <script src="theme-device.js?v=3"></script>
 </head>
 <body>
     <div class="app-container">
+        <!-- Mobile Backdrop -->
+        <div class="mobile-backdrop" id="mobileBackdrop"></div>
+        
         <!-- Mobile Header (hidden on desktop) -->
         <div class="mobile-header" id="mobileHeader" style="display: none;">
             <button class="mobile-menu-btn" id="mobileMenuBtn">☰</button>
@@ -420,7 +423,7 @@
         }
     </script>
 
-    <script src="app_enhanced.js?v=9"></script>
+    <script src="app_enhanced.js?v=10"></script>
     <script src="app_features.js?v=7"></script>
     <script src="app_voice.js?v=4"></script>
 </body>

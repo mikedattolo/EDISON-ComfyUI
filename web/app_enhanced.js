@@ -1145,6 +1145,7 @@ class EdisonApp {
 
     openSettings() {
         this.apiEndpointInput.value = this.settings.apiEndpoint;
+        this.voiceApiEndpointInput.value = this.settings.voiceApiEndpoint || '';
         this.comfyuiEndpointInput.value = this.settings.comfyuiEndpoint;
         this.defaultModeSelect.value = this.settings.defaultMode;
         this.settingsModal.classList.add('open');
@@ -1228,6 +1229,7 @@ class EdisonApp {
         const saved = localStorage.getItem('edison_settings');
         const defaults = {
             apiEndpoint: 'http://192.168.1.26:8811',
+            voiceApiEndpoint: '',
             comfyuiEndpoint: 'http://192.168.1.26:8188',
             defaultMode: 'auto',
             streamResponses: true,
