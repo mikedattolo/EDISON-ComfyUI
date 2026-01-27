@@ -66,6 +66,12 @@ async def app_features():
         logger.error(f"WEB_DIR contents: {list(WEB_DIR.glob('*.js'))}")
     return FileResponse(file_path, media_type="application/javascript")
 
+@app.get("/theme-device.js")
+async def theme_device():
+    """Serve theme and device detection JS file"""
+    file_path = WEB_DIR / "theme-device.js"
+    return FileResponse(file_path, media_type="application/javascript")
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
