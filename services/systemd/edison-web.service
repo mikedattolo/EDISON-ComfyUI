@@ -8,7 +8,7 @@ User=edison
 Group=edison
 WorkingDirectory=/opt/edison
 Environment="PATH=/opt/edison/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-ExecStart=/opt/edison/.venv/bin/python -m uvicorn services.edison_web.service:app --host 0.0.0.0 --port 8080 --ssl-certfile=/opt/edison/ssl/cert.pem --ssl-keyfile=/opt/edison/ssl/key.pem
+ExecStart=/opt/edison/.venv/bin/python services/edison_web/service.py
 Restart=on-failure
 RestartSec=10s
 
