@@ -99,30 +99,14 @@ class ThemeManager {
             });
         });
 
-        // Theme settings panel controls (separate from main settings modal)
-        // Note: settingsBtn opens the MAIN settings modal, not the theme panel
-        // The theme panel has its own close button
-        const settingCloseBtn = document.getElementById('settingCloseBtn');
-        const mobileSettingsBtn = document.getElementById('mobileSettingsBtn');
-        const settingsPanel = document.getElementById('settingsPanel');
-
-        // Only mobile settings button should toggle the theme panel
-        if (mobileSettingsBtn) mobileSettingsBtn.addEventListener('click', () => this.toggleSettings());
-        if (settingCloseBtn) settingCloseBtn.addEventListener('click', () => this.closeSettings());
-
+        // Theme controls are now in the main settings modal
+        // The theme buttons will be handled by event delegation since they're in the modal
+        // Mobile settings button no longer needed for theme panel
+        
         // Mobile menu
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
         if (mobileMenuBtn) {
             mobileMenuBtn.addEventListener('click', () => this.toggleMobileSidebar());
-        }
-
-        // Close theme panel when clicking outside
-        if (settingsPanel) {
-            settingsPanel.addEventListener('click', (e) => {
-                if (e.target === settingsPanel) {
-                    this.closeSettings();
-                }
-            });
         }
 
         // Window resize handler

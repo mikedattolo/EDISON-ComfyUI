@@ -42,9 +42,14 @@ class EdisonApp {
         this.saveSettingsBtn = document.getElementById('saveSettingsBtn');
         this.clearHistoryBtn = document.getElementById('clearHistoryBtn');
         this.apiEndpointInput = document.getElementById('apiEndpoint');
+        this.voiceApiEndpointInput = document.getElementById('voiceApiEndpoint');
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
         this.systemStatus = document.getElementById('systemStatus');
+        
+        // Theme controls (in settings modal)
+        this.themeButtons = document.querySelectorAll('.theme-btn');
+        this.colorButtons = document.querySelectorAll('.color-btn');
     }
 
     attachEventListeners() {
@@ -68,6 +73,23 @@ class EdisonApp {
         this.closeSettingsBtn.addEventListener('click', () => this.closeSettings());
         this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
         this.clearHistoryBtn.addEventListener('click', () => this.clearHistory());
+        
+        // Theme controls (in settings modal)
+        this.themeButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (window.themeManager) {
+                    window.themeManager.setTheme(btn.dataset.theme);
+                }
+            });
+        });
+        
+        this.colorButtons.forEach(btn => {
+            btn.addEventListener('click', () => {
+                if (window.themeManager) {
+                    window.themeManager.setColor(btn.dataset.color);
+                }
+            });
+        });
         
         // Modal backdrop click
         this.settingsModal.addEventListener('click', (e) => {
@@ -1135,13 +1157,24 @@ class EdisonApp {
 
     saveSettings() {
         this.settings.apiEndpoint = this.apiEndpointInput.value.trim();
+        this.settings.voiceApiEndpoint = this.voiceApiEndpointInput.value.trim();
         this.settings.comfyuiEndpoint = this.comfyuiEndpointInput.value.trim();
         this.settings.defaultMode = this.defaultModeSelect.value;
         
         localStorage.setItem('edison_settings', JSON.stringify(this.settings));
         
+        // Also save voice endpoint to its specific key (for app_voice.js)
+        if (this.settings.voiceApiEndpoint) {
+            localStorage.setItem('voiceApiEndpoint', this.settings.voiceApiEndpoint);
+        }
+        
         // Update current mode if needed
         this.setMode(this.settings.defaultMode);
+        
+        // Reinitialize voice mode if endpoint changed
+        if (window.voiceMode) {
+            window.voiceMode.initVoiceMode();
+        }
         
         this.closeSettings();
     }

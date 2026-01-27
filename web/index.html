@@ -4,11 +4,11 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=2">
+    <link rel="stylesheet" href="styles.css?v=3">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
-    <script src="theme-device.js"></script>
+    <script src="theme-device.js?v=2"></script>
 </head>
 <body>
     <div class="app-container">
@@ -276,9 +276,35 @@
                     </div>
                     
                     <div class="setting-group">
+                        <label for="voiceApiEndpoint">Voice Mode API Endpoint</label>
+                        <input type="text" id="voiceApiEndpoint" placeholder="Same as API Endpoint">
+                        <p class="setting-description">Voice mode endpoint (leave empty to use main API endpoint)</p>
+                    </div>
+                    
+                    <div class="setting-group">
                         <label for="comfyuiEndpoint">ComfyUI Endpoint</label>
                         <input type="text" id="comfyuiEndpoint" value="http://192.168.1.26:8188" placeholder="http://localhost:8188">
                         <p class="setting-description">The URL of your ComfyUI service (for image generation)</p>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>Theme</label>
+                        <div class="theme-toggle">
+                            <button class="theme-btn active" data-theme="dark" id="darkThemeBtn">🌙 Dark</button>
+                            <button class="theme-btn" data-theme="light" id="lightThemeBtn">☀️ Light</button>
+                        </div>
+                    </div>
+                    
+                    <div class="setting-group">
+                        <label>Color Scheme</label>
+                        <div class="color-palette">
+                            <button class="color-btn default active" data-color="default" title="Default (Indigo)"></button>
+                            <button class="color-btn blue" data-color="blue" title="Blue"></button>
+                            <button class="color-btn purple" data-color="purple" title="Purple"></button>
+                            <button class="color-btn cyan" data-color="cyan" title="Cyan"></button>
+                            <button class="color-btn emerald" data-color="emerald" title="Emerald"></button>
+                            <button class="color-btn rose" data-color="rose" title="Rose"></button>
+                        </div>
                     </div>
                     
                     <div class="setting-group">
@@ -394,8 +420,8 @@
         }
     </script>
 
-    <script src="app_enhanced.js?v=7"></script>
+    <script src="app_enhanced.js?v=8"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_voice.js?v=2"></script>
+    <script src="app_voice.js?v=3"></script>
 </body>
 </html>

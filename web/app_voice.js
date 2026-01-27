@@ -472,19 +472,26 @@ class VoiceMode {
 let voiceMode = null;
 
 function initVoiceMode() {
-    // Get API endpoint from localStorage, with smart fallback
-    let apiEndpoint = localStorage.getItem('apiEndpoint');
+    // Priority: voiceApiEndpoint > apiEndpoint > hostname detection
+    let apiEndpoint = localStorage.getItem('voiceApiEndpoint');
     
-    // If not set or localhost, try to detect from current page
+    if (!apiEndpoint || apiEndpoint.trim() === '') {
+        // Fall back to regular API endpoint
+        apiEndpoint = localStorage.getItem('apiEndpoint');
+    }
+    
+    // If still not set or localhost, try to detect from current page
     if (!apiEndpoint || apiEndpoint.includes('localhost') || apiEndpoint.includes('127.0.0.1')) {
         // Use current host with port 8811
         const currentHost = window.location.hostname;
         apiEndpoint = `http://${currentHost}:8811`;
-        console.log('Using detected API endpoint:', apiEndpoint);
+        console.log('Voice mode: Using detected API endpoint:', apiEndpoint);
+    } else {
+        console.log('Voice mode: Using configured endpoint:', apiEndpoint);
     }
     
     voiceMode = new VoiceMode(apiEndpoint);
-    console.log('Voice mode initialized with endpoint:', apiEndpoint);
+    window.voiceMode = voiceMode; // Make available globally for settings reload
 }
 
 // Initialize on page load
