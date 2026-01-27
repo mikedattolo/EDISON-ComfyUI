@@ -491,8 +491,11 @@ function initVoiceMode() {
     }
     
     voiceMode = new VoiceMode(apiEndpoint);
-    window.voiceMode = voiceMode; // Make available globally for settings reload
+    window.voiceMode = voiceMode; // Make available globally
 }
+
+// Make init function available globally for settings reload
+window.initVoiceMode = initVoiceMode;
 
 // Initialize on page load
 if (document.readyState === 'loading') {
