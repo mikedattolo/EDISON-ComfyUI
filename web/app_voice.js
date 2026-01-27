@@ -472,6 +472,27 @@ class VoiceMode {
 let voiceMode = null;
 
 function initVoiceMode() {
+    // Check if we're on a secure context (HTTPS or localhost)
+    const isSecureContext = window.isSecureContext || 
+                           window.location.protocol === 'https:' || 
+                           window.location.hostname === 'localhost' || 
+                           window.location.hostname === '127.0.0.1';
+    
+    const voiceBtn = document.getElementById('voiceBtn');
+    
+    if (!isSecureContext) {
+        console.warn('⚠️ Voice mode disabled: Requires HTTPS or localhost for microphone access');
+        if (voiceBtn) {
+            voiceBtn.style.display = 'none';
+        }
+        return;
+    }
+    
+    // Show voice button on secure contexts
+    if (voiceBtn) {
+        voiceBtn.style.display = 'flex';
+    }
+    
     // Priority: voiceApiEndpoint > apiEndpoint > hostname detection
     let apiEndpoint = localStorage.getItem('voiceApiEndpoint');
     

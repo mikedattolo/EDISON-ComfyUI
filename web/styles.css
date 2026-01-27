@@ -1621,7 +1621,7 @@ body {
     .mobile-header {
         display: flex;
         align-items: center;
-        justify-content: space-between;
+        justify-content: flex-start;
         padding: 12px 16px;
         background: var(--surface);
         border-bottom: 1px solid var(--border);
@@ -1634,8 +1634,7 @@ body {
         margin: 0;
     }
 
-    .mobile-menu-btn,
-    .mobile-settings-btn {
+    .mobile-menu-btn {
         background: var(--surface-hover);
         border: none;
         color: var(--text-primary);
@@ -1646,8 +1645,7 @@ body {
         transition: var(--transition);
     }
 
-    .mobile-menu-btn:active,
-    .mobile-settings-btn:active {
+    .mobile-menu-btn:active {
         background: var(--border);
     }
 
