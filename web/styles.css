@@ -1842,7 +1842,8 @@ body {
     transform: translateY(-1px);
 }
 
-.voice-btn.active {
+.voice-btn.active,
+.voice-btn.recording {
     background: var(--primary);
     color: white;
     animation: pulse-voice 1.5s infinite;
