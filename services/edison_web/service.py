@@ -72,6 +72,12 @@ async def theme_device():
     file_path = WEB_DIR / "theme-device.js"
     return FileResponse(file_path, media_type="application/javascript")
 
+@app.get("/app_voice.js")
+async def app_voice():
+    """Serve voice mode JS file"""
+    file_path = WEB_DIR / "app_voice.js"
+    return FileResponse(file_path, media_type="application/javascript")
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""

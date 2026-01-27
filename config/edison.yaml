@@ -22,7 +22,33 @@ edison:
     port: 8188
     auto_start: true
   
+  voice:
+    # VAD (Voice Activity Detection) settings
+    vad_mode: "silero"  # silero (recommended) or webrtc
+    silence_duration_ms: 700  # ms of silence to end utterance
+    min_speech_duration_ms: 250  # minimum speech duration to trigger
+    vad_threshold: 0.5  # confidence threshold (0.0-1.0)
+    
+    # STT (Speech-to-Text) settings
+    stt_model: "base"  # tiny, base (recommended), small, medium, large
+    stt_language: "en"
+    stt_device: "cuda"  # cuda (if available) or cpu
+    
+    # TTS (Text-to-Speech) settings
+    tts_model: "xtts"  # xtts (natural), piper (fast), bark (high quality)
+    tts_voice: "default"  # speaker name for XTTS
+    tts_speaker_wav: null  # path to .wav for voice cloning (optional)
+    tts_sample_rate: 24000  # output sample rate
+    
+    # Audio streaming settings
+    input_sample_rate: 16000  # browser capture rate
+    chunk_duration_ms: 30  # audio chunk size
+    partial_transcript_interval_ms: 500  # how often to send partial transcripts
+    tts_chunk_threshold: 60  # characters before starting TTS
+    
+    # Voice mode behavior
+    voice_system_prompt: "You are EDISON in voice mode. Respond concisely in 1-3 sentences unless asked for detail. Be conversational and natural."
+  
   logging:
     level: "INFO"
-    file: "logs/edison.log"
     file: "logs/edison.log"
