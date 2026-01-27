@@ -156,16 +156,31 @@ class VoiceMode {
     }
     
     async initAudio() {
-        // Request microphone access
-        this.mediaStream = await navigator.mediaDevices.getUserMedia({
-            audio: {
-                sampleRate: 16000,
-                channelCount: 1,
-                echoCancellation: true,
-                noiseSuppression: true,
-                autoGainControl: true
+        // Check if getUserMedia is available
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            throw new Error('Microphone access not supported. Voice mode requires HTTPS or localhost.');
+        }
+        
+        try {
+            // Request microphone access
+            this.mediaStream = await navigator.mediaDevices.getUserMedia({
+                audio: {
+                    sampleRate: 16000,
+                    channelCount: 1,
+                    echoCancellation: true,
+                    noiseSuppression: true,
+                    autoGainControl: true
+                }
+            });
+        } catch (err) {
+            if (err.name === 'NotAllowedError') {
+                throw new Error('Microphone permission denied. Please allow microphone access.');
+            } else if (err.name === 'NotFoundError') {
+                throw new Error('No microphone found. Please connect a microphone.');
+            } else {
+                throw new Error(`Microphone error: ${err.message}`);
             }
-        });
+        }
         
         // Create audio context
         this.audioContext = new (window.AudioContext || window.webkitAudioContext)({
