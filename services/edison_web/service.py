@@ -73,12 +73,6 @@ async def theme_device():
     file_path = WEB_DIR / "theme-device.js"
     return FileResponse(file_path, media_type="application/javascript")
 
-@app.get("/app_voice.js")
-async def app_voice():
-    """Serve voice mode JS file"""
-    file_path = WEB_DIR / "app_voice.js"
-    return FileResponse(file_path, media_type="application/javascript")
-
 @app.get("/health")
 async def health():
     """Health check endpoint"""
@@ -96,26 +90,4 @@ if __name__ == "__main__":
     logger.info(f"Starting EDISON Web UI from {WEB_DIR}")
     logger.info(f"Registered routes: {[route.path for route in app.routes]}")
     logger.info(f"Files in WEB_DIR: {list(WEB_DIR.glob('*'))}")
-    
-    # Check for SSL certificates
-    ssl_cert = Path("/opt/edison/ssl/cert.pem")
-    ssl_key = Path("/opt/edison/ssl/key.pem")
-    
-    if ssl_cert.exists() and ssl_key.exists():
-        logger.info("🔐 SSL certificates found - starting with HTTPS")
-        logger.info(f"   Certificate: {ssl_cert}")
-        logger.info(f"   Key: {ssl_key}")
-        logger.info("🎙️  Voice mode will work with microphone access!")
-        uvicorn.run(
-            app, 
-            host="0.0.0.0", 
-            port=8080,
-            ssl_certfile=str(ssl_cert),
-            ssl_keyfile=str(ssl_key),
-            log_level="info"
-        )
-    else:
-        logger.warning("⚠️  No SSL certificates found - running HTTP only")
-        logger.warning(f"   Generate certificates with: scripts/generate_ssl_cert.sh")
-        logger.warning("   Voice mode will NOT work without HTTPS!")
-        uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
