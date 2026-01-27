@@ -412,6 +412,49 @@ class VoiceMode {
     showError(message) {
         this.voiceTranscript.innerHTML += `<div class="final" style="color: #ef4444;">Error: ${message}</div>`;
         this.voiceTranscript.scrollTop = this.voiceTranscript.scrollHeight;
+        
+        // Show helpful banner for HTTPS requirement
+        if (message.includes('HTTPS') || message.includes('localhost') || message.includes('Microphone')) {
+            const banner = document.createElement('div');
+            banner.id = 'voiceErrorBanner';
+            banner.style.cssText = `
+                position: fixed;
+                top: 20px;
+                left: 50%;
+                transform: translateX(-50%);
+                background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                color: white;
+                padding: 16px 24px;
+                border-radius: 12px;
+                box-shadow: 0 4px 12px rgba(0,0,0,0.3);
+                z-index: 10000;
+                max-width: 600px;
+                text-align: center;
+                font-size: 14px;
+                line-height: 1.5;
+            `;
+            banner.innerHTML = `
+                <div style="font-weight: 600; margin-bottom: 8px;">🎙️ Voice Mode Requires Secure Connection</div>
+                <div style="font-size: 13px; opacity: 0.95;">
+                    Microphone access requires HTTPS or localhost.<br>
+                    <strong>Solution:</strong> SSH tunnel to access via localhost<br>
+                    <code style="background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px; font-family: monospace;">ssh -L 8080:localhost:8080 -L 8811:localhost:8811 user@${window.location.hostname}</code><br>
+                    Then browse to <code style="background: rgba(0,0,0,0.2); padding: 2px 6px; border-radius: 4px;">http://localhost:8080</code>
+                </div>
+                <button onclick="this.parentElement.remove()" style="margin-top: 12px; background: rgba(255,255,255,0.2); border: 1px solid rgba(255,255,255,0.3); color: white; padding: 6px 16px; border-radius: 6px; cursor: pointer; font-size: 12px; font-weight: 500;">Got it</button>
+            `;
+            
+            // Remove existing banner if any
+            const existing = document.getElementById('voiceErrorBanner');
+            if (existing) existing.remove();
+            
+            document.body.appendChild(banner);
+            
+            // Auto-remove after 20 seconds
+            setTimeout(() => {
+                if (banner.parentElement) banner.remove();
+            }, 20000);
+        }
     }
     
     arrayBufferToBase64(buffer) {

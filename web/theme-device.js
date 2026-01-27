@@ -99,15 +99,16 @@ class ThemeManager {
             });
         });
 
-        // Settings panel controls
-        const settingsBtn = document.getElementById('settingsBtn');
+        // Theme settings panel controls (separate from main settings modal)
+        // Note: settingsBtn opens the MAIN settings modal, not the theme panel
+        // The theme panel has its own close button
         const settingCloseBtn = document.getElementById('settingCloseBtn');
         const mobileSettingsBtn = document.getElementById('mobileSettingsBtn');
         const settingsPanel = document.getElementById('settingsPanel');
 
-        if (settingsBtn) settingsBtn.addEventListener('click', () => this.toggleSettings());
-        if (settingCloseBtn) settingCloseBtn.addEventListener('click', () => this.closeSettings());
+        // Only mobile settings button should toggle the theme panel
         if (mobileSettingsBtn) mobileSettingsBtn.addEventListener('click', () => this.toggleSettings());
+        if (settingCloseBtn) settingCloseBtn.addEventListener('click', () => this.closeSettings());
 
         // Mobile menu
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
@@ -115,7 +116,7 @@ class ThemeManager {
             mobileMenuBtn.addEventListener('click', () => this.toggleMobileSidebar());
         }
 
-        // Close settings when clicking outside
+        // Close theme panel when clicking outside
         if (settingsPanel) {
             settingsPanel.addEventListener('click', (e) => {
                 if (e.target === settingsPanel) {
