@@ -19,12 +19,14 @@ sudo openssl req -x509 -newkey rsa:4096 -nodes \
     -subj "/C=US/ST=State/L=City/O=EDISON/CN=edison-ai" \
     -addext "subjectAltName=DNS:localhost,DNS:*.local,IP:127.0.0.1,IP:192.168.1.26"
 
-# Set permissions
+# Set permissions - readable by edison user
 sudo chmod 644 "$CERT_DIR/cert.pem"
-sudo chmod 600 "$CERT_DIR/key.pem"
-sudo chown -R $USER:$USER "$CERT_DIR"
+sudo chmod 640 "$CERT_DIR/key.pem"
+sudo chown -R edison:edison "$CERT_DIR"
 
 echo "✅ SSL certificate generated at $CERT_DIR"
+echo "   Owner: edison:edison"
+echo "   Permissions: cert.pem (644), key.pem (640)"
 echo ""
 echo "📋 Certificate info:"
 openssl x509 -in "$CERT_DIR/cert.pem" -noout -text | grep -A2 "Subject:"
