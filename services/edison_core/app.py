@@ -38,16 +38,15 @@ sys.path.insert(0, str(REPO_ROOT))
 
 # Import voice module
 try:
-    from services.edison_core.voice import voice_manager
+    from services.edison_core.voice import VoiceSession, VoiceConfig, load_voice_config
     VOICE_AVAILABLE = True
-    logger.info("Voice mode available")
 except ImportError as e:
     logger.warning(f"Voice module not available: {e}")
     VOICE_AVAILABLE = False
 
 # Voice session management
-voice_sessions: Dict[str, "VoiceSession"] = {}
-voice_config: Optional[dict] = None
+voice_sessions: Dict[str, VoiceSession] = {}
+voice_config: Optional[VoiceConfig] = None
 
 
 # Helper functions for RAG context management
@@ -1049,179 +1048,256 @@ async def rag_stats():
 # ============================================================================
 # VOICE MODE ENDPOINTS
 # ============================================================================
-# Voice Mode Endpoints - Localhost implementation with external binaries
-# ============================================================================
 
 @app.post("/voice/session")
 async def create_voice_session():
     """Create a new voice interaction session"""
-    if not VOICE_AVAILABLE:
+    if not VOICE_AVAILABLE or not voice_config:
         raise HTTPException(status_code=503, detail="Voice mode not available")
     
     session_id = str(uuid.uuid4())
-    session = voice_manager.create_session(session_id)
+    session = VoiceSession(session_id, voice_config)
     
+    # Initialize models in background (can be slow)
+    asyncio.create_task(session.initialize())
+    
+    voice_sessions[session_id] = session
     logger.info(f"Created voice session: {session_id}")
     
     return {
         "session_id": session_id,
-        "status": "ready"
+        "status": "initializing"
     }
 
 @app.websocket("/voice/ws/{session_id}")
 async def voice_websocket(websocket: WebSocket, session_id: str):
-    """WebSocket endpoint for voice streaming"""
+    """WebSocket endpoint for bidirectional voice streaming"""
     await websocket.accept()
     
-    session = voice_manager.get_session(session_id)
-    if not session:
+    if not VOICE_AVAILABLE or session_id not in voice_sessions:
         await websocket.close(code=1008, reason="Session not found")
         return
     
-    logger.info(f"Voice WebSocket connected: {session_id}")
+    session = voice_sessions[session_id]
+    logger.info(f"WebSocket connected for session: {session_id}")
     
     try:
+        # Send initial state
         await websocket.send_json({"type": "state", "value": "ready"})
         
+        # Main message loop
         async for message in websocket.iter_json():
             try:
                 msg_type = message.get("type")
                 
-                if msg_type == "audio_pcm16":
-                    # Decode and buffer audio
-                    pcm_b64 = message.get("data_b64", "")
-                    if pcm_b64:
-                        pcm_data = base64.b64decode(pcm_b64)
-                        session.add_audio(pcm_data)
-                        
-                        if not session.is_listening:
-                            session.is_listening = True
-                            await websocket.send_json({"type": "state", "value": "listening"})
-                
-                elif msg_type == "stop_listening":
-                    # User stopped speaking - transcribe and respond
-                    if session.audio_buffer:
-                        await handle_voice_turn(websocket, session)
-                
+                if msg_type == "audio":
+                    # Process incoming audio chunk
+                    await handle_audio_chunk(websocket, session, message)
+                    
                 elif msg_type == "barge_in":
-                    # Cancel current operation
+                    # User interrupted - cancel TTS/LLM
+                    logger.info(f"Barge-in for session {session_id}")
                     session.cancel()
-                    session.clear_audio_buffer()
-                    session.is_listening = False
-                    session.is_speaking = False
-                    await websocket.send_json({"type": "state", "value": "ready"})
+                    session.reset()
+                    await websocket.send_json({"type": "state", "value": "listening"})
+                    
+                elif msg_type == "end_utterance":
+                    # Manual end of utterance signal
+                    await finalize_and_respond(websocket, session)
+                    
+                else:
+                    logger.warning(f"Unknown message type: {msg_type}")
                     
             except Exception as e:
-                logger.error(f"Error processing voice message: {e}")
-                await websocket.send_json({"type": "error", "message": str(e)})
+                logger.error(f"Error processing message: {e}", exc_info=True)
+                await websocket.send_json({
+                    "type": "error",
+                    "message": str(e)
+                })
     
     except WebSocketDisconnect:
-        logger.info(f"Voice WebSocket disconnected: {session_id}")
+        logger.info(f"WebSocket disconnected for session: {session_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}", exc_info=True)
     finally:
-        voice_manager.remove_session(session_id)
+        # Cleanup
+        session.cancel()
+        if session_id in voice_sessions:
+            del voice_sessions[session_id]
+        logger.info(f"Cleaned up voice session: {session_id}")
 
-async def handle_voice_turn(websocket: WebSocket, session):
-    """Process one voice interaction turn"""
+async def handle_audio_chunk(websocket: WebSocket, session: VoiceSession, message: dict):
+    """Process audio chunk and detect VAD/STT"""
     try:
-        # STT
-        session.is_listening = False
+        # Decode PCM audio
+        pcm_base64 = message.get("pcm16_base64", "")
+        sample_rate = message.get("sample_rate", 16000)
+        
+        if not pcm_base64:
+            return
+        
+        pcm_data = base64.b64decode(pcm_base64)
+        
+        # Update state
+        if session.state == "idle":
+            session.state = "listening"
+            await websocket.send_json({"type": "state", "value": "listening"})
+        
+        # Process audio through VAD and STT
+        result = session.process_audio_chunk(pcm_data)
+        
+        # Send partial transcript if available
+        if result.get("partial_transcript"):
+            await websocket.send_json({
+                "type": "stt_partial",
+                "text": result["partial_transcript"]
+            })
+        
+        # Check for end of utterance
+        if result["vad"].get("end_of_utterance"):
+            logger.info("End of utterance detected")
+            await finalize_and_respond(websocket, session)
+            
+    except Exception as e:
+        logger.error(f"Error handling audio chunk: {e}", exc_info=True)
+
+async def finalize_and_respond(websocket: WebSocket, session: VoiceSession):
+    """Finalize transcript and generate response"""
+    try:
+        # Get final transcript
+        session.state = "thinking"
         await websocket.send_json({"type": "state", "value": "thinking"})
         
-        transcript = await session.transcribe_audio()
-        session.clear_audio_buffer()
+        transcript = session.finalize_transcript()
         
-        if not transcript.strip():
+        if not transcript or not transcript.strip():
+            logger.warning("Empty transcript")
+            session.state = "idle"
             await websocket.send_json({"type": "state", "value": "ready"})
             return
         
-        await websocket.send_json({"type": "stt_final", "text": transcript})
+        # Send final transcript
+        await websocket.send_json({
+            "type": "stt_final",
+            "text": transcript
+        })
         
-        # LLM - use existing chat endpoint
-        response_text = await generate_voice_llm_response(transcript)
+        # Generate LLM response with voice-optimized prompt
+        response_text = await generate_voice_response(websocket, session, transcript)
         
-        if not response_text.strip():
+        if not response_text:
+            session.state = "idle"
             await websocket.send_json({"type": "state", "value": "ready"})
             return
         
-        await websocket.send_json({"type": "llm_text", "text": response_text})
-        
-        # TTS
-        session.is_speaking = True
+        # Generate and stream TTS
+        session.state = "speaking"
         await websocket.send_json({"type": "state", "value": "speaking"})
         
-        audio_data = await session.synthesize_speech(response_text)
+        await stream_tts_response(websocket, session, response_text)
         
-        if audio_data and not session.cancel_flag:
-            # Stream audio in chunks (~50ms each)
-            chunk_size = 16000 * 2 * 50 // 1000  # 50ms at 16kHz 16-bit
-            for i in range(0, len(audio_data), chunk_size):
-                if session.cancel_flag:
-                    break
-                chunk = audio_data[i:i+chunk_size]
-                audio_b64 = base64.b64encode(chunk).decode('utf-8')
-                await websocket.send_json({
-                    "type": "tts_audio",
-                    "data_b64": audio_b64,
-                    "sample_rate": 22050
-                })
-                await asyncio.sleep(0.045)  # Slight delay for smoother playback
-        
-        session.is_speaking = False
-        await websocket.send_json({"type": "done"})
+        # Done
+        session.state = "idle"
         await websocket.send_json({"type": "state", "value": "ready"})
         
     except Exception as e:
-        logger.error(f"Error in voice turn: {e}")
-        await websocket.send_json({"type": "error", "message": str(e)})
-        await websocket.send_json({"type": "state", "value": "ready"})
+        logger.error(f"Error in finalize_and_respond: {e}", exc_info=True)
+        session.state = "idle"
+        await websocket.send_json({
+            "type": "error",
+            "message": str(e)
+        })
 
-async def generate_voice_llm_response(transcript: str) -> str:
-    """Generate LLM response optimized for voice"""
+async def generate_voice_response(websocket: WebSocket, session: VoiceSession, transcript: str) -> str:
+    """Generate LLM response for voice mode"""
     try:
-        if not llm_models.get("primary"):
-            return "I'm sorry, the AI model is not available right now."
+        # Create voice-optimized prompt
+        voice_prompt = session.config.voice_system_prompt
         
-        model = llm_models["primary"]
-        
-        # Voice-optimized system prompt
-        system_prompt = (
-            "You are Edison, a helpful AI assistant. "
-            "Keep responses concise (1-3 sentences) unless asked for detail. "
-            "Speak naturally and conversationally."
-        )
-        
+        # Build messages with voice context
         messages = [
-            {"role": "system", "content": system_prompt},
+            {"role": "system", "content": voice_prompt},
             {"role": "user", "content": transcript}
         ]
         
-        response = model.create_chat_completion(
-            messages=messages,
-            max_tokens=150,
-            temperature=0.7,
-            stream=False
-        )
+        # Generate response using existing chat logic
+        # We'll use the streaming endpoint but collect the full text
+        full_response = ""
         
-        text = response["choices"][0]["message"]["content"]
-        return text.strip()
+        # Use the primary LLM model
+        if not llm_models.get("primary"):
+            raise Exception("LLM model not available")
+        
+        model = llm_models["primary"]
+        
+        # Generate with streaming
+        for chunk in model.create_chat_completion(
+            messages=messages,
+            max_tokens=150,  # Shorter for voice
+            temperature=0.7,
+            stream=True
+        ):
+            if session.cancelled:
+                break
+                
+            delta = chunk.get("choices", [{}])[0].get("delta", {})
+            token = delta.get("content", "")
+            
+            if token:
+                full_response += token
+                # Stream token to client
+                await websocket.send_json({
+                    "type": "llm_token",
+                    "text": token
+                })
+        
+        return full_response.strip()
         
     except Exception as e:
-        logger.error(f"Error generating voice response: {e}")
-        return "I'm sorry, I encountered an error processing your request."
+        logger.error(f"Error generating voice response: {e}", exc_info=True)
+        return ""
+
+async def stream_tts_response(websocket: WebSocket, session: VoiceSession, text: str):
+    """Generate and stream TTS audio"""
+    try:
+        # Create async generator for text chunks
+        async def text_generator():
+            # Split text into sentences for streaming
+            sentences = re.split(r'([.!?]\s+)', text)
+            for sentence in sentences:
+                if sentence.strip() and not session.cancelled:
+                    yield sentence
+        
+        # Audio chunk callback
+        async def send_audio_chunk(audio_bytes: bytes):
+            if not session.cancelled:
+                # Encode to base64
+                audio_base64 = base64.b64encode(audio_bytes).decode('utf-8')
+                await websocket.send_json({
+                    "type": "tts_audio",
+                    "pcm16_base64": audio_base64,
+                    "sample_rate": session.config.tts_sample_rate
+                })
+        
+        # Synthesize and stream
+        await session.tts.synthesize_streaming(text_generator(), send_audio_chunk)
+        
+        # Send end marker
+        await websocket.send_json({"type": "tts_end"})
+        
+    except Exception as e:
+        logger.error(f"Error streaming TTS: {e}", exc_info=True)
 
 @app.post("/voice/cancel/{session_id}")
 async def cancel_voice_session(session_id: str):
-    """Cancel ongoing voice session"""
-    session = voice_manager.get_session(session_id)
-    if not session:
+    """Cancel ongoing voice session tasks"""
+    if session_id not in voice_sessions:
         raise HTTPException(status_code=404, detail="Session not found")
     
+    session = voice_sessions[session_id]
     session.cancel()
+    
     return {"status": "cancelled"}
-
-# ============================================================================
-# Existing endpoints below
-# ============================================================================
 
 # ============================================================================
 # END VOICE MODE ENDPOINTS
