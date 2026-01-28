@@ -145,7 +145,7 @@ class ImageGallery {
 
         item.innerHTML = `
             <img class="gallery-item-image" 
-                 src="${image.url}" 
+                 src="${this.apiEndpoint}${image.url}" 
                  alt="${image.prompt}"
                  loading="lazy">
             <div class="gallery-item-info">
@@ -215,7 +215,7 @@ class ImageGallery {
         modal.innerHTML = `
             <div class="gallery-modal-content">
                 <button class="gallery-modal-close">×</button>
-                <img class="gallery-modal-image" src="${image.url}" alt="${image.prompt}">
+                <img class="gallery-modal-image" src="${this.apiEndpoint}${image.url}" alt="${image.prompt}">
                 <div class="gallery-modal-info">
                     <div class="gallery-modal-prompt">${image.prompt}</div>
                     <div class="gallery-modal-meta">
@@ -245,7 +245,7 @@ class ImageGallery {
 
     async downloadImage(image) {
         try {
-            const response = await fetch(image.url);
+            const response = await fetch(`${this.apiEndpoint}${image.url}`);
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             
