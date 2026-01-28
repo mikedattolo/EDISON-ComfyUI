@@ -15,21 +15,43 @@ class ImageGallery {
     }
 
     init() {
+        // Wait for DOM to be ready
+        if (document.readyState === 'loading') {
+            document.addEventListener('DOMContentLoaded', () => this.initElements());
+        } else {
+            this.initElements();
+        }
+    }
+
+    initElements() {
         // Get DOM elements
         this.galleryPanel = document.getElementById('galleryPanel');
         this.galleryGrid = document.getElementById('galleryGrid');
         this.galleryLoading = document.getElementById('galleryLoading');
         this.galleryEmpty = document.getElementById('galleryEmpty');
         
+        if (!this.galleryPanel) {
+            console.error('Gallery panel not found in DOM');
+            return;
+        }
+        
         // Set up event listeners
         this.setupEventListeners();
+        console.log('Gallery initialized successfully');
     }
 
     setupEventListeners() {
         // Gallery button
         const galleryBtn = document.getElementById('galleryBtn');
         if (galleryBtn) {
-            galleryBtn.addEventListener('click', () => this.toggle());
+            galleryBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                console.log('Gallery button clicked');
+                this.toggle();
+            });
+            console.log('Gallery button listener attached');
+        } else {
+            console.error('Gallery button not found');
         }
 
         // Close button
