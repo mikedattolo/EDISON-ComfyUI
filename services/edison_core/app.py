@@ -279,7 +279,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
         },
         "11": {
             "inputs": {
-                "clip_name1": "t5xxl_fp16.safetensors",
+                "clip_name1": "t5xxl_fp8_e4m3fn.safetensors",
                 "clip_name2": "clip_l.safetensors",
                 "type": "flux"
             },
@@ -288,7 +288,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
         },
         "12": {
             "inputs": {
-                "unet_name": "flux1-schnell.safetensors",
+                "unet_name": "flux1-dev.safetensors",
                 "weight_dtype": "default"
             },
             "class_type": "UNETLoader",
