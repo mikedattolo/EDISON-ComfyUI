@@ -128,10 +128,16 @@ if [ -d "ComfyUI-FLUX-BFL" ]; then
     echo "✓ FLUX nodes already installed"
 else
     echo "Cloning FLUX custom nodes..."
-    git clone https://github.com/kijai/ComfyUI-FLUX-BFL.git
-    cd ComfyUI-FLUX-BFL
-    pip install -r requirements.txt
-    echo "✓ FLUX nodes installed"
+    # Clone without credentials prompt (public repo)
+    GIT_TERMINAL_PROMPT=0 git clone https://github.com/kijai/ComfyUI-FLUX-BFL.git
+    if [ $? -eq 0 ]; then
+        cd ComfyUI-FLUX-BFL
+        pip install -r requirements.txt
+        echo "✓ FLUX nodes installed"
+    else
+        echo "⚠️  Failed to clone FLUX nodes. Installing manually..."
+        echo "   Run: cd /opt/edison/ComfyUI/custom_nodes && git clone https://github.com/kijai/ComfyUI-FLUX-BFL.git"
+    fi
 fi
 
 echo ""
