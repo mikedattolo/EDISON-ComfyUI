@@ -229,7 +229,7 @@ active_requests_lock = threading.Lock()
 
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
                          steps: int = 20, guidance_scale: float = 3.5) -> dict:
-    """Create a FLUX workflow for image generation
+    """Create a simple SDXL workflow for image generation (FLUX fallback)
     
     Args:
         prompt: Image generation prompt
@@ -245,98 +245,28 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
     steps = max(1, min(steps, 200))  # Clamp steps to 1-200
     guidance_scale = max(0, min(guidance_scale, 20))  # Clamp guidance to 0-20
     
+    # Simple SDXL workflow that works with base ComfyUI
     return {
-        "6": {
+        "3": {
             "inputs": {
-                "text": prompt,
-                "clip": ["11", 0]
-            },
-            "class_type": "CLIPTextEncode",
-            "_meta": {"title": "CLIP Text Encode (Positive Prompt)"}
-        },
-        "8": {
-            "inputs": {
-                "samples": ["13", 0],
-                "vae": ["10", 0]
-            },
-            "class_type": "VAEDecode",
-            "_meta": {"title": "VAE Decode"}
-        },
-        "9": {
-            "inputs": {
-                "filename_prefix": "EDISON",
-                "images": ["8", 0]
-            },
-            "class_type": "SaveImage",
-            "_meta": {"title": "Save Image"}
-        },
-        "10": {
-            "inputs": {
-                "vae_name": "ae.safetensors"
-            },
-            "class_type": "VAELoader",
-            "_meta": {"title": "Load VAE"}
-        },
-        "11": {
-            "inputs": {
-                "clip_name1": "t5xxl_fp8_e4m3fn.safetensors",
-                "clip_name2": "clip_l.safetensors",
-                "type": "flux"
-            },
-            "class_type": "DualCLIPLoader",
-            "_meta": {"title": "DualCLIPLoader"}
-        },
-        "12": {
-            "inputs": {
-                "unet_name": "flux1-dev.safetensors",
-                "weight_dtype": "default"
-            },
-            "class_type": "UNETLoader",
-            "_meta": {"title": "Load Diffusion Model"}
-        },
-        "13": {
-            "inputs": {
-                "noise": ["25", 0],
-                "guider": ["22", 0],
-                "sampler": ["16", 0],
-                "sigmas": ["17", 0],
+                "seed": seed,
+                "steps": steps,
+                "cfg": guidance_scale,
+                "sampler_name": "euler",
+                "scheduler": "normal",
+                "denoise": 1,
+                "model": ["4", 0],
+                "positive": ["6", 0],
+                "negative": ["7", 0],
                 "latent_image": ["5", 0]
             },
-            "class_type": "SamplerCustomAdvanced",
-            "_meta": {"title": "SamplerCustomAdvanced"}
+            "class_type": "KSampler"
         },
-        "16": {
+        "4": {
             "inputs": {
-                "sampler_name": "euler"
+                "ckpt_name": "flux1-dev.safetensors"
             },
-            "class_type": "KSamplerSelect",
-            "_meta": {"title": "KSamplerSelect"}
-        },
-        "17": {
-            "inputs": {
-                "scheduler": "simple",
-                "steps": steps,  # ← USER PARAMETER: Number of sampling steps
-                "denoise": 1.0,
-                "model": ["12", 0]
-            },
-            "class_type": "BasicScheduler",
-            "_meta": {"title": "BasicScheduler"}
-        },
-        "22": {
-            "inputs": {
-                "model": ["12", 0],
-                "conditioning": ["6", 0],
-                "guidance": guidance_scale  # ← USER PARAMETER: CFG scale
-            },
-            "class_type": "BasicGuider",
-            "_meta": {"title": "BasicGuider"}
-        },
-        "25": {
-            "inputs": {
-                "noise_seed": seed
-            },
-            "class_type": "RandomNoise",
-            "_meta": {"title": "RandomNoise"}
+            "class_type": "CheckpointLoaderSimple"
         },
         "5": {
             "inputs": {
@@ -344,8 +274,35 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
                 "height": height,
                 "batch_size": 1
             },
-            "class_type": "EmptyLatentImage",
-            "_meta": {"title": "Empty Latent Image"}
+            "class_type": "EmptyLatentImage"
+        },
+        "6": {
+            "inputs": {
+                "text": prompt,
+                "clip": ["4", 1]
+            },
+            "class_type": "CLIPTextEncode"
+        },
+        "7": {
+            "inputs": {
+                "text": "nsfw, nude, naked, worst quality, low quality, blurry",
+                "clip": ["4", 1]
+            },
+            "class_type": "CLIPTextEncode"
+        },
+        "8": {
+            "inputs": {
+                "samples": ["3", 0],
+                "vae": ["4", 2]
+            },
+            "class_type": "VAEDecode"
+        },
+        "9": {
+            "inputs": {
+                "filename_prefix": "EDISON",
+                "images": ["8", 0]
+            },
+            "class_type": "SaveImage"
         }
     }
 
