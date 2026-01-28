@@ -73,6 +73,15 @@ async def theme_device():
     file_path = WEB_DIR / "theme-device.js"
     return FileResponse(file_path, media_type="application/javascript")
 
+@app.get("/gallery.js")
+async def gallery():
+    """Serve gallery JS file"""
+    file_path = WEB_DIR / "gallery.js"
+    logger.info(f"Serving gallery.js from {file_path}, exists: {file_path.exists()}")
+    if not file_path.exists():
+        logger.error(f"gallery.js not found at {file_path}")
+    return FileResponse(file_path, media_type="application/javascript")
+
 @app.get("/health")
 async def health():
     """Health check endpoint"""
