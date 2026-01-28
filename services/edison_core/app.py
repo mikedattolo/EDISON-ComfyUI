@@ -156,7 +156,9 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             
             agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
                              "current", "latest", "news about", "information on",
-                             "tell me about", "research", "browse"]
+                             "tell me about", "research", "browse", "what's happening",
+                             "recent", "today", "this week", "this month", "this year",
+                             "2025", "2026", "2027", "now", "currently"]
             
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
@@ -778,6 +780,30 @@ def load_config():
         logger.error(f"Error loading config: {e}")
         config = {}
 
+def check_gpu_availability():
+    """Verify GPU availability before loading models"""
+    import subprocess
+    
+    try:
+        result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
+                              capture_output=True, text=True, timeout=5)
+        if result.returncode == 0:
+            gpus = result.stdout.strip().split('\n')
+            logger.info(f"✓ Detected {len(gpus)} NVIDIA GPU(s):")
+            for i, gpu in enumerate(gpus):
+                logger.info(f"  GPU {i}: {gpu.strip()}")
+            return True
+        else:
+            logger.warning("nvidia-smi failed - GPUs may not be available")
+            return False
+    except FileNotFoundError:
+        logger.warning("nvidia-smi not found - NVIDIA drivers may not be installed")
+        logger.warning("Models will load on CPU (very slow)")
+        return False
+    except Exception as e:
+        logger.warning(f"GPU check failed: {e}")
+        return False
+
 def load_llm_models():
     """Load GGUF models using llama-cpp-python with absolute paths"""
     global llm_fast, llm_medium, llm_deep, llm_vision
@@ -787,6 +813,11 @@ def load_llm_models():
     except ImportError:
         logger.error("llama-cpp-python not installed. Install with: pip install llama-cpp-python")
         return
+    
+    # Check GPU availability first
+    gpu_available = check_gpu_availability()
+    if not gpu_available:
+        logger.warning("⚠ Proceeding without GPU acceleration - expect slow performance")
     
     # Get model paths relative to repo root
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
@@ -1443,10 +1474,31 @@ async def chat(request: ChatRequest):
         }
     
     # Fallback: old heuristic-based search for non-agent modes or when tools_allowed is False
-    if mode in ["agent", "work"] and search_tool:
+    # ENHANCED: Detect temporal queries that need current information
+    if mode in ["agent", "work", "chat", "reasoning"] and search_tool:
         msg_lower = request.message.lower()
-        search_keywords = ["search", "internet", "web", "online", "news", "lookup", "find on", "google", "browse"]
-        if any(keyword in msg_lower for keyword in search_keywords):
+        
+        # Expanded search triggers including temporal queries
+        search_keywords = [
+            "search", "internet", "web", "online", "news", "lookup", "find on", "google", "browse",
+            "what's happening", "current", "latest", "recent", "today", "this week", "this month",
+            "this year", "2025", "2026", "2027", "now", "currently", "up to date"
+        ]
+        
+        # Also trigger search for temporal queries that clearly need current info
+        temporal_patterns = [
+            r"news (from|about|in) (today|this week|this month|202\d)",
+            r"what.{0,20}happening.{0,20}(today|now|currently|recently)",
+            r"(latest|recent|current).{0,30}(news|information|update|development)",
+            r"tell me about.{0,30}(today|now|currently|recently|latest)",
+        ]
+        
+        import re
+        needs_search = any(keyword in msg_lower for keyword in search_keywords)
+        if not needs_search:
+            needs_search = any(re.search(pattern, msg_lower) for pattern in temporal_patterns)
+        
+        if needs_search:
             try:
                 # Extract search query from message
                 import re
@@ -2437,7 +2489,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     
     # Add instruction about web search results - make it stronger
     if has_search:
-        base += " IMPORTANT: Web search results are provided below. You MUST use these search results to answer the user's question. Cite specific information from the search results and include the source titles. Do not make up information - only use what's in the search results."
+        base += " CRITICAL: Current web search results are provided below with TODAY'S information. You MUST prioritize and use ONLY these fresh search results to answer the user's question. The search results contain up-to-date facts from 2026. DO NOT use your training data knowledge from before 2023 when search results are available. Cite specific information from the search results including dates and sources. If the search results don't contain relevant information, explicitly say so."
     
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
