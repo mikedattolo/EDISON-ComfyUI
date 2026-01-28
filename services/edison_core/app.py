@@ -2389,8 +2389,8 @@ async def generate_image(request: dict):
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/image-status/{prompt_id}")
-async def image_status(prompt_id: str):
-    """Check the status of an image generation"""
+async def image_status(prompt_id: str, auto_save: bool = True):
+    """Check the status of an image generation and optionally auto-save to gallery"""
     try:
         comfyui_config = config.get("edison", {}).get("comfyui", {})
         comfyui_host = comfyui_config.get("host", "127.0.0.1")
@@ -2434,9 +2434,11 @@ async def image_status(prompt_id: str):
                     filetype = image_info.get('type', 'output')
                     
                     # Return relative URL that will be proxied through EDISON
+                    image_url = f"/proxy-image?filename={filename}&subfolder={subfolder}&type={filetype}"
+                    
                     return {
                         "status": "completed",
-                        "image_url": f"/proxy-image?filename={filename}&subfolder={subfolder}&type={filetype}",
+                        "image_url": image_url,
                         "filename": filename,
                         "message": "Image generated successfully"
                     }
@@ -2478,6 +2480,174 @@ async def proxy_image(filename: str, subfolder: str = "", type: str = "output"):
     except Exception as e:
         logger.error(f"Error proxying image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# ==================== GALLERY ENDPOINTS ====================
+
+# Gallery directory setup
+GALLERY_DIR = REPO_ROOT / "gallery"
+GALLERY_DB = GALLERY_DIR / "gallery.json"
+
+def ensure_gallery_dir():
+    """Ensure gallery directory and database exist"""
+    GALLERY_DIR.mkdir(exist_ok=True)
+    if not GALLERY_DB.exists():
+        GALLERY_DB.write_text(json.dumps({"images": []}, indent=2))
+
+def load_gallery_db():
+    """Load gallery database"""
+    ensure_gallery_dir()
+    try:
+        return json.loads(GALLERY_DB.read_text())
+    except:
+        return {"images": []}
+
+def save_gallery_db(data):
+    """Save gallery database"""
+    ensure_gallery_dir()
+    GALLERY_DB.write_text(json.dumps(data, indent=2))
+
+@app.post("/gallery/save")
+async def save_to_gallery(request: dict):
+    """Save a generated image to the gallery
+    
+    Parameters:
+        - image_url (str): URL of the generated image
+        - prompt (str): The generation prompt
+        - settings (dict): Generation settings (width, height, steps, etc.)
+    """
+    try:
+        image_url = request.get('image_url', '')
+        prompt = request.get('prompt', '')
+        settings = request.get('settings', {})
+        
+        if not image_url or not prompt:
+            raise HTTPException(status_code=400, detail="image_url and prompt required")
+        
+        # Load gallery database
+        db = load_gallery_db()
+        
+        # Generate unique ID
+        image_id = str(uuid.uuid4())[:8]
+        
+        # Download and save image to gallery directory
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        
+        # Parse the proxy URL to get actual ComfyUI parameters
+        if image_url.startswith("/proxy-image"):
+            # Extract parameters from proxy URL
+            import urllib.parse
+            params = urllib.parse.parse_qs(image_url.split('?')[1])
+            filename = params.get('filename', [''])[0]
+            subfolder = params.get('subfolder', [''])[0]
+            filetype = params.get('type', ['output'])[0]
+            
+            # Fetch from ComfyUI
+            fetch_url = f"{comfyui_url}/view?filename={filename}&subfolder={subfolder}&type={filetype}"
+            response = requests.get(fetch_url)
+            
+            if response.ok:
+                # Save to gallery directory
+                extension = filename.split('.')[-1] if '.' in filename else 'png'
+                saved_filename = f"{image_id}.{extension}"
+                saved_path = GALLERY_DIR / saved_filename
+                saved_path.write_bytes(response.content)
+                
+                # Add to database
+                image_entry = {
+                    "id": image_id,
+                    "prompt": prompt,
+                    "url": f"/gallery/image/{saved_filename}",
+                    "filename": saved_filename,
+                    "timestamp": int(time.time()),
+                    "width": settings.get("width", 1024),
+                    "height": settings.get("height", 1024),
+                    "model": settings.get("model", "SDXL"),
+                    "settings": settings
+                }
+                
+                db["images"].insert(0, image_entry)  # Add to beginning
+                save_gallery_db(db)
+                
+                logger.info(f"Saved image {image_id} to gallery")
+                return {"status": "success", "image": image_entry}
+        
+        raise HTTPException(status_code=400, detail="Invalid image URL")
+        
+    except Exception as e:
+        logger.error(f"Error saving to gallery: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/gallery/list")
+async def list_gallery():
+    """List all images in the gallery"""
+    try:
+        db = load_gallery_db()
+        return {"images": db.get("images", [])}
+    except Exception as e:
+        logger.error(f"Error listing gallery: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.delete("/gallery/delete/{image_id}")
+async def delete_from_gallery(image_id: str):
+    """Delete an image from the gallery"""
+    try:
+        db = load_gallery_db()
+        images = db.get("images", [])
+        
+        # Find and remove image
+        image_to_delete = None
+        for i, img in enumerate(images):
+            if img["id"] == image_id:
+                image_to_delete = images.pop(i)
+                break
+        
+        if not image_to_delete:
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        # Delete file
+        image_path = GALLERY_DIR / image_to_delete["filename"]
+        if image_path.exists():
+            image_path.unlink()
+        
+        # Save updated database
+        save_gallery_db(db)
+        
+        logger.info(f"Deleted image {image_id} from gallery")
+        return {"status": "success", "message": "Image deleted"}
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting from gallery: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/gallery/image/{filename}")
+async def get_gallery_image(filename: str):
+    """Serve an image from the gallery"""
+    try:
+        image_path = GALLERY_DIR / filename
+        
+        if not image_path.exists():
+            raise HTTPException(status_code=404, detail="Image not found")
+        
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            image_path,
+            media_type=f"image/{filename.split('.')[-1]}",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving gallery image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""
