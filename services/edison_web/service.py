@@ -50,7 +50,11 @@ async def root():
 @app.get("/styles.css")
 async def styles():
     """Serve CSS file"""
-    return FileResponse(WEB_DIR / "styles.css", media_type="text/css")
+    return FileResponse(
+        WEB_DIR / "styles.css", 
+        media_type="text/css",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 @app.get("/app_enhanced.js")
 async def app_enhanced():
@@ -80,7 +84,11 @@ async def gallery():
     logger.info(f"Serving gallery.js from {file_path}, exists: {file_path.exists()}")
     if not file_path.exists():
         logger.error(f"gallery.js not found at {file_path}")
-    return FileResponse(file_path, media_type="application/javascript")
+    return FileResponse(
+        file_path, 
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
 
 @app.get("/health")
 async def health():
