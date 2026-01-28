@@ -264,7 +264,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
         },
         "4": {
             "inputs": {
-                "ckpt_name": "flux1-dev.safetensors"
+                "ckpt_name": "sd_xl_base_1.0.safetensors"
             },
             "class_type": "CheckpointLoaderSimple"
         },
