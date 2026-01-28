@@ -2310,8 +2310,8 @@ async def generate_image(request: dict):
         workflow = create_flux_workflow(prompt, width, height, steps, guidance_scale)
         
         # Log the workflow parameters for debugging
-        logger.debug(f"Workflow BasicScheduler steps: {workflow['17']['inputs']['steps']}")
-        logger.debug(f"Workflow BasicGuider guidance: {workflow['22']['inputs'].get('guidance', 'not set')}")
+        logger.debug(f"Workflow KSampler steps: {workflow['3']['inputs']['steps']}")
+        logger.debug(f"Workflow CFG scale: {workflow['3']['inputs']['cfg']}")
         
         # Submit workflow to ComfyUI
         response = requests.post(
