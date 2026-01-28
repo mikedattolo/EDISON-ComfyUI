@@ -808,7 +808,7 @@ def load_llm_models():
                 n_ctx=4096,
                 n_gpu_layers=-1,  # Use GPU
                 tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
-                verbose=False
+                verbose=True  # Enable verbose to see CUDA messages
             )
             logger.info("✓ Fast model loaded successfully")
         except Exception as e:
@@ -829,7 +829,7 @@ def load_llm_models():
                 n_ctx=4096,
                 n_gpu_layers=-1,  # Use GPU
                 tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs
-                verbose=False
+                verbose=True  # Enable verbose to see CUDA messages
             )
             logger.info("✓ Medium model loaded successfully")
         except Exception as e:
@@ -852,7 +852,7 @@ def load_llm_models():
                 n_ctx=4096,  # Reduced from 8192 to save VRAM
                 n_gpu_layers=-1,  # Use GPU
                 tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
-                verbose=False
+                verbose=True  # Enable verbose to see CUDA messages
             )
             logger.info("✓ Deep model loaded successfully")
         except Exception as e:
@@ -880,7 +880,7 @@ def load_llm_models():
                     clip_model_path=str(vision_clip_path),
                     n_ctx=4096,
                     n_gpu_layers=-1,
-                    verbose=False
+                    verbose=True  # Enable verbose to see CUDA messages
                 )
                 logger.info("✓ Vision model loaded successfully")
             except Exception as e:
