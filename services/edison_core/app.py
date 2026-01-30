@@ -2438,10 +2438,40 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                                         prompt_text = node_data.get("inputs", {}).get("text", prompt_text)
                                         break
                             
-                            # Save to gallery
-                            await save_to_gallery(image_url, prompt_text, {})
-                            result["saved_to_gallery"] = True
-                            logger.info(f"Auto-saved image to gallery: {filename}")
+                            # Save to gallery directly (inline to avoid async issues)
+                            # Download image from ComfyUI
+                            fetch_url = f"{comfyui_url}/view?filename={filename}&subfolder={subfolder}&type={filetype}"
+                            img_response = requests.get(fetch_url)
+                            
+                            if img_response.ok:
+                                # Generate unique ID and save
+                                image_id = str(uuid.uuid4())
+                                extension = filename.split('.')[-1] if '.' in filename else 'png'
+                                saved_filename = f"{image_id}.{extension}"
+                                saved_path = GALLERY_DIR / saved_filename
+                                saved_path.write_bytes(img_response.content)
+                                
+                                # Add to database
+                                db = load_gallery_db()
+                                image_entry = {
+                                    "id": image_id,
+                                    "prompt": prompt_text,
+                                    "url": f"/gallery/image/{saved_filename}",
+                                    "filename": saved_filename,
+                                    "timestamp": int(time.time()),
+                                    "width": 1024,
+                                    "height": 1024,
+                                    "model": "SDXL",
+                                    "settings": {}
+                                }
+                                db["images"].insert(0, image_entry)
+                                save_gallery_db(db)
+                                
+                                result["saved_to_gallery"] = True
+                                logger.info(f"✓ Auto-saved image to gallery: {saved_filename}")
+                            else:
+                                logger.error(f"Failed to fetch image from ComfyUI: {img_response.status_code}")
+                                result["saved_to_gallery"] = False
                         except Exception as save_error:
                             logger.error(f"Failed to auto-save to gallery: {save_error}")
                             result["saved_to_gallery"] = False
