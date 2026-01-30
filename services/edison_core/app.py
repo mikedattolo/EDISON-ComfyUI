@@ -2418,12 +2418,35 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                     # Return relative URL that will be proxied through EDISON
                     image_url = f"/proxy-image?filename={filename}&subfolder={subfolder}&type={filetype}"
                     
-                    return {
+                    result = {
                         "status": "completed",
                         "image_url": image_url,
                         "filename": filename,
                         "message": "Image generated successfully"
                     }
+                    
+                    # Auto-save to gallery if requested (default=True)
+                    if auto_save:
+                        try:
+                            # Extract prompt from workflow
+                            prompt_text = "Generated image"
+                            if "prompt" in prompt_data:
+                                workflow_data = prompt_data["prompt"]
+                                # Look for CLIP text encode nodes
+                                for node_id, node_data in workflow_data.items():
+                                    if node_data.get("class_type") == "CLIPTextEncode":
+                                        prompt_text = node_data.get("inputs", {}).get("text", prompt_text)
+                                        break
+                            
+                            # Save to gallery
+                            await save_to_gallery(image_url, prompt_text, {})
+                            result["saved_to_gallery"] = True
+                            logger.info(f"Auto-saved image to gallery: {filename}")
+                        except Exception as save_error:
+                            logger.error(f"Failed to auto-save to gallery: {save_error}")
+                            result["saved_to_gallery"] = False
+                    
+                    return result
         
         return {"status": "processing", "message": "Still generating..."}
         
