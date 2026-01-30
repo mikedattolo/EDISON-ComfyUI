@@ -37,10 +37,11 @@ class ImageGallery {
             return;
         }
         
-        // Force close on init (remove any stray active class)
+        // FORCE close on init - remove class AND set inline style
         this.galleryPanel.classList.remove('active');
+        this.galleryPanel.style.right = '-100%';
         this.isOpen = false;
-        console.log('Gallery initialized - forced closed');
+        console.log('Gallery initialized - forced closed with inline style');
         
         // Set up event listeners
         this.setupEventListeners();
@@ -101,6 +102,7 @@ class ImageGallery {
     async open() {
         console.log('Opening gallery');
         this.galleryPanel.classList.add('active');
+        this.galleryPanel.style.right = ''; // Clear inline style to let CSS take over
         this.isOpen = true;
         await this.loadImages();
     }
@@ -108,6 +110,7 @@ class ImageGallery {
     close() {
         console.log('Closing gallery');
         this.galleryPanel.classList.remove('active');
+        this.galleryPanel.style.right = '-100%'; // Force close with inline style
         this.isOpen = false;
     }
 
