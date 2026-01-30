@@ -2692,7 +2692,10 @@ async def get_gallery_image(filename: str):
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""
-    base = "You are EDISON, a helpful AI assistant."
+    from datetime import datetime
+    current_date = datetime.now().strftime("%B %d, %Y")
+    
+    base = f"You are EDISON, a helpful AI assistant. Today's date is {current_date}."
     
     # Add instruction to use retrieved context if available
     if has_context:
