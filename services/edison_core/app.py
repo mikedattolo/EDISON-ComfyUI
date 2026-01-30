@@ -32,6 +32,30 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Force GPU usage - verify CUDA is available
+def verify_cuda():
+    """Verify CUDA is available before loading models"""
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            logger.error("❌ CUDA not available! Cannot load models on GPU.")
+            logger.error("Please ensure NVIDIA drivers are installed and GPUs are visible.")
+            raise RuntimeError("CUDA not available - GPU required for EDISON")
+        
+        gpu_count = torch.cuda.device_count()
+        logger.info(f"✓ CUDA available with {gpu_count} GPU(s)")
+        for i in range(gpu_count):
+            gpu_name = torch.cuda.get_device_name(i)
+            gpu_mem = torch.cuda.get_device_properties(i).total_memory / (1024**3)
+            logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f} GB)")
+        return True
+    except ImportError:
+        logger.error("❌ PyTorch not installed - cannot verify CUDA")
+        return False
+    except Exception as e:
+        logger.error(f"❌ CUDA verification failed: {e}")
+        return False
+
 # Get repo root - works regardless of CWD
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 sys.path.insert(0, str(REPO_ROOT))
@@ -771,10 +795,11 @@ def load_llm_models():
         logger.error("llama-cpp-python not installed. Install with: pip install llama-cpp-python")
         return
     
-    # Check GPU availability first
-    gpu_available = check_gpu_availability()
-    if not gpu_available:
-        logger.warning("⚠ Proceeding without GPU acceleration - expect slow performance")
+    # Verify CUDA before loading models
+    if not verify_cuda():
+        logger.error("❌ Cannot start without GPU acceleration. Please check NVIDIA drivers and CUDA installation.")
+        logger.error("Run: nvidia-smi to verify GPUs are visible")
+        sys.exit(1)  # Exit if GPU not available - don't allow CPU fallback
     
     # Get model paths relative to repo root
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
