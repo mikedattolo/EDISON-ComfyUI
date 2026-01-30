@@ -37,6 +37,11 @@ class ImageGallery {
             return;
         }
         
+        // Force close on init (remove any stray active class)
+        this.galleryPanel.classList.remove('active');
+        this.isOpen = false;
+        console.log('Gallery initialized - forced closed');
+        
         // Set up event listeners
         this.setupEventListeners();
         console.log('Gallery initialized successfully');
@@ -324,7 +329,10 @@ class ImageGallery {
     }
 }
 
-// Initialize gallery when DOM is ready
-document.addEventListener('DOMContentLoaded', () => {
-    window.imageGallery = new ImageGallery();
-});
+// Initialize gallery when DOM is ready - only once
+if (!window.imageGallery) {
+    document.addEventListener('DOMContentLoaded', () => {
+        console.log('Initializing ImageGallery singleton');
+        window.imageGallery = new ImageGallery();
+    });
+}
