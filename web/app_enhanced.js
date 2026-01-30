@@ -689,11 +689,15 @@ class EdisonApp {
         const imageKeywords = [
             'generate image', 'create image', 'make image', 'draw', 'generate a picture',
             'create a picture', 'make a picture', 'generate an image', 'create an image',
-            'make an image', 'paint', 'illustrate', 'visualize', 'generate art', 'create art',
+            'make an image', 'generate a image', 'create a image', 'make a image',
+            'paint', 'illustrate', 'visualize', 'generate art', 'create art',
             'make art', 'flux', 'stable diffusion', 'text to image', 'text2img'
         ];
         
-        if (imageKeywords.some(keyword => lowerMessage.includes(keyword))) {
+        const isImageRequest = imageKeywords.some(keyword => lowerMessage.includes(keyword));
+        console.log('🔍 Image detection:', { message: lowerMessage, detected: isImageRequest });
+        
+        if (isImageRequest) {
             return true;
         }
         
