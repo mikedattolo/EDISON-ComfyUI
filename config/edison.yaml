@@ -6,7 +6,8 @@ edison:
     port: 8811
     models_path: "models/llm"
     fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
-    deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
+    medium_model: "qwen2.5-32b-instruct-q4_k_m.gguf"  # For deep/code/agent modes
+    deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"    # Falls back to medium if OOM
     vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # VLM for image understanding
     vision_clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"  # CLIP projector for vision
   

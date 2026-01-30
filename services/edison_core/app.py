@@ -215,8 +215,8 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
     # Determine model target based on mode (only if not already set to vision)
     if model_target != "vision":
         if mode in ["work", "reasoning", "code", "agent"]:
-            model_target = "deep"  # Use deep model for complex tasks
-            reasons.append(f"Mode '{mode}' requires deep model")
+            model_target = "medium"  # Use 32B model for complex tasks (72B OOMs)
+            reasons.append(f"Mode '{mode}' requires medium model")
         else:
             model_target = "fast"  # Chat mode uses fast model
             reasons.append(f"Mode '{mode}' uses fast model")

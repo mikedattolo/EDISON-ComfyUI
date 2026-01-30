@@ -25,21 +25,36 @@ class WebSearchTool:
         self.ddgs = DDGS()
         logger.info("Web search tool initialized with DuckDuckGo API")
     
-    def search(self, query: str, num_results: int = 5) -> List[Dict[str, str]]:
+    def search(self, query: str, num_results: int = 5, time_range: str = None) -> List[Dict[str, str]]:
         """
         Search DuckDuckGo and return results using official API
         
         Args:
             query: Search query
             num_results: Number of results to return
+            time_range: Time range filter - 'd' (day), 'w' (week), 'm' (month), 'y' (year)
             
         Returns:
             List of dicts with 'title', 'url', 'snippet' keys
         """
         try:
-            # Use DuckDuckGo API
-            logger.debug(f"Searching for: {query}")
-            raw_results = self.ddgs.text(query, max_results=num_results)
+            # Detect if user wants recent/current/today news
+            query_lower = query.lower()
+            if any(word in query_lower for word in ['today', 'latest', 'recent', 'current', 'news']):
+                if 'today' in query_lower or 'latest' in query_lower:
+                    time_range = 'd'  # Last day
+                elif 'this week' in query_lower or 'recent' in query_lower:
+                    time_range = 'w'  # Last week
+                logger.info(f"Detected time-sensitive query, using time_range={time_range}")
+            
+            # Use DuckDuckGo API with time range if specified
+            logger.debug(f"Searching for: {query} (time_range={time_range})")
+            
+            # Call text() with timelimit parameter if time_range specified
+            if time_range:
+                raw_results = self.ddgs.text(query, max_results=num_results, timelimit=time_range)
+            else:
+                raw_results = self.ddgs.text(query, max_results=num_results)
             
             results = []
             result_count = 0
