@@ -11,6 +11,7 @@ class ImageGallery {
         this.galleryEmpty = null;
         this.images = [];
         this.apiEndpoint = localStorage.getItem('apiEndpoint') || 'http://192.168.1.26:8811';
+        this.escapeListenerAdded = false;
         this.init();
     }
 
@@ -41,11 +42,16 @@ class ImageGallery {
     }
 
     setupEventListeners() {
-        // Gallery button
+        // Gallery button - use single listener with once flag removed to allow proper cleanup
         const galleryBtn = document.getElementById('galleryBtn');
         if (galleryBtn) {
-            galleryBtn.addEventListener('click', (e) => {
+            // Remove any existing listeners by cloning the button
+            const newGalleryBtn = galleryBtn.cloneNode(true);
+            galleryBtn.parentNode.replaceChild(newGalleryBtn, galleryBtn);
+            
+            newGalleryBtn.addEventListener('click', (e) => {
                 e.preventDefault();
+                e.stopPropagation();
                 console.log('Gallery button clicked');
                 this.toggle();
             });
@@ -54,18 +60,27 @@ class ImageGallery {
             console.error('Gallery button not found');
         }
 
-        // Close button
+        // Close button - clean approach
         const closeBtn = document.getElementById('galleryCloseBtn');
         if (closeBtn) {
-            closeBtn.addEventListener('click', () => this.close());
+            const newCloseBtn = closeBtn.cloneNode(true);
+            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
+            newCloseBtn.addEventListener('click', (e) => {
+                e.preventDefault();
+                e.stopPropagation();
+                this.close();
+            });
         }
 
-        // Close on escape key
-        document.addEventListener('keydown', (e) => {
-            if (e.key === 'Escape' && this.galleryPanel?.classList.contains('active')) {
-                this.close();
-            }
-        });
+        // Close on escape key - only add once
+        if (!this.escapeListenerAdded) {
+            document.addEventListener('keydown', (e) => {
+                if (e.key === 'Escape' && this.galleryPanel?.classList.contains('active')) {
+                    this.close();
+                }
+            });
+            this.escapeListenerAdded = true;
+        }
     }
 
     async toggle() {
