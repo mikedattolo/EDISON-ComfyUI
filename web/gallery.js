@@ -37,11 +37,13 @@ class ImageGallery {
             return;
         }
         
-        // FORCE close on init - remove class AND set inline style
+        // FORCE close on init - remove class AND set multiple inline styles
         this.galleryPanel.classList.remove('active');
         this.galleryPanel.style.right = '-100%';
+        this.galleryPanel.style.visibility = 'hidden'; // Hide to prevent click-through
+        this.galleryPanel.style.pointerEvents = 'none'; // Disable all mouse events when closed
         this.isOpen = false;
-        console.log('Gallery initialized - forced closed with inline style');
+        console.log('Gallery initialized - forced closed with visibility hidden');
         
         // Set up event listeners
         this.setupEventListeners();
@@ -103,6 +105,8 @@ class ImageGallery {
         console.log('Opening gallery');
         this.galleryPanel.classList.add('active');
         this.galleryPanel.style.right = ''; // Clear inline style to let CSS take over
+        this.galleryPanel.style.visibility = 'visible';
+        this.galleryPanel.style.pointerEvents = 'auto'; // Re-enable mouse events
         this.isOpen = true;
         await this.loadImages();
     }
@@ -111,6 +115,8 @@ class ImageGallery {
         console.log('Closing gallery');
         this.galleryPanel.classList.remove('active');
         this.galleryPanel.style.right = '-100%'; // Force close with inline style
+        this.galleryPanel.style.visibility = 'hidden';
+        this.galleryPanel.style.pointerEvents = 'none'; // Disable mouse events
         this.isOpen = false;
     }
 
