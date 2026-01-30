@@ -40,12 +40,22 @@ class WebSearchTool:
         try:
             # Detect if user wants recent/current/today news
             query_lower = query.lower()
-            if any(word in query_lower for word in ['today', 'latest', 'recent', 'current', 'news']):
-                if 'today' in query_lower or 'latest' in query_lower:
-                    time_range = 'd'  # Last day
-                elif 'this week' in query_lower or 'recent' in query_lower:
-                    time_range = 'w'  # Last week
-                logger.info(f"Detected time-sensitive query, using time_range={time_range}")
+            
+            # Default to recent results for any news query
+            if 'news' in query_lower and not time_range:
+                time_range = 'd'  # Default news queries to last day
+                logger.info(f"News query detected, defaulting to last day")
+            
+            # Override with more specific time requests
+            if any(word in query_lower for word in ['today', 'latest', 'current']):
+                time_range = 'd'  # Last day
+                logger.info(f"Detected today/latest/current keywords, using time_range=d")
+            elif 'this week' in query_lower or 'recent' in query_lower:
+                time_range = 'w'  # Last week
+                logger.info(f"Detected recent/this week keywords, using time_range=w")
+            elif 'this month' in query_lower:
+                time_range = 'm'  # Last month
+                logger.info(f"Detected this month keyword, using time_range=m")
             
             # Use DuckDuckGo API with time range if specified
             logger.debug(f"Searching for: {query} (time_range={time_range})")
