@@ -621,7 +621,20 @@ class EdisonApp {
         let formatted = content
             // Code blocks
             .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-                return `<pre><code class="language-${lang || 'text'}">${this.escapeHtml(code.trim())}</code></pre>`;
+                const escapedCode = this.escapeHtml(code.trim());
+                return `<div class="code-block-wrapper">
+                    <div class="code-block-header">
+                        <span class="code-lang">${lang || 'text'}</span>
+                        <button class="copy-code-btn" onclick="window.copyCodeToClipboard(this)" title="Copy code">
+                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                                <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/>
+                                <path d="M5 3V2C5 1.44772 5.44772 1 6 1H14C14.5523 1 15 1.44772 15 2V10C15 10.5523 14.5523 11 14 11H13" stroke="currentColor" stroke-width="1.5"/>
+                            </svg>
+                            Copy
+                        </button>
+                    </div>
+                    <pre><code class="language-${lang || 'text'}">${escapedCode}</code></pre>
+                </div>`;
             })
             // Inline code
             .replace(/`([^`]+)`/g, '<code>$1</code>')

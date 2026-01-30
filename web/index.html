@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=8">
+    <link rel="stylesheet" href="styles.css?v=9">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -430,10 +430,35 @@
                 window.edisonApp.sendMessage();
             }
         }
+
+        // Global function to copy code to clipboard
+        window.copyCodeToClipboard = function(button) {
+            const wrapper = button.closest('.code-block-wrapper');
+            const codeElement = wrapper.querySelector('code');
+            const code = codeElement.textContent;
+            
+            navigator.clipboard.writeText(code).then(() => {
+                // Change button text to "Copied!"
+                const originalHTML = button.innerHTML;
+                button.innerHTML = `<svg width="16" height="16" viewBox="0 0 16 16" fill="none">
+                    <path d="M3 8L6 11L13 4" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+                </svg>
+                Copied!`;
+                button.classList.add('copied');
+                
+                // Reset after 2 seconds
+                setTimeout(() => {
+                    button.innerHTML = originalHTML;
+                    button.classList.remove('copied');
+                }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy code:', err);
+            });
+        }
     </script>
 
     <script src="gallery.js?v=7"></script>
-    <script src="app_enhanced.js?v=10"></script>
+    <script src="app_enhanced.js?v=11"></script>
     <script src="app_features.js?v=7"></script>
 </body>
 </html>
