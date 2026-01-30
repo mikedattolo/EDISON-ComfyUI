@@ -1818,7 +1818,6 @@ body {
 .gallery-btn {
     width: 100%;
     padding: 12px 16px;
-    margin: 8px 16px 8px 16px;
     background: var(--primary);
     color: white;
     border: none;
@@ -1831,7 +1830,6 @@ body {
     justify-content: center;
     gap: 8px;
     transition: var(--transition);
-    width: calc(100% - 32px);
 }
 
 .gallery-btn:hover {
