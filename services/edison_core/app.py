@@ -2433,10 +2433,16 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                             if "prompt" in prompt_data:
                                 workflow_data = prompt_data["prompt"]
                                 # Look for CLIP text encode nodes
-                                for node_id, node_data in workflow_data.items():
-                                    if node_data.get("class_type") == "CLIPTextEncode":
-                                        prompt_text = node_data.get("inputs", {}).get("text", prompt_text)
-                                        break
+                                # workflow_data is a dict with node IDs as keys
+                                if isinstance(workflow_data, dict):
+                                    for node_id, node_data in workflow_data.items():
+                                        if isinstance(node_data, dict) and node_data.get("class_type") == "CLIPTextEncode":
+                                            inputs = node_data.get("inputs", {})
+                                            text = inputs.get("text", "")
+                                            # Skip negative prompts (they usually contain "nsfw, nude, etc")
+                                            if text and not text.lower().startswith("nsfw"):
+                                                prompt_text = text
+                                                break
                             
                             # Save to gallery directly (inline to avoid async issues)
                             # Download image from ComfyUI
