@@ -12,6 +12,7 @@ class ImageGallery {
         this.images = [];
         this.apiEndpoint = localStorage.getItem('apiEndpoint') || 'http://192.168.1.26:8811';
         this.escapeListenerAdded = false;
+        this.isOpen = false;
         this.init();
     }
 
@@ -42,40 +43,40 @@ class ImageGallery {
     }
 
     setupEventListeners() {
-        // Gallery button - use single listener with once flag removed to allow proper cleanup
+        // Gallery button - bind once with state tracking
         const galleryBtn = document.getElementById('galleryBtn');
         if (galleryBtn) {
-            // Remove any existing listeners by cloning the button
-            const newGalleryBtn = galleryBtn.cloneNode(true);
-            galleryBtn.parentNode.replaceChild(newGalleryBtn, galleryBtn);
-            
-            newGalleryBtn.addEventListener('click', (e) => {
+            // Store bound handler for potential cleanup
+            this.handleGalleryClick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
-                console.log('Gallery button clicked');
+                console.log('Gallery button clicked, isOpen:', this.isOpen);
                 this.toggle();
-            });
+            };
+            
+            galleryBtn.addEventListener('click', this.handleGalleryClick);
             console.log('Gallery button listener attached');
         } else {
             console.error('Gallery button not found');
         }
 
-        // Close button - clean approach
+        // Close button
         const closeBtn = document.getElementById('galleryCloseBtn');
         if (closeBtn) {
-            const newCloseBtn = closeBtn.cloneNode(true);
-            closeBtn.parentNode.replaceChild(newCloseBtn, closeBtn);
-            newCloseBtn.addEventListener('click', (e) => {
+            this.handleCloseClick = (e) => {
                 e.preventDefault();
                 e.stopPropagation();
+                console.log('Close button clicked');
                 this.close();
-            });
+            };
+            
+            closeBtn.addEventListener('click', this.handleCloseClick);
         }
 
         // Close on escape key - only add once
         if (!this.escapeListenerAdded) {
             document.addEventListener('keydown', (e) => {
-                if (e.key === 'Escape' && this.galleryPanel?.classList.contains('active')) {
+                if (e.key === 'Escape' && this.isOpen) {
                     this.close();
                 }
             });
@@ -84,7 +85,8 @@ class ImageGallery {
     }
 
     async toggle() {
-        if (this.galleryPanel.classList.contains('active')) {
+        console.log('Toggle called, current state:', this.isOpen);
+        if (this.isOpen) {
             this.close();
         } else {
             this.open();
@@ -92,12 +94,16 @@ class ImageGallery {
     }
 
     async open() {
+        console.log('Opening gallery');
         this.galleryPanel.classList.add('active');
+        this.isOpen = true;
         await this.loadImages();
     }
 
     close() {
+        console.log('Closing gallery');
         this.galleryPanel.classList.remove('active');
+        this.isOpen = false;
     }
 
     async loadImages() {
