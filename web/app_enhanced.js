@@ -1488,7 +1488,7 @@ class EdisonApp {
 
     loadSettings() {
         const saved = localStorage.getItem('edison_settings');
-        // Use window.location to determine API endpoint dynamically
+        // Always use window.location to determine API endpoint dynamically (never cache)
         const apiBase = window.location.hostname === 'localhost' ? 'http://localhost:8811' : `http://${window.location.hostname}:8811`;
         const comfyBase = window.location.hostname === 'localhost' ? 'http://localhost:8188' : `http://${window.location.hostname}:8188`;
         const defaults = {
@@ -1499,7 +1499,14 @@ class EdisonApp {
             syntaxHighlight: true
         };
         
-        return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+        // Always override endpoints with current dynamic values to prevent stale cache
+        const loaded = saved ? JSON.parse(saved) : {};
+        return {
+            ...defaults,
+            ...loaded,
+            apiEndpoint: apiBase,  // Force dynamic endpoint
+            comfyuiEndpoint: comfyBase  // Force dynamic endpoint
+        };
     }
 }
 
