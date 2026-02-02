@@ -179,33 +179,51 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                             "debug", "fix this", "syntax", "refactor"]
             
             agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
-                             "current", "latest", "news about", "information on",
+                             "current", "latest", "news about", "information on", "information about",
                              "tell me about", "research", "browse", "what's happening",
                              "recent", "today", "this week", "this month", "this year",
-                             "2025", "2026", "2027", "now", "currently"]
+                             "2025", "2026", "2027", "now", "currently", "look up",
+                             "find out", "check", "what is happening", "what happened",
+                             "who is", "where is", "when is", "show me", "get me",
+                             "look for", "search for", "find information"]
             
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
             
+            # Check if agent patterns match (for enabling web search)
+            has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
+            
             if any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
-                reasons.append("Work patterns detected → work mode")
+                tools_allowed = True  # Work mode can use tools
+                reasons.append("Work patterns detected → work mode with tools")
             elif any(pattern in msg_lower for pattern in code_patterns):
                 mode = "code"
                 reasons.append("Code patterns detected → code mode")
-            elif any(pattern in msg_lower for pattern in agent_patterns):
+            elif has_agent_patterns:
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Agent patterns detected → agent mode with tools")
             elif any(pattern in msg_lower for pattern in reasoning_patterns):
                 mode = "reasoning"
-                reasons.append("Reasoning patterns detected → reasoning mode")
+                # Enable tools for reasoning if agent patterns also present
+                if has_agent_patterns:
+                    tools_allowed = True
+                    reasons.append("Reasoning with search patterns → tools enabled")
+                else:
+                    reasons.append("Reasoning patterns detected → reasoning mode")
             else:
                 # Default to chat
                 mode = "chat"
                 words = len(msg_lower.split())
                 has_question = '?' in user_message
+                
+                # Enable tools even in chat mode if agent patterns detected
+                if has_agent_patterns:
+                    tools_allowed = True
+                    reasons.append("Search request in chat → tools enabled")
+                
                 if words > 15 or has_question:
                     mode = "reasoning"
                     reasons.append("Complex/question-based message → reasoning mode")
@@ -1421,9 +1439,9 @@ async def chat(request: ChatRequest):
     # Agent mode: Check if web search is requested
     search_results = []
     
-    # If agent/work mode with tools_allowed, use structured tool loop
-    if mode in ["agent", "work"] and tools_allowed:
-        logger.info(f"Using structured tool loop for {mode} mode")
+    # If tools_allowed, use structured tool loop (works in any mode)
+    if tools_allowed:
+        logger.info(f"Using structured tool loop for {mode} mode with tools enabled")
         context_note = ""
         if context_chunks:
             context_note = "\n".join([
