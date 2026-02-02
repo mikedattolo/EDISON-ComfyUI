@@ -468,7 +468,8 @@ class EdisonApp {
                             } else if (data.t) {
                                 // Token event
                                 accumulatedResponse += data.t;
-                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
+                                // Force update even during code blocks for smooth streaming
+                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode, true);
                             } else if (data.ok !== undefined) {
                                 // Done event
                                 this.currentRequestId = null;  // Clear request ID
@@ -661,8 +662,10 @@ class EdisonApp {
         }, 2000);
     }
 
-    updateMessage(messageEl, content, mode) {
-        messageEl.classList.remove('streaming');
+    updateMessage(messageEl, content, mode, forceUpdate = false) {
+        if (!forceUpdate) {
+            messageEl.classList.remove('streaming');
+        }
         
         const contentEl = messageEl.querySelector('.message-content');
         contentEl.innerHTML = this.formatMessage(content);
@@ -1485,9 +1488,12 @@ class EdisonApp {
 
     loadSettings() {
         const saved = localStorage.getItem('edison_settings');
+        // Use window.location to determine API endpoint dynamically
+        const apiBase = window.location.hostname === 'localhost' ? 'http://localhost:8811' : `http://${window.location.hostname}:8811`;
+        const comfyBase = window.location.hostname === 'localhost' ? 'http://localhost:8188' : `http://${window.location.hostname}:8188`;
         const defaults = {
-            apiEndpoint: 'http://192.168.1.26:8811',
-            comfyuiEndpoint: 'http://192.168.1.26:8188',
+            apiEndpoint: apiBase,
+            comfyuiEndpoint: comfyBase,
             defaultMode: 'auto',
             streamResponses: true,
             syntaxHighlight: true
