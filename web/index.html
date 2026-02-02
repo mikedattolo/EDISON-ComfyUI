@@ -207,6 +207,14 @@
                             </button>
                         </div>
                         
+                        <!-- Model Selector -->
+                        <div class="model-selector" id="modelSelector" style="display: none;">
+                            <label for="modelSelect">Model:</label>
+                            <select id="modelSelect">
+                                <option value="auto">Auto (System Default)</option>
+                            </select>
+                        </div>
+                        
                         <div class="input-area">
                             <input type="file" id="fileInput" multiple style="display: none;" accept="*/*" />
                             <button class="attach-btn" id="attachBtn" title="Upload files (text, code, images)" onclick="event.stopPropagation(); window.triggerFileUpload && window.triggerFileUpload(event);">

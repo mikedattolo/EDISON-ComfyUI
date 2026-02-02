@@ -10,11 +10,14 @@ class EdisonApp {
         this.currentRequestId = null;  // Track current streaming request for cancellation
         this.sidebarCollapsed = false;
         this.lastImagePrompt = null; // Track last image generation prompt for regeneration
+        this.availableModels = [];  // Store available models
+        this.selectedModel = 'auto';  // Current selected model
         
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
         this.initializeChats();  // Load chats asynchronously
+        this.loadAvailableModels();  // Load available models
     }
 
     async initializeChats() {
@@ -39,6 +42,10 @@ class EdisonApp {
         
         // Mode selector
         this.modeButtons = document.querySelectorAll('.mode-btn');
+        
+        // Model selector
+        this.modelSelector = document.getElementById('modelSelector');
+        this.modelSelect = document.getElementById('modelSelect');
         
         // Settings modal
         this.settingsModal = document.getElementById('settingsModal');
@@ -66,6 +73,12 @@ class EdisonApp {
         // Mode selector
         this.modeButtons.forEach(btn => {
             btn.addEventListener('click', () => this.setMode(btn.dataset.mode));
+        });
+        
+        // Model selector
+        this.modelSelect.addEventListener('change', (e) => {
+            this.selectedModel = e.target.value;
+            console.log(`Model changed to: ${this.selectedModel}`);
         });
         
         // Sidebar
@@ -133,6 +146,14 @@ class EdisonApp {
         this.modeButtons.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.mode === mode);
         });
+        
+        // Show/hide model selector based on mode
+        // Hide in auto mode, show in all other modes
+        if (mode === 'auto') {
+            this.modelSelector.style.display = 'none';
+        } else {
+            this.modelSelector.style.display = 'flex';
+        }
     }
 
     async sendMessage(editingMessageId = null) {
@@ -327,7 +348,8 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
-                images: images.length > 0 ? images : undefined
+                images: images.length > 0 ? images : undefined,
+                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
             }),
             signal: this.abortController?.signal
         });
@@ -401,7 +423,8 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
-                images: images.length > 0 ? images : undefined
+                images: images.length > 0 ? images : undefined,
+                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
             }),
             signal: this.abortController?.signal
         });
@@ -453,6 +476,11 @@ class EdisonApp {
                                     // Success
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
                                     assistantMessageEl.classList.remove('streaming');
+                                    
+                                    // Handle artifacts (HTML, React, SVG, Mermaid)
+                                    if (data.artifact) {
+                                        this.renderArtifact(assistantMessageEl, data.artifact);
+                                    }
                                     
                                     // Save to chat history
                                     this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode);
@@ -547,6 +575,12 @@ class EdisonApp {
             
             copyBtn.addEventListener('click', () => this.copyToClipboard(content));
             regenerateBtn.addEventListener('click', () => this.regenerateResponse(messageEl));
+            
+            // Attach listeners to code block copy buttons
+            const codeCopyBtns = messageEl.querySelectorAll('.code-copy-btn');
+            codeCopyBtns.forEach(btn => {
+                btn.addEventListener('click', () => this.copyCodeBlock(btn));
+            });
         }
         
         this.messagesContainer.appendChild(messageEl);
@@ -591,6 +625,29 @@ class EdisonApp {
         }
     }
 
+    async copyCodeBlock(button) {
+        const codeId = button.dataset.codeId;
+        const codeElement = document.getElementById(codeId);
+        if (codeElement) {
+            const codeText = codeElement.textContent;
+            try {
+                await navigator.clipboard.writeText(codeText);
+                // Update button text temporarily
+                const copyText = button.querySelector('.copy-text');
+                const originalText = copyText.textContent;
+                copyText.textContent = 'Copied!';
+                button.classList.add('copied');
+                setTimeout(() => {
+                    copyText.textContent = originalText;
+                    button.classList.remove('copied');
+                }, 2000);
+            } catch (err) {
+                console.error('Failed to copy code:', err);
+                this.showNotification('Failed to copy code');
+            }
+        }
+    }
+
     showNotification(message) {
         const notification = document.createElement('div');
         notification.className = 'notification';
@@ -610,6 +667,12 @@ class EdisonApp {
         const contentEl = messageEl.querySelector('.message-content');
         contentEl.innerHTML = this.formatMessage(content);
         
+        // Attach listeners to code block copy buttons
+        const codeCopyBtns = contentEl.querySelectorAll('.code-copy-btn');
+        codeCopyBtns.forEach(btn => {
+            btn.addEventListener('click', () => this.copyCodeBlock(btn));
+        });
+        
         if (mode && mode !== 'error' && mode !== 'stopped') {
             const modeEl = messageEl.querySelector('.message-mode');
             modeEl.textContent = mode.toUpperCase();
@@ -619,26 +682,144 @@ class EdisonApp {
         this.scrollToBottom();
     }
 
+    renderArtifact(messageEl, artifact) {
+        /**
+         * Render artifacts (HTML, React, SVG, Mermaid) with live preview
+         * @param {HTMLElement} messageEl - The message element
+         * @param {Object} artifact - Artifact data {type, code, title}
+         */
+        if (!artifact || !artifact.type || !artifact.code) return;
+        
+        const artifactId = 'artifact-' + Math.random().toString(36).substr(2, 9);
+        const escapedCode = this.escapeHtml(artifact.code);
+        
+        const artifactHtml = `
+            <div class="artifact-container" id="${artifactId}">
+                <div class="artifact-header">
+                    <span class="artifact-type">${artifact.type.toUpperCase()}</span>
+                    ${artifact.title ? `<span class="artifact-title">${artifact.title}</span>` : ''}
+                    <div class="artifact-actions">
+                        <button class="artifact-btn" onclick="window.edisonApp.toggleArtifactView('${artifactId}')" title="Toggle view">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
+                            </svg>
+                        </button>
+                        <button class="artifact-btn" onclick="window.edisonApp.downloadArtifact('${artifactId}')" title="Download">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
+                                <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
+                            </svg>
+                        </button>
+                        <button class="artifact-btn copy-artifact-btn" onclick="window.edisonApp.copyArtifactCode('${artifactId}')" title="Copy code">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+                <div class="artifact-preview" style="display: block;">
+                    <iframe 
+                        sandbox="allow-scripts allow-same-origin" 
+                        srcdoc="${escapedCode.replace(/"/g, '&quot;')}"
+                        class="artifact-iframe">
+                    </iframe>
+                </div>
+                <div class="artifact-code" style="display: none;">
+                    <pre><code class="language-${artifact.type}">${escapedCode}</code></pre>
+                </div>
+            </div>
+        `;
+        
+        // Insert artifact after message content
+        const contentEl = messageEl.querySelector('.message-content');
+        contentEl.insertAdjacentHTML('afterend', artifactHtml);
+    }
+
+    toggleArtifactView(artifactId) {
+        const container = document.getElementById(artifactId);
+        if (!container) return;
+        
+        const preview = container.querySelector('.artifact-preview');
+        const code = container.querySelector('.artifact-code');
+        
+        if (preview.style.display === 'none') {
+            preview.style.display = 'block';
+            code.style.display = 'none';
+        } else {
+            preview.style.display = 'none';
+            code.style.display = 'block';
+        }
+    }
+
+    async downloadArtifact(artifactId) {
+        const container = document.getElementById(artifactId);
+        if (!container) return;
+        
+        const iframe = container.querySelector('.artifact-iframe');
+        const artifactType = container.querySelector('.artifact-type').textContent.toLowerCase();
+        const code = iframe.getAttribute('srcdoc');
+        
+        const extensions = {
+            html: '.html',
+            react: '.jsx',
+            svg: '.svg',
+            javascript: '.js',
+            css: '.css'
+        };
+        
+        const filename = `artifact-${Date.now()}${extensions[artifactType] || '.html'}`;
+        
+        const blob = new Blob([code], { type: 'text/html' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = filename;
+        a.click();
+        URL.revokeObjectURL(url);
+        
+        this.showNotification(`Downloaded as ${filename}`);
+    }
+
+    async copyArtifactCode(artifactId) {
+        const container = document.getElementById(artifactId);
+        if (!container) return;
+        
+        const iframe = container.querySelector('.artifact-iframe');
+        const code = iframe.getAttribute('srcdoc');
+        
+        try {
+            await navigator.clipboard.writeText(code);
+            const btn = container.querySelector('.copy-artifact-btn');
+            btn.classList.add('copied');
+            setTimeout(() => btn.classList.remove('copied'), 2000);
+            this.showNotification('Artifact code copied!');
+        } catch (err) {
+            console.error('Failed to copy artifact:', err);
+            this.showNotification('Failed to copy code');
+        }
+    }
+
     formatMessage(content) {
         if (!content) return '';
         
         // Basic markdown-like formatting
         let formatted = content
-            // Code blocks
+            // Code blocks with copy button
             .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
                 const escapedCode = this.escapeHtml(code.trim());
-                return `<div class="code-block-wrapper">
-                    <div class="code-block-header">
+                const codeId = 'code-' + Math.random().toString(36).substr(2, 9);
+                return `<div class="code-block">
+                    <div class="code-header">
                         <span class="code-lang">${lang || 'text'}</span>
-                        <button class="copy-code-btn" onclick="window.copyCodeToClipboard(this)" title="Copy code">
-                            <svg width="16" height="16" viewBox="0 0 16 16" fill="none">
-                                <rect x="3" y="3" width="10" height="10" rx="1" stroke="currentColor" stroke-width="1.5"/>
-                                <path d="M5 3V2C5 1.44772 5.44772 1 6 1H14C14.5523 1 15 1.44772 15 2V10C15 10.5523 14.5523 11 14 11H13" stroke="currentColor" stroke-width="1.5"/>
+                        <button class="code-copy-btn" data-code-id="${codeId}" title="Copy code">
+                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                                <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
                             </svg>
-                            Copy
+                            <span class="copy-text">Copy</span>
                         </button>
                     </div>
-                    <pre><code class="language-${lang || 'text'}">${escapedCode}</code></pre>
+                    <pre id="${codeId}"><code class="language-${lang || 'text'}">${escapedCode}</code></pre>
                 </div>`;
             })
             // Inline code
@@ -1209,6 +1390,39 @@ class EdisonApp {
                 <span class="status-text">Offline - ${error.message}</span>
             `;
         }
+    }
+
+    async loadAvailableModels() {
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/models/list`, {
+                method: 'GET',
+                signal: AbortSignal.timeout(10000)
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                this.availableModels = data.models || [];
+                this.populateModelSelector();
+                console.log(`Loaded ${this.availableModels.length} available models`);
+            } else {
+                console.warn('Failed to load models list');
+            }
+        } catch (error) {
+            console.error('Error loading available models:', error);
+        }
+    }
+
+    populateModelSelector() {
+        // Clear existing options except the first "Auto" option
+        this.modelSelect.innerHTML = '<option value="auto">Auto (Default)</option>';
+        
+        // Add each model as an option
+        this.availableModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.path;
+            option.textContent = model.name;
+            this.modelSelect.appendChild(option);
+        });
     }
 
     clearHistory() {

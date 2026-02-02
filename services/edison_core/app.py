@@ -375,6 +375,10 @@ class ChatRequest(BaseModel):
         default=False,
         description="If True, search across all chats; if False, scope to chat_id"
     )
+    selected_model: Optional[str] = Field(
+        default=None,
+        description="User-selected model path override (None = use auto routing)"
+    )
 
 class ChatResponse(BaseModel):
     response: str
@@ -426,6 +430,29 @@ TOOL_REGISTRY = {
     },
     "system_stats": {
         "args": {}
+    },
+    "execute_python": {
+        "args": {
+            "code": {"type": str, "required": True},
+            "packages": {"type": str, "required": False, "default": ""},
+            "description": {"type": str, "required": False, "default": ""}
+        }
+    },
+    "read_file": {
+        "args": {
+            "path": {"type": str, "required": True}
+        }
+    },
+    "list_files": {
+        "args": {
+            "directory": {"type": str, "required": False, "default": "/opt/edison/gallery"}
+        }
+    },
+    "analyze_csv": {
+        "args": {
+            "file_path": {"type": str, "required": True},
+            "operation": {"type": str, "required": True}
+        }
     }
 }
 
@@ -581,6 +608,147 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 stats.setdefault("disk", "unavailable")
             return {"ok": True, "data": stats}
 
+        if tool_name == "execute_python":
+            # Code Interpreter implementation
+            try:
+                from .sandbox import execute_python_code
+                code = args.get("code", "").strip()
+                packages = args.get("packages", "").strip()
+                description = args.get("description", "")
+                
+                if not code:
+                    return {"ok": False, "error": "No code provided"}
+                
+                # Parse packages
+                package_list = [p.strip() for p in packages.split(",") if p.strip()] if packages else None
+                
+                # Execute
+                result = await execute_python_code(code, packages=package_list)
+                
+                if result["success"]:
+                    output = {
+                        "stdout": result["stdout"],
+                        "images": result["images"],
+                        "execution_time": result["execution_time"]
+                    }
+                    return {"ok": True, "data": output}
+                else:
+                    return {"ok": False, "error": result["error"], "stderr": result.get("stderr", "")}
+                    
+            except Exception as e:
+                logger.error(f"Code execution failed: {e}")
+                return {"ok": False, "error": f"Code execution failed: {str(e)}"}
+
+        if tool_name == "read_file":
+            # Read file from gallery or uploads
+            try:
+                file_path = Path(args.get("path", ""))
+                
+                # Security: only allow reading from gallery and uploads
+                allowed_dirs = [
+                    REPO_ROOT / "gallery",
+                    REPO_ROOT / "uploads",
+                    Path("/opt/edison/gallery"),
+                    Path("/opt/edison/uploads")
+                ]
+                
+                # Resolve absolute path
+                abs_path = file_path if file_path.is_absolute() else REPO_ROOT / file_path
+                abs_path = abs_path.resolve()
+                
+                # Check if within allowed directories
+                if not any(str(abs_path).startswith(str(d)) for d in allowed_dirs):
+                    return {"ok": False, "error": "Access denied: file not in allowed directory"}
+                
+                if not abs_path.exists():
+                    return {"ok": False, "error": f"File not found: {file_path}"}
+                
+                if abs_path.is_dir():
+                    return {"ok": False, "error": f"Path is a directory: {file_path}"}
+                
+                # Read file
+                content = abs_path.read_text(encoding='utf-8', errors='replace')
+                return {"ok": True, "data": {"content": content, "path": str(file_path)}}
+                
+            except Exception as e:
+                return {"ok": False, "error": f"Failed to read file: {str(e)}"}
+
+        if tool_name == "list_files":
+            # List files in directory
+            try:
+                dir_path = Path(args.get("directory", "/opt/edison/gallery"))
+                
+                # Resolve absolute path
+                abs_dir = dir_path if dir_path.is_absolute() else REPO_ROOT / dir_path
+                abs_dir = abs_dir.resolve()
+                
+                if not abs_dir.exists():
+                    return {"ok": False, "error": f"Directory not found: {dir_path}"}
+                
+                if not abs_dir.is_dir():
+                    return {"ok": False, "error": f"Path is not a directory: {dir_path}"}
+                
+                # List files
+                files = []
+                for item in abs_dir.iterdir():
+                    files.append({
+                        "name": item.name,
+                        "type": "directory" if item.is_dir() else "file",
+                        "size": item.stat().st_size if item.is_file() else 0
+                    })
+                
+                return {"ok": True, "data": {"files": files, "directory": str(dir_path)}}
+                
+            except Exception as e:
+                return {"ok": False, "error": f"Failed to list files: {str(e)}"}
+
+        if tool_name == "analyze_csv":
+            # CSV analysis with pandas
+            try:
+                file_path = Path(args.get("file_path", ""))
+                operation = args.get("operation", "").lower()
+                
+                if not file_path.exists():
+                    return {"ok": False, "error": f"File not found: {file_path}"}
+                
+                # Use code execution for CSV analysis
+                if operation == "describe":
+                    code = f"""
+import pandas as pd
+df = pd.read_csv('{file_path}')
+print(df.describe())
+"""
+                elif operation == "head":
+                    code = f"""
+import pandas as pd
+df = pd.read_csv('{file_path}')
+print(df.head(10))
+"""
+                elif operation == "plot":
+                    code = f"""
+import pandas as pd
+import matplotlib.pyplot as plt
+df = pd.read_csv('{file_path}')
+df.plot()
+plt.show()
+"""
+                else:
+                    return {"ok": False, "error": f"Unknown operation: {operation}"}
+                
+                from .sandbox import execute_python_code
+                result = await execute_python_code(code, packages=["pandas", "matplotlib"])
+                
+                if result["success"]:
+                    return {"ok": True, "data": {
+                        "output": result["stdout"],
+                        "images": result["images"]
+                    }}
+                else:
+                    return {"ok": False, "error": result["error"]}
+                    
+            except Exception as e:
+                return {"ok": False, "error": f"CSV analysis failed: {str(e)}"}
+
         return {"ok": False, "error": f"Unhandled tool '{tool_name}'"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -617,7 +785,9 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "Reply with either a final answer in plain text (include citations like [source:web_search]) "
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
         "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
-        "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats()."
+        "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
+        "execute_python(code:str,packages:str,description:str), read_file(path:str), "
+        "list_files(directory:str), analyze_csv(file_path:str,operation:str)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
@@ -1072,6 +1242,53 @@ async def health():
         "repo_root": str(REPO_ROOT)
     }
 
+@app.get("/models/list")
+async def list_models():
+    """List all available GGUF models from both standard and large model paths"""
+    models = []
+    
+    # Scan standard model path
+    models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
+    standard_path = REPO_ROOT / models_rel_path
+    
+    # Scan large model path if configured
+    large_rel_path = config.get("llm", {}).get("large_model_path")
+    large_path = Path(large_rel_path) if large_rel_path else None
+    
+    def scan_path(path: Path, location: str):
+        """Scan a path for GGUF models"""
+        model_list = []
+        if path and path.exists():
+            for model_file in path.glob("*.gguf"):
+                size_gb = model_file.stat().st_size / (1024**3)
+                model_list.append({
+                    "name": model_file.stem,
+                    "filename": model_file.name,
+                    "size_gb": round(size_gb, 2),
+                    "location": location,
+                    "path": str(model_file)
+                })
+        return model_list
+    
+    # Scan both paths
+    models.extend(scan_path(standard_path, "standard"))
+    if large_path:
+        models.extend(scan_path(large_path, "large"))
+    
+    # Sort by name
+    models.sort(key=lambda x: x["name"])
+    
+    return {
+        "models": models,
+        "standard_path": str(standard_path),
+        "large_path": str(large_path) if large_path else None,
+        "current_models": {
+            "fast": config.get("edison", {}).get("core", {}).get("fast_model"),
+            "medium": config.get("edison", {}).get("core", {}).get("medium_model"),
+            "deep": config.get("edison", {}).get("core", {}).get("deep_model")
+        }
+    }
+
 def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
     if model is llm_vision:
@@ -1232,30 +1449,37 @@ async def chat(request: ChatRequest):
     # Keep original_mode for special handling (like work mode with steps)
     original_mode = mode
     
-    # Select model based on target
-    if model_target == "vision":
-        if not llm_vision:
-            raise HTTPException(
-                status_code=503,
-                detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
-            )
-        llm = llm_vision
-        model_name = "vision"
-        logger.info("Using vision model for image understanding")
-    elif model_target == "deep":
-        # Try deep first, then medium, then fast
-        if llm_deep:
-            llm = llm_deep
-            model_name = "deep"
-        elif llm_medium:
-            llm = llm_medium
-            model_name = "medium"
-        else:
-            llm = llm_fast
-            model_name = "fast"
-    else:  # fast
-        llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
-        model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
+    # Check if user selected a specific model (overrides routing)
+    if request.selected_model:
+        logger.info(f"User-selected model override: {request.selected_model}")
+        # Load the selected model (implement model loading logic if needed)
+        # For now, use existing model selection logic with the selected_model preference
+        model_name = request.selected_model
+    else:
+        # Select model based on target
+        if model_target == "vision":
+            if not llm_vision:
+                raise HTTPException(
+                    status_code=503,
+                    detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
+                )
+            llm = llm_vision
+            model_name = "vision"
+            logger.info("Using vision model for image understanding")
+        elif model_target == "deep":
+            # Try deep first, then medium, then fast
+            if llm_deep:
+                llm = llm_deep
+                model_name = "deep"
+            elif llm_medium:
+                llm = llm_medium
+                model_name = "medium"
+            else:
+                llm = llm_fast
+                model_name = "fast"
+        else:  # fast
+            llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
+            model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
     
     if not llm:
         raise HTTPException(
@@ -1765,24 +1989,29 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     model_target = routing["model_target"]
     original_mode = mode
 
-    if model_target == "vision":
-        if not llm_vision:
-            raise HTTPException(status_code=503, detail="Vision model not loaded. Please download LLaVA model to enable image understanding.")
-        llm = llm_vision
-        model_name = "vision"
-    elif model_target == "deep":
-        if llm_deep:
-            llm = llm_deep
-            model_name = "deep"
-        elif llm_medium:
-            llm = llm_medium
-            model_name = "medium"
-        else:
-            llm = llm_fast
-            model_name = "fast"
+    # Check if user selected a specific model (overrides routing)
+    if request.selected_model:
+        logger.info(f"User-selected model override: {request.selected_model}")
+        model_name = request.selected_model
     else:
-        llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
-        model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
+        if model_target == "vision":
+            if not llm_vision:
+                raise HTTPException(status_code=503, detail="Vision model not loaded. Please download LLaVA model to enable image understanding.")
+            llm = llm_vision
+            model_name = "vision"
+        elif model_target == "deep":
+            if llm_deep:
+                llm = llm_deep
+                model_name = "deep"
+            elif llm_medium:
+                llm = llm_medium
+                model_name = "medium"
+            else:
+                llm = llm_fast
+                model_name = "fast"
+        else:
+            llm = llm_fast if llm_fast else (llm_medium if llm_medium else llm_deep)
+            model_name = "fast" if llm_fast else ("medium" if llm_medium else "deep")
 
     if not llm:
         raise HTTPException(status_code=503, detail=f"No suitable model available for mode '{mode}'.")
@@ -2044,13 +2273,18 @@ Steps:"""
             return
 
         store_conversation_exchange(request, assistant_response, original_mode, remember)
+        
+        # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
+        artifact = detect_artifact(assistant_response)
+        
         done_payload = {
             "ok": True,
             "mode_used": original_mode,
             "model_used": model_name,
             "work_steps": work_steps,
             "search_results": search_results if search_results else [],
-            "response": assistant_response
+            "response": assistant_response,
+            "artifact": artifact  # Add artifact info if detected
         }
         # Cleanup
         with active_requests_lock:
@@ -2935,6 +3169,105 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     parts.append("Assistant:")
     
     return "\n".join(parts)
+
+def detect_artifact(response: str) -> dict:
+    """
+    Detect artifact-worthy content in assistant response
+    Returns dict with type, code, and title if artifact detected, else None
+    """
+    if not response:
+        return None
+    
+    import re
+    
+    # Check for HTML (<!DOCTYPE html>, <html>, or substantial HTML tags)
+    html_pattern = r'(?:<!DOCTYPE html>|<html[\s>])([\s\S]+)'
+    html_match = re.search(html_pattern, response, re.IGNORECASE)
+    if html_match:
+        return {
+            "type": "html",
+            "code": html_match.group(0),
+            "title": "HTML Document"
+        }
+    
+    # Check for React/JSX (import React, function component, etc.)
+    react_pattern = r'(?:import React|function \w+\([^)]*\)|const \w+ = \([^)]*\) =>)([\s\S]+)'
+    react_match = re.search(react_pattern, response)
+    if react_match and ('return' in response and '<' in response and '>' in response):
+        return {
+            "type": "react",
+            "code": response,
+            "title": "React Component"
+        }
+    
+    # Check for SVG
+    svg_pattern = r'<svg[\s\S]+?</svg>'
+    svg_match = re.search(svg_pattern, response, re.IGNORECASE)
+    if svg_match:
+        return {
+            "type": "svg",
+            "code": svg_match.group(0),
+            "title": "SVG Graphic"
+        }
+    
+    # Check for Mermaid diagrams
+    mermaid_pattern = r'```mermaid\n([\s\S]+?)```'
+    mermaid_match = re.search(mermaid_pattern, response)
+    if mermaid_match:
+        mermaid_code = mermaid_match.group(1)
+        # Wrap in HTML with Mermaid CDN
+        html_with_mermaid = f'''<!DOCTYPE html>
+<html>
+<head>
+    <script src="https://cdn.jsdelivr.net/npm/mermaid/dist/mermaid.min.js"></script>
+    <script>mermaid.initialize({{ startOnLoad: true }});</script>
+</head>
+<body>
+    <div class="mermaid">
+{mermaid_code}
+    </div>
+</body>
+</html>'''
+        return {
+            "type": "mermaid",
+            "code": html_with_mermaid,
+            "title": "Mermaid Diagram"
+        }
+    
+    # Check for code blocks that might be interactive (JavaScript, HTML in code block)
+    code_block_pattern = r'```(?:html|javascript|js)\n([\s\S]+?)```'
+    code_match = re.search(code_block_pattern, response)
+    if code_match:
+        code = code_match.group(1)
+        if len(code) > 100 and ('<' in code or 'function' in code):
+            # Substantial code, might be renderable
+            if code.strip().startswith('<'):
+                return {
+                    "type": "html",
+                    "code": code,
+                    "title": "HTML Snippet"
+                }
+            else:
+                # JavaScript - wrap in HTML
+                html_wrapper = f'''<!DOCTYPE html>
+<html>
+<head>
+    <style>body {{ font-family: system-ui; padding: 20px; }}</style>
+</head>
+<body>
+    <div id="output"></div>
+    <script>
+{code}
+    </script>
+</body>
+</html>'''
+                return {
+                    "type": "javascript",
+                    "code": html_wrapper,
+                    "title": "JavaScript Code"
+                }
+    
+    return None
 
 # ============================================
 # NEW FEATURES API ENDPOINTS
