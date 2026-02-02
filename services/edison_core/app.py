@@ -1993,6 +1993,15 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     if request.selected_model:
         logger.info(f"User-selected model override: {request.selected_model}")
         model_name = request.selected_model
+        # Map the selected model path to the appropriate llm instance
+        if "qwen2-vl" in model_name.lower() or "vision" in model_name.lower():
+            llm = llm_vision
+        elif "72b" in model_name.lower() or "deep" in model_name.lower():
+            llm = llm_deep
+        elif "32b" in model_name.lower() or "medium" in model_name.lower():
+            llm = llm_medium
+        else:
+            llm = llm_fast
     else:
         if model_target == "vision":
             if not llm_vision:
