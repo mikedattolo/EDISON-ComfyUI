@@ -1993,15 +1993,29 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     if request.selected_model:
         logger.info(f"User-selected model override: {request.selected_model}")
         model_name = request.selected_model
-        # Map the selected model path to the appropriate llm instance
+        # Map the selected model path to the appropriate llm instance with fallback
         if "qwen2-vl" in model_name.lower() or "vision" in model_name.lower():
             llm = llm_vision
+            if not llm:
+                raise HTTPException(status_code=503, detail=f"Vision model not loaded. Selected: {model_name}")
         elif "72b" in model_name.lower() or "deep" in model_name.lower():
             llm = llm_deep
+            if not llm:
+                # Fallback to available models
+                logger.warning(f"Deep model not loaded, falling back from {model_name}")
+                llm = llm_medium if llm_medium else llm_fast
+                model_name = "medium (fallback)" if llm_medium else "fast (fallback)"
         elif "32b" in model_name.lower() or "medium" in model_name.lower():
             llm = llm_medium
+            if not llm:
+                logger.warning(f"Medium model not loaded, falling back from {model_name}")
+                llm = llm_fast if llm_fast else llm_deep
+                model_name = "fast (fallback)" if llm_fast else "deep (fallback)"
         else:
             llm = llm_fast
+            if not llm:
+                llm = llm_medium if llm_medium else llm_deep
+                model_name = "medium (fallback)" if llm_medium else "deep (fallback)"
     else:
         if model_target == "vision":
             if not llm_vision:
