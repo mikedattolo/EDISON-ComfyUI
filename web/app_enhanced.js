@@ -1441,7 +1441,7 @@ class EdisonApp {
     async loadChats() {
         // Try to load from server first
         try {
-            const response = await fetch(`${this.apiEndpoint}/chats/sync`);
+            const response = await fetch(`${this.settings.apiEndpoint}/chats/sync`);
             if (response.ok) {
                 const data = await response.json();
                 console.log('Loaded chats from server:', data.chats.length);
@@ -1473,7 +1473,7 @@ class EdisonApp {
 
     async syncChatsToServer(chats) {
         try {
-            const response = await fetch(`${this.apiEndpoint}/chats/sync`, {
+            const response = await fetch(`${this.settings.apiEndpoint}/chats/sync`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({chats: chats})
