@@ -2,7 +2,7 @@
 class EdisonApp {
     constructor() {
         this.currentChatId = null;
-        this.chats = this.loadChats();
+        this.chats = [];  // Will be loaded async
         this.currentMode = 'auto';
         this.settings = this.loadSettings();
         this.isStreaming = false;
@@ -14,6 +14,11 @@ class EdisonApp {
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
+        this.initializeChats();  // Load chats asynchronously
+    }
+
+    async initializeChats() {
+        this.chats = await this.loadChats();
         this.loadCurrentChat();
     }
 
@@ -1216,13 +1221,52 @@ class EdisonApp {
         }
     }
 
-    loadChats() {
+    async loadChats() {
+        // Try to load from server first
+        try {
+            const response = await fetch(`${this.apiEndpoint}/chats/sync`);
+            if (response.ok) {
+                const data = await response.json();
+                console.log('Loaded chats from server:', data.chats.length);
+                return data.chats || [];
+            }
+        } catch (error) {
+            console.warn('Failed to load chats from server, falling back to localStorage:', error);
+        }
+        
+        // Fallback to localStorage
         const saved = localStorage.getItem('edison_chats');
-        return saved ? JSON.parse(saved) : [];
+        const chats = saved ? JSON.parse(saved) : [];
+        
+        // If we have local chats, sync them to server
+        if (chats.length > 0) {
+            this.syncChatsToServer(chats);
+        }
+        
+        return chats;
     }
 
-    saveChats() {
+    async saveChats() {
+        // Save to localStorage as backup
         localStorage.setItem('edison_chats', JSON.stringify(this.chats));
+        
+        // Sync to server
+        await this.syncChatsToServer(this.chats);
+    }
+
+    async syncChatsToServer(chats) {
+        try {
+            const response = await fetch(`${this.apiEndpoint}/chats/sync`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({chats: chats})
+            });
+            if (response.ok) {
+                console.log('Chats synced to server');
+            }
+        } catch (error) {
+            console.error('Failed to sync chats to server:', error);
+        }
     }
 
     loadSettings() {

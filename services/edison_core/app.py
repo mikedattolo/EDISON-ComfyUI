@@ -3,7 +3,7 @@ EDISON Core Service - Main Application
 FastAPI server with llama-cpp-python for local LLM inference
 """
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -2529,6 +2529,10 @@ async def proxy_image(filename: str, subfolder: str = "", type: str = "output"):
 GALLERY_DIR = REPO_ROOT / "gallery"
 GALLERY_DB = GALLERY_DIR / "gallery.json"
 
+# Chat storage setup
+CHATS_DIR = REPO_ROOT / "chats"
+CHATS_DIR.mkdir(exist_ok=True)
+
 def ensure_gallery_dir():
     """Ensure gallery directory and database exist"""
     GALLERY_DIR.mkdir(exist_ok=True)
@@ -2547,6 +2551,40 @@ def save_gallery_db(data):
     """Save gallery database"""
     ensure_gallery_dir()
     GALLERY_DB.write_text(json.dumps(data, indent=2))
+
+def get_or_create_user_id(request: Request, response: Response) -> str:
+    """Get user ID from cookie or create new one"""
+    user_id = request.cookies.get('edison_user_id')
+    if not user_id:
+        user_id = str(uuid.uuid4())
+        response.set_cookie(
+            key='edison_user_id',
+            value=user_id,
+            max_age=31536000,  # 1 year
+            httponly=True,
+            samesite='lax'
+        )
+    return user_id
+
+def get_user_chats_file(user_id: str) -> Path:
+    """Get path to user's chats file"""
+    return CHATS_DIR / f"{user_id}.json"
+
+def load_user_chats(user_id: str) -> list:
+    """Load chats for a user"""
+    chats_file = get_user_chats_file(user_id)
+    if chats_file.exists():
+        try:
+            return json.loads(chats_file.read_text())
+        except:
+            return []
+    return []
+
+def save_user_chats(user_id: str, chats: list):
+    """Save chats for a user"""
+    chats_file = get_user_chats_file(user_id)
+    chats_file.write_text(json.dumps(chats, indent=2))
+
 
 @app.post("/gallery/save")
 async def save_to_gallery(request: dict):
@@ -2687,6 +2725,34 @@ async def get_gallery_image(filename: str):
         raise
     except Exception as e:
         logger.error(f"Error serving gallery image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# ============================================================================
+# Chat Storage Endpoints
+# ============================================================================
+
+@app.get("/chats/sync")
+async def sync_chats(request: Request, response: Response):
+    """Load chats for the current user"""
+    try:
+        user_id = get_or_create_user_id(request, response)
+        chats = load_user_chats(user_id)
+        return {"chats": chats, "user_id": user_id}
+    except Exception as e:
+        logger.error(f"Error loading chats: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/chats/sync")
+async def save_chats(request: Request, response: Response):
+    """Save chats for the current user"""
+    try:
+        user_id = get_or_create_user_id(request, response)
+        data = await request.json()
+        chats = data.get('chats', [])
+        save_user_chats(user_id, chats)
+        return {"success": True, "user_id": user_id}
+    except Exception as e:
+        logger.error(f"Error saving chats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
