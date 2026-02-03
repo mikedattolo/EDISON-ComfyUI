@@ -48,35 +48,11 @@ class ImageGallery {
     }
 
     setupEventListeners() {
-        // Gallery button - bind once with state tracking
-        const galleryBtn = document.getElementById('galleryBtn');
-        if (galleryBtn) {
-            // Store bound handler for potential cleanup
-            this.handleGalleryClick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('Gallery button clicked, isOpen:', this.isOpen);
-                this.toggle();
-            };
-            
-            galleryBtn.addEventListener('click', this.handleGalleryClick);
-            console.log('Gallery button listener attached');
-        } else {
-            console.error('Gallery button not found');
-        }
+        // Gallery button now uses inline onclick in HTML - no JS listener needed
+        // This avoids double-firing issues
 
-        // Close button
-        const closeBtn = document.getElementById('galleryCloseBtn');
-        if (closeBtn) {
-            this.handleCloseClick = (e) => {
-                e.preventDefault();
-                e.stopPropagation();
-                console.log('Close button clicked');
-                this.close();
-            };
-            
-            closeBtn.addEventListener('click', this.handleCloseClick);
-        }
+        // Close button - also uses inline onclick in HTML
+        // No JS listeners needed for open/close buttons
 
         // Close on escape key - only add once
         if (!this.escapeListenerAdded) {
