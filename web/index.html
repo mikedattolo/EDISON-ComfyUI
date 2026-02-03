@@ -106,7 +106,7 @@
                 </button>
                 
                 <!-- Gallery Button -->
-                <button class="gallery-btn" id="galleryBtn" title="View generated images">
+                <button class="gallery-btn" id="galleryBtn" title="View generated images" onclick="if(window.imageGallery) window.imageGallery.toggle(); else console.error('Gallery not initialized');">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                         <rect x="2" y="3" width="16" height="11" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
                         <circle cx="7" cy="7" r="1.5" fill="currentColor"/>
@@ -402,7 +402,7 @@
     <div class="gallery-panel" id="galleryPanel" style="transform: translateX(100%); visibility: hidden;">
         <div class="gallery-header">
             <h2>🖼️ Image Gallery</h2>
-            <button class="gallery-close-btn" id="galleryCloseBtn">×</button>
+            <button class="gallery-close-btn" id="galleryCloseBtn" onclick="if(window.imageGallery) window.imageGallery.close();">×</button>
         </div>
         <div class="gallery-content" id="galleryContent">
             <div class="gallery-loading" id="galleryLoading">
