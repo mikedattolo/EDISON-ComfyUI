@@ -3,9 +3,9 @@ class EdisonApp {
     constructor() {
         this.currentChatId = null;
         this.userId = this.getOrCreateUserId();  // Get persistent user ID for cross-network sync
-        this.chats = this.loadChats();
+        this.settings = this.loadSettings();  // Load settings FIRST
+        this.chats = this.loadChats();  // Then load chats (needs settings)
         this.currentMode = 'auto';
-        this.settings = this.loadSettings();
         this.isStreaming = false;
         this.abortController = null;
         this.currentRequestId = null;  // Track current streaming request for cancellation
