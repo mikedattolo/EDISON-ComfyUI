@@ -2210,64 +2210,115 @@ Steps:"""
 
     logger.info(f"Prompt length: {len(full_prompt)} chars")
 
-    # Swarm mode: Multi-agent collaboration
+    # Swarm mode: Multi-agent collaboration with conversation
     swarm_results = []
     if mode == "swarm" and not has_images:
         try:
-            logger.info("🐝 Swarm mode activated - deploying specialized agents")
+            logger.info("🐝 Swarm mode activated - deploying specialized agents for collaborative discussion")
             
-            # Define specialized agent prompts
+            # Define specialized agents with different models and roles
             agents = [
                 {
                     "name": "Researcher",
                     "icon": "🔍",
-                    "prompt": f"You are a research specialist. Analyze this request and provide key facts, data, and context:\n\n{request.message}\n\nProvide concise factual findings:"
+                    "role": "research specialist",
+                    "model": fast_llm,  # Fast model for quick research
+                    "model_name": "Qwen 14B (Fast)"
                 },
                 {
                     "name": "Analyst", 
                     "icon": "🧠",
-                    "prompt": f"You are a strategic analyst. Break down this request into key components and requirements:\n\n{request.message}\n\nProvide structured analysis:"
+                    "role": "strategic analyst",
+                    "model": llm,  # Deep model for analysis
+                    "model_name": "Qwen 72B (Deep)"
                 },
                 {
                     "name": "Implementer",
-                    "icon": "⚙️", 
-                    "prompt": f"You are an implementation specialist. Based on this request, outline actionable steps or code:\n\n{request.message}\n\nProvide concrete implementation:"
+                    "icon": "⚙️",
+                    "role": "implementation specialist",
+                    "model": fast_llm,  # Fast model for quick implementation ideas
+                    "model_name": "Qwen 14B (Fast)"
                 }
             ]
             
-            # Run agents in parallel (simulate with sequential for now)
+            # Build conversation between agents
+            conversation = []
+            
+            # Round 1: Each agent provides initial thoughts
+            logger.info("🐝 Round 1: Initial agent perspectives")
             for agent in agents:
-                agent_prompt = agent["prompt"]
-                agent_response = ""
+                agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
+
+User Request: {request.message}
+
+Provide your initial perspective (2-3 sentences max, be concise and specific):"""
                 
-                lock = get_lock_for_model(llm)
+                agent_model = agent["model"]
+                lock = get_lock_for_model(agent_model)
                 with lock:
-                    stream = llm.create_chat_completion(
+                    stream = agent_model.create_chat_completion(
                         messages=[{"role": "user", "content": agent_prompt}],
-                        max_tokens=512,
+                        max_tokens=150,
+                        temperature=0.8,
+                        stream=False
+                    )
+                    agent_response = stream["choices"][0]["message"]["content"]
+                
+                conversation.append({
+                    "agent": agent["name"],
+                    "icon": agent["icon"],
+                    "model": agent["model_name"],
+                    "response": agent_response
+                })
+                logger.info(f"{agent['icon']} {agent['name']} ({agent['model_name']}): {agent_response[:80]}...")
+            
+            # Round 2: Agents respond to each other
+            logger.info("🐝 Round 2: Agent collaboration and refinement")
+            discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
+            
+            for agent in agents:
+                agent_prompt = f"""You are {agent['name']}, continuing the discussion.
+
+User Request: {request.message}
+
+Other experts said:
+{discussion_summary}
+
+Based on their input, provide your refined perspective or additional insights (2-3 sentences):"""
+                
+                agent_model = agent["model"]
+                lock = get_lock_for_model(agent_model)
+                with lock:
+                    stream = agent_model.create_chat_completion(
+                        messages=[{"role": "user", "content": agent_prompt}],
+                        max_tokens=150,
                         temperature=0.7,
                         stream=False
                     )
                     agent_response = stream["choices"][0]["message"]["content"]
                 
-                swarm_results.append({
-                    "agent": agent["name"],
+                conversation.append({
+                    "agent": f"{agent['name']} (Round 2)",
                     "icon": agent["icon"],
+                    "model": agent["model_name"],
                     "response": agent_response
                 })
-                logger.info(f"{agent['icon']} {agent['name']} agent completed")
+                logger.info(f"{agent['icon']} {agent['name']} Round 2: {agent_response[:80]}...")
             
-            # Synthesize swarm results
-            synthesis_prompt = f"""You are an orchestrator synthesizing insights from multiple specialized agents.
+            swarm_results = conversation
+            
+            # Synthesize with actual insight
+            synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
 
-Original Request: {request.message}
+User Request: {request.message}
 
-Agent Findings:
-{chr(10).join([f"{r['icon']} {r['agent']}: {r['response'][:200]}..." for r in swarm_results])}
+Expert Discussion:
+{chr(10).join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])}
 
-Synthesize these findings into a comprehensive, coherent response:"""
+Provide a clear, actionable synthesis that integrates all perspectives:"""
             
             full_prompt = synthesis_prompt
+            logger.info("🐝 Swarm discussion complete, synthesizing final response")
             
         except Exception as e:
             logger.error(f"Swarm orchestration failed: {e}")
@@ -2279,6 +2330,17 @@ Synthesize these findings into a comprehensive, coherent response:"""
             return
         # Send request_id as first event
         yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
+        
+        # Log GPU utilization at start of inference
+        try:
+            import torch
+            if torch.cuda.is_available():
+                for i in range(torch.cuda.device_count()):
+                    mem_allocated = torch.cuda.memory_allocated(i) / (1024**3)
+                    mem_reserved = torch.cuda.memory_reserved(i) / (1024**3)
+                    logger.info(f"🎮 GPU {i}: {mem_allocated:.2f}GB allocated, {mem_reserved:.2f}GB reserved")
+        except Exception as e:
+            logger.debug(f"Could not log GPU utilization: {e}")
         
         assistant_response = ""
         client_disconnected = False

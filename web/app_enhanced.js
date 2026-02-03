@@ -564,6 +564,12 @@ class EdisonApp {
                                 if (data.ok) {
                                     // Success
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
+                                    
+                                    // Display swarm agent results if available
+                                    if (data.swarm_agents && data.swarm_agents.length > 0) {
+                                        this.displaySwarmAgents(assistantMessageEl, data.swarm_agents);
+                                    }
+                                    
                                     assistantMessageEl.classList.remove('streaming');
                                     
                                     // Save to chat history
@@ -714,6 +720,40 @@ class EdisonApp {
             notification.classList.remove('show');
             setTimeout(() => notification.remove(), 300);
         }, 2000);
+    }
+
+    displaySwarmAgents(assistantMessageEl, swarmAgents) {
+        // Create a collapsible section to display swarm agent conversation
+        const contentEl = assistantMessageEl.querySelector('.message-content');
+        
+        const swarmSection = document.createElement('div');
+        swarmSection.className = 'swarm-agents-section';
+        swarmSection.innerHTML = `
+            <details class="swarm-details">
+                <summary class="swarm-summary">
+                    <span class="swarm-icon">🐝</span>
+                    <span>Agent Discussion (${swarmAgents.length} messages)</span>
+                    <span class="swarm-toggle">▼</span>
+                </summary>
+                <div class="swarm-conversation">
+                    ${swarmAgents.map((agent, idx) => `
+                        <div class="swarm-agent-message">
+                            <div class="swarm-agent-header">
+                                <span class="swarm-agent-icon">${agent.icon}</span>
+                                <span class="swarm-agent-name">${agent.agent}</span>
+                                <span class="swarm-agent-model">${agent.model || 'Unknown Model'}</span>
+                            </div>
+                            <div class="swarm-agent-content">
+                                ${this.formatMessage(agent.response)}
+                            </div>
+                        </div>
+                    `).join('')}
+                </div>
+            </details>
+        `;
+        
+        // Insert before the main response
+        contentEl.insertBefore(swarmSection, contentEl.firstChild);
     }
 
     updateMessage(messageEl, content, mode) {

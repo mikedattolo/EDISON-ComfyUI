@@ -2360,3 +2360,117 @@ body {
         min-height: 300px;
     }
 }
+/* Swarm Agent Display Styles */
+.swarm-agents-section {
+    margin: 16px 0;
+    border-top: 2px solid var(--border);
+    padding-top: 12px;
+}
+
+.swarm-details {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--border-radius);
+    overflow: hidden;
+}
+
+.swarm-summary {
+    padding: 12px 16px;
+    cursor: pointer;
+    user-select: none;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 500;
+    color: var(--text-primary);
+    background: var(--surface-hover);
+    transition: var(--transition);
+}
+
+.swarm-summary:hover {
+    background: var(--border);
+}
+
+.swarm-icon {
+    font-size: 18px;
+}
+
+.swarm-toggle {
+    margin-left: auto;
+    font-size: 12px;
+    transition: transform 0.2s ease;
+}
+
+.swarm-details[open] .swarm-toggle {
+    transform: rotate(180deg);
+}
+
+.swarm-conversation {
+    padding: 16px;
+    display: flex;
+    flex-direction: column;
+    gap: 12px;
+}
+
+.swarm-agent-message {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 12px;
+    transition: var(--transition);
+}
+
+.swarm-agent-message:hover {
+    border-color: var(--primary);
+    box-shadow: 0 2px 8px rgba(102, 126, 234, 0.1);
+}
+
+.swarm-agent-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin-bottom: 8px;
+    padding-bottom: 8px;
+    border-bottom: 1px solid var(--border);
+}
+
+.swarm-agent-icon {
+    font-size: 16px;
+}
+
+.swarm-agent-name {
+    font-weight: 600;
+    color: var(--primary);
+    font-size: 14px;
+}
+
+.swarm-agent-model {
+    margin-left: auto;
+    font-size: 11px;
+    color: var(--text-tertiary);
+    background: var(--surface);
+    padding: 2px 8px;
+    border-radius: 4px;
+    font-family: 'Monaco', 'Menlo', monospace;
+}
+
+.swarm-agent-content {
+    color: var(--text-secondary);
+    font-size: 14px;
+    line-height: 1.5;
+}
+
+.swarm-agent-content code {
+    background: var(--surface);
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-size: 13px;
+}
+
+.swarm-agent-content pre {
+    background: var(--surface);
+    padding: 12px;
+    border-radius: 6px;
+    overflow-x: auto;
+    margin: 8px 0;
+}
