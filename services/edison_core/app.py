@@ -153,6 +153,11 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             mode = "chat"  # Instant maps to fast chat
             model_target = "fast"
             reasons.append("Instant mode → fast chat model")
+        elif mode == "swarm":
+            # Swarm uses multiple agents with deep model
+            tools_allowed = True
+            model_target = "deep"
+            reasons.append("Swarm mode → multi-agent collaboration with deep model")
     else:
         # Rule 3: Check coral_intent for specific routing
         if coral_intent:
@@ -236,10 +241,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 else:
                     reasons.append("No patterns matched → default chat mode")
     
-    # Determine model target based on mode (only if not already set to vision or instant)
-    if model_target not in ["vision", "fast"]:  # Don't override if already set by instant mode
-        if mode in ["work", "reasoning"]:
-            model_target = "deep"  # Work and reasoning need most capable model
+    # Determine model target based on mode (only if not already set to vision, instant, or swarm)
+    if model_target not in ["vision", "fast", "deep"]:  # Don't override if already set
+        if mode in ["work", "reasoning", "swarm"]:
+            model_target = "deep"  # Work, reasoning, and swarm need most capable model
             reasons.append(f"Mode '{mode}' requires deep model")
         elif mode in ["code", "agent"]:
             model_target = "medium"  # Code and agent use medium model
@@ -2205,6 +2210,69 @@ Steps:"""
 
     logger.info(f"Prompt length: {len(full_prompt)} chars")
 
+    # Swarm mode: Multi-agent collaboration
+    swarm_results = []
+    if mode == "swarm" and not has_images:
+        try:
+            logger.info("🐝 Swarm mode activated - deploying specialized agents")
+            
+            # Define specialized agent prompts
+            agents = [
+                {
+                    "name": "Researcher",
+                    "icon": "🔍",
+                    "prompt": f"You are a research specialist. Analyze this request and provide key facts, data, and context:\n\n{request.message}\n\nProvide concise factual findings:"
+                },
+                {
+                    "name": "Analyst", 
+                    "icon": "🧠",
+                    "prompt": f"You are a strategic analyst. Break down this request into key components and requirements:\n\n{request.message}\n\nProvide structured analysis:"
+                },
+                {
+                    "name": "Implementer",
+                    "icon": "⚙️", 
+                    "prompt": f"You are an implementation specialist. Based on this request, outline actionable steps or code:\n\n{request.message}\n\nProvide concrete implementation:"
+                }
+            ]
+            
+            # Run agents in parallel (simulate with sequential for now)
+            for agent in agents:
+                agent_prompt = agent["prompt"]
+                agent_response = ""
+                
+                lock = get_lock_for_model(llm)
+                with lock:
+                    stream = llm.create_chat_completion(
+                        messages=[{"role": "user", "content": agent_prompt}],
+                        max_tokens=512,
+                        temperature=0.7,
+                        stream=False
+                    )
+                    agent_response = stream["choices"][0]["message"]["content"]
+                
+                swarm_results.append({
+                    "agent": agent["name"],
+                    "icon": agent["icon"],
+                    "response": agent_response
+                })
+                logger.info(f"{agent['icon']} {agent['name']} agent completed")
+            
+            # Synthesize swarm results
+            synthesis_prompt = f"""You are an orchestrator synthesizing insights from multiple specialized agents.
+
+Original Request: {request.message}
+
+Agent Findings:
+{chr(10).join([f"{r['icon']} {r['agent']}: {r['response'][:200]}..." for r in swarm_results])}
+
+Synthesize these findings into a comprehensive, coherent response:"""
+            
+            full_prompt = synthesis_prompt
+            
+        except Exception as e:
+            logger.error(f"Swarm orchestration failed: {e}")
+            # Fallback to normal mode
+
     async def sse_generator():
         if image_intent_payload is not None:
             yield f"event: done\ndata: {json.dumps(image_intent_payload)}\n\n"
@@ -2314,6 +2382,7 @@ Steps:"""
             "mode_used": original_mode,
             "model_used": model_name,
             "work_steps": work_steps,
+            "swarm_agents": swarm_results if swarm_results else [],  # Add swarm agent results
             "search_results": search_results if search_results else [],
             "response": assistant_response,
             "artifact": artifact  # Add artifact info if detected
