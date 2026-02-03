@@ -2,6 +2,7 @@
 class EdisonApp {
     constructor() {
         this.currentChatId = null;
+        this.userId = this.getOrCreateUserId();  // Get persistent user ID for cross-network sync
         this.chats = this.loadChats();
         this.currentMode = 'auto';
         this.settings = this.loadSettings();
@@ -11,6 +12,17 @@ class EdisonApp {
         this.attachEventListeners();
         this.checkSystemStatus();
         this.loadCurrentChat();
+    }
+
+    getOrCreateUserId() {
+        // Use a persistent user ID stored in localStorage for cross-network access
+        let userId = localStorage.getItem('edison_user_id');
+        if (!userId) {
+            // Generate a simple ID based on timestamp and random string
+            userId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('edison_user_id', userId);
+        }
+        return userId;
     }
 
     initializeElements() {
@@ -480,12 +492,99 @@ class EdisonApp {
     }
 
     loadChats() {
+        // Load from localStorage first for immediate display
         const saved = localStorage.getItem('edison_chats');
-        return saved ? JSON.parse(saved) : [];
+        const localChats = saved ? JSON.parse(saved) : [];
+        
+        // Then sync with server in background
+        this.syncChatsFromServer();
+        
+        return localChats;
+    }
+
+    async syncChatsFromServer() {
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/chats/sync`, {
+                method: 'GET',
+                credentials: 'include',  // Include cookies for user ID
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Edison-User-ID': this.userId  // Send user ID for cross-network access
+                }
+            });
+            
+            if (response.ok) {
+                const data = await response.json();
+                const serverChats = data.chats || [];
+                
+                if (serverChats.length > 0) {
+                    // Merge server chats with local chats (server takes priority for same IDs)
+                    const merged = this.mergeChats(this.chats, serverChats);
+                    this.chats = merged;
+                    localStorage.setItem('edison_chats', JSON.stringify(this.chats));
+                    this.renderChatHistory();
+                    console.log(`Synced ${serverChats.length} chats from server`);
+                }
+            }
+        } catch (error) {
+            console.warn('Could not sync chats from server:', error.message);
+        }
+    }
+
+    mergeChats(localChats, serverChats) {
+        // Create a map of all chats by ID
+        const chatMap = new Map();
+        
+        // Add local chats first
+        for (const chat of localChats) {
+            chatMap.set(chat.id, chat);
+        }
+        
+        // Server chats take priority (they may have newer messages)
+        for (const chat of serverChats) {
+            const existing = chatMap.get(chat.id);
+            if (existing) {
+                // Keep the one with more messages or newer timestamp
+                const existingMsgCount = existing.messages?.length || 0;
+                const serverMsgCount = chat.messages?.length || 0;
+                if (serverMsgCount >= existingMsgCount) {
+                    chatMap.set(chat.id, chat);
+                }
+            } else {
+                chatMap.set(chat.id, chat);
+            }
+        }
+        
+        // Sort by most recent first
+        return Array.from(chatMap.values()).sort((a, b) => {
+            const aTime = a.timestamp || 0;
+            const bTime = b.timestamp || 0;
+            return bTime - aTime;
+        });
     }
 
     saveChats() {
+        // Save locally first for immediate feedback
         localStorage.setItem('edison_chats', JSON.stringify(this.chats));
+        
+        // Then sync to server in background
+        this.syncChatsToServer();
+    }
+
+    async syncChatsToServer() {
+        try {
+            await fetch(`${this.settings.apiEndpoint}/chats/sync`, {
+                method: 'POST',
+                credentials: 'include',  // Include cookies for user ID
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Edison-User-ID': this.userId  // Send user ID for cross-network access
+                },
+                body: JSON.stringify({ chats: this.chats })
+            });
+        } catch (error) {
+            console.warn('Could not sync chats to server:', error.message);
+        }
     }
 
     loadSettings() {

@@ -6,10 +6,9 @@ edison:
     port: 8811
     models_path: "models/llm"
     fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
-    medium_model: "qwen2.5-coder-32b-instruct-q4_k_m.gguf"  # For deep/code/agent modes
-    deep_model: "Qwen2.5-72B-Instruct-Q4_K_M.gguf"    # UPGRADED: Better reasoning (45GB)
-    vision_model: "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"  # UPGRADED: Much better vision (4.4GB)
-    vision_clip: "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"  # Vision projector for Qwen2-VL
+    deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
+    vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # VLM for image understanding
+    vision_clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"  # CLIP projector for vision
   
   coral:
     enabled: true

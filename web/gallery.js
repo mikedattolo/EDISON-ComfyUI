@@ -37,13 +37,10 @@ class ImageGallery {
             return;
         }
         
-        // FORCE close on init - remove class AND set multiple inline styles
+        // Ensure gallery starts closed (CSS handles positioning via .active class)
         this.galleryPanel.classList.remove('active');
-        this.galleryPanel.style.right = '-100%';
-        this.galleryPanel.style.visibility = 'hidden'; // Hide to prevent click-through
-        this.galleryPanel.style.pointerEvents = 'none'; // Disable all mouse events when closed
         this.isOpen = false;
-        console.log('Gallery initialized - forced closed with visibility hidden');
+        console.log('Gallery initialized - starts closed');
         
         // Set up event listeners
         this.setupEventListeners();
@@ -103,20 +100,23 @@ class ImageGallery {
 
     async open() {
         console.log('Opening gallery');
+        // Clear all inline styles and use CSS class for positioning
+        this.galleryPanel.style.removeProperty('right');
+        this.galleryPanel.style.removeProperty('visibility');
+        this.galleryPanel.style.removeProperty('pointer-events');
         this.galleryPanel.classList.add('active');
-        this.galleryPanel.style.right = ''; // Clear inline style to let CSS take over
-        this.galleryPanel.style.visibility = 'visible';
-        this.galleryPanel.style.pointerEvents = 'auto'; // Re-enable mouse events
         this.isOpen = true;
         await this.loadImages();
     }
 
     close() {
         console.log('Closing gallery');
+        // Remove active class - CSS will handle the positioning
         this.galleryPanel.classList.remove('active');
-        this.galleryPanel.style.right = '-100%'; // Force close with inline style
-        this.galleryPanel.style.visibility = 'hidden';
-        this.galleryPanel.style.pointerEvents = 'none'; // Disable mouse events
+        // Clear any inline styles that might interfere
+        this.galleryPanel.style.removeProperty('right');
+        this.galleryPanel.style.removeProperty('visibility');
+        this.galleryPanel.style.removeProperty('pointer-events');
         this.isOpen = false;
     }
 

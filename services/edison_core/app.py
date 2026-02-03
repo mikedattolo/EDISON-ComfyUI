@@ -2828,17 +2828,33 @@ def save_gallery_db(data):
     GALLERY_DB.write_text(json.dumps(data, indent=2))
 
 def get_or_create_user_id(request: Request, response: Response) -> str:
-    """Get user ID from cookie or create new one"""
-    user_id = request.cookies.get('edison_user_id')
+    """Get user ID from header, cookie, or create new one.
+    
+    Priority:
+    1. X-Edison-User-ID header (for cross-network access)
+    2. Cookie (for same-origin access)
+    3. Default user 'default' (for single-user setups)
+    """
+    # Check header first (allows cross-network access)
+    user_id = request.headers.get('X-Edison-User-ID')
+    
+    # Then check cookie
     if not user_id:
-        user_id = str(uuid.uuid4())
-        response.set_cookie(
-            key='edison_user_id',
-            value=user_id,
-            max_age=31536000,  # 1 year
-            httponly=True,
-            samesite='lax'
-        )
+        user_id = request.cookies.get('edison_user_id')
+    
+    # Use default user if still no ID (simpler single-user setup)
+    if not user_id:
+        user_id = 'default'
+    
+    # Set cookie for future requests
+    response.set_cookie(
+        key='edison_user_id',
+        value=user_id,
+        max_age=31536000,  # 1 year
+        httponly=False,  # Allow JS access for cross-network sync
+        samesite='none',  # Allow cross-origin
+        secure=False  # Allow non-HTTPS for local network
+    )
     return user_id
 
 def get_user_chats_file(user_id: str) -> Path:

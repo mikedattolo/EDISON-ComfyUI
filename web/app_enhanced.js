@@ -2,7 +2,8 @@
 class EdisonApp {
     constructor() {
         this.currentChatId = null;
-        this.chats = [];  // Will be loaded async
+        this.userId = this.getOrCreateUserId();  // Get persistent user ID for cross-network sync
+        this.chats = this.loadChats();
         this.currentMode = 'auto';
         this.settings = this.loadSettings();
         this.isStreaming = false;
@@ -10,19 +11,22 @@ class EdisonApp {
         this.currentRequestId = null;  // Track current streaming request for cancellation
         this.sidebarCollapsed = false;
         this.lastImagePrompt = null; // Track last image generation prompt for regeneration
-        this.availableModels = [];  // Store available models
-        this.selectedModel = 'auto';  // Current selected model
         
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
-        this.initializeChats();  // Load chats asynchronously
-        this.loadAvailableModels();  // Load available models
+        this.loadCurrentChat();
     }
 
-    async initializeChats() {
-        this.chats = await this.loadChats();
-        this.loadCurrentChat();
+    getOrCreateUserId() {
+        // Use a persistent user ID stored in localStorage for cross-network access
+        let userId = localStorage.getItem('edison_user_id');
+        if (!userId) {
+            // Generate a simple ID based on timestamp and random string
+            userId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('edison_user_id', userId);
+        }
+        return userId;
     }
 
     initializeElements() {
@@ -43,10 +47,6 @@ class EdisonApp {
         // Mode selector
         this.modeButtons = document.querySelectorAll('.mode-btn');
         
-        // Model selector
-        this.modelSelector = document.getElementById('modelSelector');
-        this.modelSelect = document.getElementById('modelSelect');
-        
         // Settings modal
         this.settingsModal = document.getElementById('settingsModal');
         this.settingsBtn = document.getElementById('settingsBtn');
@@ -57,6 +57,12 @@ class EdisonApp {
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
         this.systemStatus = document.getElementById('systemStatus');
+        
+        // User ID sync controls
+        this.userIdInput = document.getElementById('userIdInput');
+        this.copyUserIdBtn = document.getElementById('copyUserIdBtn');
+        this.importUserIdInput = document.getElementById('importUserIdInput');
+        this.importUserIdBtn = document.getElementById('importUserIdBtn');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -75,12 +81,6 @@ class EdisonApp {
             btn.addEventListener('click', () => this.setMode(btn.dataset.mode));
         });
         
-        // Model selector
-        this.modelSelect.addEventListener('change', (e) => {
-            this.selectedModel = e.target.value;
-            console.log(`Model changed to: ${this.selectedModel}`);
-        });
-        
         // Sidebar
         this.newChatBtn.addEventListener('click', () => this.createNewChat());
         this.sidebarToggle.addEventListener('click', () => this.toggleSidebar());
@@ -90,6 +90,14 @@ class EdisonApp {
         this.closeSettingsBtn.addEventListener('click', () => this.closeSettings());
         this.saveSettingsBtn.addEventListener('click', () => this.saveSettings());
         this.clearHistoryBtn.addEventListener('click', () => this.clearHistory());
+        
+        // User ID sync controls
+        if (this.copyUserIdBtn) {
+            this.copyUserIdBtn.addEventListener('click', () => this.copyUserId());
+        }
+        if (this.importUserIdBtn) {
+            this.importUserIdBtn.addEventListener('click', () => this.importUserId());
+        }
         
         // Theme controls (in settings modal)
         this.themeButtons.forEach(btn => {
@@ -146,14 +154,6 @@ class EdisonApp {
         this.modeButtons.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.mode === mode);
         });
-        
-        // Show/hide model selector based on mode
-        // Hide in auto mode, show in all other modes
-        if (mode === 'auto') {
-            this.modelSelector.style.display = 'none';
-        } else {
-            this.modelSelector.style.display = 'flex';
-        }
     }
 
     async sendMessage(editingMessageId = null) {
@@ -348,8 +348,7 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
-                images: images.length > 0 ? images : undefined,
-                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
+                images: images.length > 0 ? images : undefined
             }),
             signal: this.abortController?.signal
         });
@@ -423,8 +422,7 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
-                images: images.length > 0 ? images : undefined,
-                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
+                images: images.length > 0 ? images : undefined
             }),
             signal: this.abortController?.signal
         });
@@ -468,8 +466,7 @@ class EdisonApp {
                             } else if (data.t) {
                                 // Token event
                                 accumulatedResponse += data.t;
-                                // Force update even during code blocks for smooth streaming
-                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode, true);
+                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
                             } else if (data.ok !== undefined) {
                                 // Done event
                                 this.currentRequestId = null;  // Clear request ID
@@ -477,11 +474,6 @@ class EdisonApp {
                                     // Success
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
                                     assistantMessageEl.classList.remove('streaming');
-                                    
-                                    // Handle artifacts (HTML, React, SVG, Mermaid)
-                                    if (data.artifact) {
-                                        this.renderArtifact(assistantMessageEl, data.artifact);
-                                    }
                                     
                                     // Save to chat history
                                     this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode);
@@ -576,12 +568,6 @@ class EdisonApp {
             
             copyBtn.addEventListener('click', () => this.copyToClipboard(content));
             regenerateBtn.addEventListener('click', () => this.regenerateResponse(messageEl));
-            
-            // Attach listeners to code block copy buttons
-            const codeCopyBtns = messageEl.querySelectorAll('.code-copy-btn');
-            codeCopyBtns.forEach(btn => {
-                btn.addEventListener('click', () => this.copyCodeBlock(btn));
-            });
         }
         
         this.messagesContainer.appendChild(messageEl);
@@ -626,29 +612,6 @@ class EdisonApp {
         }
     }
 
-    async copyCodeBlock(button) {
-        const codeId = button.dataset.codeId;
-        const codeElement = document.getElementById(codeId);
-        if (codeElement) {
-            const codeText = codeElement.textContent;
-            try {
-                await navigator.clipboard.writeText(codeText);
-                // Update button text temporarily
-                const copyText = button.querySelector('.copy-text');
-                const originalText = copyText.textContent;
-                copyText.textContent = 'Copied!';
-                button.classList.add('copied');
-                setTimeout(() => {
-                    copyText.textContent = originalText;
-                    button.classList.remove('copied');
-                }, 2000);
-            } catch (err) {
-                console.error('Failed to copy code:', err);
-                this.showNotification('Failed to copy code');
-            }
-        }
-    }
-
     showNotification(message) {
         const notification = document.createElement('div');
         notification.className = 'notification';
@@ -662,19 +625,11 @@ class EdisonApp {
         }, 2000);
     }
 
-    updateMessage(messageEl, content, mode, forceUpdate = false) {
-        if (!forceUpdate) {
-            messageEl.classList.remove('streaming');
-        }
+    updateMessage(messageEl, content, mode) {
+        messageEl.classList.remove('streaming');
         
         const contentEl = messageEl.querySelector('.message-content');
         contentEl.innerHTML = this.formatMessage(content);
-        
-        // Attach listeners to code block copy buttons
-        const codeCopyBtns = contentEl.querySelectorAll('.code-copy-btn');
-        codeCopyBtns.forEach(btn => {
-            btn.addEventListener('click', () => this.copyCodeBlock(btn));
-        });
         
         if (mode && mode !== 'error' && mode !== 'stopped') {
             const modeEl = messageEl.querySelector('.message-mode');
@@ -685,145 +640,14 @@ class EdisonApp {
         this.scrollToBottom();
     }
 
-    renderArtifact(messageEl, artifact) {
-        /**
-         * Render artifacts (HTML, React, SVG, Mermaid) with live preview
-         * @param {HTMLElement} messageEl - The message element
-         * @param {Object} artifact - Artifact data {type, code, title}
-         */
-        if (!artifact || !artifact.type || !artifact.code) return;
-        
-        const artifactId = 'artifact-' + Math.random().toString(36).substr(2, 9);
-        const escapedCode = this.escapeHtml(artifact.code);
-        
-        const artifactHtml = `
-            <div class="artifact-container" id="${artifactId}">
-                <div class="artifact-header">
-                    <span class="artifact-type">${artifact.type.toUpperCase()}</span>
-                    ${artifact.title ? `<span class="artifact-title">${artifact.title}</span>` : ''}
-                    <div class="artifact-actions">
-                        <button class="artifact-btn" onclick="window.edisonApp.toggleArtifactView('${artifactId}')" title="Toggle view">
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M8 4a.5.5 0 0 1 .5.5v3h3a.5.5 0 0 1 0 1h-3v3a.5.5 0 0 1-1 0v-3h-3a.5.5 0 0 1 0-1h3v-3A.5.5 0 0 1 8 4z"/>
-                            </svg>
-                        </button>
-                        <button class="artifact-btn" onclick="window.edisonApp.downloadArtifact('${artifactId}')" title="Download">
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/>
-                                <path d="M7.646 11.854a.5.5 0 0 0 .708 0l3-3a.5.5 0 0 0-.708-.708L8.5 10.293V1.5a.5.5 0 0 0-1 0v8.793L5.354 8.146a.5.5 0 1 0-.708.708l3 3z"/>
-                            </svg>
-                        </button>
-                        <button class="artifact-btn copy-artifact-btn" onclick="window.edisonApp.copyArtifactCode('${artifactId}')" title="Copy code">
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
-                            </svg>
-                        </button>
-                    </div>
-                </div>
-                <div class="artifact-preview" style="display: block;">
-                    <iframe 
-                        sandbox="allow-scripts allow-same-origin" 
-                        srcdoc="${escapedCode.replace(/"/g, '&quot;')}"
-                        class="artifact-iframe">
-                    </iframe>
-                </div>
-                <div class="artifact-code" style="display: none;">
-                    <pre><code class="language-${artifact.type}">${escapedCode}</code></pre>
-                </div>
-            </div>
-        `;
-        
-        // Insert artifact after message content
-        const contentEl = messageEl.querySelector('.message-content');
-        contentEl.insertAdjacentHTML('afterend', artifactHtml);
-    }
-
-    toggleArtifactView(artifactId) {
-        const container = document.getElementById(artifactId);
-        if (!container) return;
-        
-        const preview = container.querySelector('.artifact-preview');
-        const code = container.querySelector('.artifact-code');
-        
-        if (preview.style.display === 'none') {
-            preview.style.display = 'block';
-            code.style.display = 'none';
-        } else {
-            preview.style.display = 'none';
-            code.style.display = 'block';
-        }
-    }
-
-    async downloadArtifact(artifactId) {
-        const container = document.getElementById(artifactId);
-        if (!container) return;
-        
-        const iframe = container.querySelector('.artifact-iframe');
-        const artifactType = container.querySelector('.artifact-type').textContent.toLowerCase();
-        const code = iframe.getAttribute('srcdoc');
-        
-        const extensions = {
-            html: '.html',
-            react: '.jsx',
-            svg: '.svg',
-            javascript: '.js',
-            css: '.css'
-        };
-        
-        const filename = `artifact-${Date.now()}${extensions[artifactType] || '.html'}`;
-        
-        const blob = new Blob([code], { type: 'text/html' });
-        const url = URL.createObjectURL(blob);
-        const a = document.createElement('a');
-        a.href = url;
-        a.download = filename;
-        a.click();
-        URL.revokeObjectURL(url);
-        
-        this.showNotification(`Downloaded as ${filename}`);
-    }
-
-    async copyArtifactCode(artifactId) {
-        const container = document.getElementById(artifactId);
-        if (!container) return;
-        
-        const iframe = container.querySelector('.artifact-iframe');
-        const code = iframe.getAttribute('srcdoc');
-        
-        try {
-            await navigator.clipboard.writeText(code);
-            const btn = container.querySelector('.copy-artifact-btn');
-            btn.classList.add('copied');
-            setTimeout(() => btn.classList.remove('copied'), 2000);
-            this.showNotification('Artifact code copied!');
-        } catch (err) {
-            console.error('Failed to copy artifact:', err);
-            this.showNotification('Failed to copy code');
-        }
-    }
-
     formatMessage(content) {
         if (!content) return '';
         
         // Basic markdown-like formatting
         let formatted = content
-            // Code blocks with copy button
+            // Code blocks
             .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-                const escapedCode = this.escapeHtml(code.trim());
-                const codeId = 'code-' + Math.random().toString(36).substr(2, 9);
-                return `<div class="code-block">
-                    <div class="code-header">
-                        <span class="code-lang">${lang || 'text'}</span>
-                        <button class="code-copy-btn" data-code-id="${codeId}" title="Copy code">
-                            <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-                                <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
-                                <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
-                            </svg>
-                            <span class="copy-text">Copy</span>
-                        </button>
-                    </div>
-                    <pre id="${codeId}"><code class="language-${lang || 'text'}">${escapedCode}</code></pre>
-                </div>`;
+                return `<pre><code class="language-${lang || 'text'}">${this.escapeHtml(code.trim())}</code></pre>`;
             })
             // Inline code
             .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -891,15 +715,11 @@ class EdisonApp {
         const imageKeywords = [
             'generate image', 'create image', 'make image', 'draw', 'generate a picture',
             'create a picture', 'make a picture', 'generate an image', 'create an image',
-            'make an image', 'generate a image', 'create a image', 'make a image',
-            'paint', 'illustrate', 'visualize', 'generate art', 'create art',
+            'make an image', 'paint', 'illustrate', 'visualize', 'generate art', 'create art',
             'make art', 'flux', 'stable diffusion', 'text to image', 'text2img'
         ];
         
-        const isImageRequest = imageKeywords.some(keyword => lowerMessage.includes(keyword));
-        console.log('🔍 Image detection:', { message: lowerMessage, detected: isImageRequest });
-        
-        if (isImageRequest) {
+        if (imageKeywords.some(keyword => lowerMessage.includes(keyword))) {
             return true;
         }
         
@@ -1128,6 +948,10 @@ class EdisonApp {
                             <button onclick="downloadImage('${fullImageUrl}', 'EDISON_${Date.now()}.png')" style="padding: 10px 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 20px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Download Image">
                                 📥
                             </button>
+                            <button onclick="regenerateImage('${imagePrompt.replace(/'/g, "\\'")}')
+" style="padding: 10px 14px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 18px; box-shadow: 0 2px 8px rgba(240, 147, 251, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Regenerate Image">
+                                🔄
+                            </button>
                             <span style="color: #888; font-size: 14px;"><strong>Prompt:</strong> ${imagePrompt}</span>
                         </div>
                     `;
@@ -1348,12 +1172,62 @@ class EdisonApp {
         this.apiEndpointInput.value = this.settings.apiEndpoint;
         this.comfyuiEndpointInput.value = this.settings.comfyuiEndpoint;
         this.defaultModeSelect.value = this.settings.defaultMode;
+        
+        // Populate user ID field
+        if (this.userIdInput) {
+            this.userIdInput.value = this.userId;
+        }
+        
         this.settingsModal.classList.add('open');
         this.checkSystemStatus();
     }
 
     closeSettings() {
         this.settingsModal.classList.remove('open');
+    }
+
+    copyUserId() {
+        if (this.userId) {
+            navigator.clipboard.writeText(this.userId).then(() => {
+                // Show feedback
+                const btn = this.copyUserIdBtn;
+                const originalText = btn.textContent;
+                btn.textContent = '✓ Copied!';
+                setTimeout(() => { btn.textContent = originalText; }, 2000);
+            }).catch(err => {
+                console.error('Failed to copy user ID:', err);
+                alert('Failed to copy. Please copy manually: ' + this.userId);
+            });
+        }
+    }
+
+    importUserId() {
+        const newUserId = this.importUserIdInput?.value?.trim();
+        if (!newUserId) {
+            alert('Please paste a User ID first');
+            return;
+        }
+        
+        if (confirm(`This will replace your current User ID and sync chats from the imported account. Continue?`)) {
+            // Save the new user ID
+            this.userId = newUserId;
+            localStorage.setItem('edison_user_id', newUserId);
+            
+            // Update display
+            if (this.userIdInput) {
+                this.userIdInput.value = newUserId;
+            }
+            
+            // Clear import field
+            if (this.importUserIdInput) {
+                this.importUserIdInput.value = '';
+            }
+            
+            // Sync chats from server with new user ID
+            this.syncChatsFromServer().then(() => {
+                alert('User ID imported successfully! Your chats have been synced.');
+            });
+        }
     }
 
     saveSettings() {
@@ -1395,39 +1269,6 @@ class EdisonApp {
         }
     }
 
-    async loadAvailableModels() {
-        try {
-            const response = await fetch(`${this.settings.apiEndpoint}/models/list`, {
-                method: 'GET',
-                signal: AbortSignal.timeout(10000)
-            });
-            
-            if (response.ok) {
-                const data = await response.json();
-                this.availableModels = data.models || [];
-                this.populateModelSelector();
-                console.log(`Loaded ${this.availableModels.length} available models`);
-            } else {
-                console.warn('Failed to load models list');
-            }
-        } catch (error) {
-            console.error('Error loading available models:', error);
-        }
-    }
-
-    populateModelSelector() {
-        // Clear existing options except the first "Auto" option
-        this.modelSelect.innerHTML = '<option value="auto">Auto (Default)</option>';
-        
-        // Add each model as an option
-        this.availableModels.forEach(model => {
-            const option = document.createElement('option');
-            option.value = model.path;
-            option.textContent = model.name;
-            this.modelSelect.appendChild(option);
-        });
-    }
-
     clearHistory() {
         if (confirm('Are you sure you want to clear all chat history? This cannot be undone.')) {
             this.chats = [];
@@ -1438,75 +1279,113 @@ class EdisonApp {
         }
     }
 
-    async loadChats() {
-        // Try to load from server first
-        try {
-            const response = await fetch(`${this.settings.apiEndpoint}/chats/sync`);
-            if (response.ok) {
-                const data = await response.json();
-                console.log('Loaded chats from server:', data.chats.length);
-                return data.chats || [];
-            }
-        } catch (error) {
-            console.warn('Failed to load chats from server, falling back to localStorage:', error);
-        }
-        
-        // Fallback to localStorage
+    loadChats() {
+        // Load from localStorage first for immediate display
         const saved = localStorage.getItem('edison_chats');
-        const chats = saved ? JSON.parse(saved) : [];
+        const localChats = saved ? JSON.parse(saved) : [];
         
-        // If we have local chats, sync them to server
-        if (chats.length > 0) {
-            this.syncChatsToServer(chats);
-        }
+        // Then sync with server in background
+        this.syncChatsFromServer();
         
-        return chats;
+        return localChats;
     }
 
-    async saveChats() {
-        // Save to localStorage as backup
-        localStorage.setItem('edison_chats', JSON.stringify(this.chats));
-        
-        // Sync to server
-        await this.syncChatsToServer(this.chats);
-    }
-
-    async syncChatsToServer(chats) {
+    async syncChatsFromServer() {
         try {
             const response = await fetch(`${this.settings.apiEndpoint}/chats/sync`, {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({chats: chats})
+                method: 'GET',
+                credentials: 'include',  // Include cookies for user ID
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Edison-User-ID': this.userId  // Send user ID for cross-network access
+                }
             });
+            
             if (response.ok) {
-                console.log('Chats synced to server');
+                const data = await response.json();
+                const serverChats = data.chats || [];
+                
+                if (serverChats.length > 0) {
+                    // Merge server chats with local chats (server takes priority for same IDs)
+                    const merged = this.mergeChats(this.chats, serverChats);
+                    this.chats = merged;
+                    localStorage.setItem('edison_chats', JSON.stringify(this.chats));
+                    this.renderChatHistory();
+                    console.log(`Synced ${serverChats.length} chats from server`);
+                }
             }
         } catch (error) {
-            console.error('Failed to sync chats to server:', error);
+            console.warn('Could not sync chats from server:', error.message);
+        }
+    }
+
+    mergeChats(localChats, serverChats) {
+        // Create a map of all chats by ID
+        const chatMap = new Map();
+        
+        // Add local chats first
+        for (const chat of localChats) {
+            chatMap.set(chat.id, chat);
+        }
+        
+        // Server chats take priority (they may have newer messages)
+        for (const chat of serverChats) {
+            const existing = chatMap.get(chat.id);
+            if (existing) {
+                // Keep the one with more messages or newer timestamp
+                const existingMsgCount = existing.messages?.length || 0;
+                const serverMsgCount = chat.messages?.length || 0;
+                if (serverMsgCount >= existingMsgCount) {
+                    chatMap.set(chat.id, chat);
+                }
+            } else {
+                chatMap.set(chat.id, chat);
+            }
+        }
+        
+        // Sort by most recent first
+        return Array.from(chatMap.values()).sort((a, b) => {
+            const aTime = a.timestamp || 0;
+            const bTime = b.timestamp || 0;
+            return bTime - aTime;
+        });
+    }
+
+    saveChats() {
+        // Save locally first for immediate feedback
+        localStorage.setItem('edison_chats', JSON.stringify(this.chats));
+        
+        // Then sync to server in background
+        this.syncChatsToServer();
+    }
+
+    async syncChatsToServer() {
+        try {
+            await fetch(`${this.settings.apiEndpoint}/chats/sync`, {
+                method: 'POST',
+                credentials: 'include',  // Include cookies for user ID
+                headers: { 
+                    'Content-Type': 'application/json',
+                    'X-Edison-User-ID': this.userId  // Send user ID for cross-network access
+                },
+                body: JSON.stringify({ chats: this.chats })
+            });
+        } catch (error) {
+            console.warn('Could not sync chats to server:', error.message);
         }
     }
 
     loadSettings() {
         const saved = localStorage.getItem('edison_settings');
-        // Always use window.location to determine API endpoint dynamically (never cache)
-        const apiBase = window.location.hostname === 'localhost' ? 'http://localhost:8811' : `http://${window.location.hostname}:8811`;
-        const comfyBase = window.location.hostname === 'localhost' ? 'http://localhost:8188' : `http://${window.location.hostname}:8188`;
         const defaults = {
-            apiEndpoint: apiBase,
-            comfyuiEndpoint: comfyBase,
+            apiEndpoint: 'http://192.168.1.26:8811',
+            comfyuiEndpoint: 'http://192.168.1.26:8188',
             defaultMode: 'auto',
             streamResponses: true,
             syntaxHighlight: true
         };
         
-        // Always override endpoints with current dynamic values to prevent stale cache
-        const loaded = saved ? JSON.parse(saved) : {};
-        return {
-            ...defaults,
-            ...loaded,
-            apiEndpoint: apiBase,  // Force dynamic endpoint
-            comfyuiEndpoint: comfyBase  // Force dynamic endpoint
-        };
+        return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
     }
 }
 

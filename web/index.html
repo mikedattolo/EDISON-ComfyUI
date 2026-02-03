@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=9">
+    <link rel="stylesheet" href="styles.css?v=10">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap" rel="stylesheet">
@@ -333,6 +333,20 @@
                             <span class="status-text">Checking...</span>
                         </div>
                     </div>
+                    
+                    <div class="setting-group">
+                        <h3>Sync Settings</h3>
+                        <p class="setting-description">Your chats are synced to the server. To access your chats from another device, copy this User ID:</p>
+                        <div class="user-id-container">
+                            <input type="text" id="userIdInput" readonly style="flex: 1; font-family: monospace; font-size: 12px;">
+                            <button class="btn-secondary" id="copyUserIdBtn" title="Copy User ID">📋 Copy</button>
+                        </div>
+                        <p class="setting-description" style="margin-top: 8px;">To restore chats on this device from another, paste the User ID below:</p>
+                        <div class="user-id-container">
+                            <input type="text" id="importUserIdInput" placeholder="Paste User ID here" style="flex: 1; font-family: monospace; font-size: 12px;">
+                            <button class="btn-secondary" id="importUserIdBtn" title="Import User ID">📥 Import</button>
+                        </div>
+                    </div>
                 </div>
                 <div class="modal-footer">
                     <button class="btn-secondary" id="clearHistoryBtn">Clear Chat History</button>
@@ -465,7 +479,7 @@
         }
     </script>
 
-    <script src="gallery.js?v=7"></script>
+    <script src="gallery.js?v=8"></script>
     <script src="app_enhanced.js?v=11"></script>
     <script src="app_features.js?v=7"></script>
 </body>
