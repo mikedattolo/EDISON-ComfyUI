@@ -36,6 +36,11 @@ class ImageGallery {
             console.error('Gallery panel not found in DOM');
             return;
         }
+
+        // Ensure gallery panel is attached directly to body (avoid layout/stacking issues)
+        if (this.galleryPanel.parentElement !== document.body) {
+            document.body.appendChild(this.galleryPanel);
+        }
         
         // Ensure gallery starts closed (CSS handles positioning via .active class)
         this.galleryPanel.classList.remove('active');
@@ -77,26 +82,43 @@ class ImageGallery {
     async open() {
         console.log('Opening gallery');
         console.log('Gallery panel element:', this.galleryPanel);
-        
+
         if (!this.galleryPanel) {
             console.error('NO GALLERY PANEL!');
             alert('Gallery panel not found!');
             return;
         }
-        
+
+        // Force critical styles to guarantee visibility and stacking
+        Object.assign(this.galleryPanel.style, {
+            position: 'fixed',
+            top: '0',
+            right: '0',
+            left: 'auto',
+            bottom: '0',
+            width: '600px',
+            maxWidth: '90vw',
+            height: '100vh',
+            zIndex: '99999',
+            display: 'flex',
+            opacity: '1',
+            pointerEvents: 'auto'
+        });
+
         // Set inline styles for open state
         this.galleryPanel.style.transform = 'translateX(0)';
         this.galleryPanel.style.visibility = 'visible';
-        this.galleryPanel.style.display = 'flex';
         this.galleryPanel.classList.add('active');
         this.isOpen = true;
-        
+
         console.log('Gallery panel styles after open:', {
             transform: this.galleryPanel.style.transform,
             visibility: this.galleryPanel.style.visibility,
-            display: this.galleryPanel.style.display
+            display: this.galleryPanel.style.display,
+            zIndex: this.galleryPanel.style.zIndex,
+            position: this.galleryPanel.style.position
         });
-        
+
         await this.loadImages();
     }
 
@@ -106,6 +128,7 @@ class ImageGallery {
         this.galleryPanel.classList.remove('active');
         this.galleryPanel.style.transform = 'translateX(100%)';
         this.galleryPanel.style.visibility = 'hidden';
+        this.galleryPanel.style.pointerEvents = 'none';
         this.isOpen = false;
     }
 
