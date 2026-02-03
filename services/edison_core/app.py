@@ -2341,6 +2341,10 @@ Provide a clear, actionable synthesis that integrates all perspectives:"""
                     logger.info(f"🎮 GPU {i}: {mem_allocated:.2f}GB allocated, {mem_reserved:.2f}GB reserved")
         except Exception as e:
             logger.debug(f"Could not log GPU utilization: {e}")
+
+        # If swarm results exist, emit them before streaming the synthesis
+        if swarm_results:
+            yield f"event: swarm\ndata: {json.dumps({'swarm_agents': swarm_results})}\n\n"
         
         assistant_response = ""
         client_disconnected = False

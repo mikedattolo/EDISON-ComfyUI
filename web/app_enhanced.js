@@ -527,6 +527,8 @@ class EdisonApp {
         const decoder = new TextDecoder();
         let buffer = '';
         let accumulatedResponse = '';
+        let currentEventType = null;
+        let swarmInserted = false;
         
         try {
             while (true) {
@@ -541,7 +543,7 @@ class EdisonApp {
                     if (!line.trim()) continue;
                     
                     if (line.startsWith('event: ')) {
-                        const eventType = line.substring(7).trim();
+                        currentEventType = line.substring(7).trim();
                         continue;
                     }
                     
@@ -554,6 +556,11 @@ class EdisonApp {
                                 // Init event with request_id
                                 this.currentRequestId = data.request_id;
                                 console.log(`📡 Streaming request started: ${this.currentRequestId}`);
+                            } else if (currentEventType === 'swarm' && data.swarm_agents) {
+                                if (!swarmInserted && data.swarm_agents.length > 0) {
+                                    this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
+                                    swarmInserted = true;
+                                }
                             } else if (data.t) {
                                 // Token event
                                 accumulatedResponse += data.t;
@@ -565,9 +572,10 @@ class EdisonApp {
                                     // Success
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
                                     
-                                    // Display swarm agent conversation as separate messages if available
-                                    if (data.swarm_agents && data.swarm_agents.length > 0) {
+                                    // Display swarm agent conversation if not already inserted
+                                    if (!swarmInserted && data.swarm_agents && data.swarm_agents.length > 0) {
                                         this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
+                                        swarmInserted = true;
                                     }
                                     
                                     assistantMessageEl.classList.remove('streaming');
