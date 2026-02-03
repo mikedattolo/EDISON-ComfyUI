@@ -100,10 +100,9 @@ class ImageGallery {
 
     async open() {
         console.log('Opening gallery');
-        // Clear all inline styles and use CSS class for positioning
-        this.galleryPanel.style.removeProperty('right');
-        this.galleryPanel.style.removeProperty('visibility');
-        this.galleryPanel.style.removeProperty('pointer-events');
+        // Set inline styles for open state and add active class
+        this.galleryPanel.style.transform = 'translateX(0)';
+        this.galleryPanel.style.visibility = 'visible';
         this.galleryPanel.classList.add('active');
         this.isOpen = true;
         await this.loadImages();
@@ -111,12 +110,10 @@ class ImageGallery {
 
     close() {
         console.log('Closing gallery');
-        // Remove active class - CSS will handle the positioning
+        // Remove active class and set inline styles for closed state
         this.galleryPanel.classList.remove('active');
-        // Clear any inline styles that might interfere
-        this.galleryPanel.style.removeProperty('right');
-        this.galleryPanel.style.removeProperty('visibility');
-        this.galleryPanel.style.removeProperty('pointer-events');
+        this.galleryPanel.style.transform = 'translateX(100%)';
+        this.galleryPanel.style.visibility = 'hidden';
         this.isOpen = false;
     }
 
