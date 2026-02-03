@@ -335,10 +335,15 @@ class ImageGallery {
     }
 }
 
-// Initialize gallery when DOM is ready - only once
+// Initialize gallery - handle both cases: before and after DOMContentLoaded
 if (!window.imageGallery) {
-    document.addEventListener('DOMContentLoaded', () => {
-        console.log('Initializing ImageGallery singleton');
+    if (document.readyState === 'loading') {
+        document.addEventListener('DOMContentLoaded', () => {
+            console.log('Initializing ImageGallery singleton (on DOMContentLoaded)');
+            window.imageGallery = new ImageGallery();
+        });
+    } else {
+        console.log('Initializing ImageGallery singleton (DOM already ready)');
         window.imageGallery = new ImageGallery();
-    });
+    }
 }
