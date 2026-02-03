@@ -355,32 +355,6 @@
             </div>
         </div>
 
-        <!-- Gallery Panel -->
-        <div class="gallery-panel" id="galleryPanel" style="transform: translateX(100%); visibility: hidden;">
-            <div class="gallery-header">
-                <h2>🖼️ Image Gallery</h2>
-                <button class="gallery-close-btn" id="galleryCloseBtn">×</button>
-            </div>
-            <div class="gallery-content" id="galleryContent">
-                <div class="gallery-loading" id="galleryLoading">
-                    <div class="loading-spinner"></div>
-                    <p>Loading images...</p>
-                </div>
-                <div class="gallery-empty" id="galleryEmpty" style="display: none;">
-                    <svg width="64" height="64" viewBox="0 0 64 64" fill="currentColor" style="opacity: 0.3;">
-                        <rect x="8" y="12" width="48" height="36" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
-                        <circle cx="20" cy="24" r="4" fill="currentColor"/>
-                        <path d="M8 44l12-12 8 8 12-16 16 20" stroke="currentColor" stroke-width="2" fill="none"/>
-                    </svg>
-                    <h3>No images yet</h3>
-                    <p>Generated images will appear here</p>
-                </div>
-                <div class="gallery-grid" id="galleryGrid">
-                    <!-- Images will be dynamically inserted here -->
-                </div>
-            </div>
-        </div>
-
         <!-- Settings Panel -->
         <div class="settings-panel" id="settingsPanel">
             <div class="settings-header">
@@ -420,6 +394,32 @@
                         <div><strong>API:</strong> <span id="apiEndpoint">Loading...</span></div>
                     </div>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Gallery Panel - Placed outside app-container to avoid flex layout interference -->
+    <div class="gallery-panel" id="galleryPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="gallery-header">
+            <h2>🖼️ Image Gallery</h2>
+            <button class="gallery-close-btn" id="galleryCloseBtn">×</button>
+        </div>
+        <div class="gallery-content" id="galleryContent">
+            <div class="gallery-loading" id="galleryLoading">
+                <div class="loading-spinner"></div>
+                <p>Loading images...</p>
+            </div>
+            <div class="gallery-empty" id="galleryEmpty" style="display: none;">
+                <svg width="64" height="64" viewBox="0 0 64 64" fill="currentColor" style="opacity: 0.3;">
+                    <rect x="8" y="12" width="48" height="36" rx="2" stroke="currentColor" stroke-width="2" fill="none"/>
+                    <circle cx="20" cy="24" r="4" fill="currentColor"/>
+                    <path d="M8 44l12-12 8 8 12-16 16 20" stroke="currentColor" stroke-width="2" fill="none"/>
+                </svg>
+                <h3>No images yet</h3>
+                <p>Generated images will appear here</p>
+            </div>
+            <div class="gallery-grid" id="galleryGrid">
+                <!-- Images will be dynamically inserted here -->
             </div>
         </div>
     </div>
