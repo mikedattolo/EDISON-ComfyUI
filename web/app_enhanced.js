@@ -11,6 +11,9 @@ class EdisonApp {
         this.currentRequestId = null;  // Track current streaming request for cancellation
         this.sidebarCollapsed = false;
         this.lastImagePrompt = null; // Track last image generation prompt for regeneration
+        this.projectId = localStorage.getItem('edison_project_id') || 'default';
+        this.sessionId = localStorage.getItem('edison_session_id') || `session_${Date.now()}`;
+        localStorage.setItem('edison_session_id', this.sessionId);
         this.availableModels = [];
         this.selectedModel = localStorage.getItem('edison_selected_model') || 'auto';
         this.modelSelector = null;
@@ -430,6 +433,8 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
+                project_id: this.projectId,
+                session_id: this.sessionId,
                 images: images.length > 0 ? images : undefined,
                 selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
             }),
@@ -505,6 +510,8 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
+                project_id: this.projectId,
+                session_id: this.sessionId,
                 images: images.length > 0 ? images : undefined,
                 selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
             }),

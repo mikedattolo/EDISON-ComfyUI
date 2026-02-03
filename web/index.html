@@ -185,6 +185,14 @@
                                 <span class="mode-icon">🔮</span>
                                 <span class="mode-label">Auto</span>
                             </button>
+                            <button class="mode-btn" data-mode="instant" title="Instant response">
+                                <span class="mode-icon">⚡</span>
+                                <span class="mode-label">Instant</span>
+                            </button>
+                            <button class="mode-btn" data-mode="thinking" title="Extended reasoning">
+                                <span class="mode-icon">🧩</span>
+                                <span class="mode-label">Thinking</span>
+                            </button>
                             <button class="mode-btn" data-mode="chat" title="Fast responses (14B)">
                                 <span class="mode-icon">💬</span>
                                 <span class="mode-label">Chat</span>
@@ -200,6 +208,10 @@
                             <button class="mode-btn" data-mode="agent" title="Tool-using agent">
                                 <span class="mode-icon">🤖</span>
                                 <span class="mode-label">Agent</span>
+                            </button>
+                            <button class="mode-btn" data-mode="swarm" title="Parallel specialized agents">
+                                <span class="mode-icon">🕸️</span>
+                                <span class="mode-label">Swarm</span>
                             </button>
                             <button class="mode-btn" data-mode="work" title="Work mode with task visualization">
                                 <span class="mode-icon">🖥️</span>
@@ -305,10 +317,13 @@
                         <label for="defaultMode">Default Mode</label>
                         <select id="defaultMode">
                             <option value="auto">Auto (Intent Detection)</option>
+                            <option value="instant">Instant (Quick Response)</option>
+                            <option value="thinking">Thinking (Extended Reasoning)</option>
                             <option value="chat">Chat (14B Fast)</option>
                             <option value="reasoning">Deep (72B Detailed)</option>
                             <option value="code">Code Assistant</option>
                             <option value="agent">Agent Mode</option>
+                            <option value="swarm">Swarm (Parallel Agents)</option>
                         </select>
                     </div>
                     
@@ -480,7 +495,7 @@
     </script>
 
     <script src="gallery.js?v=13"></script>
-    <script src="app_enhanced.js?v=12"></script>
+    <script src="app_enhanced.js?v=14"></script>
     <script src="app_features.js?v=7"></script>
 </body>
 </html>

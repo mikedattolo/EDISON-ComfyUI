@@ -11,9 +11,16 @@ AgentMode = Literal["instant", "thinking", "agent", "swarm"]
 
 class AgentTask(BaseModel):
     id: str
-    kind: Literal["llm", "vision", "code", "web", "comfyui", "tool"]
+    kind: Literal["llm", "vision", "code", "web", "comfyui", "tool", "artifact"]
     description: str
     inputs: Dict[str, Any] = Field(default_factory=dict)
+
+
+class AgentTaskResult(BaseModel):
+    id: str
+    kind: str
+    output: Optional[Any] = None
+    error: Optional[str] = None
 
 
 class AgentPlanRequest(BaseModel):
@@ -36,12 +43,15 @@ class AgentExecuteRequest(BaseModel):
     plan: AgentPlanResponse
     project_id: Optional[str] = None
     dry_run: bool = True
+    images: Optional[List[str]] = None
+    context: Dict[str, Any] = Field(default_factory=dict)
 
 
 class AgentExecuteResponse(BaseModel):
     job_id: str
     status: Literal["queued", "running", "completed", "failed"]
     message: str
+    results: Optional[List[AgentTaskResult]] = None
 
 
 class ProjectCreateRequest(BaseModel):

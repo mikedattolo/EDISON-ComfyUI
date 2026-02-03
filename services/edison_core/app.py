@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import StreamingResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, Iterator, List, Dict
+from typing import Optional, Literal, Iterator, List, Dict, Any
 import logging
 from pathlib import Path
 import yaml
@@ -25,11 +25,16 @@ import shutil
 import base64
 import numpy as np
 
+from services.edison_core.tools import ComfyUITools
+from services.edison_core.sandbox import PythonSandbox
+
 from services.edison_core.contracts import (
     AgentPlanRequest,
     AgentPlanResponse,
     AgentExecuteRequest,
     AgentExecuteResponse,
+    AgentTaskResult,
+    AgentTask,
     ProjectCreateRequest,
     ProjectResponse,
     ArtifactGenerateRequest,
@@ -42,6 +47,7 @@ from services.edison_core.projects import ProjectWorkspaceManager
 from services.edison_core.artifact_pipeline import ArtifactPipeline
 from services.edison_core.safety import SafetyGate
 from services.edison_core.memory_scopes import MemoryScopeManager
+from services.edison_core.voice import parse_voice_command
 
 # Configure logging
 logging.basicConfig(
@@ -250,7 +256,7 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
     
     # Determine model target based on mode (only if not already set to vision)
     if model_target != "vision":
-        if mode in ["work", "reasoning", "code", "agent"]:
+        if mode in ["work", "reasoning", "code", "agent", "thinking", "swarm"]:
             model_target = "medium"  # Use 32B model for complex tasks (72B OOMs)
             reasons.append(f"Mode '{mode}' requires medium model")
         else:
@@ -291,6 +297,10 @@ lock_vision = threading.Lock()
 # Active request tracking for server-side cancellation
 active_requests = {}  # {request_id: {"cancelled": bool, "timestamp": float}}
 active_requests_lock = threading.Lock()
+
+# Agent job tracking
+agent_jobs = {}  # {job_id: {"status": str, "results": list, "error": str}}
+agent_jobs_lock = threading.Lock()
 
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
                          steps: int = 20, guidance_scale: float = 3.5) -> dict:
@@ -374,8 +384,8 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "agent", "code", "work"] = Field(
-        default="auto", 
+    mode: Literal["auto", "chat", "reasoning", "agent", "code", "work", "instant", "thinking", "swarm"] = Field(
+        default="auto",
         description="Interaction mode"
     )
     remember: Optional[bool] = Field(
@@ -393,6 +403,14 @@ class ChatRequest(BaseModel):
     chat_id: Optional[str] = Field(
         default=None,
         description="Unique chat/conversation ID for scoped memory retrieval"
+    )
+    project_id: Optional[str] = Field(
+        default=None,
+        description="Project ID for scoped memory and artifact outputs"
+    )
+    session_id: Optional[str] = Field(
+        default=None,
+        description="Session ID for scoped memory"
     )
     global_memory_search: Optional[bool] = Field(
         default=False,
@@ -426,6 +444,33 @@ class HealthResponse(BaseModel):
     qdrant_ready: bool
     repo_root: str
     vision_enabled: bool = False
+
+
+class VoiceCommandRequest(BaseModel):
+    text: str = Field(..., description="Spoken command text")
+
+
+class VoiceCommandResponse(BaseModel):
+    action: str
+    mode: Optional[str] = None
+    message: Optional[str] = None
+
+
+class WorkflowGenerateRequest(BaseModel):
+    prompt: str
+    width: int = 1024
+    height: int = 1024
+    steps: int = 20
+    guidance_scale: float = 3.5
+
+
+class WorkflowGenerateResponse(BaseModel):
+    workflow: dict
+
+
+class WorkflowExecuteRequest(BaseModel):
+    prompt: Optional[str] = None
+    workflow: Optional[dict] = None
 
 # Structured tool registry for agent/work modes
 TOOL_REGISTRY = {
@@ -1351,11 +1396,58 @@ async def agent_plan(request: AgentPlanRequest):
 @app.post("/agent/execute", response_model=AgentExecuteResponse)
 async def agent_execute(request: AgentExecuteRequest):
     job_id = str(uuid.uuid4())[:8]
-    return AgentExecuteResponse(
-        job_id=job_id,
-        status="queued",
-        message="Execution queued (scaffolding only)"
-    )
+    with agent_jobs_lock:
+        agent_jobs[job_id] = {"status": "running", "results": None, "error": None}
+
+    if request.project_id and project_manager:
+        if not project_manager.get_project(request.project_id):
+            project_manager.create_project(ProjectCreateRequest(name=request.project_id))
+
+    if request.dry_run:
+        with agent_jobs_lock:
+            agent_jobs[job_id]["status"] = "completed"
+        return AgentExecuteResponse(
+            job_id=job_id,
+            status="completed",
+            message="Dry run completed",
+            results=[]
+        )
+
+    try:
+        results = await execute_agent_plan(request.plan, images=request.images, context=request.context)
+        with agent_jobs_lock:
+            agent_jobs[job_id]["status"] = "completed"
+            agent_jobs[job_id]["results"] = results
+        return AgentExecuteResponse(
+            job_id=job_id,
+            status="completed",
+            message="Execution completed",
+            results=[AgentTaskResult(**r) for r in results]
+        )
+    except Exception as e:
+        with agent_jobs_lock:
+            agent_jobs[job_id]["status"] = "failed"
+            agent_jobs[job_id]["error"] = str(e)
+        return AgentExecuteResponse(
+            job_id=job_id,
+            status="failed",
+            message=f"Execution failed: {e}",
+            results=[]
+        )
+
+
+@app.get("/agent/jobs")
+async def list_agent_jobs():
+    with agent_jobs_lock:
+        return agent_jobs
+
+
+@app.get("/agent/jobs/{job_id}")
+async def get_agent_job(job_id: str):
+    with agent_jobs_lock:
+        if job_id not in agent_jobs:
+            raise HTTPException(status_code=404, detail="Job not found")
+        return agent_jobs[job_id]
 
 
 @app.get("/projects", response_model=List[ProjectResponse])
@@ -1386,6 +1478,8 @@ async def get_project(project_id: str):
 async def generate_artifact(request: ArtifactGenerateRequest):
     if not artifact_pipeline:
         raise HTTPException(status_code=503, detail="Artifact pipeline not initialized")
+    if project_manager and not project_manager.get_project(request.project_id):
+        project_manager.create_project(ProjectCreateRequest(name=request.project_id))
     return artifact_pipeline.generate(request)
 
 
@@ -1397,14 +1491,47 @@ async def safety_assess(request: SafetyAssessmentRequest):
 
 
 @app.get("/memory/scope")
-async def get_memory_scope(project_id: Optional[str] = None, session_id: Optional[str] = None):
+async def get_memory_scope(project_id: Optional[str] = None, session_id: Optional[str] = None, chat_id: Optional[str] = None):
     if not memory_scope_manager:
         raise HTTPException(status_code=503, detail="Memory scope manager not initialized")
-    scope = memory_scope_manager.get_scope(project_id=project_id, session_id=session_id)
+    scope = memory_scope_manager.get_scope(project_id=project_id, session_id=session_id, chat_id=chat_id)
     return {
         "scope_id": scope.scope_id,
         "kind": scope.kind
     }
+
+
+@app.post("/voice/command", response_model=VoiceCommandResponse)
+async def voice_command(request: VoiceCommandRequest):
+    result = parse_voice_command(request.text)
+    return VoiceCommandResponse(**result)
+
+
+@app.post("/comfyui/workflow/generate", response_model=WorkflowGenerateResponse)
+async def generate_comfyui_workflow(request: WorkflowGenerateRequest):
+    workflow = create_flux_workflow(
+        request.prompt,
+        width=request.width,
+        height=request.height,
+        steps=request.steps,
+        guidance_scale=request.guidance_scale
+    )
+    return WorkflowGenerateResponse(workflow=workflow)
+
+
+@app.post("/comfyui/workflow/execute")
+async def execute_comfyui_workflow(request: WorkflowExecuteRequest):
+    comfy_cfg = config.get("edison", {}).get("comfyui", {}) if config else {}
+    tools = ComfyUITools({
+        "host": comfy_cfg.get("host", "127.0.0.1"),
+        "port": comfy_cfg.get("port", 8188)
+    })
+    workflow = request.workflow
+    if not workflow and request.prompt:
+        workflow = create_flux_workflow(request.prompt)
+    if not workflow:
+        raise HTTPException(status_code=400, detail="workflow or prompt required")
+    return tools.execute_workflow(workflow)
 
 def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
@@ -1417,7 +1544,7 @@ def get_lock_for_model(model) -> threading.Lock:
     else:  # llm_fast or other
         return lock_fast
 
-def store_conversation_exchange(request: ChatRequest, assistant_response: str, mode: str, remember: bool):
+def store_conversation_exchange(request: ChatRequest, assistant_response: str, mode: str, remember: bool, scope_id: Optional[str] = None):
     """Persist user/assistant messages and extracted facts when enabled."""
     if not remember or not rag_system:
         return
@@ -1430,6 +1557,7 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
             metadatas=[{
                 "role": "user",
                 "chat_id": chat_id,
+                "scope_id": scope_id,
                 "timestamp": current_timestamp,
                 "tags": ["conversation", mode],
                 "type": "message"
@@ -1440,6 +1568,7 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
             metadatas=[{
                 "role": "assistant",
                 "chat_id": chat_id,
+                "scope_id": scope_id,
                 "timestamp": current_timestamp,
                 "tags": ["conversation", mode],
                 "type": "message",
@@ -1458,6 +1587,7 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
                             "fact_type": fact.get("type"),
                             "confidence": fact.get("confidence"),
                             "chat_id": chat_id,
+                            "scope_id": scope_id,
                             "timestamp": current_timestamp,
                             "tags": ["fact", fact.get("type")],
                             "type": "fact",
@@ -1471,6 +1601,164 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
             logger.info(f"Stored user message and assistant response with chat_id {chat_id}")
     except Exception as e:
         logger.warning(f"Memory storage failed: {e}")
+
+
+def select_llm_for_agent_mode(mode: str):
+    """Select the best available model for agent modes."""
+    if mode == "instant":
+        if llm_fast:
+            return llm_fast, "fast"
+        return (llm_medium or llm_deep), "medium" if llm_medium else "deep"
+    if mode in ["thinking", "agent", "swarm"]:
+        if llm_medium:
+            return llm_medium, "medium"
+        if llm_deep:
+            return llm_deep, "deep"
+        return llm_fast, "fast"
+    return llm_fast or llm_medium or llm_deep, "fast"
+
+
+def run_llm_task(prompt: str, mode: str = "instant") -> str:
+    llm, model_name = select_llm_for_agent_mode(mode)
+    if not llm:
+        raise RuntimeError("No LLM available")
+    task_lock = get_lock_for_model(llm)
+    with task_lock:
+        response = llm(
+            prompt,
+            max_tokens=2048,
+            temperature=0.6,
+            top_p=0.9,
+            repeat_penalty=1.1,
+            stop=["User:", "Human:"]
+        )
+    return response["choices"][0]["text"].strip()
+
+
+def run_vision_task(prompt: str, images: Optional[List[str]] = None) -> str:
+    if not llm_vision:
+        raise RuntimeError("Vision model not loaded")
+    if not images:
+        return run_llm_task(prompt, mode="thinking")
+
+    content = [{"type": "text", "text": prompt}]
+    for img_b64 in images:
+        if isinstance(img_b64, str) and ',' in img_b64:
+            img_b64 = img_b64.split(',', 1)[1]
+        content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+
+    vision_lock = get_lock_for_model(llm_vision)
+    with vision_lock:
+        response = llm_vision.create_chat_completion(
+            messages=[{"role": "user", "content": content}],
+            max_tokens=1024,
+            temperature=0.6
+        )
+    return response["choices"][0]["message"]["content"].strip()
+
+
+def run_web_task(query: str) -> List[Dict[str, str]]:
+    if not search_tool:
+        return []
+    return search_tool.search(query, num_results=5)
+
+
+async def run_code_task(goal: str, code: Optional[str] = None) -> Dict[str, Any]:
+    if code:
+        try:
+            sandbox = PythonSandbox()
+            result = await sandbox.execute_code(code)
+            return result
+        except Exception as e:
+            return {"error": str(e)}
+    # fallback: generate code
+    draft = run_llm_task(f"Write a concise Python solution for: {goal}\nReturn only code.", mode="thinking")
+    return {"code": draft}
+
+
+def run_comfyui_task(prompt: str, config_obj: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    comfy_cfg = config_obj.get("edison", {}).get("comfyui", {}) if config_obj else {}
+    tools = ComfyUITools({
+        "host": comfy_cfg.get("host", "127.0.0.1"),
+        "port": comfy_cfg.get("port", 8188)
+    })
+    workflow = create_flux_workflow(prompt)
+    return tools.execute_workflow(workflow)
+
+
+async def execute_agent_plan(plan: AgentPlanResponse, images: Optional[List[str]] = None, context: Optional[Dict[str, Any]] = None) -> List[Dict[str, Any]]:
+    context = context or {}
+    results = []
+
+    async def run_task(task: AgentTask):
+        try:
+            if safety_gate and task.kind in {"code", "comfyui", "web", "tool", "artifact"}:
+                risk_score = float(context.get("risk_score", 0.1))
+                assessment = safety_gate.assess(SafetyAssessmentRequest(
+                    action_type=task.kind if task.kind != "tool" else "process",
+                    risk_score=risk_score,
+                    summary=f"Agent task: {task.description}"
+                ))
+                if not assessment.allowed:
+                    return {"id": task.id, "kind": task.kind, "error": assessment.rationale}
+                if assessment.requires_confirmation:
+                    return {"id": task.id, "kind": task.kind, "error": "Confirmation required before executing"}
+
+            if task.kind == "llm":
+                output = run_llm_task(task.inputs.get("goal", ""), mode=plan.mode)
+            elif task.kind == "vision":
+                output = run_vision_task(task.inputs.get("goal", ""), images=images)
+            elif task.kind == "web":
+                output = run_web_task(task.inputs.get("goal", ""))
+            elif task.kind == "tool":
+                output = run_web_task(task.inputs.get("goal", ""))
+            elif task.kind == "code":
+                output = await run_code_task(task.inputs.get("goal", ""), code=task.inputs.get("code"))
+            elif task.kind == "comfyui":
+                output = run_comfyui_task(task.inputs.get("goal", ""), config)
+            elif task.kind == "artifact":
+                if not artifact_pipeline:
+                    raise RuntimeError("Artifact pipeline not initialized")
+                project_id = task.inputs.get("project_id") or context.get("project_id") or "default"
+                artifact_kind = task.inputs.get("kind", "document")
+                artifact_req = ArtifactGenerateRequest(
+                    project_id=project_id,
+                    kind=artifact_kind,
+                    prompt=task.inputs.get("goal", "")
+                )
+                output = artifact_pipeline.generate(artifact_req).dict()
+            else:
+                output = {"note": "No executor for task type", "inputs": task.inputs}
+
+            return {"id": task.id, "kind": task.kind, "output": output}
+        except Exception as e:
+            return {"id": task.id, "kind": task.kind, "error": str(e)}
+
+    if plan.parallel:
+        results = await asyncio.gather(*[run_task(task) for task in plan.tasks])
+    else:
+        for task in plan.tasks:
+            results.append(await run_task(task))
+
+    return results
+
+
+def format_agent_results(results: List[Dict[str, Any]]) -> str:
+    lines = ["Agent execution results:"]
+    for result in results:
+        kind = result.get("kind")
+        output = result.get("output")
+        error = result.get("error")
+        if error:
+            lines.append(f"- {kind}: ERROR: {error}")
+        else:
+            if isinstance(output, list):
+                lines.append(f"- {kind}: {len(output)} items")
+            elif isinstance(output, dict):
+                lines.append(f"- {kind}: {json.dumps(output)[:300]}")
+            else:
+                lines.append(f"- {kind}: {str(output)[:300]}")
+    return "\n".join(lines)
 
 @app.post("/chat")
 async def chat(request: ChatRequest):
@@ -1504,6 +1792,10 @@ async def chat(request: ChatRequest):
             f"Consider asking user to provide redacted version."
         )
         remember = False  # Override even explicit requests for sensitive data
+
+    if request.project_id and project_manager:
+        if not project_manager.get_project(request.project_id):
+            project_manager.create_project(ProjectCreateRequest(name=request.project_id))
     
     # Check if this is a recall request
     is_recall, recall_query = detect_recall_intent(request.message)
@@ -1534,6 +1826,15 @@ async def chat(request: ChatRequest):
     
     # Determine which mode to use - SINGLE ROUTING FUNCTION
     has_images = request.images and len(request.images) > 0
+
+    scope_id = None
+    if memory_scope_manager:
+        scope = memory_scope_manager.get_scope(
+            project_id=request.project_id,
+            session_id=request.session_id,
+            chat_id=request.chat_id
+        )
+        scope_id = scope.scope_id
     
     # Get intent from coral service first
     coral_intent = get_intent_from_coral(request.message)
@@ -1565,6 +1866,20 @@ async def chat(request: ChatRequest):
     
     # Keep original_mode for special handling (like work mode with steps)
     original_mode = mode
+
+    orchestration_enabled = config.get("edison", {}).get("orchestration", {}).get("enabled", False)
+    if orchestration_enabled and mode in ["instant", "thinking", "agent", "swarm"] and agent_controller:
+        plan = agent_controller.plan(
+            goal=request.message,
+            mode=mode,
+            has_image=has_images,
+            project_id=request.project_id,
+            context={"chat_id": request.chat_id}
+        )
+        results = await execute_agent_plan(plan, images=request.images)
+        response_text = format_agent_results(results)
+        store_conversation_exchange(request, response_text, original_mode, remember, scope_id=scope_id)
+        return ChatResponse(response=response_text, mode_used=original_mode, model_used="agent-orchestrator")
     
     # Check if user selected a specific model (overrides routing)
     if request.selected_model:
@@ -1612,15 +1927,17 @@ async def chat(request: ChatRequest):
     expanded_count = 0
     main_count = 0
     
-    # Determine if this should be a global search
-    # Global search if: explicit recall request OR user toggled global_memory_search OR no chat_id provided
+    # Determine memory scope
     current_chat_id = request.chat_id
-    global_search = is_recall or request.global_memory_search or not current_chat_id
+
+    # Determine if this should be a global search
+    # Global search if: explicit recall request OR user toggled global_memory_search OR no scope provided
+    global_search = is_recall or request.global_memory_search or not scope_id
     
     if global_search:
-        logger.info(f"Using GLOBAL memory search (recall={is_recall}, toggle={request.global_memory_search}, no_chat_id={not current_chat_id})")
-    elif current_chat_id:
-        logger.info(f"Using CHAT-SCOPED memory search for chat_id={current_chat_id}")
+        logger.info(f"Using GLOBAL memory search (recall={is_recall}, toggle={request.global_memory_search}, no_scope={not scope_id})")
+    elif scope_id:
+        logger.info(f"Using SCOPED memory search for scope_id={scope_id}")
     
     if rag_system and rag_system.is_ready():
         try:
@@ -1628,14 +1945,26 @@ async def chat(request: ChatRequest):
             if is_recall:
                 logger.info(f"Recall request detected, searching for: {recall_query}")
                 # Do extensive search across all conversations (force global)
-                recall_chunks = rag_system.get_context(recall_query, n_results=5, chat_id=current_chat_id, global_search=True)
+                recall_chunks = rag_system.get_context(
+                    recall_query,
+                    n_results=5,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=True
+                )
                 if recall_chunks:
                     context_chunks = merge_chunks(context_chunks, recall_chunks, max_total=8, source_name="recall")
                     recall_count = len([c for c in recall_chunks if normalize_chunk(c) not in [normalize_chunk(e) for e in context_chunks[:-len(recall_chunks)]]])
                     logger.info(f"Retrieved {len(recall_chunks)} chunks for recall request")
                 
                 # Also search with original message (global)
-                additional_chunks = rag_system.get_context(request.message, n_results=3, chat_id=current_chat_id, global_search=True)
+                additional_chunks = rag_system.get_context(
+                    request.message,
+                    n_results=3,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=True
+                )
                 if additional_chunks:
                     context_chunks = merge_chunks(context_chunks, additional_chunks, max_total=8, source_name="additional")
             
@@ -1662,7 +1991,13 @@ async def chat(request: ChatRequest):
                 followup_chunks_all = []
                 for context_msg in recent_context:
                     if len(context_msg) > 10:  # Skip very short messages
-                        chunks = rag_system.get_context(context_msg[:200], n_results=2, chat_id=current_chat_id, global_search=global_search)
+                        chunks = rag_system.get_context(
+                            context_msg[:200],
+                            n_results=2,
+                            chat_id=current_chat_id,
+                            scope_id=scope_id,
+                            global_search=global_search
+                        )
                         if chunks:
                             followup_chunks_all.extend(chunks[:1])  # Take top result from each
                 
@@ -1672,7 +2007,13 @@ async def chat(request: ChatRequest):
                     followup_count = len(followup_chunks_all)
                 
                 # Also search with current message - treat as main query (chat-scoped unless global)
-                main_chunks = rag_system.get_context(request.message, n_results=2, chat_id=current_chat_id, global_search=global_search)
+                main_chunks = rag_system.get_context(
+                    request.message,
+                    n_results=2,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=global_search
+                )
                 if main_chunks:
                     context_chunks = merge_chunks(context_chunks, main_chunks, max_total=8, source_name="main")
                     main_count = len(main_chunks)
@@ -1722,7 +2063,13 @@ async def chat(request: ChatRequest):
             # Get results from each query separately and take best from each (chat-scoped unless global)
             expanded_chunks_raw = []
             for query in search_queries[:5]:  # Limit to 5 queries max
-                chunks = rag_system.get_context(query, n_results=2, chat_id=current_chat_id, global_search=global_search)
+                chunks = rag_system.get_context(
+                    query,
+                    n_results=2,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=global_search
+                )
                 if chunks:
                     # Log what we found
                     text_preview = chunks[0][0][:80] if isinstance(chunks[0], tuple) else chunks[0][:80]
@@ -1805,7 +2152,7 @@ async def chat(request: ChatRequest):
             logger.info(f"Tool loop executed {len(tool_events)} steps: {[e['tool'] for e in tool_events]}")
         
         # Store response
-        store_conversation_exchange(request, assistant_response, original_mode, remember)
+        store_conversation_exchange(request, assistant_response, original_mode, remember, scope_id=scope_id)
         
         return {
             "response": assistant_response,
@@ -2028,7 +2375,7 @@ Steps:"""
             assistant_response = response["choices"][0]["text"].strip()
         
         # Store in memory if auto-detected or requested
-        store_conversation_exchange(request, assistant_response, original_mode, remember)
+        store_conversation_exchange(request, assistant_response, original_mode, remember, scope_id=scope_id)
         
         # Build response with work mode metadata
         response_data = {
@@ -2081,6 +2428,10 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         logger.warning("Sensitive data detected; blocking storage even with explicit request.")
         remember = False
 
+    if request.project_id and project_manager:
+        if not project_manager.get_project(request.project_id):
+            project_manager.create_project(ProjectCreateRequest(name=request.project_id))
+
     is_recall, recall_query = detect_recall_intent(request.message)
     intent = get_intent_from_coral(request.message)
 
@@ -2100,11 +2451,39 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     has_images = request.images and len(request.images) > 0
     coral_intent = intent
 
+    scope_id = None
+    if memory_scope_manager:
+        scope = memory_scope_manager.get_scope(
+            project_id=request.project_id,
+            session_id=request.session_id,
+            chat_id=request.chat_id
+        )
+        scope_id = scope.scope_id
+
     routing = route_mode(request.message, request.mode, has_images, coral_intent)
     mode = routing["mode"]
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
     original_mode = mode
+
+    orchestration_enabled = config.get("edison", {}).get("orchestration", {}).get("enabled", False)
+    if orchestration_enabled and mode in ["instant", "thinking", "agent", "swarm"] and agent_controller:
+        async def orchestrator_stream():
+            request_id = str(uuid.uuid4())[:8]
+            yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
+            plan = agent_controller.plan(
+                goal=request.message,
+                mode=mode,
+                has_image=has_images,
+                project_id=request.project_id,
+                context={"chat_id": request.chat_id}
+            )
+            results = await execute_agent_plan(plan, images=request.images)
+            response_text = format_agent_results(results)
+            store_conversation_exchange(request, response_text, original_mode, remember, scope_id=scope_id)
+            yield f"event: token\ndata: {json.dumps({'t': response_text})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'ok': True, 'mode_used': original_mode, 'model_used': 'agent-orchestrator', 'response': response_text})}\n\n"
+        return StreamingResponse(orchestrator_stream(), media_type="text/event-stream")
 
     # Check if user selected a specific model (overrides routing)
     if request.selected_model:
@@ -2162,17 +2541,29 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     expanded_count = 0
     main_count = 0
     current_chat_id = request.chat_id
-    global_search = is_recall or request.global_memory_search or not current_chat_id
+    global_search = is_recall or request.global_memory_search or not scope_id
 
     if rag_system and rag_system.is_ready():
         try:
             msg_lower = request.message.lower()
             if is_recall:
-                recall_chunks = rag_system.get_context(recall_query, n_results=5, chat_id=current_chat_id, global_search=True)
+                recall_chunks = rag_system.get_context(
+                    recall_query,
+                    n_results=5,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=True
+                )
                 if recall_chunks:
                     context_chunks = merge_chunks(context_chunks, recall_chunks, max_total=8, source_name="recall")
                     recall_count = len([c for c in recall_chunks if normalize_chunk(c) not in [normalize_chunk(e) for e in context_chunks[:-len(recall_chunks)]]])
-                additional_chunks = rag_system.get_context(request.message, n_results=3, chat_id=current_chat_id, global_search=True)
+                additional_chunks = rag_system.get_context(
+                    request.message,
+                    n_results=3,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=True
+                )
                 if additional_chunks:
                     context_chunks = merge_chunks(context_chunks, additional_chunks, max_total=8, source_name="additional")
 
@@ -2187,13 +2578,25 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 followup_chunks_all = []
                 for context_msg in recent_context:
                     if len(context_msg) > 10:
-                        chunks = rag_system.get_context(context_msg[:200], n_results=2, chat_id=current_chat_id, global_search=global_search)
+                        chunks = rag_system.get_context(
+                            context_msg[:200],
+                            n_results=2,
+                            chat_id=current_chat_id,
+                            scope_id=scope_id,
+                            global_search=global_search
+                        )
                         if chunks:
                             followup_chunks_all.extend(chunks[:1])
                 if followup_chunks_all:
                     context_chunks = merge_chunks(context_chunks, followup_chunks_all, max_total=8, source_name="follow-up")
                     followup_count = len(followup_chunks_all)
-                main_chunks = rag_system.get_context(request.message, n_results=2, chat_id=current_chat_id, global_search=global_search)
+                main_chunks = rag_system.get_context(
+                    request.message,
+                    n_results=2,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=global_search
+                )
                 if main_chunks:
                     context_chunks = merge_chunks(context_chunks, main_chunks, max_total=8, source_name="main")
                     main_count = len(main_chunks)
@@ -2225,7 +2628,13 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             search_queries = [q for q in search_queries if not (q in seen or seen.add(q))]
             expanded_chunks_raw = []
             for query in search_queries[:5]:
-                chunks = rag_system.get_context(query, n_results=2, chat_id=current_chat_id, global_search=global_search)
+                chunks = rag_system.get_context(
+                    query,
+                    n_results=2,
+                    chat_id=current_chat_id,
+                    scope_id=scope_id,
+                    global_search=global_search
+                )
                 if chunks:
                     expanded_chunks_raw.append(chunks[0])
             informative_chunks = []
@@ -2412,7 +2821,7 @@ Steps:"""
             yield f"event: done\ndata: {json.dumps({'ok': False, 'stopped': True})}\n\n"
             return
 
-        store_conversation_exchange(request, assistant_response, original_mode, remember)
+        store_conversation_exchange(request, assistant_response, original_mode, remember, scope_id=scope_id)
         
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
         artifact = detect_artifact(assistant_response)

@@ -125,7 +125,14 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"Error adding documents: {e}")
     
-    def get_context(self, query: str, n_results: int = 3, chat_id: Optional[str] = None, global_search: bool = False) -> List[tuple]:
+    def get_context(
+        self,
+        query: str,
+        n_results: int = 3,
+        chat_id: Optional[str] = None,
+        scope_id: Optional[str] = None,
+        global_search: bool = False
+    ) -> List[tuple]:
         """
         Retrieve relevant context for a query - returns list of (text, metadata) tuples.
         
@@ -149,8 +156,18 @@ class RAGSystem:
             
             # Build filter for chat-scoped search
             query_filter = None
-            if not global_search and chat_id:
-                # Filter by chat_id - only get results from this specific chat
+            if not global_search and scope_id:
+                query_filter = Filter(
+                    must=[
+                        FieldCondition(
+                            key="scope_id",
+                            match=MatchValue(value=scope_id)
+                        )
+                    ]
+                )
+                logger.info(f"Scoped search: filtering by scope_id={scope_id}")
+            elif not global_search and chat_id:
+                # Backward compatibility with chat_id-only filtering
                 query_filter = Filter(
                     must=[
                         FieldCondition(
@@ -161,7 +178,7 @@ class RAGSystem:
                 )
                 logger.info(f"Chat-scoped search: filtering by chat_id={chat_id}")
             elif global_search:
-                logger.info("Global search: searching across all chats")
+                logger.info("Global search: searching across all scopes")
             
             # Search in Qdrant using query method
             search_results = self.client.query_points(

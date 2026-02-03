@@ -33,6 +33,12 @@ class AgentControllerBrain:
             tasks.append(self._task("tool", "Execute tools", {"goal": goal, "project_id": project_id}))
             if has_image:
                 tasks.append(self._task("vision", "Analyze image", {"goal": goal}))
+            if any(token in goal.lower() for token in ["search", "web", "lookup", "find"]):
+                tasks.append(self._task("web", "Web search", {"goal": goal}))
+            if "image" in goal.lower() or "generate" in goal.lower():
+                tasks.append(self._task("comfyui", "Generate image workflow", {"goal": goal}))
+            if any(token in goal.lower() for token in ["document", "report", "slides", "presentation", "spreadsheet", "website", "repo", "repository", "schema"]):
+                tasks.append(self._task("artifact", "Generate artifact output", {"goal": goal, "project_id": project_id, "kind": "document"}))
         elif mode == "swarm":
             rationale.append("Swarm mode: parallel specialized agents")
             parallel = True
@@ -41,6 +47,10 @@ class AgentControllerBrain:
             tasks.append(self._task("web", "Research specialist", {"goal": goal}))
             if has_image:
                 tasks.append(self._task("vision", "Vision specialist", {"goal": goal}))
+            if "image" in goal.lower() or "generate" in goal.lower():
+                tasks.append(self._task("comfyui", "Image workflow", {"goal": goal}))
+            if any(token in goal.lower() for token in ["document", "report", "slides", "presentation", "spreadsheet", "website", "repo", "repository", "schema"]):
+                tasks.append(self._task("artifact", "Generate artifact output", {"goal": goal, "project_id": project_id, "kind": "document"}))
         else:
             rationale.append("Fallback: instant mode")
             tasks.append(self._task("llm", "Quick response", {"goal": goal, "context": context}))

@@ -38,9 +38,47 @@ class ArtifactPipeline:
         meta_path = project_dir / "artifact.json"
         meta_path.write_text(json.dumps(meta, indent=2))
 
+        # Generate a minimal artifact file based on kind
+        output_file = None
+        content = None
+
+        if req.kind == "document":
+            output_file = project_dir / "document.md"
+            content = f"# Document\n\nPrompt: {req.prompt}\n\n## Notes\n- Replace with generated content."
+        elif req.kind == "code":
+            repo_dir = project_dir / "repo"
+            repo_dir.mkdir(parents=True, exist_ok=True)
+            (repo_dir / "README.md").write_text(f"# Generated Repo\n\nPrompt: {req.prompt}\n")
+            (repo_dir / "main.py").write_text("def main():\n    print('Hello from EDISON')\n\nif __name__ == '__main__':\n    main()\n")
+            tests_dir = repo_dir / "tests"
+            tests_dir.mkdir(exist_ok=True)
+            (tests_dir / "test_main.py").write_text("def test_smoke():\n    assert True\n")
+            output_file = repo_dir / "README.md"
+        elif req.kind == "schema":
+            output_file = project_dir / "schema.json"
+            content = json.dumps({"title": "Schema", "description": req.prompt, "type": "object"}, indent=2)
+        elif req.kind == "ui":
+            output_file = project_dir / "Component.jsx"
+            content = """export default function Component(){\n  return (\n    <div style={{padding:20}}><h1>EDISON UI</h1></div>\n  );\n}\n"""
+        elif req.kind == "presentation":
+            output_file = project_dir / "slides.md"
+            content = f"# Slide 1\n\n{req.prompt}\n\n---\n\n# Slide 2\n\nKey points here."
+        elif req.kind == "spreadsheet":
+            output_file = project_dir / "data.csv"
+            content = "col1,col2\nvalue1,value2\n"
+        elif req.kind == "website":
+            output_file = project_dir / "index.html"
+            content = f"""<!DOCTYPE html><html><head><meta charset='utf-8'><title>EDISON Site</title></head><body><h1>{req.prompt}</h1></body></html>"""
+
+        if output_file and content is not None:
+            output_file.write_text(content)
+            meta["status"] = "generated"
+            meta["output_file"] = str(output_file)
+            meta_path.write_text(json.dumps(meta, indent=2))
+
         return ArtifactGenerateResponse(
             artifact_id=artifact_id,
             kind=req.kind,
             output_path=str(project_dir),
-            status="queued"
+            status=meta["status"]
         )
