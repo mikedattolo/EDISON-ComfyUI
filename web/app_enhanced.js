@@ -565,9 +565,9 @@ class EdisonApp {
                                     // Success
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
                                     
-                                    // Display swarm agent results if available
+                                    // Display swarm agent conversation as separate messages if available
                                     if (data.swarm_agents && data.swarm_agents.length > 0) {
-                                        this.displaySwarmAgents(assistantMessageEl, data.swarm_agents);
+                                        this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
                                     }
                                     
                                     assistantMessageEl.classList.remove('streaming');
@@ -603,7 +603,7 @@ class EdisonApp {
     }
 
     getRecentMessages(count = 5) {
-        const messages = Array.from(this.messagesContainer.querySelectorAll('.message:not(.streaming)'));
+        const messages = Array.from(this.messagesContainer.querySelectorAll('.message:not(.streaming):not(.swarm-agent)'));
         const recent = messages.slice(-count * 2); // Get last N exchanges (user + assistant pairs)
         
         return recent.map(msg => ({
@@ -722,38 +722,42 @@ class EdisonApp {
         }, 2000);
     }
 
-    displaySwarmAgents(assistantMessageEl, swarmAgents) {
-        // Create a collapsible section to display swarm agent conversation
-        const contentEl = assistantMessageEl.querySelector('.message-content');
-        
-        const swarmSection = document.createElement('div');
-        swarmSection.className = 'swarm-agents-section';
-        swarmSection.innerHTML = `
-            <details class="swarm-details">
-                <summary class="swarm-summary">
-                    <span class="swarm-icon">🐝</span>
-                    <span>Agent Discussion (${swarmAgents.length} messages)</span>
-                    <span class="swarm-toggle">▼</span>
-                </summary>
-                <div class="swarm-conversation">
-                    ${swarmAgents.map((agent, idx) => `
-                        <div class="swarm-agent-message">
-                            <div class="swarm-agent-header">
-                                <span class="swarm-agent-icon">${agent.icon}</span>
-                                <span class="swarm-agent-name">${agent.agent}</span>
-                                <span class="swarm-agent-model">${agent.model || 'Unknown Model'}</span>
-                            </div>
-                            <div class="swarm-agent-content">
-                                ${this.formatMessage(agent.response)}
-                            </div>
-                        </div>
-                    `).join('')}
+    insertSwarmConversation(assistantMessageEl, swarmAgents) {
+        // Insert swarm agent messages as separate chat entries before the main response
+        const fragment = document.createDocumentFragment();
+
+        swarmAgents.forEach(agent => {
+            const agentMessageEl = document.createElement('div');
+            agentMessageEl.className = 'message assistant swarm-agent';
+
+            agentMessageEl.innerHTML = `
+                <div class="message-header">
+                    <div class="message-avatar">${agent.icon || '🐝'}</div>
+                    <span class="message-role">${agent.agent || 'Agent'}</span>
+                    <span class="message-mode">${(agent.model || 'Unknown Model').toUpperCase()}</span>
                 </div>
-            </details>
-        `;
-        
-        // Insert before the main response
-        contentEl.insertBefore(swarmSection, contentEl.firstChild);
+                <div class="message-content">${this.formatMessage(agent.response || '')}</div>
+                <div class="message-actions">
+                    <button class="action-btn copy-btn" title="Copy to clipboard">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
+                            <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
+                        </svg>
+                    </button>
+                </div>
+            `;
+
+            const copyBtn = agentMessageEl.querySelector('.copy-btn');
+            if (copyBtn) {
+                copyBtn.addEventListener('click', () => this.copyToClipboard(agent.response || ''));
+            }
+
+            fragment.appendChild(agentMessageEl);
+        });
+
+        // Insert all agent messages before the main assistant response
+        this.messagesContainer.insertBefore(fragment, assistantMessageEl);
+        this.scrollToBottom();
     }
 
     updateMessage(messageEl, content, mode) {
@@ -890,7 +894,7 @@ class EdisonApp {
 
     buildPromptFromContext(message) {
         // Build a prompt by combining recent conversation context
-        const messages = Array.from(this.messagesContainer.querySelectorAll('.message:not(.streaming)'));
+        const messages = Array.from(this.messagesContainer.querySelectorAll('.message:not(.streaming):not(.swarm-agent)'));
         const recentMessages = messages.slice(-6); // Last 3 exchanges
         
         let promptParts = [];

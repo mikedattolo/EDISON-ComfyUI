@@ -402,6 +402,30 @@ body {
     border-radius: 4px;
 }
 
+/* Swarm agent message styling */
+.message.swarm-agent {
+    border: 1px dashed var(--border);
+    background: rgba(102, 126, 234, 0.05);
+}
+
+.message.swarm-agent .message-avatar {
+    background: linear-gradient(135deg, #f59e0b, #f97316);
+}
+
+.message.swarm-agent .message-role {
+    color: var(--primary);
+}
+
+.message.swarm-agent .message-mode {
+    display: inline-block;
+    color: var(--text-secondary);
+    background: var(--surface-hover);
+}
+
+.message.swarm-agent .message-content {
+    color: var(--text-secondary);
+}
+
 .message-content {
     margin-left: 44px;
     color: var(--text-primary);
