@@ -1900,15 +1900,15 @@ body {
 /* ==================== GALLERY STYLES ==================== */
 
 .gallery-panel {
-    position: fixed;
-    top: 0;
-    right: 0;
+    position: fixed !important;
+    top: 0 !important;
+    right: 0 !important;
     width: 600px;
     max-width: 90vw;
-    height: 100vh;
+    height: 100vh !important;
     background: var(--surface);
     border-left: 1px solid var(--border);
-    z-index: 1000;
+    z-index: 9999 !important;
     display: flex;
     flex-direction: column;
     overflow: hidden;
@@ -1920,8 +1920,8 @@ body {
 }
 
 .gallery-panel.active {
-    transform: translateX(0);
-    visibility: visible;
+    transform: translateX(0) !important;
+    visibility: visible !important;
 }
 
 .gallery-header {
