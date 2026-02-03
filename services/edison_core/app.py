@@ -2222,22 +2222,22 @@ Steps:"""
                     "name": "Researcher",
                     "icon": "🔍",
                     "role": "research specialist",
-                    "model": fast_llm,  # Fast model for quick research
-                    "model_name": "Qwen 14B (Fast)"
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
                 },
                 {
                     "name": "Analyst", 
                     "icon": "🧠",
                     "role": "strategic analyst",
-                    "model": llm,  # Deep model for analysis
-                    "model_name": "Qwen 72B (Deep)"
+                    "model": llm_deep if llm_deep else llm,
+                    "model_name": "Qwen 72B (Deep)" if llm_deep else "Selected Model"
                 },
                 {
                     "name": "Implementer",
                     "icon": "⚙️",
                     "role": "implementation specialist",
-                    "model": fast_llm,  # Fast model for quick implementation ideas
-                    "model_name": "Qwen 14B (Fast)"
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
                 }
             ]
             
