@@ -106,7 +106,7 @@
                 </button>
                 
                 <!-- Gallery Button -->
-                <button class="gallery-btn" id="galleryBtn" title="View generated images" onclick="if(window.imageGallery) window.imageGallery.toggle(); else console.error('Gallery not initialized');">
+                <button class="gallery-btn" id="galleryBtn" title="View generated images" onclick="event.stopPropagation(); event.preventDefault(); console.log('CLICK EVENT'); if(window.imageGallery) { if(window.imageGallery.isOpen) { window.imageGallery.close(); } else { window.imageGallery.open(); } }">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                         <rect x="2" y="3" width="16" height="11" rx="1" stroke="currentColor" stroke-width="1.5" fill="none"/>
                         <circle cx="7" cy="7" r="1.5" fill="currentColor"/>
