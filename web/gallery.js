@@ -76,11 +76,27 @@ class ImageGallery {
 
     async open() {
         console.log('Opening gallery');
-        // Set inline styles for open state and add active class
+        console.log('Gallery panel element:', this.galleryPanel);
+        
+        if (!this.galleryPanel) {
+            console.error('NO GALLERY PANEL!');
+            alert('Gallery panel not found!');
+            return;
+        }
+        
+        // Set inline styles for open state
         this.galleryPanel.style.transform = 'translateX(0)';
         this.galleryPanel.style.visibility = 'visible';
+        this.galleryPanel.style.display = 'flex';
         this.galleryPanel.classList.add('active');
         this.isOpen = true;
+        
+        console.log('Gallery panel styles after open:', {
+            transform: this.galleryPanel.style.transform,
+            visibility: this.galleryPanel.style.visibility,
+            display: this.galleryPanel.style.display
+        });
+        
         await this.loadImages();
     }
 
