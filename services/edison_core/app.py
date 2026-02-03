@@ -2243,7 +2243,27 @@ Steps:"""
             
             # Build conversation between agents
             conversation = []
-            
+
+            def _normalize_text(text: str) -> set:
+                return set(re.findall(r"[a-zA-Z]+", (text or "").lower()))
+
+            def _avg_jaccard(responses: list) -> float:
+                if len(responses) < 2:
+                    return 0.0
+                sets = [_normalize_text(r) for r in responses]
+                scores = []
+                for i in range(len(sets)):
+                    for j in range(i + 1, len(sets)):
+                        union = sets[i] | sets[j]
+                        if not union:
+                            continue
+                        scores.append(len(sets[i] & sets[j]) / len(union))
+                return sum(scores) / len(scores) if scores else 0.0
+
+            # Decide number of rounds (auto)
+            max_rounds = 3
+            rounds = 2
+
             # Round 1: Each agent provides initial thoughts
             logger.info("🐝 Round 1: Initial agent perspectives")
             for agent in agents:
@@ -2251,15 +2271,20 @@ Steps:"""
 
 User Request: {request.message}
 
-Provide your initial perspective (2-3 sentences max, be concise and specific):"""
+Rules:
+- Respond only in English.
+- Be specific and concise (2-3 sentences).
+- Provide unique insights from your role.
+
+Your initial perspective:"""
                 
                 agent_model = agent["model"]
                 lock = get_lock_for_model(agent_model)
                 with lock:
                     stream = agent_model.create_chat_completion(
                         messages=[{"role": "user", "content": agent_prompt}],
-                        max_tokens=150,
-                        temperature=0.8,
+                        max_tokens=180,
+                        temperature=0.7,
                         stream=False
                     )
                     agent_response = stream["choices"][0]["message"]["content"]
@@ -2271,40 +2296,52 @@ Provide your initial perspective (2-3 sentences max, be concise and specific):""
                     "response": agent_response
                 })
                 logger.info(f"{agent['icon']} {agent['name']} ({agent['model_name']}): {agent_response[:80]}...")
-            
-            # Round 2: Agents respond to each other
-            logger.info("🐝 Round 2: Agent collaboration and refinement")
-            discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
-            
-            for agent in agents:
-                agent_prompt = f"""You are {agent['name']}, continuing the discussion.
+
+            # Decide if we need an extra round based on similarity
+            round1_responses = [c["response"] for c in conversation]
+            if _avg_jaccard(round1_responses) > 0.45 and rounds < max_rounds:
+                rounds = 3
+                logger.info("🐝 Auto-round: responses too similar, adding an extra round")
+
+            for round_idx in range(2, rounds + 1):
+                logger.info(f"🐝 Round {round_idx}: Agent collaboration and refinement")
+                discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
+
+                for agent in agents:
+                    agent_prompt = f"""You are {agent['name']}, continuing the discussion.
 
 User Request: {request.message}
 
 Other experts said:
 {discussion_summary}
 
-Based on their input, provide your refined perspective or additional insights (2-3 sentences):"""
-                
-                agent_model = agent["model"]
-                lock = get_lock_for_model(agent_model)
-                with lock:
-                    stream = agent_model.create_chat_completion(
-                        messages=[{"role": "user", "content": agent_prompt}],
-                        max_tokens=150,
-                        temperature=0.7,
-                        stream=False
-                    )
-                    agent_response = stream["choices"][0]["message"]["content"]
-                
-                conversation.append({
-                    "agent": f"{agent['name']} (Round 2)",
-                    "icon": agent["icon"],
-                    "model": agent["model_name"],
-                    "response": agent_response
-                })
-                logger.info(f"{agent['icon']} {agent['name']} Round 2: {agent_response[:80]}...")
-            
+Rules:
+- Respond only in English.
+- Address at least one specific point from another agent by name.
+- Add one new insight not previously mentioned.
+- Keep it to 2-3 sentences.
+
+Your refined contribution:"""
+                    
+                    agent_model = agent["model"]
+                    lock = get_lock_for_model(agent_model)
+                    with lock:
+                        stream = agent_model.create_chat_completion(
+                            messages=[{"role": "user", "content": agent_prompt}],
+                            max_tokens=180,
+                            temperature=0.6,
+                            stream=False
+                        )
+                        agent_response = stream["choices"][0]["message"]["content"]
+                    
+                    conversation.append({
+                        "agent": f"{agent['name']} (Round {round_idx})",
+                        "icon": agent["icon"],
+                        "model": agent["model_name"],
+                        "response": agent_response
+                    })
+                    logger.info(f"{agent['icon']} {agent['name']} Round {round_idx}: {agent_response[:80]}...")
+
             swarm_results = conversation
             
             # Synthesize with actual insight
