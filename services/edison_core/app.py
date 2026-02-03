@@ -25,6 +25,24 @@ import shutil
 import base64
 import numpy as np
 
+from services.edison_core.contracts import (
+    AgentPlanRequest,
+    AgentPlanResponse,
+    AgentExecuteRequest,
+    AgentExecuteResponse,
+    ProjectCreateRequest,
+    ProjectResponse,
+    ArtifactGenerateRequest,
+    ArtifactGenerateResponse,
+    SafetyAssessmentRequest,
+    SafetyAssessmentResponse,
+)
+from services.edison_core.orchestration import AgentControllerBrain
+from services.edison_core.projects import ProjectWorkspaceManager
+from services.edison_core.artifact_pipeline import ArtifactPipeline
+from services.edison_core.safety import SafetyGate
+from services.edison_core.memory_scopes import MemoryScopeManager
+
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
@@ -258,6 +276,11 @@ llm_vision = None  # VLM for image understanding
 rag_system = None
 search_tool = None
 config = None
+agent_controller = None
+project_manager = None
+artifact_pipeline = None
+safety_gate = None
+memory_scope_manager = None
 
 # Thread locks for concurrent model access safety
 lock_fast = threading.Lock()
@@ -1158,6 +1181,16 @@ async def lifespan(app: FastAPI):
     load_llm_models()
     init_rag_system()
     init_search_tool()
+
+    # Initialize orchestration scaffolding
+    global agent_controller, project_manager, artifact_pipeline, safety_gate, memory_scope_manager
+    agent_controller = AgentControllerBrain(config=config or {})
+    project_manager = ProjectWorkspaceManager(REPO_ROOT, config.get("edison", {}) if config else {})
+    artifact_pipeline = ArtifactPipeline(REPO_ROOT, config.get("edison", {}) if config else {})
+    safety_gate = SafetyGate(config.get("edison", {}) if config else {})
+    memory_scope_manager = MemoryScopeManager(
+        global_scope=config.get("edison", {}).get("memory", {}).get("global_scope", "global") if config else "global"
+    )
     
     logger.info("EDISON Core Service ready")
     logger.info("=" * 50)
@@ -1255,6 +1288,15 @@ async def list_models():
     large_rel_path = config.get("llm", {}).get("large_model_path")
     large_path = Path(large_rel_path) if large_rel_path else None
     
+    vision_model_name = config.get("edison", {}).get("core", {}).get("vision_model")
+    vlm_tokens = ["llava", "vision", "vlm", "mmproj"]
+
+    def is_vlm_model(model_file: Path) -> bool:
+        name = model_file.stem.lower()
+        if vision_model_name and model_file.name == vision_model_name:
+            return True
+        return any(token in name for token in vlm_tokens)
+
     def scan_path(path: Path, location: str):
         """Scan a path for GGUF models"""
         model_list = []
@@ -1266,7 +1308,8 @@ async def list_models():
                     "filename": model_file.name,
                     "size_gb": round(size_gb, 2),
                     "location": location,
-                    "path": str(model_file)
+                    "path": str(model_file),
+                    "is_vlm": is_vlm_model(model_file)
                 })
         return model_list
     
@@ -1285,8 +1328,82 @@ async def list_models():
         "current_models": {
             "fast": config.get("edison", {}).get("core", {}).get("fast_model"),
             "medium": config.get("edison", {}).get("core", {}).get("medium_model"),
-            "deep": config.get("edison", {}).get("core", {}).get("deep_model")
-        }
+            "deep": config.get("edison", {}).get("core", {}).get("deep_model"),
+            "vision": config.get("edison", {}).get("core", {}).get("vision_model")
+        },
+        "vision_default": config.get("edison", {}).get("core", {}).get("vision_model")
+    }
+
+
+@app.post("/agent/plan", response_model=AgentPlanResponse)
+async def agent_plan(request: AgentPlanRequest):
+    if not agent_controller:
+        raise HTTPException(status_code=503, detail="Agent controller not initialized")
+    return agent_controller.plan(
+        goal=request.goal,
+        mode=request.mode,
+        has_image=request.has_image,
+        project_id=request.project_id,
+        context=request.context
+    )
+
+
+@app.post("/agent/execute", response_model=AgentExecuteResponse)
+async def agent_execute(request: AgentExecuteRequest):
+    job_id = str(uuid.uuid4())[:8]
+    return AgentExecuteResponse(
+        job_id=job_id,
+        status="queued",
+        message="Execution queued (scaffolding only)"
+    )
+
+
+@app.get("/projects", response_model=List[ProjectResponse])
+async def list_projects():
+    if not project_manager:
+        raise HTTPException(status_code=503, detail="Project manager not initialized")
+    return project_manager.list_projects()
+
+
+@app.post("/projects", response_model=ProjectResponse)
+async def create_project(request: ProjectCreateRequest):
+    if not project_manager:
+        raise HTTPException(status_code=503, detail="Project manager not initialized")
+    return project_manager.create_project(request)
+
+
+@app.get("/projects/{project_id}", response_model=ProjectResponse)
+async def get_project(project_id: str):
+    if not project_manager:
+        raise HTTPException(status_code=503, detail="Project manager not initialized")
+    project = project_manager.get_project(project_id)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+    return project
+
+
+@app.post("/artifacts/generate", response_model=ArtifactGenerateResponse)
+async def generate_artifact(request: ArtifactGenerateRequest):
+    if not artifact_pipeline:
+        raise HTTPException(status_code=503, detail="Artifact pipeline not initialized")
+    return artifact_pipeline.generate(request)
+
+
+@app.post("/safety/assess", response_model=SafetyAssessmentResponse)
+async def safety_assess(request: SafetyAssessmentRequest):
+    if not safety_gate:
+        raise HTTPException(status_code=503, detail="Safety gate not initialized")
+    return safety_gate.assess(request)
+
+
+@app.get("/memory/scope")
+async def get_memory_scope(project_id: Optional[str] = None, session_id: Optional[str] = None):
+    if not memory_scope_manager:
+        raise HTTPException(status_code=503, detail="Memory scope manager not initialized")
+    scope = memory_scope_manager.get_scope(project_id=project_id, session_id=session_id)
+    return {
+        "scope_id": scope.scope_id,
+        "kind": scope.kind
     }
 
 def get_lock_for_model(model) -> threading.Lock:

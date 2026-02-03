@@ -11,11 +11,18 @@ class EdisonApp {
         this.currentRequestId = null;  // Track current streaming request for cancellation
         this.sidebarCollapsed = false;
         this.lastImagePrompt = null; // Track last image generation prompt for regeneration
+        this.availableModels = [];
+        this.selectedModel = localStorage.getItem('edison_selected_model') || 'auto';
+        this.modelSelector = null;
+        this.modelSelect = null;
+        this.bestVlm = null;
         
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
         this.loadCurrentChat();
+        this.setMode(this.settings.defaultMode);
+        this.loadAvailableModels();
     }
 
     getOrCreateUserId() {
@@ -57,6 +64,10 @@ class EdisonApp {
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
         this.systemStatus = document.getElementById('systemStatus');
+
+        // Model selector
+        this.modelSelector = document.getElementById('modelSelector');
+        this.modelSelect = document.getElementById('modelSelect');
         
         // User ID sync controls
         this.userIdInput = document.getElementById('userIdInput');
@@ -80,6 +91,13 @@ class EdisonApp {
         this.modeButtons.forEach(btn => {
             btn.addEventListener('click', () => this.setMode(btn.dataset.mode));
         });
+
+        // Model selector
+        if (this.modelSelect) {
+            this.modelSelect.addEventListener('change', (e) => {
+                this.setSelectedModel(e.target.value);
+            });
+        }
         
         // Sidebar
         this.newChatBtn.addEventListener('click', () => this.createNewChat());
@@ -154,6 +172,70 @@ class EdisonApp {
         this.modeButtons.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.mode === mode);
         });
+
+        if (this.modelSelector) {
+            this.modelSelector.style.display = mode === 'auto' ? 'none' : 'flex';
+        }
+    }
+
+    setSelectedModel(modelPath) {
+        this.selectedModel = modelPath || 'auto';
+        localStorage.setItem('edison_selected_model', this.selectedModel);
+        console.log(`Model changed to: ${this.selectedModel}`);
+    }
+
+    async loadAvailableModels() {
+        if (!this.modelSelect) return;
+
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/models/list`);
+            if (!response.ok) throw new Error('Failed to load models');
+
+            const data = await response.json();
+            this.availableModels = data.models || [];
+            this.bestVlm = data.vision_default || null;
+            this.populateModelSelector();
+            console.log(`Loaded ${this.availableModels.length} available models`);
+        } catch (error) {
+            console.warn('Failed to load available models:', error.message);
+        }
+    }
+
+    populateModelSelector() {
+        if (!this.modelSelect) return;
+
+        this.modelSelect.innerHTML = '';
+        const autoOption = document.createElement('option');
+        autoOption.value = 'auto';
+        autoOption.textContent = this.bestVlm
+            ? `Auto (System Default · VLM: ${this.bestVlm})`
+            : 'Auto (System Default)';
+        this.modelSelect.appendChild(autoOption);
+
+        const isVlmName = (name) => /llava|vision|vlm|mmproj/i.test(name || '');
+
+        this.availableModels.forEach(model => {
+            const option = document.createElement('option');
+            option.value = model.path;
+            option.textContent = model.name;
+            const vlm = model.is_vlm || isVlmName(model.name) || (this.bestVlm && model.filename === this.bestVlm);
+            if (vlm) {
+                option.disabled = true;
+                option.textContent = `${model.name} (VLM - auto)`;
+            }
+            this.modelSelect.appendChild(option);
+        });
+
+        // Reset selection if it points to a VLM
+        const selectedIsVlm = this.availableModels.some(m => m.path === this.selectedModel && (m.is_vlm || isVlmName(m.name)));
+        if (selectedIsVlm) {
+            this.selectedModel = 'auto';
+            localStorage.setItem('edison_selected_model', 'auto');
+        }
+
+        if (this.selectedModel) {
+            this.modelSelect.value = this.selectedModel;
+        }
     }
 
     async sendMessage(editingMessageId = null) {
@@ -348,7 +430,8 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
-                images: images.length > 0 ? images : undefined
+                images: images.length > 0 ? images : undefined,
+                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
             }),
             signal: this.abortController?.signal
         });
@@ -422,7 +505,8 @@ class EdisonApp {
                 mode: mode,
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
-                images: images.length > 0 ? images : undefined
+                images: images.length > 0 ? images : undefined,
+                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
             }),
             signal: this.abortController?.signal
         });
@@ -1239,6 +1323,7 @@ class EdisonApp {
         
         // Update current mode if needed
         this.setMode(this.settings.defaultMode);
+        this.loadAvailableModels();
         
         this.closeSettings();
     }

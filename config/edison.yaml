@@ -7,8 +7,51 @@ edison:
     models_path: "models/llm"
     fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
     deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
-    vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # VLM for image understanding
+    vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # Best available VLM (default)
     vision_clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"  # CLIP projector for vision
+
+  orchestration:
+    enabled: true
+    default_mode: "instant"
+    swarm_max_agents: 4
+    tool_access: true
+
+  agent_modes:
+    instant:
+      max_tokens: 1024
+      reasoning: "light"
+    thinking:
+      max_tokens: 4096
+      reasoning: "deep"
+    agent:
+      tools: true
+    swarm:
+      tools: true
+      parallel: true
+
+  projects:
+    root: "outputs"
+    sandbox:
+      docker_image: "python:3.11-slim"
+      memory_limit: "1g"
+      cpu_quota: 200000
+
+  artifacts:
+    root: "outputs"
+    formats:
+      - "md"
+      - "pdf"
+      - "docx"
+      - "json"
+
+  safety:
+    thresholds:
+      auto_block: 0.9
+      require_confirm: 0.5
+
+  memory:
+    global_scope: "global"
+    project_scopes: true
   
   coral:
     enabled: true
