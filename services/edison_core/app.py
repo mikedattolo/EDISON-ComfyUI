@@ -1779,6 +1779,27 @@ async def chat(request: ChatRequest):
     
     # Build prompt
     system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
+
+    status_steps = [{"stage": "Analyzing request"}]
+    if search_results:
+        try:
+            from urllib.parse import urlparse
+            domains = []
+            for r in search_results[:3]:
+                url = r.get("url") or ""
+                domain = urlparse(url).netloc
+                if domain:
+                    domains.append(domain)
+            if domains:
+                status_steps.append({"stage": "Searching web", "detail": ", ".join(domains)})
+            else:
+                status_steps.append({"stage": "Searching web"})
+        except Exception:
+            status_steps.append({"stage": "Searching web"})
+    if context_chunks:
+        status_steps.append({"stage": "Using memory"})
+    if mode != "swarm":
+        status_steps.append({"stage": "Generating response"})
     
     # Work mode: Break down task into actionable steps
     work_steps = []
@@ -2219,62 +2240,80 @@ Steps:"""
             logger.info("🐝 Swarm mode activated - deploying specialized agents for collaborative discussion")
             
             # Define specialized agents with different models and roles
+            def _pick_agent_model(agent_name: str):
+                if agent_name == "Analyst":
+                    if llm_deep:
+                        return llm_deep, "Qwen 72B (Deep)"
+                    if llm_medium:
+                        return llm_medium, "Qwen 32B (Medium)"
+                    if llm_fast:
+                        return llm_fast, "Qwen 14B (Fast)"
+                    return llm, "Selected Model"
+                # Default preference for other agents
+                if llm_fast:
+                    return llm_fast, "Qwen 14B (Fast)"
+                if llm_medium:
+                    return llm_medium, "Qwen 32B (Medium)"
+                if llm_deep:
+                    return llm_deep, "Qwen 72B (Deep)"
+                return llm, "Selected Model"
+
             agent_catalog = {
                 "Researcher": {
                     "name": "Researcher",
                     "icon": "🔍",
                     "role": "research specialist",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Researcher")[0],
+                    "model_name": _pick_agent_model("Researcher")[1]
                 },
                 "Analyst": {
                     "name": "Analyst",
                     "icon": "🧠",
                     "role": "strategic analyst",
-                    "model": llm_deep if llm_deep else llm,
-                    "model_name": "Qwen 72B (Deep)" if llm_deep else "Selected Model"
+                    "model": _pick_agent_model("Analyst")[0],
+                    "model_name": _pick_agent_model("Analyst")[1]
                 },
                 "Implementer": {
                     "name": "Implementer",
                     "icon": "⚙️",
                     "role": "implementation specialist",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Implementer")[0],
+                    "model_name": _pick_agent_model("Implementer")[1]
                 },
                 "Critic": {
                     "name": "Critic",
                     "icon": "🧯",
                     "role": "critical reviewer who finds flaws, risks, and missing constraints",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Critic")[0],
+                    "model_name": _pick_agent_model("Critic")[1]
                 },
                 "Planner": {
                     "name": "Planner",
                     "icon": "🧭",
                     "role": "project planner who breaks work into steps and milestones",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Planner")[0],
+                    "model_name": _pick_agent_model("Planner")[1]
                 },
                 "Designer": {
                     "name": "Designer",
                     "icon": "🎨",
                     "role": "UX/UI designer focusing on layout, interaction, and aesthetics",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Designer")[0],
+                    "model_name": _pick_agent_model("Designer")[1]
                 },
                 "Marketer": {
                     "name": "Marketer",
                     "icon": "📣",
                     "role": "growth marketer focusing on positioning, audience, and messaging",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Marketer")[0],
+                    "model_name": _pick_agent_model("Marketer")[1]
                 },
                 "Verifier": {
                     "name": "Verifier",
                     "icon": "✅",
                     "role": "validator who checks constraints, requirements, and correctness",
-                    "model": llm_fast if llm_fast else llm,
-                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                    "model": _pick_agent_model("Verifier")[0],
+                    "model_name": _pick_agent_model("Verifier")[1]
                 }
             }
 
@@ -2362,6 +2401,10 @@ Steps:"""
 
             # Round 1: Each agent provides initial thoughts
             logger.info("🐝 Round 1: Initial agent perspectives")
+            status_steps.extend([
+                {"stage": "Selecting agents"},
+                {"stage": "Swarm round 1"}
+            ])
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
@@ -2416,6 +2459,13 @@ Your initial perspective:"""
             if _avg_jaccard(round1_responses) > 0.45 and rounds < max_rounds:
                 rounds = 3
                 logger.info("🐝 Auto-round: responses too similar, adding an extra round")
+
+            if rounds >= 2:
+                status_steps.append({"stage": "Swarm round 2"})
+            if rounds >= 3:
+                status_steps.append({"stage": "Swarm round 3"})
+            if rounds >= 4:
+                status_steps.append({"stage": "Swarm round 4"})
 
             for round_idx in range(2, rounds + 1):
                 logger.info(f"🐝 Round {round_idx}: Agent collaboration and refinement")
@@ -2538,6 +2588,7 @@ Your vote:"""
                     "response": vote_summary
                 }
             ]
+            status_steps.append({"stage": "Voting"})
             
             # Synthesize with actual insight
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
@@ -2554,6 +2605,7 @@ Vote Summary:
 {vote_summary}
 
 Provide a clear, actionable synthesis that integrates all perspectives:"""
+            status_steps.append({"stage": "Synthesizing"})
             
             full_prompt = synthesis_prompt
             logger.info("🐝 Swarm discussion complete, synthesizing final response")
@@ -2568,6 +2620,17 @@ Provide a clear, actionable synthesis that integrates all perspectives:"""
             return
         # Send request_id as first event
         yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
+
+        if status_steps:
+            total_steps = len(status_steps)
+            for idx, step in enumerate(status_steps, start=1):
+                payload = {
+                    "stage": step.get("stage"),
+                    "detail": step.get("detail"),
+                    "current": idx,
+                    "total": total_steps
+                }
+                yield f"event: status\ndata: {json.dumps(payload)}\n\n"
         
         # Log GPU utilization at start of inference
         try:
@@ -3280,6 +3343,28 @@ def ensure_user_record(user_id: str, name: str = None) -> dict:
     save_users_db(db)
     return record
 
+def extract_pdf_text_from_base64(b64_data: str) -> str:
+    try:
+        from PyPDF2 import PdfReader
+    except Exception:
+        logger.warning("PyPDF2 not installed - PDF extraction skipped")
+        return ""
+
+    try:
+        if b64_data.startswith("data:"):
+            b64_data = b64_data.split(",", 1)[1]
+        raw = base64.b64decode(b64_data)
+        reader = PdfReader(io.BytesIO(raw))
+        texts = []
+        for page in reader.pages:
+            page_text = page.extract_text() or ""
+            if page_text:
+                texts.append(page_text)
+        return "\n".join(texts).strip()
+    except Exception as e:
+        logger.error(f"PDF extraction failed: {e}")
+        return ""
+
 def get_user_chats_file(user_id: str) -> Path:
     """Get path to user's chats file"""
     return CHATS_DIR / f"{user_id}.json"
@@ -3930,6 +4015,14 @@ async def upload_document(request: dict):
     try:
         file_name = request.get('name', 'unknown')
         file_content = request.get('content', '')
+        file_base64 = request.get('content_base64', '')
+
+        # If PDF base64 provided, extract text
+        if file_base64 or (file_name.lower().endswith('.pdf') and isinstance(file_content, str) and file_content.startswith('data:')):
+            b64 = file_base64 or file_content
+            extracted = extract_pdf_text_from_base64(b64)
+            if extracted:
+                file_content = extracted
         
         # Store in RAG if available
         if rag_system:

@@ -402,6 +402,27 @@ body {
     border-radius: 4px;
 }
 
+.message-status {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    margin-left: auto;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.status-ring {
+    width: 14px;
+    height: 14px;
+    border-radius: 50%;
+    background: conic-gradient(var(--primary) var(--progress), var(--border) 0);
+    border: 1px solid var(--border);
+}
+
+.status-text {
+    white-space: nowrap;
+}
+
 /* Swarm agent message styling */
 .message.swarm-agent {
     border: 1px dashed var(--border);

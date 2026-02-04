@@ -69,7 +69,8 @@ function initFileUpload() {
                 name: file.name,
                 type: file.type,
                 content: fileData,
-                isImage: file.type.startsWith('image/')
+                isImage: file.type.startsWith('image/'),
+                isPdf: file.type === 'application/pdf'
             });
         }
 
@@ -87,8 +88,8 @@ async function readFileContent(file) {
         reader.onload = (e) => resolve(e.target.result);
         reader.onerror = reject;
         
-        // Read images as base64, text files as text
-        if (file.type.startsWith('image/')) {
+        // Read images and PDFs as base64, text files as text
+        if (file.type.startsWith('image/') || file.type === 'application/pdf') {
             reader.readAsDataURL(file);
         } else {
             reader.readAsText(file);

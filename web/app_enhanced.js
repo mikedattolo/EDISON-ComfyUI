@@ -412,8 +412,9 @@ class EdisonApp {
             console.log('📤 Processing files...');
             
             // Separate images from text files
-            const textFiles = attachedFiles.filter(f => !f.isImage);
+            const textFiles = attachedFiles.filter(f => !f.isImage && !f.isPdf);
             const imageFiles = attachedFiles.filter(f => f.isImage);
+            const pdfFiles = attachedFiles.filter(f => f.isPdf);
             
             // Add text files to message
             if (textFiles.length > 0) {
@@ -428,6 +429,14 @@ class EdisonApp {
                         : fileContent;
                     enhancedMessage += `\n--- File: ${file.name} ---\n${truncated}\n`;
                 });
+            }
+
+            if (pdfFiles.length > 0) {
+                console.log('📤 Uploading PDFs for extraction');
+                for (const file of pdfFiles) {
+                    await this.uploadDocument(file);
+                    enhancedMessage += `\n[Attached PDF: ${file.name} uploaded for extraction]\n`;
+                }
             }
             
             // Collect images
@@ -588,6 +597,8 @@ class EdisonApp {
                                     this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
                                     swarmInserted = true;
                                 }
+                            } else if (currentEventType === 'status' && data.stage) {
+                                this.updateStatus(assistantMessageEl, data);
                             } else if (data.t) {
                                 // Token event
                                 accumulatedResponse += data.t;
@@ -609,6 +620,7 @@ class EdisonApp {
                                     if (data.files && data.files.length > 0) {
                                         this.displayGeneratedFiles(assistantMessageEl, data.files);
                                     }
+                                    this.clearStatus(assistantMessageEl);
                                     
                                     assistantMessageEl.classList.remove('streaming');
                                     
@@ -798,6 +810,45 @@ class EdisonApp {
         // Insert all agent messages before the main assistant response
         this.messagesContainer.insertBefore(fragment, assistantMessageEl);
         this.scrollToBottom();
+    }
+
+    updateStatus(assistantMessageEl, data) {
+        const header = assistantMessageEl.querySelector('.message-header');
+        let statusEl = assistantMessageEl.querySelector('.message-status');
+        if (!statusEl) {
+            statusEl = document.createElement('div');
+            statusEl.className = 'message-status';
+            header.appendChild(statusEl);
+        }
+        const progress = data.total ? Math.round((data.current / data.total) * 100) : 0;
+        const detail = data.detail ? ` — ${data.detail}` : '';
+        statusEl.innerHTML = `
+            <span class="status-ring" style="--progress:${progress}%"></span>
+            <span class="status-text">${data.stage}${detail}</span>
+        `;
+    }
+
+    clearStatus(assistantMessageEl) {
+        const statusEl = assistantMessageEl.querySelector('.message-status');
+        if (statusEl) statusEl.remove();
+    }
+
+    async uploadDocument(file) {
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/upload-document`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    name: file.name,
+                    content_base64: file.content
+                })
+            });
+            if (!response.ok) {
+                console.warn('PDF upload failed:', file.name);
+            }
+        } catch (error) {
+            console.warn('PDF upload error:', error.message);
+        }
     }
 
     displayGeneratedFiles(assistantMessageEl, files) {
