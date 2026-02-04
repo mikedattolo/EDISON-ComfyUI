@@ -2266,21 +2266,24 @@ Steps:"""
             
             # Define specialized agents with different models and roles
             def _pick_agent_model(agent_name: str):
-                if agent_name == "Analyst":
-                    if llm_deep:
+                preferences = {
+                    "Analyst": ["deep", "medium", "fast"],
+                    "Critic": ["deep", "medium", "fast"],
+                    "Researcher": ["medium", "deep", "fast"],
+                    "Planner": ["medium", "deep", "fast"],
+                    "Verifier": ["medium", "deep", "fast"],
+                    "Implementer": ["fast", "medium", "deep"],
+                    "Designer": ["fast", "medium", "deep"],
+                    "Marketer": ["fast", "medium", "deep"]
+                }
+                order = preferences.get(agent_name, ["fast", "medium", "deep"])
+                for pref in order:
+                    if pref == "deep" and llm_deep:
                         return llm_deep, "Qwen 72B (Deep)"
-                    if llm_medium:
+                    if pref == "medium" and llm_medium:
                         return llm_medium, "Qwen 32B (Medium)"
-                    if llm_fast:
+                    if pref == "fast" and llm_fast:
                         return llm_fast, "Qwen 14B (Fast)"
-                    return llm, "Selected Model"
-                # Default preference for other agents
-                if llm_fast:
-                    return llm_fast, "Qwen 14B (Fast)"
-                if llm_medium:
-                    return llm_medium, "Qwen 32B (Medium)"
-                if llm_deep:
-                    return llm_deep, "Qwen 72B (Deep)"
                 return llm, "Selected Model"
 
             agent_catalog = {
@@ -2376,6 +2379,13 @@ Steps:"""
             # Truncate long user input for swarm prompts to avoid context overflow
             swarm_user_message = truncate_text(request.message or "", max_chars=2500, label="User message")
             
+            def _is_file_request(text: str) -> bool:
+                if not text:
+                    return False
+                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as)\b", text, re.IGNORECASE))
+
+            file_request = _is_file_request(request.message or "")
+
             # Build conversation between agents
             conversation = []
             shared_notes = []
@@ -2619,6 +2629,8 @@ Your vote:"""
                 status_steps.append({"stage": "Voting"})
             
             # Synthesize with actual insight
+            file_instruction = "If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.txt\", \"content\": \"...\"}]\n```\n\nInclude a brief summary outside the block."
+
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
 
 User Request: {swarm_user_message}
@@ -2632,7 +2644,9 @@ Shared Scratchpad:
 Vote Summary:
 {vote_summary}
 
-Provide a clear, actionable synthesis that integrates all perspectives:"""
+Provide a clear, actionable synthesis that integrates all perspectives.
+Do not repeat yourself. Keep it concise.
+{file_instruction if file_request else ""}"""
             if status_steps is not None:
                 status_steps.append({"stage": "Synthesizing"})
             
