@@ -4,7 +4,7 @@ FastAPI server with llama-cpp-python for local LLM inference
 """
 
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie
-from fastapi.responses import StreamingResponse
+from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 from typing import Optional, Literal, Iterator, List, Dict
@@ -1851,6 +1851,9 @@ Steps:"""
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
+
+    # Status steps (only used in stream handler, but keep defined for swarm reuse)
+    status_steps = []
     if context_chunks:
         logger.info(f"Context in prompt: {[c[0][:50] if isinstance(c, tuple) else c[:50] for c in context_chunks]}")
         # Log first 500 chars of actual prompt to see formatting
@@ -2401,10 +2404,11 @@ Steps:"""
 
             # Round 1: Each agent provides initial thoughts
             logger.info("🐝 Round 1: Initial agent perspectives")
-            status_steps.extend([
-                {"stage": "Selecting agents"},
-                {"stage": "Swarm round 1"}
-            ])
+            if status_steps is not None:
+                status_steps.extend([
+                    {"stage": "Selecting agents"},
+                    {"stage": "Swarm round 1"}
+                ])
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
@@ -2460,12 +2464,13 @@ Your initial perspective:"""
                 rounds = 3
                 logger.info("🐝 Auto-round: responses too similar, adding an extra round")
 
-            if rounds >= 2:
-                status_steps.append({"stage": "Swarm round 2"})
-            if rounds >= 3:
-                status_steps.append({"stage": "Swarm round 3"})
-            if rounds >= 4:
-                status_steps.append({"stage": "Swarm round 4"})
+            if status_steps is not None:
+                if rounds >= 2:
+                    status_steps.append({"stage": "Swarm round 2"})
+                if rounds >= 3:
+                    status_steps.append({"stage": "Swarm round 3"})
+                if rounds >= 4:
+                    status_steps.append({"stage": "Swarm round 4"})
 
             for round_idx in range(2, rounds + 1):
                 logger.info(f"🐝 Round {round_idx}: Agent collaboration and refinement")
@@ -2588,7 +2593,8 @@ Your vote:"""
                     "response": vote_summary
                 }
             ]
-            status_steps.append({"stage": "Voting"})
+            if status_steps is not None:
+                status_steps.append({"stage": "Voting"})
             
             # Synthesize with actual insight
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
@@ -2605,7 +2611,8 @@ Vote Summary:
 {vote_summary}
 
 Provide a clear, actionable synthesis that integrates all perspectives:"""
-            status_steps.append({"stage": "Synthesizing"})
+            if status_steps is not None:
+                status_steps.append({"stage": "Synthesizing"})
             
             full_prompt = synthesis_prompt
             logger.info("🐝 Swarm discussion complete, synthesizing final response")
