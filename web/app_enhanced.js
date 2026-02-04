@@ -399,7 +399,12 @@ class EdisonApp {
                 enhancedMessage += '\n\n[Attached files:]\n';
                 textFiles.forEach(file => {
                     console.log(`📤 Adding file: ${file.name}, content length: ${file.content?.length || 0}`);
-                    enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
+                    const maxFileChars = 6000;
+                    const fileContent = file.content || '';
+                    const truncated = fileContent.length > maxFileChars
+                        ? `${fileContent.slice(0, maxFileChars)}\n\n[TRUNCATED FILE: ${fileContent.length} chars total]`
+                        : fileContent;
+                    enhancedMessage += `\n--- File: ${file.name} ---\n${truncated}\n`;
                 });
             }
             

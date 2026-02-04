@@ -2308,7 +2308,7 @@ Steps:"""
             logger.info(f"🐝 Swarm agents selected: {', '.join([a['name'] for a in agents])}")
 
             # Truncate long user input for swarm prompts to avoid context overflow
-            swarm_user_message = truncate_text(request.message or "", max_chars=4000, label="User message")
+            swarm_user_message = truncate_text(request.message or "", max_chars=2500, label="User message")
             
             # Build conversation between agents
             conversation = []
@@ -2374,8 +2374,6 @@ Rules:
 - Be specific and concise (2-3 sentences).
 - Provide unique insights from your role.
 
-If you cannot comply in English, respond with: "ENGLISH_ONLY".
-
 Your initial perspective:"""
                 
                 agent_model = agent["model"]
@@ -2398,6 +2396,8 @@ Your initial perspective:"""
                             stream=False
                         )
                         agent_response = stream["choices"][0]["message"]["content"]
+                if _contains_cjk(agent_response):
+                    agent_response = "(Response omitted: non-English output detected.)"
 
                 _update_shared_notes(agent_response)
 
@@ -2437,8 +2437,6 @@ Rules:
 - Add one new insight not previously mentioned.
 - Keep it to 2-3 sentences.
 
-If you cannot comply in English, respond with: "ENGLISH_ONLY".
-
 Your refined contribution:"""
                     
                     agent_model = agent["model"]
@@ -2461,6 +2459,8 @@ Your refined contribution:"""
                                 stream=False
                             )
                             agent_response = stream["choices"][0]["message"]["content"]
+                    if _contains_cjk(agent_response):
+                        agent_response = "(Response omitted: non-English output detected.)"
 
                     _update_shared_notes(agent_response)
 
@@ -2622,7 +2622,13 @@ Provide a clear, actionable synthesis that integrates all perspectives:"""
                             assistant_response += token
                             yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
             else:
+                # Estimate safe max_tokens based on prompt size to avoid context overflow
+                estimated_prompt_tokens = max(1, len(full_prompt) // 4)
+                ctx_limit = 4096
                 max_tokens = 3072 if original_mode == "work" else 2048
+                safe_max_tokens = max(128, ctx_limit - estimated_prompt_tokens - 64)
+                if safe_max_tokens < max_tokens:
+                    max_tokens = safe_max_tokens
                 lock = get_lock_for_model(llm)
                 with lock:
                     stream = llm(
@@ -3522,7 +3528,7 @@ def _format_untrusted_search_context(search_results: list) -> str:
     return "\n".join(parts)
 
 
-def truncate_text(text: str, max_chars: int = 6000, label: str = "text") -> str:
+def truncate_text(text: str, max_chars: int = 3000, label: str = "text") -> str:
     if not text:
         return ""
     if len(text) <= max_chars:
@@ -3540,7 +3546,7 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
         parts.append("RECENT CONVERSATION:")
         for msg in conversation_history[-3:]:
             role = msg.get("role", "user")
-            content = truncate_text(msg.get("content", ""), max_chars=800, label="history")
+            content = truncate_text(msg.get("content", ""), max_chars=400, label="history")
             if role == "user":
                 parts.append(f"User: {content}")
             elif role == "assistant":
@@ -3577,7 +3583,7 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 parts.append(f"- {fact}")
             parts.append("")
     
-    user_message = truncate_text(user_message or "", max_chars=6000, label="user message")
+    user_message = truncate_text(user_message or "", max_chars=2500, label="user message")
     parts.append(f"User: {user_message}")
     parts.append("Assistant:")
     
