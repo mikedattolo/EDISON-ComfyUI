@@ -77,6 +77,13 @@ class EdisonApp {
         this.copyUserIdBtn = document.getElementById('copyUserIdBtn');
         this.importUserIdInput = document.getElementById('importUserIdInput');
         this.importUserIdBtn = document.getElementById('importUserIdBtn');
+        this.userSelect = document.getElementById('userSelect');
+        this.refreshUsersBtn = document.getElementById('refreshUsersBtn');
+        this.newUserNameInput = document.getElementById('newUserNameInput');
+        this.addUserBtn = document.getElementById('addUserBtn');
+        this.renameUserInput = document.getElementById('renameUserInput');
+        this.renameUserBtn = document.getElementById('renameUserBtn');
+        this.deleteUserBtn = document.getElementById('deleteUserBtn');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -118,6 +125,21 @@ class EdisonApp {
         }
         if (this.importUserIdBtn) {
             this.importUserIdBtn.addEventListener('click', () => this.importUserId());
+        }
+        if (this.userSelect) {
+            this.userSelect.addEventListener('change', () => this.switchUserFromSelect());
+        }
+        if (this.refreshUsersBtn) {
+            this.refreshUsersBtn.addEventListener('click', () => this.loadUsers());
+        }
+        if (this.addUserBtn) {
+            this.addUserBtn.addEventListener('click', () => this.addUser());
+        }
+        if (this.renameUserBtn) {
+            this.renameUserBtn.addEventListener('click', () => this.renameUser());
+        }
+        if (this.deleteUserBtn) {
+            this.deleteUserBtn.addEventListener('click', () => this.deleteUser());
         }
         
         // Theme controls (in settings modal)
@@ -1356,6 +1378,7 @@ class EdisonApp {
         if (this.userIdInput) {
             this.userIdInput.value = this.userId;
         }
+        this.loadUsers();
         
         this.settingsModal.classList.add('open');
         this.checkSystemStatus();
@@ -1407,6 +1430,94 @@ class EdisonApp {
                 alert('User ID imported successfully! Your chats have been synced.');
             });
         }
+    }
+
+    async loadUsers() {
+        if (!this.userSelect) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users`);
+            if (!response.ok) throw new Error('Failed to load users');
+            const data = await response.json();
+            const users = data.users || [];
+            this.userSelect.innerHTML = users.map(u => {
+                const selected = u.id === this.userId ? 'selected' : '';
+                return `<option value="${u.id}" ${selected}>${u.name}</option>`;
+            }).join('');
+        } catch (error) {
+            console.warn('Could not load users:', error.message);
+        }
+    }
+
+    async addUser() {
+        const name = this.newUserNameInput?.value?.trim();
+        if (!name) {
+            alert('Please enter a user name');
+            return;
+        }
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            if (!response.ok) throw new Error('Failed to create user');
+            this.newUserNameInput.value = '';
+            await this.loadUsers();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async renameUser() {
+        const name = this.renameUserInput?.value?.trim();
+        const userId = this.userSelect?.value;
+        if (!name || !userId) {
+            alert('Select a user and enter a new name');
+            return;
+        }
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users/${userId}`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name })
+            });
+            if (!response.ok) throw new Error('Failed to rename user');
+            this.renameUserInput.value = '';
+            await this.loadUsers();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteUser() {
+        const userId = this.userSelect?.value;
+        if (!userId) return;
+        if (!confirm('Delete this user and all chats? This cannot be undone.')) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users/${userId}`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) throw new Error('Failed to delete user');
+            if (userId === this.userId) {
+                // Reset to a new local ID
+                this.userId = this.getOrCreateUserId();
+                if (this.userIdInput) this.userIdInput.value = this.userId;
+                this.syncChatsFromServer();
+            }
+            await this.loadUsers();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async switchUserFromSelect() {
+        const userId = this.userSelect?.value;
+        if (!userId || userId === this.userId) return;
+        this.userId = userId;
+        localStorage.setItem('edison_user_id', userId);
+        if (this.userIdInput) this.userIdInput.value = userId;
+        await this.syncChatsFromServer();
+        this.renderChatHistory();
     }
 
     saveSettings() {

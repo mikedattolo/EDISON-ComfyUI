@@ -3223,7 +3223,7 @@ def save_gallery_db(data):
 
 def get_or_create_user_id(request: Request, response: Response) -> str:
     """Get user ID from cookie or create new one"""
-    user_id = request.cookies.get('edison_user_id')
+    user_id = request.headers.get('X-Edison-User-ID') or request.cookies.get('edison_user_id')
     if not user_id:
         user_id = str(uuid.uuid4())
         response.set_cookie(
@@ -3233,7 +3233,52 @@ def get_or_create_user_id(request: Request, response: Response) -> str:
             httponly=True,
             samesite='lax'
         )
+    else:
+        # Refresh cookie for cross-network header usage
+        response.set_cookie(
+            key='edison_user_id',
+            value=user_id,
+            max_age=31536000,
+            httponly=True,
+            samesite='lax'
+        )
     return user_id
+
+def _users_db_path() -> Path:
+    return CHATS_DIR / "users.json"
+
+def load_users_db() -> dict:
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    path = _users_db_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {"users": []}
+    return {"users": []}
+
+def save_users_db(data: dict):
+    CHATS_DIR.mkdir(parents=True, exist_ok=True)
+    _users_db_path().write_text(json.dumps(data, indent=2))
+
+def ensure_user_record(user_id: str, name: str = None) -> dict:
+    db = load_users_db()
+    users = db.get("users", [])
+    existing = next((u for u in users if u.get("id") == user_id), None)
+    if existing:
+        if name and existing.get("name") != name:
+            existing["name"] = name
+            save_users_db(db)
+        return existing
+    record = {
+        "id": user_id,
+        "name": name or f"User-{user_id[:6]}",
+        "created_at": int(time.time())
+    }
+    users.append(record)
+    db["users"] = users
+    save_users_db(db)
+    return record
 
 def get_user_chats_file(user_id: str) -> Path:
     """Get path to user's chats file"""
@@ -3405,6 +3450,7 @@ async def sync_chats(request: Request, response: Response):
     """Load chats for the current user"""
     try:
         user_id = get_or_create_user_id(request, response)
+        ensure_user_record(user_id)
         chats = load_user_chats(user_id)
         return {"chats": chats, "user_id": user_id}
     except Exception as e:
@@ -3416,6 +3462,7 @@ async def save_chats(request: Request, response: Response):
     """Save chats for the current user"""
     try:
         user_id = get_or_create_user_id(request, response)
+        ensure_user_record(user_id)
         data = await request.json()
         chats = data.get('chats', [])
         save_user_chats(user_id, chats)
@@ -3423,6 +3470,48 @@ async def save_chats(request: Request, response: Response):
     except Exception as e:
         logger.error(f"Error saving chats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/users")
+async def list_users():
+    """List all users with chat identities."""
+    db = load_users_db()
+    return {"users": db.get("users", [])}
+
+@app.post("/users")
+async def create_user(request: dict):
+    """Create a new user with a friendly name."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    user_id = str(uuid.uuid4())
+    record = ensure_user_record(user_id, name)
+    return {"user": record}
+
+@app.put("/users/{user_id}")
+async def rename_user(user_id: str, request: dict):
+    """Rename an existing user."""
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    record = ensure_user_record(user_id, name)
+    return {"user": record}
+
+@app.delete("/users/{user_id}")
+async def delete_user(user_id: str):
+    """Remove a user and their chats."""
+    db = load_users_db()
+    users = db.get("users", [])
+    users = [u for u in users if u.get("id") != user_id]
+    db["users"] = users
+    save_users_db(db)
+    # delete chats file if exists
+    chats_file = get_user_chats_file(user_id)
+    if chats_file.exists():
+        try:
+            chats_file.unlink()
+        except Exception:
+            pass
+    return {"success": True}
 
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:

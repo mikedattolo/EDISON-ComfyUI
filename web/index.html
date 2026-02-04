@@ -353,6 +353,20 @@
                             <input type="text" id="importUserIdInput" placeholder="Paste User ID here" style="flex: 1; font-family: monospace; font-size: 12px;">
                             <button class="btn-secondary" id="importUserIdBtn" title="Import User ID">📥 Import</button>
                         </div>
+                        <p class="setting-description" style="margin-top: 12px;">Manage users and switch between them:</p>
+                        <div class="user-id-container">
+                            <select id="userSelect" style="flex: 1;"></select>
+                            <button class="btn-secondary" id="refreshUsersBtn" title="Refresh users">🔄</button>
+                        </div>
+                        <div class="user-id-container" style="margin-top: 8px;">
+                            <input type="text" id="newUserNameInput" placeholder="New user name" style="flex: 1;">
+                            <button class="btn-secondary" id="addUserBtn" title="Add user">➕ Add</button>
+                        </div>
+                        <div class="user-id-container" style="margin-top: 8px;">
+                            <input type="text" id="renameUserInput" placeholder="Rename selected user" style="flex: 1;">
+                            <button class="btn-secondary" id="renameUserBtn" title="Rename user">✏️ Rename</button>
+                            <button class="btn-secondary" id="deleteUserBtn" title="Delete user">🗑️ Delete</button>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">
