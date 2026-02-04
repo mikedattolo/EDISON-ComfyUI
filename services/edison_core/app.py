@@ -2265,83 +2265,86 @@ Steps:"""
             logger.info("🐝 Swarm mode activated - deploying specialized agents for collaborative discussion")
             
             # Define specialized agents with different models and roles
-            def _pick_agent_model(agent_name: str):
+            def _available_models():
+                models = []
+                if llm_deep:
+                    models.append(("deep", llm_deep, "Qwen 72B (Deep)"))
+                if llm_medium:
+                    models.append(("medium", llm_medium, "Qwen 32B (Medium)"))
+                if llm_fast:
+                    models.append(("fast", llm_fast, "Qwen 14B (Fast)"))
+                return models
+
+            def _pick_agent_model(agent_name: str, used: set):
                 preferences = {
                     "Analyst": ["deep", "medium", "fast"],
                     "Critic": ["deep", "medium", "fast"],
                     "Researcher": ["medium", "deep", "fast"],
+                    "Searcher": ["medium", "deep", "fast"],
                     "Planner": ["medium", "deep", "fast"],
                     "Verifier": ["medium", "deep", "fast"],
                     "Implementer": ["fast", "medium", "deep"],
+                    "Coder": ["medium", "fast", "deep"],
                     "Designer": ["fast", "medium", "deep"],
                     "Marketer": ["fast", "medium", "deep"]
                 }
                 order = preferences.get(agent_name, ["fast", "medium", "deep"])
+                available = _available_models()
+                # Prefer unused models first when multiple are available
                 for pref in order:
-                    if pref == "deep" and llm_deep:
-                        return llm_deep, "Qwen 72B (Deep)"
-                    if pref == "medium" and llm_medium:
-                        return llm_medium, "Qwen 32B (Medium)"
-                    if pref == "fast" and llm_fast:
-                        return llm_fast, "Qwen 14B (Fast)"
+                    for tag, model, name in available:
+                        if tag == pref and tag not in used:
+                            used.add(tag)
+                            return model, name
+                # Fallback to any available model by preference
+                for pref in order:
+                    for tag, model, name in available:
+                        if tag == pref:
+                            used.add(tag)
+                            return model, name
                 return llm, "Selected Model"
+
+            used_models = set()
+            def _make_agent(name: str, icon: str, role: str) -> dict:
+                model, model_name = _pick_agent_model(name, used_models)
+                return {
+                    "name": name,
+                    "icon": icon,
+                    "role": role,
+                    "model": model,
+                    "model_name": model_name
+                }
 
             agent_catalog = {
                 "Researcher": {
-                    "name": "Researcher",
-                    "icon": "🔍",
-                    "role": "research specialist",
-                    "model": _pick_agent_model("Researcher")[0],
-                    "model_name": _pick_agent_model("Researcher")[1]
+                    **_make_agent("Researcher", "🔍", "research specialist")
+                },
+                "Searcher": {
+                    **_make_agent("Searcher", "🌐", "web search specialist who summarizes current information")
                 },
                 "Analyst": {
-                    "name": "Analyst",
-                    "icon": "🧠",
-                    "role": "strategic analyst",
-                    "model": _pick_agent_model("Analyst")[0],
-                    "model_name": _pick_agent_model("Analyst")[1]
+                    **_make_agent("Analyst", "🧠", "strategic analyst")
                 },
                 "Implementer": {
-                    "name": "Implementer",
-                    "icon": "⚙️",
-                    "role": "implementation specialist",
-                    "model": _pick_agent_model("Implementer")[0],
-                    "model_name": _pick_agent_model("Implementer")[1]
+                    **_make_agent("Implementer", "⚙️", "implementation specialist")
+                },
+                "Coder": {
+                    **_make_agent("Coder", "💻", "coding specialist focused on implementation details")
                 },
                 "Critic": {
-                    "name": "Critic",
-                    "icon": "🧯",
-                    "role": "critical reviewer who finds flaws, risks, and missing constraints",
-                    "model": _pick_agent_model("Critic")[0],
-                    "model_name": _pick_agent_model("Critic")[1]
+                    **_make_agent("Critic", "🧯", "critical reviewer who finds flaws, risks, and missing constraints")
                 },
                 "Planner": {
-                    "name": "Planner",
-                    "icon": "🧭",
-                    "role": "project planner who breaks work into steps and milestones",
-                    "model": _pick_agent_model("Planner")[0],
-                    "model_name": _pick_agent_model("Planner")[1]
+                    **_make_agent("Planner", "🧭", "project planner who breaks work into steps and milestones")
                 },
                 "Designer": {
-                    "name": "Designer",
-                    "icon": "🎨",
-                    "role": "UX/UI designer focusing on layout, interaction, and aesthetics",
-                    "model": _pick_agent_model("Designer")[0],
-                    "model_name": _pick_agent_model("Designer")[1]
+                    **_make_agent("Designer", "🎨", "UX/UI designer focusing on layout, interaction, and aesthetics")
                 },
                 "Marketer": {
-                    "name": "Marketer",
-                    "icon": "📣",
-                    "role": "growth marketer focusing on positioning, audience, and messaging",
-                    "model": _pick_agent_model("Marketer")[0],
-                    "model_name": _pick_agent_model("Marketer")[1]
+                    **_make_agent("Marketer", "📣", "growth marketer focusing on positioning, audience, and messaging")
                 },
                 "Verifier": {
-                    "name": "Verifier",
-                    "icon": "✅",
-                    "role": "validator who checks constraints, requirements, and correctness",
-                    "model": _pick_agent_model("Verifier")[0],
-                    "model_name": _pick_agent_model("Verifier")[1]
+                    **_make_agent("Verifier", "✅", "validator who checks constraints, requirements, and correctness")
                 }
             }
 
@@ -2351,6 +2354,9 @@ Steps:"""
 
             if re.search(r"research|market|trend|compare|benchmark|stats|insight", user_text):
                 selected_agents.add("Researcher")
+                selected_agents.add("Searcher")
+            if re.search(r"search|web|internet|latest|current|news|today", user_text):
+                selected_agents.add("Searcher")
             if re.search(r"design|ui|ux|layout|branding|style|theme|visual", user_text):
                 selected_agents.add("Designer")
             if re.search(r"plan|roadmap|milestone|phase|timeline|steps", user_text):
@@ -2361,6 +2367,8 @@ Steps:"""
                 selected_agents.add("Verifier")
             if re.search(r"risk|critic|review|tradeoff|cons|pitfall", user_text):
                 selected_agents.add("Critic")
+            if re.search(r"code|implement|build|script|program|debug|refactor", user_text):
+                selected_agents.add("Coder")
 
             # Always include Critic for complex tasks
             if len(user_text) > 200:
@@ -2370,7 +2378,7 @@ Steps:"""
             max_agents = 5
             if len(selected_agents) > max_agents:
                 # Prefer Analyst/Implementer + highest-signal extras
-                priority = ["Analyst", "Implementer", "Researcher", "Designer", "Planner", "Marketer", "Critic", "Verifier"]
+                priority = ["Analyst", "Implementer", "Researcher", "Searcher", "Coder", "Designer", "Planner", "Marketer", "Critic", "Verifier"]
                 selected_agents = set([a for a in priority if a in selected_agents][:max_agents])
 
             agents = [agent_catalog[name] for name in selected_agents if name in agent_catalog]
@@ -2443,12 +2451,29 @@ Steps:"""
                 ])
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
+                search_block = ""
+                if agent["name"] == "Searcher" and search_tool:
+                    try:
+                        search_query = (request.message or "").strip()
+                        results = search_tool.search(search_query, num_results=3)
+                        lines = []
+                        for r in results or []:
+                            title = r.get("title") or ""
+                            url = r.get("url") or ""
+                            snippet = r.get("body") or r.get("snippet") or ""
+                            lines.append(f"- {title} ({url}) {snippet}".strip())
+                        if lines:
+                            search_block = "\n\nWeb Search Results:\n" + "\n".join(lines)
+                    except Exception as e:
+                        logger.warning(f"Searcher web search failed: {e}")
+
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
 
 User Request: {swarm_user_message}
 
 Shared Scratchpad (read/write):
 {scratchpad_block}
+{search_block}
 
 Rules:
 - Respond only in English.
