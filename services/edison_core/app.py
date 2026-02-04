@@ -2238,6 +2238,13 @@ Steps:"""
                     "role": "implementation specialist",
                     "model": llm_fast if llm_fast else llm,
                     "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                },
+                {
+                    "name": "Critic",
+                    "icon": "🧯",
+                    "role": "critical reviewer who finds flaws, risks, and missing constraints",
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
                 }
             ]
             
@@ -2261,7 +2268,12 @@ Steps:"""
                 return sum(scores) / len(scores) if scores else 0.0
 
             # Decide number of rounds (auto)
-            max_rounds = 3
+            def _contains_cjk(text: str) -> bool:
+                if not text:
+                    return False
+                return bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", text))
+
+            max_rounds = 4
             rounds = 2
 
             # Round 1: Each agent provides initial thoughts
@@ -2276,6 +2288,8 @@ Rules:
 - Be specific and concise (2-3 sentences).
 - Provide unique insights from your role.
 
+If you cannot comply in English, respond with: "ENGLISH_ONLY".
+
 Your initial perspective:"""
                 
                 agent_model = agent["model"]
@@ -2288,7 +2302,17 @@ Your initial perspective:"""
                         stream=False
                     )
                     agent_response = stream["choices"][0]["message"]["content"]
-                
+                if _contains_cjk(agent_response):
+                    agent_prompt_retry = agent_prompt + "\n\nStrictly respond in English only."
+                    with lock:
+                        stream = agent_model.create_chat_completion(
+                            messages=[{"role": "user", "content": agent_prompt_retry}],
+                            max_tokens=180,
+                            temperature=0.5,
+                            stream=False
+                        )
+                        agent_response = stream["choices"][0]["message"]["content"]
+
                 conversation.append({
                     "agent": agent["name"],
                     "icon": agent["icon"],
@@ -2321,6 +2345,8 @@ Rules:
 - Add one new insight not previously mentioned.
 - Keep it to 2-3 sentences.
 
+If you cannot comply in English, respond with: "ENGLISH_ONLY".
+
 Your refined contribution:"""
                     
                     agent_model = agent["model"]
@@ -2333,7 +2359,17 @@ Your refined contribution:"""
                             stream=False
                         )
                         agent_response = stream["choices"][0]["message"]["content"]
-                    
+                    if _contains_cjk(agent_response):
+                        agent_prompt_retry = agent_prompt + "\n\nStrictly respond in English only."
+                        with lock:
+                            stream = agent_model.create_chat_completion(
+                                messages=[{"role": "user", "content": agent_prompt_retry}],
+                                max_tokens=180,
+                                temperature=0.5,
+                                stream=False
+                            )
+                            agent_response = stream["choices"][0]["message"]["content"]
+
                     conversation.append({
                         "agent": f"{agent['name']} (Round {round_idx})",
                         "icon": agent["icon"],
@@ -2341,6 +2377,12 @@ Your refined contribution:"""
                         "response": agent_response
                     })
                     logger.info(f"{agent['icon']} {agent['name']} Round {round_idx}: {agent_response[:80]}...")
+
+                # Stop early if responses converge too much
+                recent_responses = [c["response"] for c in conversation[-len(agents):]]
+                if _avg_jaccard(recent_responses) > 0.6:
+                    logger.info("🐝 Auto-stop: responses converged, ending rounds early")
+                    break
 
             swarm_results = conversation
             
