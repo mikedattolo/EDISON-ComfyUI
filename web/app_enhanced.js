@@ -408,13 +408,20 @@ class EdisonApp {
         let enhancedMessage = message;
         let images = [];
         
+        const isPdfFile = (file) => {
+            const name = (file?.name || '').toLowerCase();
+            const type = (file?.type || '').toLowerCase();
+            const content = file?.content || '';
+            return type === 'application/pdf' || name.endsWith('.pdf') || content.startsWith('data:application/pdf');
+        };
+
         if (attachedFiles.length > 0) {
             console.log('📤 Processing files...');
             
             // Separate images from text files
-            const textFiles = attachedFiles.filter(f => !f.isImage && !f.isPdf);
+            const textFiles = attachedFiles.filter(f => !f.isImage && !isPdfFile(f));
             const imageFiles = attachedFiles.filter(f => f.isImage);
-            const pdfFiles = attachedFiles.filter(f => f.isPdf);
+            const pdfFiles = attachedFiles.filter(f => isPdfFile(f));
             
             // Add text files to message
             if (textFiles.length > 0) {
@@ -499,12 +506,20 @@ class EdisonApp {
         let enhancedMessage = message;
         let images = [];
         
+        const isPdfFile = (file) => {
+            const name = (file?.name || '').toLowerCase();
+            const type = (file?.type || '').toLowerCase();
+            const content = file?.content || '';
+            return type === 'application/pdf' || name.endsWith('.pdf') || content.startsWith('data:application/pdf');
+        };
+
         if (attachedFiles.length > 0) {
             console.log('📤 Processing files...');
             
             // Separate images from text files
-            const textFiles = attachedFiles.filter(f => !f.isImage);
+            const textFiles = attachedFiles.filter(f => !f.isImage && !isPdfFile(f));
             const imageFiles = attachedFiles.filter(f => f.isImage);
+            const pdfFiles = attachedFiles.filter(f => isPdfFile(f));
             
             // Add text files to message
             if (textFiles.length > 0) {
@@ -512,8 +527,21 @@ class EdisonApp {
                 enhancedMessage += '\n\n[Attached files:]\n';
                 textFiles.forEach(file => {
                     console.log(`📤 Adding file: ${file.name}, content length: ${file.content?.length || 0}`);
-                    enhancedMessage += `\n--- File: ${file.name} ---\n${file.content}\n`;
+                    const maxFileChars = 6000;
+                    const fileContent = file.content || '';
+                    const truncated = fileContent.length > maxFileChars
+                        ? `${fileContent.slice(0, maxFileChars)}\n\n[TRUNCATED FILE: ${fileContent.length} chars total]`
+                        : fileContent;
+                    enhancedMessage += `\n--- File: ${file.name} ---\n${truncated}\n`;
                 });
+            }
+
+            if (pdfFiles.length > 0) {
+                console.log('📤 Uploading PDFs for extraction');
+                for (const file of pdfFiles) {
+                    await this.uploadDocument(file);
+                    enhancedMessage += `\n[Attached PDF: ${file.name} uploaded for extraction]\n`;
+                }
             }
             
             // Collect images
