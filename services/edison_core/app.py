@@ -2237,6 +2237,27 @@ Steps:"""
 
     logger.info(f"Prompt length: {len(full_prompt)} chars")
 
+    status_steps = [{"stage": "Analyzing request"}]
+    if search_results:
+        try:
+            from urllib.parse import urlparse
+            domains = []
+            for r in search_results[:3]:
+                url = r.get("url") or ""
+                domain = urlparse(url).netloc
+                if domain:
+                    domains.append(domain)
+            if domains:
+                status_steps.append({"stage": "Searching web", "detail": ", ".join(domains)})
+            else:
+                status_steps.append({"stage": "Searching web"})
+        except Exception:
+            status_steps.append({"stage": "Searching web"})
+    if context_chunks:
+        status_steps.append({"stage": "Using memory"})
+    if mode != "swarm":
+        status_steps.append({"stage": "Generating response"})
+
     # Swarm mode: Multi-agent collaboration with conversation
     swarm_results = []
     if mode == "swarm" and not has_images:
@@ -2406,11 +2427,10 @@ Steps:"""
             # Round 1: Each agent provides initial thoughts
             logger.info("🐝 Round 1: Initial agent perspectives")
             if status_steps is not None:
-                if status_steps is not None:
-                    status_steps.extend([
-                        {"stage": "Selecting agents"},
-                        {"stage": "Swarm round 1"}
-                    ])
+                status_steps.extend([
+                    {"stage": "Selecting agents"},
+                    {"stage": "Swarm round 1"}
+                ])
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
