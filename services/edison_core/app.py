@@ -3783,6 +3783,48 @@ def _artifacts_root() -> Path:
     path.mkdir(parents=True, exist_ok=True)
     return path
 
+def _artifacts_db_path() -> Path:
+    return _artifacts_root() / "artifacts.json"
+
+def _load_artifacts_db() -> dict:
+    path = _artifacts_db_path()
+    if path.exists():
+        try:
+            return json.loads(path.read_text())
+        except Exception:
+            return {"files": []}
+    return {"files": []}
+
+def _save_artifacts_db(data: dict):
+    _artifacts_db_path().write_text(json.dumps(data, indent=2))
+
+def _artifacts_ttl_seconds() -> int:
+    return int(config.get("edison", {}).get("artifacts", {}).get("ttl_seconds", 3600))
+
+def _cleanup_expired_artifacts():
+    db = _load_artifacts_db()
+    files = db.get("files", [])
+    ttl = _artifacts_ttl_seconds()
+    now = int(time.time())
+    kept = []
+    for entry in files:
+        name = entry.get("name")
+        created = entry.get("created_at", now)
+        if not name:
+            continue
+        expired = (now - created) > ttl
+        file_path = _artifacts_root() / name
+        if expired:
+            try:
+                if file_path.exists():
+                    file_path.unlink()
+            except Exception:
+                pass
+        else:
+            kept.append(entry)
+    db["files"] = kept
+    _save_artifacts_db(db)
+
 def _safe_filename(name: str) -> str:
     name = os.path.basename(name or "output.txt")
     name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
@@ -3859,6 +3901,9 @@ def _write_artifacts(file_entries: list) -> list:
         return []
     root = _artifacts_root()
     saved = []
+    db = _load_artifacts_db()
+    files_db = db.get("files", [])
+    now = int(time.time())
     temp_files = []
 
     for entry in file_entries:
@@ -3882,12 +3927,15 @@ def _write_artifacts(file_entries: list) -> list:
         with open(out_path, "wb") as f:
             f.write(data)
         temp_files.append(out_path)
-        saved.append({
+        record = {
             "name": filename,
             "url": f"/artifacts/{filename}",
             "size": out_path.stat().st_size,
-            "type": ext.lstrip(".") or "txt"
-        })
+            "type": ext.lstrip(".") or "txt",
+            "created_at": now
+        }
+        files_db.append(record)
+        saved.append(record)
 
     # If a zip was requested, create it from the other files
     zip_entries = [e for e in file_entries if str(e.get("filename", "")).lower().endswith(".zip")]
@@ -3900,13 +3948,18 @@ def _write_artifacts(file_entries: list) -> list:
         with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
             for file_path in temp_files:
                 zf.write(file_path, arcname=file_path.name)
-        saved.append({
+        record = {
             "name": zip_name,
             "url": f"/artifacts/{zip_name}",
             "size": zip_path.stat().st_size,
-            "type": "zip"
-        })
+            "type": "zip",
+            "created_at": now
+        }
+        files_db.append(record)
+        saved.append(record)
 
+    db["files"] = files_db
+    _save_artifacts_db(db)
     return saved
 
 def detect_artifact(response: str) -> dict:
@@ -4054,6 +4107,7 @@ async def upload_document(request: dict):
 async def download_artifact(filename: str):
     """Serve generated artifacts (pdf, zip, txt, etc.)."""
     try:
+        _cleanup_expired_artifacts()
         safe_name = _safe_filename(filename)
         file_path = _artifacts_root() / safe_name
         if not file_path.exists():

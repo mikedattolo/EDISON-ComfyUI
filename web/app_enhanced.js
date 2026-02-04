@@ -888,7 +888,7 @@ class EdisonApp {
             <ul class="generated-files-list">
                 ${files.map(file => `
                     <li>
-                        <a href="${file.url}" target="_blank" rel="noopener" download>${file.name}</a>
+                        <a href="${this.settings.apiEndpoint}${file.url}" target="_blank" rel="noopener" download>${file.name}</a>
                         <span class="file-meta">${file.type?.toUpperCase() || 'FILE'} · ${this.formatFileSize(file.size || 0)}</span>
                     </li>
                 `).join('')}
