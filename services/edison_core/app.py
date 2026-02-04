@@ -2614,6 +2614,9 @@ Provide a clear, actionable synthesis that integrates all perspectives:"""
             logger.error(f"Swarm orchestration failed: {e}")
             # Fallback to normal mode
 
+    if 'status_steps' not in locals():
+        status_steps = []
+
     async def sse_generator():
         if image_intent_payload is not None:
             yield f"event: done\ndata: {json.dumps(image_intent_payload)}\n\n"
