@@ -2217,36 +2217,95 @@ Steps:"""
             logger.info("🐝 Swarm mode activated - deploying specialized agents for collaborative discussion")
             
             # Define specialized agents with different models and roles
-            agents = [
-                {
+            agent_catalog = {
+                "Researcher": {
                     "name": "Researcher",
                     "icon": "🔍",
                     "role": "research specialist",
                     "model": llm_fast if llm_fast else llm,
                     "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
                 },
-                {
-                    "name": "Analyst", 
+                "Analyst": {
+                    "name": "Analyst",
                     "icon": "🧠",
                     "role": "strategic analyst",
                     "model": llm_deep if llm_deep else llm,
                     "model_name": "Qwen 72B (Deep)" if llm_deep else "Selected Model"
                 },
-                {
+                "Implementer": {
                     "name": "Implementer",
                     "icon": "⚙️",
                     "role": "implementation specialist",
                     "model": llm_fast if llm_fast else llm,
                     "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
                 },
-                {
+                "Critic": {
                     "name": "Critic",
                     "icon": "🧯",
                     "role": "critical reviewer who finds flaws, risks, and missing constraints",
                     "model": llm_fast if llm_fast else llm,
                     "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                },
+                "Planner": {
+                    "name": "Planner",
+                    "icon": "🧭",
+                    "role": "project planner who breaks work into steps and milestones",
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                },
+                "Designer": {
+                    "name": "Designer",
+                    "icon": "🎨",
+                    "role": "UX/UI designer focusing on layout, interaction, and aesthetics",
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                },
+                "Marketer": {
+                    "name": "Marketer",
+                    "icon": "📣",
+                    "role": "growth marketer focusing on positioning, audience, and messaging",
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
+                },
+                "Verifier": {
+                    "name": "Verifier",
+                    "icon": "✅",
+                    "role": "validator who checks constraints, requirements, and correctness",
+                    "model": llm_fast if llm_fast else llm,
+                    "model_name": "Qwen 14B (Fast)" if llm_fast else "Selected Model"
                 }
-            ]
+            }
+
+            # Intent-based agent selection
+            user_text = (request.message or "").lower()
+            selected_agents = {"Analyst", "Implementer"}  # baseline
+
+            if re.search(r"research|market|trend|compare|benchmark|stats|insight", user_text):
+                selected_agents.add("Researcher")
+            if re.search(r"design|ui|ux|layout|branding|style|theme|visual", user_text):
+                selected_agents.add("Designer")
+            if re.search(r"plan|roadmap|milestone|phase|timeline|steps", user_text):
+                selected_agents.add("Planner")
+            if re.search(r"marketing|position|audience|persona|copy|seo|growth", user_text):
+                selected_agents.add("Marketer")
+            if re.search(r"validate|verify|test|requirements|constraints|edge cases", user_text):
+                selected_agents.add("Verifier")
+            if re.search(r"risk|critic|review|tradeoff|cons|pitfall", user_text):
+                selected_agents.add("Critic")
+
+            # Always include Critic for complex tasks
+            if len(user_text) > 200:
+                selected_agents.add("Critic")
+
+            # Safety: cap max agents to limit latency
+            max_agents = 5
+            if len(selected_agents) > max_agents:
+                # Prefer Analyst/Implementer + highest-signal extras
+                priority = ["Analyst", "Implementer", "Researcher", "Designer", "Planner", "Marketer", "Critic", "Verifier"]
+                selected_agents = set([a for a in priority if a in selected_agents][:max_agents])
+
+            agents = [agent_catalog[name] for name in selected_agents if name in agent_catalog]
+            logger.info(f"🐝 Swarm agents selected: {', '.join([a['name'] for a in agents])}")
             
             # Build conversation between agents
             conversation = []
