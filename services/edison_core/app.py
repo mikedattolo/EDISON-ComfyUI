@@ -2250,6 +2250,8 @@ Steps:"""
             
             # Build conversation between agents
             conversation = []
+            shared_notes = []
+            shared_note_set = set()
 
             def _normalize_text(text: str) -> set:
                 return set(re.findall(r"[a-zA-Z]+", (text or "").lower()))
@@ -2273,15 +2275,37 @@ Steps:"""
                     return False
                 return bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", text))
 
+            def _extract_notes(text: str, max_items: int = 3) -> list:
+                if not text:
+                    return []
+                lines = [line.strip() for line in text.splitlines() if line.strip()]
+                notes = [line.lstrip("-•*").strip() for line in lines if line[:1] in ["-", "•", "*"]]
+                if not notes:
+                    # fallback to first 1-2 sentences
+                    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
+                    notes = [s.strip() for s in sentences if s.strip()][:2]
+                return notes[:max_items]
+
+            def _update_shared_notes(text: str):
+                for note in _extract_notes(text):
+                    key = normalize_chunk(note).lower()
+                    if key and key not in shared_note_set:
+                        shared_note_set.add(key)
+                        shared_notes.append(note)
+
             max_rounds = 4
             rounds = 2
 
             # Round 1: Each agent provides initial thoughts
             logger.info("🐝 Round 1: Initial agent perspectives")
             for agent in agents:
+                scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
 
 User Request: {request.message}
+
+Shared Scratchpad (read/write):
+{scratchpad_block}
 
 Rules:
 - Respond only in English.
@@ -2313,6 +2337,8 @@ Your initial perspective:"""
                         )
                         agent_response = stream["choices"][0]["message"]["content"]
 
+                _update_shared_notes(agent_response)
+
                 conversation.append({
                     "agent": agent["name"],
                     "icon": agent["icon"],
@@ -2330,6 +2356,7 @@ Your initial perspective:"""
             for round_idx in range(2, rounds + 1):
                 logger.info(f"🐝 Round {round_idx}: Agent collaboration and refinement")
                 discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
+                scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
 
                 for agent in agents:
                     agent_prompt = f"""You are {agent['name']}, continuing the discussion.
@@ -2338,6 +2365,9 @@ User Request: {request.message}
 
 Other experts said:
 {discussion_summary}
+
+Shared Scratchpad (read/write):
+{scratchpad_block}
 
 Rules:
 - Respond only in English.
@@ -2370,6 +2400,8 @@ Your refined contribution:"""
                             )
                             agent_response = stream["choices"][0]["message"]["content"]
 
+                    _update_shared_notes(agent_response)
+
                     conversation.append({
                         "agent": f"{agent['name']} (Round {round_idx})",
                         "icon": agent["icon"],
@@ -2384,7 +2416,64 @@ Your refined contribution:"""
                     logger.info("🐝 Auto-stop: responses converged, ending rounds early")
                     break
 
-            swarm_results = conversation
+            # Voting round: choose top 2 contributions
+            latest_by_agent = {}
+            for entry in conversation:
+                base_name = entry["agent"].split(" (Round ")[0]
+                latest_by_agent[base_name] = entry
+
+            candidates = [a["name"] for a in agents]
+            candidate_summaries = "\n".join([
+                f"{name}: {latest_by_agent.get(name, {}).get('response', '')[:160]}"
+                for name in candidates
+            ])
+
+            vote_counts = {name: 0 for name in candidates}
+            for agent in agents:
+                vote_prompt = f"""You are {agent['name']}. Vote for the top 2 agent contributions (excluding yourself if possible).
+
+Candidates:
+{candidate_summaries}
+
+Rules:
+- Respond only in English.
+- Reply with two agent names separated by a comma.
+- Do not include any other text.
+
+Your vote:"""
+                agent_model = agent["model"]
+                lock = get_lock_for_model(agent_model)
+                with lock:
+                    stream = agent_model.create_chat_completion(
+                        messages=[{"role": "user", "content": vote_prompt}],
+                        max_tokens=50,
+                        temperature=0.2,
+                        stream=False
+                    )
+                    vote_response = stream["choices"][0]["message"]["content"]
+
+                if _contains_cjk(vote_response):
+                    continue
+
+                picks = [p.strip() for p in vote_response.split(",") if p.strip()]
+                for pick in picks[:2]:
+                    for name in candidates:
+                        if name.lower() in pick.lower():
+                            vote_counts[name] += 1
+                            break
+
+            sorted_votes = sorted(vote_counts.items(), key=lambda x: x[1], reverse=True)
+            winners = ", ".join([f"{name} ({count})" for name, count in sorted_votes if count > 0])
+            vote_summary = f"Vote results: {winners or 'No clear consensus'}"
+
+            swarm_results = conversation + [
+                {
+                    "agent": "Swarm Vote",
+                    "icon": "🗳️",
+                    "model": "Consensus",
+                    "response": vote_summary
+                }
+            ]
             
             # Synthesize with actual insight
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
@@ -2393,6 +2482,12 @@ User Request: {request.message}
 
 Expert Discussion:
 {chr(10).join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])}
+
+Shared Scratchpad:
+{chr(10).join([f"- {n}" for n in shared_notes]) or "- (empty)"}
+
+Vote Summary:
+{vote_summary}
 
 Provide a clear, actionable synthesis that integrates all perspectives:"""
             
