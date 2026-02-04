@@ -2306,6 +2306,9 @@ Steps:"""
 
             agents = [agent_catalog[name] for name in selected_agents if name in agent_catalog]
             logger.info(f"🐝 Swarm agents selected: {', '.join([a['name'] for a in agents])}")
+
+            # Truncate long user input for swarm prompts to avoid context overflow
+            swarm_user_message = truncate_text(request.message or "", max_chars=4000, label="User message")
             
             # Build conversation between agents
             conversation = []
@@ -2361,7 +2364,7 @@ Steps:"""
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
 
-User Request: {request.message}
+User Request: {swarm_user_message}
 
 Shared Scratchpad (read/write):
 {scratchpad_block}
@@ -2420,7 +2423,7 @@ Your initial perspective:"""
                 for agent in agents:
                     agent_prompt = f"""You are {agent['name']}, continuing the discussion.
 
-User Request: {request.message}
+    User Request: {swarm_user_message}
 
 Other experts said:
 {discussion_summary}
@@ -2537,7 +2540,7 @@ Your vote:"""
             # Synthesize with actual insight
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
 
-User Request: {request.message}
+User Request: {swarm_user_message}
 
 Expert Discussion:
 {chr(10).join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])}
@@ -3519,6 +3522,15 @@ def _format_untrusted_search_context(search_results: list) -> str:
     return "\n".join(parts)
 
 
+def truncate_text(text: str, max_chars: int = 6000, label: str = "text") -> str:
+    if not text:
+        return ""
+    if len(text) <= max_chars:
+        return text
+    truncated = text[:max_chars]
+    return f"{truncated}\n\n[TRUNCATED {label}: {len(text)} chars total]"
+
+
 def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None) -> str:
     """Build the complete prompt with context, search results, and conversation history"""
     parts = [system_prompt, ""]
@@ -3526,9 +3538,9 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     # Add recent conversation history for context
     if conversation_history and len(conversation_history) > 0:
         parts.append("RECENT CONVERSATION:")
-        for msg in conversation_history[-5:]:
+        for msg in conversation_history[-3:]:
             role = msg.get("role", "user")
-            content = msg.get("content", "")
+            content = truncate_text(msg.get("content", ""), max_chars=800, label="history")
             if role == "user":
                 parts.append(f"User: {content}")
             elif role == "assistant":
@@ -3565,6 +3577,7 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 parts.append(f"- {fact}")
             parts.append("")
     
+    user_message = truncate_text(user_message or "", max_chars=6000, label="user message")
     parts.append(f"User: {user_message}")
     parts.append("Assistant:")
     
