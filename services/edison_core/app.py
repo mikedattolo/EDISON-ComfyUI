@@ -23,6 +23,8 @@ import uuid
 import os
 import shutil
 import base64
+import io
+import zipfile
 import numpy as np
 
 # Configure logging
@@ -2680,10 +2682,15 @@ Provide a clear, actionable synthesis that integrates all perspectives:"""
             yield f"event: done\ndata: {json.dumps({'ok': False, 'stopped': True})}\n\n"
             return
 
-        store_conversation_exchange(request, assistant_response, original_mode, remember)
+        # Parse and write file artifacts if requested in response
+        file_entries = _parse_files_from_response(assistant_response)
+        generated_files = _write_artifacts(file_entries) if file_entries else []
+        cleaned_response = _strip_file_blocks(assistant_response)
+
+        store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
-        artifact = detect_artifact(assistant_response)
+        artifact = detect_artifact(cleaned_response)
         
         done_payload = {
             "ok": True,
@@ -2692,8 +2699,9 @@ Provide a clear, actionable synthesis that integrates all perspectives:"""
             "work_steps": work_steps,
             "swarm_agents": swarm_results if swarm_results else [],  # Add swarm agent results
             "search_results": search_results if search_results else [],
-            "response": assistant_response,
-            "artifact": artifact  # Add artifact info if detected
+            "response": cleaned_response,
+            "artifact": artifact,  # Add artifact info if detected
+            "files": generated_files
         }
         # Cleanup
         with active_requests_lock:
@@ -3434,6 +3442,9 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
+
+    # Add file generation instruction for all modes
+    base += " If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.txt\", \"content\": \"...\"}]\n```\n\nInclude a brief summary outside the block."
     
     prompts = {
         "chat": base + " Respond conversationally.",
@@ -3589,6 +3600,138 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     
     return "\n".join(parts)
 
+def _artifacts_root() -> Path:
+    root = config.get("edison", {}).get("artifacts", {}).get("root", "outputs")
+    path = REPO_ROOT / root
+    path.mkdir(parents=True, exist_ok=True)
+    return path
+
+def _safe_filename(name: str) -> str:
+    name = os.path.basename(name or "output.txt")
+    name = re.sub(r"[^a-zA-Z0-9._-]+", "_", name)
+    return name or "output.txt"
+
+def _render_pdf_from_text(text: str) -> bytes:
+    # Minimal PDF generator with single page text
+    if text is None:
+        text = ""
+    # Escape parentheses
+    safe = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
+    lines = safe.splitlines() or [""]
+    # Simple line layout
+    y = 740
+    leading = 14
+    content_lines = []
+    for line in lines[:45]:
+        content_lines.append(f"BT /F1 12 Tf 72 {y} Td ({line}) Tj ET")
+        y -= leading
+        if y < 60:
+            break
+    content_stream = "\n".join(content_lines).encode("latin-1", errors="ignore")
+    objects = []
+    objects.append(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj")
+    objects.append(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj")
+    objects.append(b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj")
+    objects.append(b"4 0 obj << /Length %d >> stream\n%s\nendstream endobj" % (len(content_stream), content_stream))
+    objects.append(b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj")
+
+    xref_positions = []
+    pdf = b"%PDF-1.4\n"
+    for obj in objects:
+        xref_positions.append(len(pdf))
+        pdf += obj + b"\n"
+    xref_start = len(pdf)
+    pdf += b"xref\n0 %d\n" % (len(objects) + 1)
+    pdf += b"0000000000 65535 f \n"
+    for pos in xref_positions:
+        pdf += f"{pos:010d} 00000 n \n".encode("ascii")
+    pdf += b"trailer << /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%EOF" % (len(objects) + 1, xref_start)
+    return pdf
+
+def _parse_files_from_response(response: str) -> list:
+    if not response:
+        return []
+    blocks = []
+    for match in re.findall(r"```files\s*([\s\S]+?)```", response, re.IGNORECASE):
+        try:
+            data = json.loads(match.strip())
+            if isinstance(data, dict):
+                data = [data]
+            if isinstance(data, list):
+                blocks.extend(data)
+        except Exception:
+            continue
+    for match in re.findall(r"```file\s*([\s\S]+?)```", response, re.IGNORECASE):
+        try:
+            data = json.loads(match.strip())
+            if isinstance(data, dict):
+                blocks.append(data)
+        except Exception:
+            continue
+    return blocks
+
+def _strip_file_blocks(response: str) -> str:
+    if not response:
+        return response
+    response = re.sub(r"```files[\s\S]+?```", "", response, flags=re.IGNORECASE)
+    response = re.sub(r"```file[\s\S]+?```", "", response, flags=re.IGNORECASE)
+    return response.strip()
+
+def _write_artifacts(file_entries: list) -> list:
+    if not file_entries:
+        return []
+    root = _artifacts_root()
+    saved = []
+    temp_files = []
+
+    for entry in file_entries:
+        filename = _safe_filename(entry.get("filename") or "output.txt")
+        content = entry.get("content", "")
+        ext = os.path.splitext(filename)[1].lower()
+
+        if ext == ".pdf":
+            data = _render_pdf_from_text(str(content))
+        elif isinstance(content, (dict, list)):
+            data = json.dumps(content, indent=2).encode("utf-8")
+        else:
+            data = str(content).encode("utf-8")
+
+        out_path = root / filename
+        # Avoid collisions
+        if out_path.exists():
+            stem, suffix = os.path.splitext(filename)
+            filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+            out_path = root / filename
+        with open(out_path, "wb") as f:
+            f.write(data)
+        temp_files.append(out_path)
+        saved.append({
+            "name": filename,
+            "url": f"/artifacts/{filename}",
+            "size": out_path.stat().st_size,
+            "type": ext.lstrip(".") or "txt"
+        })
+
+    # If a zip was requested, create it from the other files
+    zip_entries = [e for e in file_entries if str(e.get("filename", "")).lower().endswith(".zip")]
+    if zip_entries:
+        zip_name = _safe_filename(zip_entries[0].get("filename") or "bundle.zip")
+        zip_path = root / zip_name
+        if zip_path.exists():
+            zip_name = f"{os.path.splitext(zip_name)[0]}_{uuid.uuid4().hex[:6]}.zip"
+            zip_path = root / zip_name
+        with zipfile.ZipFile(zip_path, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+            for file_path in temp_files:
+                zf.write(file_path, arcname=file_path.name)
+        saved.append({
+            "name": zip_name,
+            "url": f"/artifacts/{zip_name}",
+            "size": zip_path.stat().st_size,
+            "type": "zip"
+        })
+
+    return saved
+
 def detect_artifact(response: str) -> dict:
     """
     Detect artifact-worthy content in assistant response
@@ -3720,6 +3863,26 @@ async def upload_document(request: dict):
         }
     except Exception as e:
         logger.error(f"Error uploading document: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/artifacts/{filename}")
+async def download_artifact(filename: str):
+    """Serve generated artifacts (pdf, zip, txt, etc.)."""
+    try:
+        safe_name = _safe_filename(filename)
+        file_path = _artifacts_root() / safe_name
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Artifact not found")
+        media_type = "application/octet-stream"
+        return FileResponse(
+            file_path,
+            media_type=media_type,
+            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'}
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving artifact: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/generate-title")

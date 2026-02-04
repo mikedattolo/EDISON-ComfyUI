@@ -582,6 +582,11 @@ class EdisonApp {
                                         this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
                                         swarmInserted = true;
                                     }
+
+                                    // Display generated files if available
+                                    if (data.files && data.files.length > 0) {
+                                        this.displayGeneratedFiles(assistantMessageEl, data.files);
+                                    }
                                     
                                     assistantMessageEl.classList.remove('streaming');
                                     
@@ -771,6 +776,32 @@ class EdisonApp {
         // Insert all agent messages before the main assistant response
         this.messagesContainer.insertBefore(fragment, assistantMessageEl);
         this.scrollToBottom();
+    }
+
+    displayGeneratedFiles(assistantMessageEl, files) {
+        const contentEl = assistantMessageEl.querySelector('.message-content');
+        const fileSection = document.createElement('div');
+        fileSection.className = 'generated-files';
+        fileSection.innerHTML = `
+            <div class="generated-files-header">📁 Generated Files</div>
+            <ul class="generated-files-list">
+                ${files.map(file => `
+                    <li>
+                        <a href="${file.url}" target="_blank" rel="noopener" download>${file.name}</a>
+                        <span class="file-meta">${file.type?.toUpperCase() || 'FILE'} · ${this.formatFileSize(file.size || 0)}</span>
+                    </li>
+                `).join('')}
+            </ul>
+        `;
+        contentEl.appendChild(fileSection);
+    }
+
+    formatFileSize(bytes) {
+        if (!bytes) return '0 B';
+        const units = ['B', 'KB', 'MB', 'GB'];
+        const idx = Math.min(Math.floor(Math.log(bytes) / Math.log(1024)), units.length - 1);
+        const size = bytes / Math.pow(1024, idx);
+        return `${size.toFixed(size >= 10 || idx === 0 ? 0 : 1)} ${units[idx]}`;
     }
 
     updateMessage(messageEl, content, mode) {

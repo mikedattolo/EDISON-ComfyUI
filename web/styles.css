@@ -454,6 +454,48 @@ body {
     margin: 12px 0;
 }
 
+/* Generated files */
+.generated-files {
+    margin-top: 16px;
+    padding: 12px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+}
+
+.generated-files-header {
+    font-weight: 600;
+    margin-bottom: 8px;
+    color: var(--text-primary);
+}
+
+.generated-files-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+}
+
+.generated-files-list li {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    margin-bottom: 6px;
+}
+
+.generated-files-list a {
+    color: var(--primary);
+    text-decoration: none;
+}
+
+.generated-files-list a:hover {
+    text-decoration: underline;
+}
+
+.file-meta {
+    color: var(--text-tertiary);
+    font-size: 12px;
+}
+
 .message-content pre code {
     background: none;
     padding: 0;
