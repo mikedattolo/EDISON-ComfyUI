@@ -1779,6 +1779,7 @@ async def chat(request: ChatRequest):
     
     # Build prompt
     system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
+    status_steps = []
 
     status_steps = [{"stage": "Analyzing request"}]
     if search_results:
@@ -2405,10 +2406,11 @@ Steps:"""
             # Round 1: Each agent provides initial thoughts
             logger.info("🐝 Round 1: Initial agent perspectives")
             if status_steps is not None:
-                status_steps.extend([
-                    {"stage": "Selecting agents"},
-                    {"stage": "Swarm round 1"}
-                ])
+                if status_steps is not None:
+                    status_steps.extend([
+                        {"stage": "Selecting agents"},
+                        {"stage": "Swarm round 1"}
+                    ])
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
