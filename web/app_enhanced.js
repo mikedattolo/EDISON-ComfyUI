@@ -346,7 +346,8 @@ class EdisonApp {
             const isImageRequest = this.detectImageGenerationRequest(message);
             const isRegenerateRequest = this.detectImageRegenerationRequest(message);
             
-            if (isImageRequest || isRegenerateRequest) {
+            const allowClientImage = ['auto', 'instant', 'chat'].includes(mode);
+            if ((isImageRequest || isRegenerateRequest) && allowClientImage) {
                 // Determine the prompt to use
                 let promptToUse;
                 
@@ -1133,7 +1134,21 @@ class EdisonApp {
 
     async startVoiceInput() {
         if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            alert('Voice input not supported in this browser.');
+            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+            if (!SpeechRecognition) {
+                alert('Voice input not supported in this browser.');
+                return;
+            }
+            const recognition = new SpeechRecognition();
+            recognition.lang = 'en-US';
+            recognition.interimResults = false;
+            recognition.onresult = (event) => {
+                const transcript = event.results?.[0]?.[0]?.transcript || '';
+                this.messageInput.value = transcript.trim();
+                this.handleInputChange();
+            };
+            recognition.onerror = () => alert('Voice input failed.');
+            recognition.start();
             return;
         }
         try {

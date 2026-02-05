@@ -145,6 +145,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Swarm mode → multi-agent collaboration with deep model")
+        elif mode == "thinking":
+            mode = "reasoning"
+            model_target = "reasoning"
+            reasons.append("Thinking mode → reasoning model")
         elif mode == "reasoning":
             model_target = "reasoning"
             reasons.append("Reasoning mode → reasoning model")
@@ -1565,7 +1569,7 @@ async def chat(request: ChatRequest):
     intent = get_intent_from_coral(request.message)
     
     # Check for image generation intent and redirect
-    if intent in ["generate_image", "text_to_image", "create_image"]:
+    if intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
         logger.info(f"Image generation intent detected via Coral, returning JSON response for frontend handling")
         # Extract prompt from message
         msg_lower = request.message.lower()
@@ -1590,7 +1594,7 @@ async def chat(request: ChatRequest):
     coral_intent = get_intent_from_coral(request.message)
     
     # Check for image generation intent and redirect (before routing)
-    if coral_intent in ["generate_image", "text_to_image", "create_image"]:
+    if coral_intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
         logger.info(f"Image generation intent detected via Coral, returning JSON response for frontend handling")
         # Extract prompt from message
         msg_lower = request.message.lower()
@@ -1618,11 +1622,33 @@ async def chat(request: ChatRequest):
     original_mode = mode
     
     # Check if user selected a specific model (overrides routing)
-    if request.selected_model:
+    use_selected_model = bool(request.selected_model)
+    if use_selected_model and has_images and not re.search(r"vlm|vision|llava|qwen2-vl", request.selected_model, re.IGNORECASE):
+        logger.info("Ignoring selected_model override for vision request")
+        use_selected_model = False
+
+    if use_selected_model:
         logger.info(f"User-selected model override: {request.selected_model}")
-        # Load the selected model (implement model loading logic if needed)
-        # For now, use existing model selection logic with the selected_model preference
         model_name = request.selected_model
+        if "qwen2-vl" in model_name.lower() or "vision" in model_name.lower():
+            llm = llm_vision
+            if not llm:
+                raise HTTPException(status_code=503, detail=f"Vision model not loaded. Selected: {model_name}")
+        elif "72b" in model_name.lower() or "deep" in model_name.lower():
+            llm = llm_deep
+            if not llm:
+                llm = llm_medium if llm_medium else llm_fast
+                model_name = "medium (fallback)" if llm_medium else "fast (fallback)"
+        elif "32b" in model_name.lower() or "medium" in model_name.lower():
+            llm = llm_medium
+            if not llm:
+                llm = llm_fast if llm_fast else llm_deep
+                model_name = "fast (fallback)" if llm_fast else "deep (fallback)"
+        else:
+            llm = llm_fast
+            if not llm:
+                llm = llm_medium if llm_medium else llm_deep
+                model_name = "medium (fallback)" if llm_medium else "deep (fallback)"
     else:
         # Select model based on target
         if model_target == "vision":
@@ -2188,7 +2214,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     # Precompute image intent response so the outer handler stays non-generator
     image_intent_payload = None
-    if intent in ["generate_image", "text_to_image", "create_image"]:
+    if intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
         msg_lower = request.message.lower()
         for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
             msg_lower = msg_lower.replace(prefix, "").strip()
@@ -2209,7 +2235,12 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     original_mode = mode
 
     # Check if user selected a specific model (overrides routing)
-    if request.selected_model:
+    use_selected_model = bool(request.selected_model)
+    if use_selected_model and has_images and not re.search(r"vlm|vision|llava|qwen2-vl", request.selected_model, re.IGNORECASE):
+        logger.info("Ignoring selected_model override for vision request")
+        use_selected_model = False
+
+    if use_selected_model:
         logger.info(f"User-selected model override: {request.selected_model}")
         model_name = request.selected_model
         # Map the selected model path to the appropriate llm instance with fallback
@@ -2499,46 +2530,47 @@ Steps:"""
                 return llm, "Selected Model"
 
             used_models = set()
-            def _make_agent(name: str, icon: str, role: str) -> dict:
+            def _make_agent(name: str, icon: str, role: str, style: str) -> dict:
                 model, model_name = _pick_agent_model(name, used_models)
                 return {
                     "name": name,
                     "icon": icon,
                     "role": role,
+                    "style": style,
                     "model": model,
                     "model_name": model_name
                 }
 
             agent_catalog = {
                 "Researcher": {
-                    **_make_agent("Researcher", "🔍", "research specialist")
+                    **_make_agent("Researcher", "🔍", "research specialist", "cite sources and emphasize evidence")
                 },
                 "Searcher": {
-                    **_make_agent("Searcher", "🌐", "web search specialist who summarizes current information")
+                    **_make_agent("Searcher", "🌐", "web search specialist who summarizes current information", "summarize findings with links and dates")
                 },
                 "Analyst": {
-                    **_make_agent("Analyst", "🧠", "strategic analyst")
+                    **_make_agent("Analyst", "🧠", "strategic analyst", "structured, decisive recommendations")
                 },
                 "Implementer": {
-                    **_make_agent("Implementer", "⚙️", "implementation specialist")
+                    **_make_agent("Implementer", "⚙️", "implementation specialist", "actionable steps and concrete details")
                 },
                 "Coder": {
-                    **_make_agent("Coder", "💻", "coding specialist focused on implementation details")
+                    **_make_agent("Coder", "💻", "coding specialist focused on implementation details", "code-first with minimal prose")
                 },
                 "Critic": {
-                    **_make_agent("Critic", "🧯", "critical reviewer who finds flaws, risks, and missing constraints")
+                    **_make_agent("Critic", "🧯", "critical reviewer who finds flaws, risks, and missing constraints", "skeptical, highlight risks and gaps")
                 },
                 "Planner": {
-                    **_make_agent("Planner", "🧭", "project planner who breaks work into steps and milestones")
+                    **_make_agent("Planner", "🧭", "project planner who breaks work into steps and milestones", "sequenced plan with milestones")
                 },
                 "Designer": {
-                    **_make_agent("Designer", "🎨", "UX/UI designer focusing on layout, interaction, and aesthetics")
+                    **_make_agent("Designer", "🎨", "UX/UI designer focusing on layout, interaction, and aesthetics", "visual-first, UX tradeoffs")
                 },
                 "Marketer": {
-                    **_make_agent("Marketer", "📣", "growth marketer focusing on positioning, audience, and messaging")
+                    **_make_agent("Marketer", "📣", "growth marketer focusing on positioning, audience, and messaging", "audience, positioning, CTA")
                 },
                 "Verifier": {
-                    **_make_agent("Verifier", "✅", "validator who checks constraints, requirements, and correctness")
+                    **_make_agent("Verifier", "✅", "validator who checks constraints, requirements, and correctness", "checklists, edge cases")
                 }
             }
 
@@ -2691,6 +2723,7 @@ Steps:"""
                         logger.warning(f"Searcher web search failed: {e}")
 
                 agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
+Personality: {agent.get('style', 'concise and helpful')}.
 
 User Request: {swarm_user_message}
 
@@ -2742,6 +2775,7 @@ Your initial perspective:"""
                 round_prompts = []
                 for agent in agents:
                     agent_prompt = f"""You are {agent['name']}, continuing the discussion.
+Personality: {agent.get('style', 'concise and helpful')}.
 
     User Request: {swarm_user_message}
 
@@ -2947,6 +2981,16 @@ Do not repeat yourself. Keep it concise.
                             break
                         delta = chunk["choices"][0].get("delta", {})
                         token = delta.get("content") if isinstance(delta, dict) else None
+                        if isinstance(token, list):
+                            parts = []
+                            for item in token:
+                                if isinstance(item, str):
+                                    parts.append(item)
+                                elif isinstance(item, dict):
+                                    text_part = item.get("text") or item.get("content") or ""
+                                    if text_part:
+                                        parts.append(text_part)
+                            token = "".join(parts)
                         if token:
                             assistant_response += token
                             yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
@@ -3968,7 +4012,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
         "agent": base + " You can search the web for current information. Provide detailed, accurate answers based on search results.",
-        "code": base + " Generate complete, working code solutions with explanations.",
+        "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
         "work": base + " You are helping with a complex multi-step task. Follow the task plan provided, work through each step methodically, and provide comprehensive results. Be thorough and detail-oriented."
     }
     
@@ -4172,28 +4216,49 @@ def _safe_filename(name: str) -> str:
     return name or "output.txt"
 
 def _render_pdf_from_text(text: str) -> bytes:
-    # Minimal PDF generator with single page text
     if text is None:
         text = ""
-    # Escape parentheses
+    import textwrap
+
     safe = text.replace("\\", "\\\\").replace("(", "\\(").replace(")", "\\)")
-    lines = safe.splitlines() or [""]
-    # Simple line layout
-    y = 740
-    leading = 14
-    content_lines = []
-    for line in lines[:45]:
-        content_lines.append(f"BT /F1 12 Tf 72 {y} Td ({line}) Tj ET")
-        y -= leading
-        if y < 60:
-            break
-    content_stream = "\n".join(content_lines).encode("latin-1", errors="ignore")
+    raw_lines = safe.splitlines() or [""]
+    lines = []
+    for line in raw_lines:
+        wrapped = textwrap.wrap(line, width=90) or [""]
+        lines.extend(wrapped)
+
+    page_line_count = 45
+    pages = [lines[i:i + page_line_count] for i in range(0, len(lines), page_line_count)] or [[""]]
+    font_obj_num = 3 + (2 * len(pages))
+
     objects = []
     objects.append(b"1 0 obj << /Type /Catalog /Pages 2 0 R >> endobj")
-    objects.append(b"2 0 obj << /Type /Pages /Kids [3 0 R] /Count 1 >> endobj")
-    objects.append(b"3 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >> endobj")
-    objects.append(b"4 0 obj << /Length %d >> stream\n%s\nendstream endobj" % (len(content_stream), content_stream))
-    objects.append(b"5 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj")
+    kids = " ".join([f"{3 + i * 2} 0 R" for i in range(len(pages))])
+    objects.append(f"2 0 obj << /Type /Pages /Kids [{kids}] /Count {len(pages)} >> endobj".encode("ascii"))
+
+    for idx, page_lines in enumerate(pages):
+        page_obj_num = 3 + idx * 2
+        content_obj_num = 4 + idx * 2
+        y = 740
+        leading = 14
+        content_lines = []
+        for line in page_lines:
+            content_lines.append(f"BT /F1 12 Tf 72 {y} Td ({line}) Tj ET")
+            y -= leading
+        content_stream = "\n".join(content_lines).encode("latin-1", errors="ignore")
+        page_obj = (
+            f"{page_obj_num} 0 obj << /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] "
+            f"/Contents {content_obj_num} 0 R /Resources << /Font << /F1 {font_obj_num} 0 R >> >> >> endobj"
+        ).encode("ascii")
+        content_obj = b"%d 0 obj << /Length %d >> stream\n%s\nendstream endobj" % (
+            content_obj_num,
+            len(content_stream),
+            content_stream
+        )
+        objects.append(page_obj)
+        objects.append(content_obj)
+
+    objects.append(f"{font_obj_num} 0 obj << /Type /Font /Subtype /Type1 /BaseFont /Helvetica >> endobj".encode("ascii"))
 
     xref_positions = []
     pdf = b"%PDF-1.4\n"
