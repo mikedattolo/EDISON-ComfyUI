@@ -265,6 +265,9 @@ llm_deep = None
 llm_reasoning = None
 llm_vision = None  # VLM for image understanding
 llm_vision_code = None
+model_manager = None
+vllm_enabled = False
+vllm_url = None
 rag_system = None
 search_tool = None
 config = None
@@ -964,6 +967,54 @@ def load_config():
         logger.error(f"Error loading config: {e}")
         config = {}
 
+def _get_core_config() -> dict:
+    return config.get("edison", {}).get("core", {})
+
+def _get_ctx_limit(model_name: str) -> int:
+    core_config = _get_core_config()
+    if model_name == "deep":
+        return int(core_config.get("deep_n_ctx", core_config.get("context_window", 4096)))
+    if model_name == "reasoning":
+        return int(core_config.get("reasoning_n_ctx", core_config.get("n_ctx", 4096)))
+    if model_name == "medium":
+        return int(core_config.get("medium_n_ctx", core_config.get("n_ctx", 4096)))
+    if model_name == "fast":
+        return int(core_config.get("fast_n_ctx", core_config.get("n_ctx", 4096)))
+    return int(core_config.get("n_ctx", 4096))
+
+def _init_vllm_config():
+    global vllm_enabled, vllm_url
+    vllm_cfg = config.get("edison", {}).get("vllm", {})
+    vllm_enabled = bool(vllm_cfg.get("enabled", False))
+    host = vllm_cfg.get("host", "127.0.0.1")
+    port = vllm_cfg.get("port", 8822)
+    vllm_url = f"http://{host}:{port}"
+
+def _vllm_generate(prompt: str, mode: str, max_tokens: int, temperature: float, top_p: float) -> Optional[str]:
+    if not vllm_enabled or not vllm_url:
+        return None
+    try:
+        resp = requests.post(
+            f"{vllm_url}/generate",
+            json={
+                "prompt": prompt,
+                "mode": mode,
+                "max_tokens": max_tokens,
+                "temperature": temperature,
+                "top_p": top_p
+            },
+            timeout=120
+        )
+        if resp.status_code != 200:
+            logger.warning(f"vLLM request failed: {resp.status_code} {resp.text}")
+            return None
+        data = resp.json()
+        results = data.get("results", [])
+        return results[0] if results else ""
+    except Exception as e:
+        logger.warning(f"vLLM request error: {e}")
+        return None
+
 def check_gpu_availability():
     """Verify GPU availability before loading models"""
     import subprocess
@@ -1008,7 +1059,7 @@ def load_llm_models():
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
     models_path = REPO_ROOT / models_rel_path
     
-    core_config = config.get("edison", {}).get("core", {})
+    core_config = _get_core_config()
     fast_model_name = core_config.get("fast_model", "qwen2.5-14b-instruct-q4_k_m.gguf")
     medium_model_name = core_config.get("medium_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
     deep_model_name = core_config.get("deep_model", "qwen2.5-72b-instruct-q4_k_m.gguf")
@@ -1226,9 +1277,19 @@ async def lifespan(app: FastAPI):
     logger.info("Starting EDISON Core Service...")
     logger.info(f"Repo root: {REPO_ROOT}")
     load_config()
+    _init_vllm_config()
     load_llm_models()
     init_rag_system()
     init_search_tool()
+
+    # Optional model manager for hot-swap
+    global model_manager
+    try:
+        from services.edison_core.model_manager import ModelManager
+        model_manager = ModelManager()
+    except Exception as e:
+        model_manager = None
+        logger.warning(f"Model manager unavailable: {e}")
     
     logger.info("EDISON Core Service ready")
     logger.info("=" * 50)
@@ -1363,6 +1424,29 @@ async def list_models():
             "vision_code": config.get("edison", {}).get("core", {}).get("vision_code_model")
         }
     }
+
+@app.post("/models/load")
+async def load_model(request: dict):
+    if not model_manager:
+        raise HTTPException(status_code=503, detail="Model manager not available")
+    name = request.get("name")
+    path = request.get("path")
+    n_ctx = int(request.get("n_ctx", _get_core_config().get("n_ctx", 4096)))
+    tensor_split = request.get("tensor_split")
+    if not name or not path:
+        raise HTTPException(status_code=400, detail="name and path are required")
+    model = model_manager.load_model(name, path, n_ctx=n_ctx, tensor_split=tensor_split)
+    return {"ok": True, "name": name, "loaded": model is not None}
+
+@app.post("/models/unload")
+async def unload_model(request: dict):
+    if not model_manager:
+        raise HTTPException(status_code=503, detail="Model manager not available")
+    name = request.get("name")
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+    model_manager.unload_model(name)
+    return {"ok": True, "name": name}
 
 def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
@@ -2015,20 +2099,30 @@ Steps:"""
             # Text-only model
             max_tokens = 3072 if original_mode == "work" else 2048  # More tokens for work mode
             text_lock = get_lock_for_model(llm)
-            with text_lock:
-                response = llm(
-                    full_prompt,
-                    max_tokens=max_tokens,
-                    temperature=0.7,
-                    top_p=0.9,
-                    frequency_penalty=0.3,  # Reduce repetition
-                    presence_penalty=0.2,   # Encourage new topics
-                    repeat_penalty=1.1,     # Penalize repeated tokens
-                    stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
-                    echo=False
-                )
-            
-            assistant_response = response["choices"][0]["text"].strip()
+            vllm_mode = "deep" if model_name in ["deep", "reasoning"] else "fast"
+            assistant_response = _vllm_generate(
+                full_prompt,
+                mode=vllm_mode,
+                max_tokens=max_tokens,
+                temperature=0.7,
+                top_p=0.9
+            ) if (vllm_enabled and not has_images) else None
+
+            if assistant_response is None:
+                with text_lock:
+                    response = llm(
+                        full_prompt,
+                        max_tokens=max_tokens,
+                        temperature=0.7,
+                        top_p=0.9,
+                        frequency_penalty=0.3,  # Reduce repetition
+                        presence_penalty=0.2,   # Encourage new topics
+                        repeat_penalty=1.1,     # Penalize repeated tokens
+                        stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                        echo=False
+                    )
+                
+                assistant_response = response["choices"][0]["text"].strip()
         
         # Store in memory if auto-detected or requested
         store_conversation_exchange(request, assistant_response, original_mode, remember)
@@ -2863,7 +2957,7 @@ Do not repeat yourself. Keep it concise.
             else:
                 # Estimate safe max_tokens based on prompt size to avoid context overflow
                 estimated_prompt_tokens = max(1, len(full_prompt) // 4)
-                ctx_limit = 4096
+                ctx_limit = _get_ctx_limit(model_name)
                 max_tokens = 3072 if original_mode == "work" else 2048
                 safe_max_tokens = max(128, ctx_limit - estimated_prompt_tokens - 64)
                 if safe_max_tokens < max_tokens:
