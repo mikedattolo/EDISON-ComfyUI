@@ -1085,11 +1085,17 @@ def load_llm_models():
     reasoning_n_ctx = core_config.get("reasoning_n_ctx", default_ctx)
     vision_n_ctx = core_config.get("vision_n_ctx", 4096)
     vision_code_n_ctx = core_config.get("vision_code_n_ctx", 8192)
+    default_n_gpu_layers = int(core_config.get("n_gpu_layers", -1))
+    fast_n_gpu_layers = int(core_config.get("fast_n_gpu_layers", default_n_gpu_layers))
+    medium_n_gpu_layers = int(core_config.get("medium_n_gpu_layers", default_n_gpu_layers))
+    deep_n_gpu_layers = int(core_config.get("deep_n_gpu_layers", default_n_gpu_layers))
+    reasoning_n_gpu_layers = int(core_config.get("reasoning_n_gpu_layers", default_n_gpu_layers))
+    vision_n_gpu_layers = int(core_config.get("vision_n_gpu_layers", default_n_gpu_layers))
+    vision_code_n_gpu_layers = int(core_config.get("vision_code_n_gpu_layers", default_n_gpu_layers))
 
     use_flash_attn = bool(core_config.get("use_flash_attn", False))
     flash_attn_recompute = bool(core_config.get("flash_attn_recompute", False))
     common_kwargs = {
-        "n_gpu_layers": -1,
         "tensor_split": tensor_split,
         "verbose": True
     }
@@ -1107,6 +1113,7 @@ def load_llm_models():
             llm_fast = Llama(
                 model_path=str(fast_model_path),
                 n_ctx=fast_n_ctx,
+                n_gpu_layers=fast_n_gpu_layers,
                 **common_kwargs
             )
             logger.info("✓ Fast model loaded successfully")
@@ -1126,6 +1133,7 @@ def load_llm_models():
             llm_medium = Llama(
                 model_path=str(medium_model_path),
                 n_ctx=medium_n_ctx,
+                n_gpu_layers=medium_n_gpu_layers,
                 **common_kwargs
             )
             logger.info("✓ Medium model loaded successfully")
@@ -1147,6 +1155,7 @@ def load_llm_models():
             llm_deep = Llama(
                 model_path=str(deep_model_path),
                 n_ctx=deep_n_ctx,
+                n_gpu_layers=deep_n_gpu_layers,
                 **common_kwargs
             )
             logger.info("✓ Deep model loaded successfully")
@@ -1166,6 +1175,7 @@ def load_llm_models():
                 llm_reasoning = Llama(
                     model_path=str(reasoning_model_path),
                     n_ctx=reasoning_n_ctx,
+                    n_gpu_layers=reasoning_n_gpu_layers,
                     **common_kwargs
                 )
                 logger.info("✓ Reasoning model loaded successfully")
@@ -1192,6 +1202,7 @@ def load_llm_models():
                     model_path=str(vision_model_path),
                     clip_model_path=str(vision_clip_path),
                     n_ctx=vision_n_ctx,
+                    n_gpu_layers=vision_n_gpu_layers,
                     **common_kwargs
                 )
                 logger.info("✓ Vision model loaded successfully")
@@ -1215,6 +1226,7 @@ def load_llm_models():
                     model_path=str(vision_code_model_path),
                     clip_model_path=str(vision_code_clip_path),
                     n_ctx=vision_code_n_ctx,
+                    n_gpu_layers=vision_code_n_gpu_layers,
                     **common_kwargs
                 )
                 logger.info("✓ Vision-to-code model loaded successfully")
