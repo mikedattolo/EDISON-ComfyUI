@@ -4,7 +4,7 @@ import base64
 import logging
 import tempfile
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Body
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +52,7 @@ async def voice_to_text(audio: UploadFile = File(...)):
     return {"text": result.get("text", "").strip()}
 
 @app.post("/text-to-voice")
-async def text_to_voice(text: str):
+async def text_to_voice(text: str = Body(..., embed=True)):
     if _tts_engine is None:
         raise HTTPException(status_code=503, detail="TTS engine not available")
     with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as tmp:

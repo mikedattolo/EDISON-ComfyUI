@@ -359,6 +359,24 @@
                             Enable syntax highlighting for code
                         </label>
                     </div>
+
+                    <div class="setting-group">
+                        <h3>Model Hot-Swap</h3>
+                        <div class="user-id-container">
+                            <input type="text" id="modelNameInput" placeholder="Model name (e.g., qwq-32b)" style="flex: 1;">
+                        </div>
+                        <div class="user-id-container" style="margin-top: 8px;">
+                            <input type="text" id="modelPathInput" placeholder="Model path (/opt/edison/models/llm/...)" style="flex: 1;">
+                        </div>
+                        <div class="user-id-container" style="margin-top: 8px;">
+                            <input type="number" id="modelCtxInput" placeholder="Context window (e.g., 32768)" style="flex: 1;">
+                            <input type="text" id="modelTensorInput" placeholder="Tensor split (e.g., 0.55,0.30,0.15)" style="flex: 1;">
+                        </div>
+                        <div class="user-id-container" style="margin-top: 8px;">
+                            <button class="btn-secondary" id="loadModelBtn" title="Load model">⬆️ Load</button>
+                            <button class="btn-secondary" id="unloadModelBtn" title="Unload model">⬇️ Unload</button>
+                        </div>
+                    </div>
                     
                     <div class="setting-group">
                         <h3>System Status</h3>

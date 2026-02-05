@@ -993,6 +993,11 @@ def _init_vllm_config():
 def _vllm_generate(prompt: str, mode: str, max_tokens: int, temperature: float, top_p: float) -> Optional[str]:
     if not vllm_enabled or not vllm_url:
         return None
+
+def _chunk_text(text: str, chunk_size: int = 12) -> list:
+    if not text:
+        return []
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
     try:
         resp = requests.post(
             f"{vllm_url}/generate",
@@ -2953,28 +2958,23 @@ Do not repeat yourself. Keep it concise.
                 safe_max_tokens = max(128, ctx_limit - estimated_prompt_tokens - 64)
                 if safe_max_tokens < max_tokens:
                     max_tokens = safe_max_tokens
-                lock = get_lock_for_model(llm)
-                with lock:
-                    stream = llm(
-                        full_prompt,
-                        max_tokens=max_tokens,
-                        temperature=0.7,
-                        top_p=0.9,
-                        frequency_penalty=0.3,
-                        presence_penalty=0.2,
-                        repeat_penalty=1.1,
-                        stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
-                        echo=False,
-                        stream=True
-                    )
-                    for chunk in stream:
+                vllm_mode = "deep" if model_name in ["deep", "reasoning"] else "fast"
+                vllm_text = _vllm_generate(
+                    full_prompt,
+                    mode=vllm_mode,
+                    max_tokens=max_tokens,
+                    temperature=0.7,
+                    top_p=0.9
+                ) if vllm_enabled else None
+
+                if vllm_text is not None:
+                    for token in _chunk_text(vllm_text, chunk_size=12):
                         # Check for cancellation
                         with active_requests_lock:
                             if request_id in active_requests and active_requests[request_id]["cancelled"]:
                                 logger.info(f"Request {request_id} cancelled by user")
                                 client_disconnected = True
                                 break
-                        
                         if await raw_request.is_disconnected():
                             logger.info(f"Client disconnected for request {request_id}")
                             with active_requests_lock:
@@ -2982,10 +2982,42 @@ Do not repeat yourself. Keep it concise.
                                     active_requests[request_id]["cancelled"] = True
                             client_disconnected = True
                             break
-                        token = chunk["choices"][0].get("text", "")
-                        if token:
-                            assistant_response += token
-                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                        assistant_response += token
+                        yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                else:
+                    lock = get_lock_for_model(llm)
+                    with lock:
+                        stream = llm(
+                            full_prompt,
+                            max_tokens=max_tokens,
+                            temperature=0.7,
+                            top_p=0.9,
+                            frequency_penalty=0.3,
+                            presence_penalty=0.2,
+                            repeat_penalty=1.1,
+                            stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                            echo=False,
+                            stream=True
+                        )
+                        for chunk in stream:
+                            # Check for cancellation
+                            with active_requests_lock:
+                                if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                                    logger.info(f"Request {request_id} cancelled by user")
+                                    client_disconnected = True
+                                    break
+                            
+                            if await raw_request.is_disconnected():
+                                logger.info(f"Client disconnected for request {request_id}")
+                                with active_requests_lock:
+                                    if request_id in active_requests:
+                                        active_requests[request_id]["cancelled"] = True
+                                client_disconnected = True
+                                break
+                            token = chunk["choices"][0].get("text", "")
+                            if token:
+                                assistant_response += token
+                                yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
         except Exception as e:
             logger.error(f"Streaming generation failed: {e}")
             # Cleanup

@@ -73,6 +73,12 @@ class EdisonApp {
         this.modelSelect = document.getElementById('modelSelect');
         this.voiceBtn = document.getElementById('voiceBtn');
         this.voiceEndpointInput = document.getElementById('voiceEndpoint');
+        this.modelNameInput = document.getElementById('modelNameInput');
+        this.modelPathInput = document.getElementById('modelPathInput');
+        this.modelCtxInput = document.getElementById('modelCtxInput');
+        this.modelTensorInput = document.getElementById('modelTensorInput');
+        this.loadModelBtn = document.getElementById('loadModelBtn');
+        this.unloadModelBtn = document.getElementById('unloadModelBtn');
         
         // User ID sync controls
         this.userIdInput = document.getElementById('userIdInput');
@@ -121,6 +127,12 @@ class EdisonApp {
 
         if (this.voiceBtn) {
             this.voiceBtn.addEventListener('click', () => this.startVoiceInput());
+        }
+        if (this.loadModelBtn) {
+            this.loadModelBtn.addEventListener('click', () => this.loadModelHotSwap());
+        }
+        if (this.unloadModelBtn) {
+            this.unloadModelBtn.addEventListener('click', () => this.unloadModelHotSwap());
         }
         
         // Sidebar
@@ -743,6 +755,13 @@ class EdisonApp {
                         <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
                     </svg>
                 </button>
+                <button class="action-btn speak-btn" title="Play audio">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M3 6h2l3-3v10l-3-3H3z"/>
+                        <path d="M10.5 5.5a3.5 3.5 0 0 1 0 5" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                        <path d="M12 3.5a5.5 5.5 0 0 1 0 9" fill="none" stroke="currentColor" stroke-width="1.2"/>
+                    </svg>
+                </button>
                 <button class="action-btn regenerate-btn" title="Regenerate response">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                         <path fill-rule="evenodd" d="M8 3a5 5 0 1 0 4.546 2.914.5.5 0 0 1 .908-.417A6 6 0 1 1 8 2v1z"/>
@@ -768,9 +787,13 @@ class EdisonApp {
             editBtn.addEventListener('click', () => this.editMessage(messageEl, content));
         } else {
             const copyBtn = messageEl.querySelector('.copy-btn');
+            const speakBtn = messageEl.querySelector('.speak-btn');
             const regenerateBtn = messageEl.querySelector('.regenerate-btn');
             
             copyBtn.addEventListener('click', () => this.copyToClipboard(content));
+            if (speakBtn) {
+                speakBtn.addEventListener('click', () => this.playTtsForMessage(messageEl));
+            }
             regenerateBtn.addEventListener('click', () => this.regenerateResponse(messageEl));
         }
         
@@ -934,6 +957,7 @@ class EdisonApp {
 
     updateMessage(messageEl, content, mode) {
         messageEl.classList.remove('streaming');
+        messageEl.dataset.rawText = content || '';
         
         const contentEl = messageEl.querySelector('.message-content');
         contentEl.innerHTML = this.formatMessage(content);
@@ -945,6 +969,81 @@ class EdisonApp {
         }
         
         this.scrollToBottom();
+    }
+
+    async loadModelHotSwap() {
+        const name = this.modelNameInput?.value?.trim();
+        const path = this.modelPathInput?.value?.trim();
+        const nCtx = parseInt(this.modelCtxInput?.value || '0', 10);
+        const tensor = this.modelTensorInput?.value?.trim();
+        if (!name || !path) {
+            alert('Model name and path are required');
+            return;
+        }
+        const payload = {
+            name,
+            path
+        };
+        if (nCtx) payload.n_ctx = nCtx;
+        if (tensor) {
+            payload.tensor_split = tensor.split(',').map(v => parseFloat(v.trim())).filter(v => !Number.isNaN(v));
+        }
+        const response = await fetch(`${this.settings.apiEndpoint}/models/load`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload)
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            alert(`Load failed: ${text}`);
+            return;
+        }
+        this.showNotification('Model loaded');
+    }
+
+    async unloadModelHotSwap() {
+        const name = this.modelNameInput?.value?.trim();
+        if (!name) {
+            alert('Model name is required');
+            return;
+        }
+        const response = await fetch(`${this.settings.apiEndpoint}/models/unload`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ name })
+        });
+        if (!response.ok) {
+            const text = await response.text();
+            alert(`Unload failed: ${text}`);
+            return;
+        }
+        this.showNotification('Model unloaded');
+    }
+
+    async playTtsForMessage(messageEl) {
+        const text = messageEl?.dataset?.rawText || '';
+        if (!text) return;
+        const endpoint = this.settings.voiceEndpoint || 'http://localhost:8809';
+        const response = await fetch(`${endpoint}/text-to-voice`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ text })
+        });
+        if (!response.ok) {
+            alert('Voice playback failed');
+            return;
+        }
+        const data = await response.json();
+        const audioBytes = atob(data.audio || '');
+        const array = new Uint8Array(audioBytes.length);
+        for (let i = 0; i < audioBytes.length; i++) {
+            array[i] = audioBytes.charCodeAt(i);
+        }
+        const blob = new Blob([array], { type: 'audio/mpeg' });
+        const url = URL.createObjectURL(blob);
+        const audio = new Audio(url);
+        audio.onended = () => URL.revokeObjectURL(url);
+        audio.play();
     }
 
     formatMessage(content) {

@@ -323,6 +323,14 @@ body {
     transition: var(--transition);
 }
 
+.message-actions .speak-btn {
+    color: var(--text-secondary);
+}
+
+.message-actions .speak-btn:hover {
+    color: var(--primary);
+}
+
 .artifact-actions button:hover {
     border-color: var(--primary);
     color: var(--primary);
