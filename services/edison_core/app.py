@@ -1228,6 +1228,15 @@ def load_llm_models():
         logger.error("⚠ No models loaded. Please place GGUF models in the models/llm/ directory.")
         logger.error(f"Expected: {models_path / fast_model_name}")
         logger.error(f"      or: {models_path / deep_model_name}")
+    else:
+        logger.info(
+            "Models loaded: fast=%s medium=%s deep=%s reasoning=%s vision=%s",
+            bool(llm_fast),
+            bool(llm_medium),
+            bool(llm_deep),
+            bool(llm_reasoning),
+            bool(llm_vision)
+        )
 
 def init_rag_system():
     """Initialize RAG system with Qdrant and sentence-transformers"""
@@ -2899,6 +2908,7 @@ Vote Summary:
 
 Provide a clear, actionable synthesis that integrates all perspectives.
 Do not repeat yourself. Keep it concise.
+Do not include multiple summaries or "Final Summary" variants.
 {file_instruction if file_request else ""}"""
             if status_steps is not None:
                 status_steps.append({"stage": "Synthesizing"})
@@ -3085,6 +3095,8 @@ Do not repeat yourself. Keep it concise.
         file_entries = _parse_files_from_response(assistant_response)
         generated_files = _write_artifacts(file_entries) if file_entries else []
         cleaned_response = _strip_file_blocks(assistant_response)
+        if original_mode == "swarm":
+            cleaned_response = _dedupe_repeated_lines(cleaned_response)
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
@@ -4302,6 +4314,29 @@ def _strip_file_blocks(response: str) -> str:
     response = re.sub(r"```files[\s\S]+?```", "", response, flags=re.IGNORECASE)
     response = re.sub(r"```file[\s\S]+?```", "", response, flags=re.IGNORECASE)
     return response.strip()
+
+def _dedupe_repeated_lines(text: str) -> str:
+    if not text:
+        return text
+    lines = text.splitlines()
+    deduped = []
+    last_norm = None
+    final_seen = False
+    for line in lines:
+        norm = line.strip().lower()
+        if not norm:
+            deduped.append(line)
+            last_norm = None
+            continue
+        if norm.startswith("final"):
+            if final_seen:
+                continue
+            final_seen = True
+        if norm == last_norm:
+            continue
+        deduped.append(line)
+        last_norm = norm
+    return "\n".join(deduped).strip()
 
 def _write_artifacts(file_entries: list) -> list:
     if not file_entries:
