@@ -29,6 +29,14 @@ PyPDF2>=3.0.0
 # Web search
 ddgs>=1.0.0
 
+# Optional performance
+vllm==0.6.3
+flash-attn==2.5.8
+
+# Optional voice I/O
+openai-whisper==20231117
+pyttsx3==2.90
+
 # System monitoring
 psutil>=5.9.0
 numpy>=1.24.0  # Audio processing

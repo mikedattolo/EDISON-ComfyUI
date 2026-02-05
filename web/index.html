@@ -178,6 +178,20 @@
                     </div>
                 </div>
 
+                <div class="artifacts-panel" id="artifactsPanel" style="display: none;">
+                    <div class="artifact-header">
+                        <span id="artifactTitle">Artifact</span>
+                        <div class="artifact-actions">
+                            <button id="artifactCopyBtn" title="Copy">📋</button>
+                            <button id="artifactDownloadBtn" title="Download">💾</button>
+                            <button id="artifactCloseBtn" title="Close">✕</button>
+                        </div>
+                    </div>
+                    <div class="artifact-content">
+                        <pre><code id="artifactCode"></code></pre>
+                    </div>
+                </div>
+
                 <div class="input-container">
                     <div class="input-wrapper">
                         <div class="mode-selector">
@@ -197,9 +211,9 @@
                                 <span class="mode-icon">💬</span>
                                 <span class="mode-label">Chat</span>
                             </button>
-                            <button class="mode-btn" data-mode="reasoning" title="Detailed analysis (72B)">
+                            <button class="mode-btn" data-mode="reasoning" title="Reasoning mode (QwQ-32B)">
                                 <span class="mode-icon">🧠</span>
-                                <span class="mode-label">Deep</span>
+                                <span class="mode-label">Reasoning</span>
                             </button>
                             <button class="mode-btn" data-mode="code" title="Code assistance">
                                 <span class="mode-icon">💻</span>
@@ -224,6 +238,13 @@
                             <button class="attach-btn" id="attachBtn" title="Upload files (text, code, images)" onclick="event.stopPropagation(); window.triggerFileUpload && window.triggerFileUpload(event);">
                                 <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
                                     <path d="M10 3v14M3 10h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                                </svg>
+                            </button>
+                            <button class="voice-btn" id="voiceBtn" title="Voice input">
+                                <svg width="20" height="20" viewBox="0 0 20 20" fill="currentColor">
+                                    <path d="M10 12a3 3 0 0 0 3-3V5a3 3 0 1 0-6 0v4a3 3 0 0 0 3 3z"/>
+                                    <path d="M4 9a6 6 0 0 0 12 0h-2a4 4 0 0 1-8 0H4z"/>
+                                    <path d="M10 15v3M7 18h6" stroke="currentColor" stroke-width="1"/>
                                 </svg>
                             </button>
                             <textarea 
@@ -284,6 +305,12 @@
                         <input type="text" id="comfyuiEndpoint" value="http://192.168.1.26:8188" placeholder="http://localhost:8188">
                         <p class="setting-description">The URL of your ComfyUI service (for image generation)</p>
                     </div>
+
+                    <div class="setting-group">
+                        <label for="voiceEndpoint">Voice Endpoint</label>
+                        <input type="text" id="voiceEndpoint" value="http://192.168.1.26:8809" placeholder="http://localhost:8809">
+                        <p class="setting-description">The URL of your voice service (speech-to-text)</p>
+                    </div>
                     
                     <div class="setting-group">
                         <label>Theme</label>
@@ -312,7 +339,7 @@
                             <option value="instant">Instant (Quick Response)</option>
                             <option value="thinking">Thinking (Extended Reasoning)</option>
                             <option value="chat">Chat (14B Fast)</option>
-                            <option value="reasoning">Deep (72B Detailed)</option>
+                            <option value="reasoning">Reasoning (QwQ-32B)</option>
                             <option value="code">Code Assistant</option>
                             <option value="agent">Agent Mode</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>

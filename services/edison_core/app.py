@@ -3,7 +3,7 @@ EDISON Core Service - Main Application
 FastAPI server with llama-cpp-python for local LLM inference
 """
 
-from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie
+from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
@@ -114,32 +114,17 @@ def merge_chunks(existing: list, new: list, max_total: int = 4, source_name: str
     return merged[:max_total]
 
 
-def route_mode(user_message: str, requested_mode: str, has_image: bool, 
+def route_mode(user_message: str, requested_mode: str, has_image: bool,
                coral_intent: Optional[str] = None) -> Dict[str, any]:
     """
     Consolidated routing function to determine mode, tools, and model target.
     Single source of truth for all routing logic.
-    
-    Args:
-        user_message: The user's message text
-        requested_mode: User's requested mode ("auto" or specific mode)
-        has_image: Whether the request includes images
-        coral_intent: Intent detected by coral service (optional)
-    
-    Returns:
-        Dictionary with routing decision:
-        {
-            "mode": str,                    # "chat" | "code" | "agent" | "image" | "reasoning" | "work"
-            "tools_allowed": bool,          # Whether agent tools can be used
-            "model_target": str,            # "fast" | "medium" | "deep" | "vision"
-            "reasons": List[str]           # Explanation of routing decision
-        }
     """
     reasons = []
     mode = requested_mode
     tools_allowed = False
     model_target = "fast"
-    
+
     # Rule 1: If has_image, always use image mode (highest priority)
     if has_image:
         mode = "image"
@@ -149,7 +134,7 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
     elif requested_mode != "auto":
         reasons.append(f"User explicitly requested mode: {requested_mode}")
         mode = requested_mode
-        
+
         # Map frontend-specific modes to backend modes
         if mode == "instant":
             mode = "chat"  # Instant maps to fast chat
@@ -160,6 +145,9 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Swarm mode → multi-agent collaboration with deep model")
+        elif mode == "reasoning":
+            model_target = "reasoning"
+            reasons.append("Reasoning mode → reasoning model")
     else:
         # Rule 3: Check coral_intent for specific routing
         if coral_intent:
@@ -181,16 +169,16 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
         else:
             # Rule 4: Heuristic pattern matching
             msg_lower = user_message.lower()
-            
+
             # Check patterns in priority order
             work_patterns = ["create a project", "build an app", "design a system", "plan",
                             "multi-step", "workflow", "organize", "manage",
                             "help me with", "work on", "collaborate", "break down this"]
-            
+
             code_patterns = ["code", "program", "function", "implement", "script", "write",
                             "create a", "build", "develop", "algorithm", "class", "method",
                             "debug", "fix this", "syntax", "refactor"]
-            
+
             agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
                              "current", "latest", "news about", "information on", "information about",
                              "tell me about", "research", "browse", "what's happening",
@@ -199,14 +187,14 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "find out", "check", "what is happening", "what happened",
                              "who is", "where is", "when is", "show me", "get me",
                              "look for", "search for", "find information"]
-            
+
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
-            
+
             # Check if agent patterns match (for enabling web search)
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
-            
+
             if any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
@@ -231,20 +219,24 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "chat"
                 words = len(msg_lower.split())
                 has_question = '?' in user_message
-                
+
                 # Enable tools even in chat mode if agent patterns detected
                 if has_agent_patterns:
                     tools_allowed = True
                     reasons.append("Search request in chat → tools enabled")
-                
+
                 if words > 15 or has_question:
                     mode = "reasoning"
                     reasons.append("Complex/question-based message → reasoning mode")
                 else:
                     reasons.append("No patterns matched → default chat mode")
-    
+
+    if mode == "reasoning" and model_target == "fast":
+        model_target = "reasoning"
+        reasons.append("Auto reasoning → reasoning model")
+
     # Determine model target based on mode (only if not already set to vision, instant, or swarm)
-    if model_target not in ["vision", "fast", "deep"]:  # Don't override if already set
+    if model_target not in ["vision", "fast", "deep", "reasoning"]:
         if mode in ["work", "reasoning", "swarm"]:
             model_target = "deep"  # Work, reasoning, and swarm need most capable model
             reasons.append(f"Mode '{mode}' requires deep model")
@@ -254,10 +246,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
         else:
             model_target = "fast"  # Chat and other modes use fast model
             reasons.append(f"Mode '{mode}' uses fast model")
-    
+
     # Log routing decision once
     logger.info(f"ROUTING: mode={mode}, model={model_target}, tools={tools_allowed}, reasons={reasons}")
-    
+
     return {
         "mode": mode,
         "tools_allowed": tools_allowed,
@@ -270,7 +262,9 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
 llm_fast = None
 llm_medium = None  # 32B model - fallback for deep mode
 llm_deep = None
+llm_reasoning = None
 llm_vision = None  # VLM for image understanding
+llm_vision_code = None
 rag_system = None
 search_tool = None
 config = None
@@ -279,7 +273,9 @@ config = None
 lock_fast = threading.Lock()
 lock_medium = threading.Lock()
 lock_deep = threading.Lock()
+lock_reasoning = threading.Lock()
 lock_vision = threading.Lock()
+lock_vision_code = threading.Lock()
 
 # Active request tracking for server-side cancellation
 active_requests = {}  # {request_id: {"cancelled": bool, "timestamp": float}}
@@ -576,7 +572,10 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 return {"ok": False, "error": "web_search unavailable"}
             query = args.get("query", "").strip()
             max_results = args.get("max_results", 5)
-            results = await asyncio.to_thread(search_tool.search, query, max_results)
+            if hasattr(search_tool, "deep_search"):
+                results, _meta = await asyncio.to_thread(search_tool.deep_search, query, max_results)
+            else:
+                results = await asyncio.to_thread(search_tool.search, query, max_results)
             return {"ok": True, "data": results}
 
         if tool_name == "rag_search":
@@ -991,7 +990,7 @@ def check_gpu_availability():
 
 def load_llm_models():
     """Load GGUF models using llama-cpp-python with absolute paths"""
-    global llm_fast, llm_medium, llm_deep, llm_vision
+    global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
     
     try:
         from llama_cpp import Llama
@@ -1009,9 +1008,33 @@ def load_llm_models():
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
     models_path = REPO_ROOT / models_rel_path
     
-    fast_model_name = config.get("edison", {}).get("core", {}).get("fast_model", "qwen2.5-14b-instruct-q4_k_m.gguf")
-    medium_model_name = config.get("edison", {}).get("core", {}).get("medium_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
-    deep_model_name = config.get("edison", {}).get("core", {}).get("deep_model", "qwen2.5-72b-instruct-q4_k_m.gguf")
+    core_config = config.get("edison", {}).get("core", {})
+    fast_model_name = core_config.get("fast_model", "qwen2.5-14b-instruct-q4_k_m.gguf")
+    medium_model_name = core_config.get("medium_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
+    deep_model_name = core_config.get("deep_model", "qwen2.5-72b-instruct-q4_k_m.gguf")
+    reasoning_model_name = core_config.get("reasoning_model")
+    vision_code_model_name = core_config.get("vision_code_model")
+    vision_code_clip_name = core_config.get("vision_code_clip")
+
+    tensor_split = core_config.get("tensor_split", [0.5, 0.25, 0.25])
+    default_ctx = core_config.get("n_ctx", 4096)
+    fast_n_ctx = core_config.get("fast_n_ctx", default_ctx)
+    medium_n_ctx = core_config.get("medium_n_ctx", default_ctx)
+    deep_n_ctx = core_config.get("deep_n_ctx", core_config.get("context_window", default_ctx))
+    reasoning_n_ctx = core_config.get("reasoning_n_ctx", default_ctx)
+    vision_n_ctx = core_config.get("vision_n_ctx", 4096)
+    vision_code_n_ctx = core_config.get("vision_code_n_ctx", 8192)
+
+    use_flash_attn = bool(core_config.get("use_flash_attn", False))
+    flash_attn_recompute = bool(core_config.get("flash_attn_recompute", False))
+    common_kwargs = {
+        "n_gpu_layers": -1,
+        "tensor_split": tensor_split,
+        "verbose": True
+    }
+    if use_flash_attn:
+        common_kwargs["use_flash_attn"] = True
+        common_kwargs["flash_attn_recompute"] = flash_attn_recompute
     
     logger.info(f"Looking for models in: {models_path}")
     
@@ -1022,10 +1045,8 @@ def load_llm_models():
             logger.info(f"Loading fast model: {fast_model_path}")
             llm_fast = Llama(
                 model_path=str(fast_model_path),
-                n_ctx=4096,
-                n_gpu_layers=-1,  # Use GPU
-                tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
-                verbose=True  # Enable verbose to see CUDA messages
+                n_ctx=fast_n_ctx,
+                **common_kwargs
             )
             logger.info("✓ Fast model loaded successfully")
         except Exception as e:
@@ -1043,10 +1064,8 @@ def load_llm_models():
             
             llm_medium = Llama(
                 model_path=str(medium_model_path),
-                n_ctx=4096,
-                n_gpu_layers=-1,  # Use GPU
-                tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs
-                verbose=True  # Enable verbose to see CUDA messages
+                n_ctx=medium_n_ctx,
+                **common_kwargs
             )
             logger.info("✓ Medium model loaded successfully")
         except Exception as e:
@@ -1066,10 +1085,8 @@ def load_llm_models():
             
             llm_deep = Llama(
                 model_path=str(deep_model_path),
-                n_ctx=4096,  # Reduced from 8192 to save VRAM
-                n_gpu_layers=-1,  # Use GPU
-                tensor_split=[0.5, 0.25, 0.25],  # Split across 3 GPUs: 3090 (50%), 5060ti (25%), 3060 (25%)
-                verbose=True  # Enable verbose to see CUDA messages
+                n_ctx=deep_n_ctx,
+                **common_kwargs
             )
             logger.info("✓ Deep model loaded successfully")
         except Exception as e:
@@ -1078,6 +1095,24 @@ def load_llm_models():
             logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
     else:
         logger.warning(f"Deep model not found at {deep_model_path}")
+
+    # Try to load reasoning model (optional)
+    if reasoning_model_name:
+        reasoning_model_path = models_path / reasoning_model_name
+        if reasoning_model_path.exists():
+            try:
+                logger.info(f"Loading reasoning model: {reasoning_model_path}")
+                llm_reasoning = Llama(
+                    model_path=str(reasoning_model_path),
+                    n_ctx=reasoning_n_ctx,
+                    **common_kwargs
+                )
+                logger.info("✓ Reasoning model loaded successfully")
+            except Exception as e:
+                llm_reasoning = None
+                logger.warning(f"Failed to load reasoning model: {e}")
+        else:
+            logger.info(f"Reasoning model not found at {reasoning_model_path} (optional)")
 
     # Try to load vision model (VLM)
     vision_model_name = config.get("edison", {}).get("core", {}).get("vision_model")
@@ -1095,9 +1130,8 @@ def load_llm_models():
                 llm_vision = Llama(
                     model_path=str(vision_model_path),
                     clip_model_path=str(vision_clip_path),
-                    n_ctx=4096,
-                    n_gpu_layers=-1,
-                    verbose=True  # Enable verbose to see CUDA messages
+                    n_ctx=vision_n_ctx,
+                    **common_kwargs
                 )
                 logger.info("✓ Vision model loaded successfully")
             except Exception as e:
@@ -1108,7 +1142,28 @@ def load_llm_models():
     else:
         logger.info("Vision model not configured (image understanding disabled)")
     
-    if not llm_fast and not llm_medium and not llm_deep:
+    # Try to load vision-to-code model (optional)
+    if vision_code_model_name and vision_code_clip_name:
+        vision_code_model_path = models_path / vision_code_model_name
+        vision_code_clip_path = models_path / vision_code_clip_name
+        if vision_code_model_path.exists() and vision_code_clip_path.exists():
+            try:
+                logger.info(f"Loading vision-to-code model: {vision_code_model_path}")
+                logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
+                llm_vision_code = Llama(
+                    model_path=str(vision_code_model_path),
+                    clip_model_path=str(vision_code_clip_path),
+                    n_ctx=vision_code_n_ctx,
+                    **common_kwargs
+                )
+                logger.info("✓ Vision-to-code model loaded successfully")
+            except Exception as e:
+                llm_vision_code = None
+                logger.warning(f"Failed to load vision-to-code model: {e}")
+        else:
+            logger.info("Vision-to-code model or CLIP projector not found (optional)")
+
+    if not llm_fast and not llm_medium and not llm_deep and not llm_reasoning:
         logger.error("⚠ No models loaded. Please place GGUF models in the models/llm/ directory.")
         logger.error(f"Expected: {models_path / fast_model_name}")
         logger.error(f"      or: {models_path / deep_model_name}")
@@ -1251,7 +1306,9 @@ async def health():
             "fast_model": llm_fast is not None,
             "medium_model": llm_medium is not None,
             "deep_model": llm_deep is not None,
-            "vision_model": llm_vision is not None
+            "reasoning_model": llm_reasoning is not None,
+            "vision_model": llm_vision is not None,
+            "vision_code_model": llm_vision_code is not None
         },
         "vision_enabled": llm_vision is not None,
         "qdrant_ready": rag_system is not None,
@@ -1301,7 +1358,9 @@ async def list_models():
         "current_models": {
             "fast": config.get("edison", {}).get("core", {}).get("fast_model"),
             "medium": config.get("edison", {}).get("core", {}).get("medium_model"),
-            "deep": config.get("edison", {}).get("core", {}).get("deep_model")
+            "deep": config.get("edison", {}).get("core", {}).get("deep_model"),
+            "reasoning": config.get("edison", {}).get("core", {}).get("reasoning_model"),
+            "vision_code": config.get("edison", {}).get("core", {}).get("vision_code_model")
         }
     }
 
@@ -1309,6 +1368,10 @@ def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
     if model is llm_vision:
         return lock_vision
+    elif model is llm_vision_code:
+        return lock_vision_code
+    elif model is llm_reasoning:
+        return lock_reasoning
     elif model is llm_deep:
         return lock_deep
     elif model is llm_medium:
@@ -1482,6 +1545,19 @@ async def chat(request: ChatRequest):
             llm = llm_vision
             model_name = "vision"
             logger.info("Using vision model for image understanding")
+        elif model_target == "reasoning":
+            if llm_reasoning:
+                llm = llm_reasoning
+                model_name = "reasoning"
+            elif llm_deep:
+                llm = llm_deep
+                model_name = "deep"
+            elif llm_medium:
+                llm = llm_medium
+                model_name = "medium"
+            else:
+                llm = llm_fast
+                model_name = "fast"
         elif model_target == "deep":
             # Try deep first, then medium, then fast
             if llm_deep:
@@ -1771,7 +1847,10 @@ async def chat(request: ChatRequest):
                     search_query = " ".join(words)
                 
                 logger.info(f"Performing web search for: {search_query}")
-                results = search_tool.search(search_query, num_results=3)
+                if hasattr(search_tool, "deep_search"):
+                    results, _meta = search_tool.deep_search(search_query, num_results=5)
+                else:
+                    results = search_tool.search(search_query, num_results=3)
                 search_results = results
                 logger.info(f"Found {len(results)} search results")
             except Exception as e:
@@ -2063,6 +2142,19 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 raise HTTPException(status_code=503, detail="Vision model not loaded. Please download LLaVA model to enable image understanding.")
             llm = llm_vision
             model_name = "vision"
+        elif model_target == "reasoning":
+            if llm_reasoning:
+                llm = llm_reasoning
+                model_name = "reasoning"
+            elif llm_deep:
+                llm = llm_deep
+                model_name = "deep"
+            elif llm_medium:
+                llm = llm_medium
+                model_name = "medium"
+            else:
+                llm = llm_fast
+                model_name = "fast"
         elif model_target == "deep":
             if llm_deep:
                 llm = llm_deep
@@ -2192,7 +2284,10 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 if len(search_query.split()) > 8:
                     words = search_query.split()[:5]
                     search_query = " ".join(words)
-                results = search_tool.search(search_query, num_results=3)
+                if hasattr(search_tool, "deep_search"):
+                    results, _meta = search_tool.deep_search(search_query, num_results=5)
+                else:
+                    results = search_tool.search(search_query, num_results=3)
                 search_results = results
             except Exception as e:
                 logger.error(f"Web search failed: {e}")
@@ -2394,6 +2489,8 @@ Steps:"""
 
             file_request = _is_file_request(request.message or "")
 
+            wants_search = bool(re.search(r"search|web|internet|latest|current|news|today|research|sources", user_text))
+
             # Build conversation between agents
             conversation = []
             shared_notes = []
@@ -2452,10 +2549,16 @@ Steps:"""
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 search_block = ""
-                if agent["name"] == "Searcher" and search_tool:
+                if agent["name"] == "Searcher" and search_tool and wants_search:
                     try:
                         search_query = (request.message or "").strip()
-                        results = search_tool.search(search_query, num_results=3)
+                        if hasattr(search_tool, "deep_search"):
+                            results, _meta = search_tool.deep_search(search_query, num_results=5)
+                        else:
+                            if hasattr(search_tool, "deep_search"):
+                                results, _meta = search_tool.deep_search(search_query, num_results=5)
+                            else:
+                                results = search_tool.search(search_query, num_results=3)
                         lines = []
                         for r in results or []:
                             title = r.get("title") or ""
@@ -2853,6 +2956,56 @@ Do not repeat yourself. Keep it concise.
         }
     )
 
+@app.post("/vision-to-code")
+async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
+    """Generate code from a UI mockup image using a vision model plus a code-capable model."""
+    vision_model = llm_vision_code or llm_vision
+    if not vision_model:
+        raise HTTPException(status_code=503, detail="Vision model not loaded.")
+
+    code_model = llm_deep or llm_reasoning or llm_medium or llm_fast
+    if not code_model:
+        raise HTTPException(status_code=503, detail="No text model available for code generation.")
+
+    img_data = await image.read()
+    img_b64 = base64.b64encode(img_data).decode("ascii")
+
+    layout_prompt = [
+        {
+            "type": "image_url",
+            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+        },
+        {
+            "type": "text",
+            "text": f"Analyze this UI mockup and describe layout, components, and styling. Requirements: {requirements}".strip()
+        }
+    ]
+
+    vision_lock = get_lock_for_model(vision_model)
+    with vision_lock:
+        layout_response = vision_model.create_chat_completion(
+            messages=[{"role": "user", "content": layout_prompt}],
+            max_tokens=800,
+            temperature=0.2,
+            stream=False
+        )
+        layout_text = layout_response["choices"][0]["message"]["content"]
+
+    code_lock = get_lock_for_model(code_model)
+    with code_lock:
+        code_response = code_model.create_chat_completion(
+            messages=[{
+                "role": "user",
+                "content": f"Generate HTML/CSS/JavaScript for this UI:\n{layout_text}\n\nRequirements: {requirements}".strip()
+            }],
+            max_tokens=1200,
+            temperature=0.4,
+            stream=False
+        )
+        code_text = code_response["choices"][0]["message"]["content"]
+
+    return {"layout": layout_text, "code": code_text}
+
 @app.post("/chat/cancel")
 async def cancel_chat(request: dict):
     """Cancel an active streaming chat request."""
@@ -3077,7 +3230,10 @@ async def web_search(request: SearchRequest):
         )
     
     try:
-        results = search_tool.search(request.query, num_results=request.num_results)
+        if hasattr(search_tool, "deep_search"):
+            results, _meta = search_tool.deep_search(request.query, num_results=request.num_results)
+        else:
+            results = search_tool.search(request.query, num_results=request.num_results)
         return SearchResponse(
             results=results,
             query=request.query

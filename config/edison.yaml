@@ -7,8 +7,24 @@ edison:
     models_path: "models/llm"
     fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
     deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
+    reasoning_model: "qwq-32b-preview-q4_k_m.gguf"
     vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # Best available VLM (default)
     vision_clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"  # CLIP projector for vision
+    vision_code_model: "qwen2-vl-7b-instruct-q4_k_m.gguf"
+    vision_code_clip: "qwen2-vl-7b-vision.gguf"
+    # Context window settings
+    n_ctx: 4096
+    context_window: 131072
+    fast_n_ctx: 4096
+    medium_n_ctx: 8192
+    deep_n_ctx: 131072
+    reasoning_n_ctx: 32768
+    vision_n_ctx: 4096
+    vision_code_n_ctx: 8192
+    # GPU split and attention settings
+    tensor_split: [0.55, 0.30, 0.15]
+    use_flash_attn: false
+    flash_attn_recompute: false
 
   orchestration:
     enabled: true
@@ -68,3 +84,15 @@ edison:
   logging:
     level: "INFO"
     file: "logs/edison.log"
+
+  vllm:
+    enabled: false
+    host: "127.0.0.1"
+    port: 8822
+    tensor_parallel_size: 3
+    gpu_memory_utilization: 0.90
+
+  voice:
+    enabled: false
+    host: "127.0.0.1"
+    port: 8809

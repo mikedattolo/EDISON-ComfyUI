@@ -71,6 +71,8 @@ class EdisonApp {
         // Model selector
         this.modelSelector = document.getElementById('modelSelector');
         this.modelSelect = document.getElementById('modelSelect');
+        this.voiceBtn = document.getElementById('voiceBtn');
+        this.voiceEndpointInput = document.getElementById('voiceEndpoint');
         
         // User ID sync controls
         this.userIdInput = document.getElementById('userIdInput');
@@ -88,6 +90,14 @@ class EdisonApp {
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
         this.colorButtons = document.querySelectorAll('.color-btn');
+
+        // Artifacts panel
+        this.artifactsPanel = document.getElementById('artifactsPanel');
+        this.artifactTitle = document.getElementById('artifactTitle');
+        this.artifactCode = document.getElementById('artifactCode');
+        this.artifactCopyBtn = document.getElementById('artifactCopyBtn');
+        this.artifactDownloadBtn = document.getElementById('artifactDownloadBtn');
+        this.artifactCloseBtn = document.getElementById('artifactCloseBtn');
     }
 
     attachEventListeners() {
@@ -107,6 +117,10 @@ class EdisonApp {
             this.modelSelect.addEventListener('change', (e) => {
                 this.setSelectedModel(e.target.value);
             });
+        }
+
+        if (this.voiceBtn) {
+            this.voiceBtn.addEventListener('click', () => this.startVoiceInput());
         }
         
         // Sidebar
@@ -158,6 +172,16 @@ class EdisonApp {
                 }
             });
         });
+
+        if (this.artifactCopyBtn) {
+            this.artifactCopyBtn.addEventListener('click', () => this.copyArtifact());
+        }
+        if (this.artifactDownloadBtn) {
+            this.artifactDownloadBtn.addEventListener('click', () => this.downloadArtifact());
+        }
+        if (this.artifactCloseBtn) {
+            this.artifactCloseBtn.addEventListener('click', () => this.hideArtifactPanel());
+        }
         
         // Modal backdrop click
         this.settingsModal.addEventListener('click', (e) => {
@@ -648,6 +672,9 @@ class EdisonApp {
                                     if (data.files && data.files.length > 0) {
                                         this.displayGeneratedFiles(assistantMessageEl, data.files);
                                     }
+                                    if (data.artifact && data.artifact.content) {
+                                        this.showArtifactPanel(data.artifact);
+                                    }
                                     this.clearStatus(assistantMessageEl);
                                     
                                     assistantMessageEl.classList.remove('streaming');
@@ -922,6 +949,19 @@ class EdisonApp {
 
     formatMessage(content) {
         if (!content) return '';
+
+        let reasoningHtml = '';
+        const thinkingMatch = content.match(/<thinking>([\s\S]*?)<\/thinking>/i);
+        if (thinkingMatch) {
+            const thinkingText = this.escapeHtml(thinkingMatch[1].trim()).replace(/\n/g, '<br>');
+            reasoningHtml = `
+                <details class="reasoning-section">
+                    <summary>🔍 Show Reasoning Process</summary>
+                    <div class="thinking-content">${thinkingText}</div>
+                </details>
+            `;
+            content = content.replace(/<thinking>[\s\S]*?<\/thinking>/i, '').trim();
+        }
         
         // Basic markdown-like formatting
         let formatted = content
@@ -940,7 +980,87 @@ class EdisonApp {
             // Line breaks
             .replace(/\n/g, '<br>');
         
-        return formatted;
+        return reasoningHtml + formatted;
+    }
+
+    showArtifactPanel(artifact) {
+        if (!this.artifactsPanel || !artifact) return;
+        const title = artifact.title || `${(artifact.type || 'artifact').toUpperCase()} Artifact`;
+        const code = artifact.code || '';
+        this.artifactTitle.textContent = title;
+        this.artifactCode.textContent = code;
+        this.currentArtifact = { title, code, type: artifact.type || 'txt' };
+
+        this.artifactsPanel.style.display = 'flex';
+        const container = document.querySelector('.chat-container');
+        if (container) container.classList.add('with-artifacts');
+    }
+
+    hideArtifactPanel() {
+        if (!this.artifactsPanel) return;
+        this.artifactsPanel.style.display = 'none';
+        const container = document.querySelector('.chat-container');
+        if (container) container.classList.remove('with-artifacts');
+        this.currentArtifact = null;
+    }
+
+    copyArtifact() {
+        if (!this.currentArtifact) return;
+        navigator.clipboard.writeText(this.currentArtifact.code || '').catch(() => {
+            alert('Copy failed');
+        });
+    }
+
+    downloadArtifact() {
+        if (!this.currentArtifact) return;
+        const extMap = {
+            html: 'html',
+            react: 'jsx',
+            svg: 'svg',
+            mermaid: 'html',
+            code: 'txt'
+        };
+        const ext = extMap[this.currentArtifact.type] || 'txt';
+        const blob = new Blob([this.currentArtifact.code], { type: 'text/plain;charset=utf-8' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `artifact.${ext}`;
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+        URL.revokeObjectURL(url);
+    }
+
+    async startVoiceInput() {
+        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
+            alert('Voice input not supported in this browser.');
+            return;
+        }
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            const mediaRecorder = new MediaRecorder(stream);
+            const chunks = [];
+            mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
+            mediaRecorder.onstop = async () => {
+                const blob = new Blob(chunks, { type: 'audio/wav' });
+                const formData = new FormData();
+                formData.append('audio', blob, 'voice.wav');
+                const endpoint = this.settings.voiceEndpoint || 'http://localhost:8809';
+                const response = await fetch(`${endpoint}/voice-to-text`, {
+                    method: 'POST',
+                    body: formData
+                });
+                if (!response.ok) throw new Error('Voice transcription failed');
+                const data = await response.json();
+                this.messageInput.value = (data.text || '').trim();
+                this.handleInputChange();
+            };
+            mediaRecorder.start();
+            setTimeout(() => mediaRecorder.stop(), 5000);
+        } catch (error) {
+            alert(error.message || 'Voice input failed');
+        }
     }
 
     escapeHtml(text) {
@@ -1451,6 +1571,9 @@ class EdisonApp {
     openSettings() {
         this.apiEndpointInput.value = this.settings.apiEndpoint;
         this.comfyuiEndpointInput.value = this.settings.comfyuiEndpoint;
+        if (this.voiceEndpointInput) {
+            this.voiceEndpointInput.value = this.settings.voiceEndpoint || '';
+        }
         this.defaultModeSelect.value = this.settings.defaultMode;
         
         // Populate user ID field
@@ -1602,6 +1725,9 @@ class EdisonApp {
     saveSettings() {
         this.settings.apiEndpoint = this.apiEndpointInput.value.trim();
         this.settings.comfyuiEndpoint = this.comfyuiEndpointInput.value.trim();
+        if (this.voiceEndpointInput) {
+            this.settings.voiceEndpoint = this.voiceEndpointInput.value.trim();
+        }
         this.settings.defaultMode = this.defaultModeSelect.value;
         
         localStorage.setItem('edison_settings', JSON.stringify(this.settings));
@@ -1750,6 +1876,7 @@ class EdisonApp {
         const defaults = {
             apiEndpoint: 'http://192.168.1.26:8811',
             comfyuiEndpoint: 'http://192.168.1.26:8188',
+            voiceEndpoint: 'http://192.168.1.26:8809',
             defaultMode: 'auto',
             streamResponses: true,
             syntaxHighlight: true

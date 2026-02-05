@@ -103,3 +103,44 @@ class WebSearchTool:
         except Exception as e:
             logger.error(f"Web search error: {e}", exc_info=True)
             return []
+
+    def deep_search(self, query: str, num_results: int = 5, variations: int = 3) -> tuple[List[Dict[str, str]], Dict[str, int]]:
+        """
+        Multi-query search expansion for deeper coverage.
+
+        Returns tuple: (results, metadata)
+        """
+        queries = self._expand_queries(query, variations)
+        all_results = []
+        for q in queries:
+            all_results.extend(self.search(q, num_results=num_results))
+
+        deduped = []
+        seen = set()
+        for item in all_results:
+            key = (item.get("url") or "").strip().lower()
+            if key and key not in seen:
+                seen.add(key)
+                deduped.append(item)
+
+        meta = {
+            "queries": len(queries),
+            "results": len(deduped)
+        }
+        return deduped[: max(num_results, 5)], meta
+
+    def _expand_queries(self, query: str, variations: int) -> List[str]:
+        base = [query]
+        templates = [
+            f"{query} overview",
+            f"{query} best practices",
+            f"{query} recent findings",
+            f"{query} pros and cons",
+            f"{query} guidelines"
+        ]
+        for t in templates:
+            if t not in base:
+                base.append(t)
+            if len(base) >= variations + 1:
+                break
+        return base
