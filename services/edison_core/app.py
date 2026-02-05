@@ -998,10 +998,6 @@ def _vllm_generate(prompt: str, mode: str, max_tokens: int, temperature: float, 
     if not vllm_enabled or not vllm_url:
         return None
 
-def _chunk_text(text: str, chunk_size: int = 12) -> list:
-    if not text:
-        return []
-    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
     try:
         resp = requests.post(
             f"{vllm_url}/generate",
@@ -1023,6 +1019,11 @@ def _chunk_text(text: str, chunk_size: int = 12) -> list:
     except Exception as e:
         logger.warning(f"vLLM request error: {e}")
         return None
+
+def _chunk_text(text: str, chunk_size: int = 12) -> list:
+    if not text:
+        return []
+    return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
 
 def check_gpu_availability():
     """Verify GPU availability before loading models"""
