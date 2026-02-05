@@ -2575,15 +2575,6 @@ Steps:"""
 
             # Truncate long user input for swarm prompts to avoid context overflow
             swarm_user_message = truncate_text(request.message or "", max_chars=2500, label="User message")
-            
-            def _is_file_request(text: str) -> bool:
-                if not text:
-                    return False
-                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as)\b", text, re.IGNORECASE))
-
-            file_request = _is_file_request(request.message or "")
-
-            wants_search = bool(re.search(r"search|web|internet|latest|current|news|today|research|sources", user_text))
 
             # Build conversation between agents
             conversation = []
@@ -2606,7 +2597,6 @@ Steps:"""
                         scores.append(len(sets[i] & sets[j]) / len(union))
                 return sum(scores) / len(scores) if scores else 0.0
 
-            # Decide number of rounds (auto)
             def _contains_cjk(text: str) -> bool:
                 if not text:
                     return False
@@ -2618,7 +2608,6 @@ Steps:"""
                 lines = [line.strip() for line in text.splitlines() if line.strip()]
                 notes = [line.lstrip("-•*").strip() for line in lines if line[:1] in ["-", "•", "*"]]
                 if not notes:
-                    # fallback to first 1-2 sentences
                     sentences = re.split(r"(?<=[.!?])\s+", text.strip())
                     notes = [s.strip() for s in sentences if s.strip()][:2]
                 return notes[:max_items]
@@ -2632,14 +2621,49 @@ Steps:"""
 
             max_rounds = 4
             rounds = 2
+            
+            def _is_file_request(text: str) -> bool:
+                if not text:
+                    return False
+                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as)\b", text, re.IGNORECASE))
 
-            # Round 1: Each agent provides initial thoughts
-            logger.info("🐝 Round 1: Initial agent perspectives")
-            if status_steps is not None:
-                status_steps.extend([
-                    {"stage": "Selecting agents"},
-                    {"stage": "Swarm round 1"}
-                ])
+            file_request = _is_file_request(request.message or "")
+            parallel_swarm = bool(
+                config.get("edison", {})
+                .get("agent_modes", {})
+                .get("swarm", {})
+                .get("parallel", False)
+            )
+
+            wants_search = bool(re.search(r"search|web|internet|latest|current|news|today|research|sources", user_text))
+
+            async def _run_agent_prompt(agent: dict, prompt: str, temperature: float) -> dict:
+                def _invoke(prompt_text: str, temp: float) -> str:
+                    agent_model = agent["model"]
+                    lock = get_lock_for_model(agent_model)
+                    with lock:
+                        stream = agent_model.create_chat_completion(
+                            messages=[{"role": "user", "content": prompt_text}],
+                            max_tokens=180,
+                            temperature=temp,
+                            stream=False
+                        )
+                        return stream["choices"][0]["message"]["content"]
+
+                agent_response = await asyncio.to_thread(_invoke, prompt, temperature)
+                if _contains_cjk(agent_response):
+                    retry_prompt = prompt + "\n\nStrictly respond in English only."
+                    agent_response = await asyncio.to_thread(_invoke, retry_prompt, 0.5)
+                if _contains_cjk(agent_response):
+                    agent_response = "(Response omitted: non-English output detected.)"
+                return {
+                    "agent": agent["name"],
+                    "icon": agent["icon"],
+                    "model": agent["model_name"],
+                    "response": agent_response
+                }
+
+            prompts = []
             for agent in agents:
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
                 search_block = ""
@@ -2649,10 +2673,7 @@ Steps:"""
                         if hasattr(search_tool, "deep_search"):
                             results, _meta = search_tool.deep_search(search_query, num_results=5)
                         else:
-                            if hasattr(search_tool, "deep_search"):
-                                results, _meta = search_tool.deep_search(search_query, num_results=5)
-                            else:
-                                results = search_tool.search(search_query, num_results=3)
+                            results = search_tool.search(search_query, num_results=3)
                         lines = []
                         for r in results or []:
                             title = r.get("title") or ""
@@ -2678,39 +2699,21 @@ Rules:
 - Provide unique insights from your role.
 
 Your initial perspective:"""
-                
-                agent_model = agent["model"]
-                lock = get_lock_for_model(agent_model)
-                with lock:
-                    stream = agent_model.create_chat_completion(
-                        messages=[{"role": "user", "content": agent_prompt}],
-                        max_tokens=180,
-                        temperature=0.7,
-                        stream=False
-                    )
-                    agent_response = stream["choices"][0]["message"]["content"]
-                if _contains_cjk(agent_response):
-                    agent_prompt_retry = agent_prompt + "\n\nStrictly respond in English only."
-                    with lock:
-                        stream = agent_model.create_chat_completion(
-                            messages=[{"role": "user", "content": agent_prompt_retry}],
-                            max_tokens=180,
-                            temperature=0.5,
-                            stream=False
-                        )
-                        agent_response = stream["choices"][0]["message"]["content"]
-                if _contains_cjk(agent_response):
-                    agent_response = "(Response omitted: non-English output detected.)"
+                prompts.append((agent, agent_prompt))
 
-                _update_shared_notes(agent_response)
+            if parallel_swarm:
+                results = await asyncio.gather(*[
+                    _run_agent_prompt(agent, prompt, 0.7) for agent, prompt in prompts
+                ])
+            else:
+                results = []
+                for agent, prompt in prompts:
+                    results.append(await _run_agent_prompt(agent, prompt, 0.7))
 
-                conversation.append({
-                    "agent": agent["name"],
-                    "icon": agent["icon"],
-                    "model": agent["model_name"],
-                    "response": agent_response
-                })
-                logger.info(f"{agent['icon']} {agent['name']} ({agent['model_name']}): {agent_response[:80]}...")
+            for result in results:
+                _update_shared_notes(result["response"])
+                conversation.append(result)
+                logger.info(f"{result['icon']} {result['agent']} ({result['model']}): {result['response'][:80]}...")
 
             # Decide if we need an extra round based on similarity
             round1_responses = [c["response"] for c in conversation]
@@ -2731,6 +2734,7 @@ Your initial perspective:"""
                 discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
 
+                round_prompts = []
                 for agent in agents:
                     agent_prompt = f"""You are {agent['name']}, continuing the discussion.
 
@@ -2749,39 +2753,26 @@ Rules:
 - Keep it to 2-3 sentences.
 
 Your refined contribution:"""
-                    
-                    agent_model = agent["model"]
-                    lock = get_lock_for_model(agent_model)
-                    with lock:
-                        stream = agent_model.create_chat_completion(
-                            messages=[{"role": "user", "content": agent_prompt}],
-                            max_tokens=180,
-                            temperature=0.6,
-                            stream=False
-                        )
-                        agent_response = stream["choices"][0]["message"]["content"]
-                    if _contains_cjk(agent_response):
-                        agent_prompt_retry = agent_prompt + "\n\nStrictly respond in English only."
-                        with lock:
-                            stream = agent_model.create_chat_completion(
-                                messages=[{"role": "user", "content": agent_prompt_retry}],
-                                max_tokens=180,
-                                temperature=0.5,
-                                stream=False
-                            )
-                            agent_response = stream["choices"][0]["message"]["content"]
-                    if _contains_cjk(agent_response):
-                        agent_response = "(Response omitted: non-English output detected.)"
+                    round_prompts.append((agent, agent_prompt))
 
-                    _update_shared_notes(agent_response)
+                if parallel_swarm:
+                    round_results = await asyncio.gather(*[
+                        _run_agent_prompt(agent, prompt, 0.6) for agent, prompt in round_prompts
+                    ])
+                else:
+                    round_results = []
+                    for agent, prompt in round_prompts:
+                        round_results.append(await _run_agent_prompt(agent, prompt, 0.6))
 
+                for result in round_results:
+                    _update_shared_notes(result["response"])
                     conversation.append({
-                        "agent": f"{agent['name']} (Round {round_idx})",
-                        "icon": agent["icon"],
-                        "model": agent["model_name"],
-                        "response": agent_response
+                        "agent": f"{result['agent']} (Round {round_idx})",
+                        "icon": result["icon"],
+                        "model": result["model"],
+                        "response": result["response"]
                     })
-                    logger.info(f"{agent['icon']} {agent['name']} Round {round_idx}: {agent_response[:80]}...")
+                    logger.info(f"{result['icon']} {result['agent']} Round {round_idx}: {result['response'][:80]}...")
 
                 # Stop early if responses converge too much
                 recent_responses = [c["response"] for c in conversation[-len(agents):]]
