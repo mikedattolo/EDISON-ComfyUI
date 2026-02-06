@@ -26,6 +26,8 @@ class EdisonApp {
         this.loadCurrentChat();
         this.setMode(this.settings.defaultMode);
         this.loadAvailableModels();
+        this.handleViewportChange();
+        window.addEventListener('resize', () => this.handleViewportChange());
     }
 
     getOrCreateUserId() {
@@ -68,6 +70,9 @@ class EdisonApp {
         this.sidebarToggle = document.getElementById('sidebarToggle');
         this.chatHistory = document.getElementById('chatHistory');
         this.newChatBtn = document.getElementById('newChatBtn');
+        this.mobileHeader = document.getElementById('mobileHeader');
+        this.mobileMenuBtn = document.getElementById('mobileMenuBtn');
+        this.mobileBackdrop = document.getElementById('mobileBackdrop');
         
         // Mode selector
         this.modeButtons = document.querySelectorAll('.mode-btn');
@@ -153,6 +158,12 @@ class EdisonApp {
         // Sidebar
         this.newChatBtn.addEventListener('click', () => this.createNewChat());
         this.sidebarToggle.addEventListener('click', () => this.toggleSidebar());
+        if (this.mobileMenuBtn) {
+            this.mobileMenuBtn.addEventListener('click', () => this.toggleSidebar());
+        }
+        if (this.mobileBackdrop) {
+            this.mobileBackdrop.addEventListener('click', () => this.closeMobileSidebar());
+        }
         
         // Settings
         this.settingsBtn.addEventListener('click', () => this.openSettings());
@@ -217,9 +228,37 @@ class EdisonApp {
     }
 
     toggleSidebar() {
+        if (this.isMobileView()) {
+            if (this.sidebar.classList.contains('mobile-open')) {
+                this.closeMobileSidebar();
+            } else {
+                this.openMobileSidebar();
+            }
+            return;
+        }
         this.sidebarCollapsed = !this.sidebarCollapsed;
         this.sidebar.classList.toggle('collapsed');
         document.querySelector('.main-content').classList.toggle('sidebar-collapsed');
+    }
+
+    isMobileView() {
+        return window.matchMedia('(max-width: 768px)').matches;
+    }
+
+    openMobileSidebar() {
+        this.sidebar.classList.add('mobile-open');
+        if (this.mobileBackdrop) this.mobileBackdrop.classList.add('active');
+    }
+
+    closeMobileSidebar() {
+        this.sidebar.classList.remove('mobile-open');
+        if (this.mobileBackdrop) this.mobileBackdrop.classList.remove('active');
+    }
+
+    handleViewportChange() {
+        if (!this.isMobileView()) {
+            this.closeMobileSidebar();
+        }
     }
 
     handleInputChange() {
@@ -1541,6 +1580,7 @@ class EdisonApp {
     }
 
     createNewChat() {
+        this.closeMobileSidebar();
         const chatId = Date.now().toString();
         const chat = {
             id: chatId,
@@ -1575,6 +1615,7 @@ class EdisonApp {
     }
 
     switchChat(chatId) {
+        this.closeMobileSidebar();
         this.currentChatId = chatId;
         const chat = this.chats.find(c => c.id === chatId);
         if (chat) {
