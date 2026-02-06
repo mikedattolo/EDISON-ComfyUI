@@ -39,6 +39,21 @@ class EdisonApp {
         return userId;
     }
 
+    getChatsStorageKey(userId = null) {
+        const resolvedUserId = userId || this.userId || 'default';
+        return `edison_chats_${resolvedUserId}`;
+    }
+
+    getDefaultEndpoints() {
+        const protocol = window.location.protocol || 'http:';
+        const host = window.location.hostname || 'localhost';
+        return {
+            apiEndpoint: `${protocol}//${host}:8811`,
+            comfyuiEndpoint: `${protocol}//${host}:8188`,
+            voiceEndpoint: `${protocol}//${host}:8809`
+        };
+    }
+
     initializeElements() {
         // Main elements
         this.messagesContainer = document.getElementById('messagesContainer');
@@ -1728,8 +1743,7 @@ class EdisonApp {
         
         if (confirm(`This will replace your current User ID and sync chats from the imported account. Continue?`)) {
             // Save the new user ID
-            this.userId = newUserId;
-            localStorage.setItem('edison_user_id', newUserId);
+            this.setActiveUser(newUserId, true);
             
             // Update display
             if (this.userIdInput) {
@@ -1743,6 +1757,7 @@ class EdisonApp {
             
             // Sync chats from server with new user ID
             this.syncChatsFromServer().then(() => {
+                this.loadCurrentChat();
                 alert('User ID imported successfully! Your chats have been synced.');
             });
         }
@@ -1816,9 +1831,9 @@ class EdisonApp {
             if (!response.ok) throw new Error('Failed to delete user');
             if (userId === this.userId) {
                 // Reset to a new local ID
-                this.userId = this.getOrCreateUserId();
-                if (this.userIdInput) this.userIdInput.value = this.userId;
-                this.syncChatsFromServer();
+                this.setActiveUser(this.getOrCreateUserId(), true);
+                await this.syncChatsFromServer();
+                this.loadCurrentChat();
             }
             await this.loadUsers();
         } catch (error) {
@@ -1829,11 +1844,21 @@ class EdisonApp {
     async switchUserFromSelect() {
         const userId = this.userSelect?.value;
         if (!userId || userId === this.userId) return;
+        this.setActiveUser(userId, true);
+        await this.syncChatsFromServer();
+        this.loadCurrentChat();
+    }
+
+    setActiveUser(userId, resetChats) {
         this.userId = userId;
         localStorage.setItem('edison_user_id', userId);
         if (this.userIdInput) this.userIdInput.value = userId;
-        await this.syncChatsFromServer();
-        this.renderChatHistory();
+        if (resetChats) {
+            this.currentChatId = null;
+            this.chats = this.loadChats({ sync: false });
+            this.renderChatHistory();
+            this.clearMessages();
+        }
     }
 
     saveSettings() {
@@ -1889,13 +1914,15 @@ class EdisonApp {
         }
     }
 
-    loadChats() {
+    loadChats({ sync = true } = {}) {
         // Load from localStorage first for immediate display
-        const saved = localStorage.getItem('edison_chats');
+        const saved = localStorage.getItem(this.getChatsStorageKey());
         const localChats = saved ? JSON.parse(saved) : [];
         
         // Then sync with server in background
-        this.syncChatsFromServer();
+        if (sync) {
+            this.syncChatsFromServer();
+        }
         
         return localChats;
     }
@@ -1915,14 +1942,12 @@ class EdisonApp {
                 const data = await response.json();
                 const serverChats = data.chats || [];
                 
-                if (serverChats.length > 0) {
-                    // Merge server chats with local chats (server takes priority for same IDs)
-                    const merged = this.mergeChats(this.chats, serverChats);
-                    this.chats = merged;
-                    localStorage.setItem('edison_chats', JSON.stringify(this.chats));
-                    this.renderChatHistory();
-                    console.log(`Synced ${serverChats.length} chats from server`);
-                }
+                // Merge server chats with local chats (server takes priority for same IDs)
+                const merged = this.mergeChats(this.chats, serverChats);
+                this.chats = merged;
+                localStorage.setItem(this.getChatsStorageKey(), JSON.stringify(this.chats));
+                this.renderChatHistory();
+                console.log(`Synced ${serverChats.length} chats from server`);
             }
         } catch (error) {
             console.warn('Could not sync chats from server:', error.message);
@@ -1963,7 +1988,7 @@ class EdisonApp {
 
     saveChats() {
         // Save locally first for immediate feedback
-        localStorage.setItem('edison_chats', JSON.stringify(this.chats));
+        localStorage.setItem(this.getChatsStorageKey(), JSON.stringify(this.chats));
         
         // Then sync to server in background
         this.syncChatsToServer();
@@ -1988,15 +2013,25 @@ class EdisonApp {
     loadSettings() {
         const saved = localStorage.getItem('edison_settings');
         const defaults = {
-            apiEndpoint: 'http://192.168.1.26:8811',
-            comfyuiEndpoint: 'http://192.168.1.26:8188',
-            voiceEndpoint: 'http://192.168.1.26:8809',
+            ...this.getDefaultEndpoints(),
             defaultMode: 'auto',
             streamResponses: true,
             syntaxHighlight: true
         };
-        
-        return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+
+        const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+        const legacyHost = 'http://192.168.1.26';
+        if (settings.apiEndpoint && settings.apiEndpoint.startsWith(legacyHost)) {
+            settings.apiEndpoint = defaults.apiEndpoint;
+        }
+        if (settings.comfyuiEndpoint && settings.comfyuiEndpoint.startsWith(legacyHost)) {
+            settings.comfyuiEndpoint = defaults.comfyuiEndpoint;
+        }
+        if (settings.voiceEndpoint && settings.voiceEndpoint.startsWith(legacyHost)) {
+            settings.voiceEndpoint = defaults.voiceEndpoint;
+        }
+
+        return settings;
     }
 }
 

@@ -370,7 +370,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "agent", "code", "work", "swarm", "instant"] = Field(
+    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant"] = Field(
         default="auto", 
         description="Interaction mode"
     )
