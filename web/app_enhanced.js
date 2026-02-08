@@ -157,6 +157,7 @@ class EdisonApp {
         // Chat header user switcher
         this.chatUserSelect = document.getElementById('chatUserSelect');
         this.chatAddUserBtn = document.getElementById('chatAddUserBtn');
+        this.chatCleanUsersBtn = document.getElementById('chatCleanUsersBtn');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -245,6 +246,9 @@ class EdisonApp {
         }
         if (this.chatAddUserBtn) {
             this.chatAddUserBtn.addEventListener('click', () => this.addChatUser());
+        }
+        if (this.chatCleanUsersBtn) {
+            this.chatCleanUsersBtn.addEventListener('click', () => this.cleanupAutoUsers());
         }
         
         // Theme controls (in settings modal)
@@ -2207,6 +2211,24 @@ class EdisonApp {
             await this.loadUsers();
         } catch (error) {
             alert('Error creating user: ' + error.message);
+        }
+    }
+
+    async cleanupAutoUsers() {
+        if (!confirm('Remove all auto-generated users (User-XXXX)?\nYour named users will be kept.')) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users/cleanup`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keep_ids: [this.userId] })
+            });
+            if (!response.ok) throw new Error('Cleanup failed');
+            const data = await response.json();
+            await this.loadChatHeaderUsers();
+            await this.loadUsers();
+            alert(`Removed ${data.removed} auto-generated users. ${data.remaining} users remaining.`);
+        } catch (error) {
+            alert('Error: ' + error.message);
         }
     }
 

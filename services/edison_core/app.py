@@ -4321,6 +4321,37 @@ async def delete_user(user_id: str):
             pass
     return {"success": True}
 
+@app.post("/users/cleanup")
+async def cleanup_auto_users(request: dict = None):
+    """Remove auto-generated user_ entries that have default names (User-XXXX).
+    Keeps any user whose name was explicitly set by the user.
+    Optionally pass {"keep_ids": ["id1", ...]} to preserve specific IDs."""
+    keep_ids = set((request or {}).get("keep_ids", []))
+    db = load_users_db()
+    users = db.get("users", [])
+    import re as _re
+    remaining = []
+    removed = []
+    for u in users:
+        uid = u.get("id", "")
+        name = u.get("name", "")
+        # Keep if: explicitly in keep list, or name was customized (not auto-generated pattern)
+        is_auto_name = bool(_re.match(r'^User-[a-f0-9\-]{4,}$', name))
+        if uid in keep_ids or not is_auto_name:
+            remaining.append(u)
+        else:
+            removed.append(u)
+            # Also remove their chat file
+            chats_file = get_user_chats_file(uid)
+            if chats_file.exists():
+                try:
+                    chats_file.unlink()
+                except Exception:
+                    pass
+    db["users"] = remaining
+    save_users_db(db)
+    return {"success": True, "removed": len(removed), "remaining": len(remaining)}
+
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""

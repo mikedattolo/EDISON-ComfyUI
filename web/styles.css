@@ -303,9 +303,15 @@ button, input, textarea, select {
     max-width: 220px;
     appearance: none;
     -webkit-appearance: none;
-    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23888'/%3E%3C/svg%3E");
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23cdd6f4'/%3E%3C/svg%3E");
     background-repeat: no-repeat;
     background-position: right 8px center;
+}
+
+.chat-user-select option {
+    background: var(--bg-primary, #181825);
+    color: var(--text-primary, #cdd6f4);
+    padding: 4px 8px;
 }
 
 .chat-user-select:hover {
