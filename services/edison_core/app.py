@@ -4271,7 +4271,7 @@ async def create_user(request: dict):
     name = (request.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    user_id = str(uuid.uuid4())
+    user_id = request.get("id") or str(uuid.uuid4())
     record = ensure_user_record(user_id, name)
     return {"user": record}
 

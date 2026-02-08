@@ -23,7 +23,12 @@ class EdisonApp {
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
-        this.loadCurrentChat();
+        // Resolve user ID from server if needed, then finish init
+        this.resolveUserId().then(() => {
+            this.chats = this.loadChats();
+            this.loadCurrentChat();
+            this.loadChatHeaderUsers();
+        });
         this.setMode(this.settings.defaultMode);
         this.loadAvailableModels();
         this.handleViewportChange();
@@ -34,11 +39,47 @@ class EdisonApp {
         // Use a persistent user ID stored in localStorage for cross-network access
         let userId = localStorage.getItem('edison_user_id');
         if (!userId) {
-            // Generate a simple ID based on timestamp and random string
-            userId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
-            localStorage.setItem('edison_user_id', userId);
+            // Don't generate a random ID yet – resolveUserId() will check the
+            // server for existing users first.  Use a temporary placeholder so
+            // the constructor can proceed synchronously.
+            userId = '__pending__';
         }
         return userId;
+    }
+
+    async resolveUserId() {
+        // If localStorage already had a real user ID, nothing to do.
+        if (this.userId && this.userId !== '__pending__') return;
+
+        try {
+            const resp = await fetch(`${this.settings.apiEndpoint}/users`);
+            if (resp.ok) {
+                const data = await resp.json();
+                const users = data.users || [];
+                if (users.length > 0) {
+                    // Pick the most recently created existing user
+                    users.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
+                    const existing = users[0];
+                    this.setActiveUser(existing.id, false);
+                    console.log(`Resolved to existing user: ${existing.name} (${existing.id})`);
+                    return;
+                }
+            }
+        } catch (e) {
+            console.warn('Could not fetch users for resolution:', e.message);
+        }
+
+        // No existing users found – generate a new ID and register it
+        const newId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+        this.setActiveUser(newId, false);
+        // Register on server so it shows up for next time
+        try {
+            await fetch(`${this.settings.apiEndpoint}/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: `User-${newId.slice(0, 8)}`, id: newId })
+            });
+        } catch (_) { /* best-effort */ }
     }
 
     getChatsStorageKey(userId = null) {
@@ -112,6 +153,10 @@ class EdisonApp {
         this.renameUserInput = document.getElementById('renameUserInput');
         this.renameUserBtn = document.getElementById('renameUserBtn');
         this.deleteUserBtn = document.getElementById('deleteUserBtn');
+
+        // Chat header user switcher
+        this.chatUserSelect = document.getElementById('chatUserSelect');
+        this.chatAddUserBtn = document.getElementById('chatAddUserBtn');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -192,6 +237,14 @@ class EdisonApp {
         }
         if (this.deleteUserBtn) {
             this.deleteUserBtn.addEventListener('click', () => this.deleteUser());
+        }
+
+        // Chat header user switcher
+        if (this.chatUserSelect) {
+            this.chatUserSelect.addEventListener('change', () => this.switchChatHeaderUser());
+        }
+        if (this.chatAddUserBtn) {
+            this.chatAddUserBtn.addEventListener('click', () => this.addChatUser());
         }
         
         // Theme controls (in settings modal)
@@ -2006,16 +2059,17 @@ class EdisonApp {
     }
 
     async loadUsers() {
-        if (!this.userSelect) return;
         try {
             const response = await fetch(`${this.settings.apiEndpoint}/users`);
             if (!response.ok) throw new Error('Failed to load users');
             const data = await response.json();
             const users = data.users || [];
-            this.userSelect.innerHTML = users.map(u => {
+            const optionsHtml = users.map(u => {
                 const selected = u.id === this.userId ? 'selected' : '';
                 return `<option value="${u.id}" ${selected}>${u.name}</option>`;
             }).join('');
+            if (this.userSelect) this.userSelect.innerHTML = optionsHtml;
+            if (this.chatUserSelect) this.chatUserSelect.innerHTML = optionsHtml;
         } catch (error) {
             console.warn('Could not load users:', error.message);
         }
@@ -2095,11 +2149,64 @@ class EdisonApp {
         this.userId = userId;
         localStorage.setItem('edison_user_id', userId);
         if (this.userIdInput) this.userIdInput.value = userId;
+        // Keep chat header dropdown in sync
+        if (this.chatUserSelect) this.chatUserSelect.value = userId;
         if (resetChats) {
             this.currentChatId = null;
             this.chats = this.loadChats({ sync: false });
             this.renderChatHistory();
             this.clearMessages();
+        }
+    }
+
+    // ---- Chat Header User Switcher ----
+
+    async loadChatHeaderUsers() {
+        if (!this.chatUserSelect) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users`);
+            if (!response.ok) throw new Error('Failed to load users');
+            const data = await response.json();
+            const users = data.users || [];
+            this.chatUserSelect.innerHTML = users.map(u => {
+                const selected = u.id === this.userId ? 'selected' : '';
+                return `<option value="${u.id}" ${selected}>${u.name}</option>`;
+            }).join('');
+        } catch (error) {
+            console.warn('Could not load users for header:', error.message);
+        }
+    }
+
+    async switchChatHeaderUser() {
+        const userId = this.chatUserSelect?.value;
+        if (!userId || userId === this.userId) return;
+        this.setActiveUser(userId, true);
+        await this.syncChatsFromServer();
+        this.loadCurrentChat();
+        // Sync the settings-panel dropdown too
+        if (this.userSelect) this.userSelect.value = userId;
+    }
+
+    async addChatUser() {
+        const name = prompt('Enter new user name:');
+        if (!name || !name.trim()) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name.trim() })
+            });
+            if (!response.ok) throw new Error('Failed to create user');
+            const data = await response.json();
+            const newUser = data.user;
+            // Switch to the new user
+            this.setActiveUser(newUser.id, true);
+            await this.syncChatsFromServer();
+            this.loadCurrentChat();
+            await this.loadChatHeaderUsers();
+            await this.loadUsers();
+        } catch (error) {
+            alert('Error creating user: ' + error.message);
         }
     }
 
