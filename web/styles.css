@@ -1679,38 +1679,50 @@ button, input, textarea, select {
 .work-desktop {
     position: fixed;
     top: 0;
-    left: 0;
     right: 0;
-    bottom: 0;
-    background: rgba(15, 15, 15, 0.98);
+    width: 380px;
+    height: 100vh;
+    background: var(--bg-secondary, rgba(30, 30, 46, 0.98));
     backdrop-filter: blur(10px);
     z-index: 999;
-    padding: 20px;
     overflow-y: auto;
+    border-left: 1px solid var(--border);
+    box-shadow: -4px 0 20px rgba(0, 0, 0, 0.3);
+    transform: translateX(100%);
+    transition: transform 0.25s ease;
+}
+
+.work-desktop.visible {
+    transform: translateX(0);
+    display: block !important;
 }
 
 .work-header {
     display: flex;
     justify-content: space-between;
     align-items: center;
-    margin-bottom: 20px;
-    padding-bottom: 16px;
+    padding: 12px 16px;
     border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: inherit;
+    z-index: 1;
 }
 
 .work-header h2 {
-    font-size: 24px;
+    font-size: 16px;
     color: var(--text-primary);
+    white-space: nowrap;
 }
 
 .work-close {
     background: var(--surface);
     border: 1px solid var(--border);
     color: var(--text-secondary);
-    font-size: 32px;
+    font-size: 20px;
     cursor: pointer;
-    padding: 4px 12px;
-    border-radius: 8px;
+    padding: 2px 8px;
+    border-radius: 6px;
     line-height: 1;
 }
 
@@ -1720,29 +1732,124 @@ button, input, textarea, select {
 }
 
 .work-content {
-    display: grid;
-    grid-template-columns: repeat(2, 1fr);
-    gap: 20px;
+    display: flex;
+    flex-direction: column;
+    gap: 0;
+    padding: 0;
 }
 
 .work-panel {
-    background: var(--surface);
-    border: 1px solid var(--border);
-    border-radius: 12px;
-    padding: 16px;
-    min-height: 200px;
+    background: transparent;
+    border: none;
+    border-bottom: 1px solid var(--border);
+    border-radius: 0;
+    padding: 12px 16px;
+    min-height: auto;
 }
 
 .work-panel.full-width {
     grid-column: 1 / -1;
 }
 
-.work-panel h3 {
-    font-size: 16px;
-    margin-bottom: 12px;
+/* Step progress bar */
+.step-progress-bar {
+    width: 100%;
+    height: 4px;
+    background: var(--border, #45475a);
+    border-radius: 2px;
+    margin-top: 8px;
+    overflow: hidden;
+}
+
+.step-progress-fill {
+    height: 100%;
+    background: var(--accent, #89b4fa);
+    border-radius: 2px;
+    transition: width 0.4s ease;
+}
+
+/* Step list in side panel */
+.step-list {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+}
+
+.step-list-item {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border-radius: 6px;
+    font-size: 13px;
+    color: var(--text-secondary);
+    background: transparent;
+    transition: all 0.2s ease;
+}
+
+.step-list-item.step-running {
+    background: rgba(137, 180, 250, 0.1);
     color: var(--text-primary);
-    border-bottom: 1px solid var(--border);
-    padding-bottom: 8px;
+}
+
+.step-list-item.step-completed {
+    color: var(--text-primary);
+}
+
+.step-list-item.step-failed {
+    color: #f38ba8;
+}
+
+.step-list-item .step-icon {
+    font-size: 14px;
+    width: 20px;
+    text-align: center;
+    flex-shrink: 0;
+}
+
+.step-list-item .step-text {
+    flex: 1;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.step-list-item .step-elapsed {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex-shrink: 0;
+}
+
+@keyframes spin {
+    to { transform: rotate(360deg); }
+}
+
+.step-list-item.step-running .step-icon {
+    animation: spin 1s linear infinite;
+}
+
+/* Work status badge */
+.work-status-badge {
+    font-size: 11px;
+    padding: 2px 8px;
+    border-radius: 10px;
+    background: rgba(137, 180, 250, 0.2);
+    color: var(--accent, #89b4fa);
+}
+
+.work-status-badge.done {
+    background: rgba(166, 227, 161, 0.2);
+    color: #a6e3a1;
+}
+
+.work-panel h3 {
+    font-size: 13px;
+    margin-bottom: 8px;
+    color: var(--text-secondary);
+    border-bottom: none;
+    padding-bottom: 0;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
 }
 
 .task-display, .results-display, .docs-display, .log-display {

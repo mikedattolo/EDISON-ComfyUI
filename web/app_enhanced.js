@@ -1031,16 +1031,23 @@ class EdisonApp {
     }
 
     handleWorkPlan(assistantMessageEl, planData) {
-        /**Handle work_plan SSE event — show the full task plan in the work desktop and chat*/
+        /**Handle work_plan SSE event — show the side panel with steps as pending*/
         const steps = planData.steps || [];
         if (!steps.length) return;
 
-        // Show the work desktop overlay if not already visible
+        // Show the work side panel with slide-in
         const workDesktop = document.getElementById('workDesktop');
         if (workDesktop) {
             workDesktop.style.display = 'block';
+            // Trigger reflow for transition
+            workDesktop.offsetHeight;
+            workDesktop.classList.add('visible');
             window.workModeActive = true;
         }
+
+        // Track step state for progress
+        this._workTotalSteps = steps.length;
+        this._workCompletedSteps = 0;
 
         // Update the current task
         const currentTask = document.getElementById('currentTask');
@@ -1048,55 +1055,127 @@ class EdisonApp {
             currentTask.innerHTML = `<strong>${this.escapeHtml(planData.task || '')}</strong>`;
         }
 
-        // Clear and populate thinking log with plan
-        const thinkingLog = document.getElementById('thinkingLog');
-        if (thinkingLog) {
-            thinkingLog.innerHTML = '';
-            if (window.addThinkingLogEntry) {
-                window.addThinkingLogEntry(`📋 Task planned: ${steps.length} steps`);
-                steps.forEach(step => {
-                    const kindIcon = this._getStepKindIcon(step.kind || 'llm');
-                    window.addThinkingLogEntry(`${kindIcon} Step ${step.id}: ${step.title}`);
-                });
-            }
+        // Reset progress bar
+        const progressFill = document.getElementById('stepProgressFill');
+        if (progressFill) progressFill.style.width = '0%';
+
+        // Update status badge
+        const badge = document.getElementById('workStatusBadge');
+        if (badge) {
+            badge.textContent = `0/${steps.length}`;
+            badge.classList.remove('done');
         }
 
-        // Insert step plan before the assistant message
+        // Populate step list with pending items
+        const stepList = document.getElementById('workStepList');
+        if (stepList) {
+            stepList.innerHTML = steps.map(step => {
+                const kindIcon = this._getStepKindIcon(step.kind || 'llm');
+                return `<div class="step-list-item step-pending" data-step-id="${step.id}">
+                    <span class="step-icon">⏳</span>
+                    <span class="step-text">${kindIcon} ${this.escapeHtml(step.title)}</span>
+                    <span class="step-elapsed"></span>
+                </div>`;
+            }).join('');
+        }
+
+        // Clear panels
+        const thinkingLog = document.getElementById('thinkingLog');
+        if (thinkingLog) thinkingLog.innerHTML = '';
+        const searchResults = document.getElementById('searchResults');
+        if (searchResults) searchResults.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">No results yet</span>';
+        const workDocs = document.getElementById('workDocuments');
+        if (workDocs) workDocs.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">No artifacts yet</span>';
+
+        // Add initial log entry
+        if (window.addThinkingLogEntry) {
+            window.addThinkingLogEntry(`📋 Task planned: ${steps.length} steps`);
+        }
+
+        // Insert step panel into chat (with pending items)
         this.displayWorkStepResults(assistantMessageEl, steps);
     }
 
     handleWorkStep(assistantMessageEl, stepData) {
-        /**Handle work_step SSE event — update a single step's status in real-time*/
+        /**Handle work_step SSE event — update a single step's live status*/
         const stepId = stepData.step_id;
-        const statusEl = assistantMessageEl.parentElement?.querySelector(`.work-step-item[data-step-id="${stepId}"]`);
+        const status = stepData.status;
 
-        if (statusEl) {
-            const statusIcon = this._getStepStatusIcon(stepData.status);
-            const statusBadge = statusEl.querySelector('.step-status');
-            if (statusBadge) {
-                statusBadge.innerHTML = statusIcon;
-                statusBadge.className = `step-status step-${stepData.status}`;
+        // Update side panel step list
+        const stepItem = document.querySelector(`.step-list-item[data-step-id="${stepId}"]`);
+        if (stepItem) {
+            stepItem.className = `step-list-item step-${status}`;
+            const iconEl = stepItem.querySelector('.step-icon');
+            if (iconEl) iconEl.textContent = this._getStepStatusIcon(status);
+            if (stepData.elapsed_ms && status !== 'running') {
+                const elapsedEl = stepItem.querySelector('.step-elapsed');
+                if (elapsedEl) elapsedEl.textContent = `${(stepData.elapsed_ms / 1000).toFixed(1)}s`;
             }
-            // Show elapsed time
-            if (stepData.elapsed_ms) {
-                const timeEl = statusEl.querySelector('.step-time');
-                if (timeEl) {
-                    timeEl.textContent = `${(stepData.elapsed_ms / 1000).toFixed(1)}s`;
+        }
+
+        // Update in-chat step panel
+        const chatStepItem = assistantMessageEl.parentElement?.querySelector(`.work-step-item[data-step-id="${stepId}"]`);
+        if (chatStepItem) {
+            chatStepItem.className = `work-step-item step-${status}`;
+            const statusBadge = chatStepItem.querySelector('.step-status');
+            if (statusBadge) {
+                statusBadge.innerHTML = this._getStepStatusIcon(status);
+                statusBadge.className = `step-status step-${status}`;
+            }
+            if (stepData.elapsed_ms && status !== 'running') {
+                const timeEl = chatStepItem.querySelector('.step-time');
+                if (timeEl) timeEl.textContent = `${(stepData.elapsed_ms / 1000).toFixed(1)}s`;
+            }
+            // Show result preview if completed
+            if (status === 'completed' && stepData.result) {
+                let preview = chatStepItem.querySelector('.step-result-preview');
+                if (!preview) {
+                    preview = document.createElement('div');
+                    preview.className = 'step-result-preview';
+                    chatStepItem.appendChild(preview);
+                }
+                preview.textContent = stepData.result.substring(0, 200) + (stepData.result.length > 200 ? '...' : '');
+            }
+        }
+
+        // Update progress bar and badge
+        if (status === 'completed' || status === 'failed') {
+            this._workCompletedSteps = (this._workCompletedSteps || 0) + 1;
+            const total = this._workTotalSteps || 1;
+            const pct = Math.round((this._workCompletedSteps / total) * 100);
+
+            const progressFill = document.getElementById('stepProgressFill');
+            if (progressFill) progressFill.style.width = `${pct}%`;
+
+            const badge = document.getElementById('workStatusBadge');
+            if (badge) {
+                badge.textContent = `${this._workCompletedSteps}/${total}`;
+                if (this._workCompletedSteps >= total) {
+                    badge.textContent = 'Done';
+                    badge.classList.add('done');
                 }
             }
+
+            // Update chat panel summary
+            const summaryEl = assistantMessageEl.parentElement?.querySelector('.work-steps-summary');
+            if (summaryEl) {
+                summaryEl.textContent = `${this._workCompletedSteps}/${total} steps`;
+            }
         }
 
-        // Update thinking log in real-time
+        // Update thinking log
         if (window.addThinkingLogEntry) {
-            const icon = this._getStepStatusIcon(stepData.status);
-            const timeStr = stepData.elapsed_ms ? ` (${(stepData.elapsed_ms / 1000).toFixed(1)}s)` : '';
-            window.addThinkingLogEntry(`${icon} Step ${stepId}: ${stepData.title} — ${stepData.status}${timeStr}`);
+            const icon = this._getStepStatusIcon(status);
+            const timeStr = stepData.elapsed_ms && status !== 'running' ? ` (${(stepData.elapsed_ms / 1000).toFixed(1)}s)` : '';
+            window.addThinkingLogEntry(`${icon} Step ${stepId}: ${stepData.title} — ${status}${timeStr}`);
         }
 
-        // Update search results panel if this step had search results
+        // Update search results panel
         if (stepData.search_results && stepData.search_results.length > 0 && window.workModeActive) {
             const searchResultsDiv = document.getElementById('searchResults');
             if (searchResultsDiv) {
+                // Clear placeholder
+                if (searchResultsDiv.querySelector('span')) searchResultsDiv.innerHTML = '';
                 const newResults = stepData.search_results.map(r => `
                     <div class="result-item">
                         <div class="result-title">${this.escapeHtml(r.title || '')}</div>
@@ -1108,10 +1187,11 @@ class EdisonApp {
             }
         }
 
-        // Update documents panel if this step produced artifacts
+        // Update artifacts panel
         if (stepData.artifacts && stepData.artifacts.length > 0 && window.workModeActive) {
             const docsDiv = document.getElementById('workDocuments');
             if (docsDiv) {
+                if (docsDiv.querySelector('span')) docsDiv.innerHTML = '';
                 const newDocs = stepData.artifacts.map(a => `
                     <div class="doc-item">
                         <span class="doc-icon">📄</span>

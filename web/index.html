@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=14">
+    <link rel="stylesheet" href="styles.css?v=15">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -52,32 +52,35 @@
         <!-- Work Mode Desktop View -->
         <div class="work-desktop" id="workDesktop" style="display: none;">
             <div class="work-header">
-                <h2>🖥️ AI Desktop — Task Workspace</h2>
+                <h2>🖥️ Task Progress</h2>
                 <div class="work-header-controls">
-                    <span class="work-status-badge" id="workStatusBadge">Ready</span>
+                    <span class="work-status-badge" id="workStatusBadge">Working...</span>
                     <button class="work-close" id="workCloseBtn">&times;</button>
                 </div>
             </div>
             <div class="work-content">
                 <div class="work-panel">
-                    <h3>📋 Current Task</h3>
+                    <h3>📋 Task</h3>
                     <div id="currentTask" class="task-display">Waiting for task...</div>
                     <div id="workStepProgress" class="step-progress-bar">
                         <div class="step-progress-fill" id="stepProgressFill" style="width: 0%"></div>
                     </div>
+                </div>
+                <div class="work-panel">
+                    <h3>📝 Steps</h3>
                     <div id="workStepList" class="step-list"></div>
+                </div>
+                <div class="work-panel">
+                    <h3>💭 Log</h3>
+                    <div id="thinkingLog" class="log-display"></div>
                 </div>
                 <div class="work-panel">
                     <h3>🔍 Search Results</h3>
                     <div id="searchResults" class="results-display"></div>
                 </div>
                 <div class="work-panel">
-                    <h3>📄 Documents &amp; Artifacts</h3>
+                    <h3>📄 Artifacts</h3>
                     <div id="workDocuments" class="docs-display"></div>
-                </div>
-                <div class="work-panel full-width">
-                    <h3>💭 Thinking Process</h3>
-                    <div id="thinkingLog" class="log-display"></div>
                 </div>
             </div>
         </div>
@@ -563,7 +566,7 @@
     </script>
 
     <script src="gallery.js?v=13"></script>
-    <script src="app_enhanced.js?v=17"></script>
-    <script src="app_features.js?v=9"></script>
+    <script src="app_enhanced.js?v=18"></script>
+    <script src="app_features.js?v=10"></script>
 </body>
 </html>

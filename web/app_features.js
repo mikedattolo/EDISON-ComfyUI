@@ -243,8 +243,10 @@ function initWorkMode() {
     if (!workCloseBtn || !workDesktop) return;
 
     workCloseBtn.addEventListener('click', () => {
-        workDesktop.style.display = 'none';
+        workDesktop.classList.remove('visible');
+        setTimeout(() => { workDesktop.style.display = 'none'; }, 250);
         workModeActive = false;
+        window.workModeActive = false;
     });
 
     // Listen for work mode selection
@@ -252,7 +254,10 @@ function initWorkMode() {
     if (workModeBtn) {
         workModeBtn.addEventListener('click', () => {
             workDesktop.style.display = 'block';
+            workDesktop.offsetHeight; // trigger reflow
+            workDesktop.classList.add('visible');
             workModeActive = true;
+            window.workModeActive = true;
             // Reset panels on fresh activation
             resetWorkDesktop();
         });

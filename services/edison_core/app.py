@@ -1739,7 +1739,7 @@ Provide working, complete code. Include comments explaining key parts."""
             with lock:
                 response = llm_model(
                     code_prompt,
-                    max_tokens=1500,
+                    max_tokens=800,
                     temperature=0.4,
                     stop=["User:", "Human:", "\n\n\n"],
                     echo=False
@@ -1761,7 +1761,7 @@ Generate the complete content. Use appropriate formatting (markdown for docs, JS
             with lock:
                 response = llm_model(
                     artifact_prompt,
-                    max_tokens=2000,
+                    max_tokens=1000,
                     temperature=0.5,
                     stop=["User:", "Human:", "\n\n\n"],
                     echo=False
@@ -1809,7 +1809,7 @@ Provide a thorough, detailed response for this step. Be specific and actionable.
             with lock:
                 response = llm_model(
                     llm_prompt,
-                    max_tokens=1200,
+                    max_tokens=600,
                     temperature=0.5,
                     stop=["User:", "Human:", "\n\n\n"],
                     echo=False
@@ -2727,37 +2727,12 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     work_step_results = []
     if original_mode == "work" and not has_images:
         try:
-            logger.info("🖥️ Work mode (stream): planning and executing steps")
+            logger.info("🖥️ Work mode (stream): planning steps (execution will be streamed)")
             work_steps = _plan_work_steps(request.message, llm, has_image=False,
                                           project_id=getattr(request, 'project_id', None))
-            logger.info(f"Work mode: {len(work_steps)} steps planned")
-
-            # Execute each step sequentially, feeding results forward
-            completed_results = []
-            for step in work_steps:
-                step = _execute_work_step(step, request.message, llm, completed_results,
-                                          context_chunks=context_chunks)
-                completed_results.append(step)
-                logger.info(f"  Step {step['id']} [{step['kind']}]: {step['status']} ({step.get('elapsed_ms', 0)}ms)")
-
-            work_step_results = completed_results
-
-            # Build comprehensive system prompt with step results
-            steps_context = []
-            for step in completed_results:
-                step_info = f"Step {step['id']}: {step['title']}"
-                if step.get("result"):
-                    step_info += f"\nResult: {step['result'][:500]}"
-                steps_context.append(step_info)
-
-            steps_text = "\n\n".join(steps_context)
-            system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
-
+            logger.info(f"Work mode: {len(work_steps)} steps planned — will execute inside SSE stream")
         except Exception as e:
-            logger.warning(f"Work mode step execution failed: {e}")
-            if work_steps:
-                steps_text = "\n".join([f"{s['id']}. {s['title']}" for s in work_steps])
-                system_prompt += f"\n\nTask Plan:\n{steps_text}\n\nFollow these steps to complete the task thoroughly."
+            logger.warning(f"Work mode step planning failed: {e}")
 
     if has_images:
         full_prompt = request.message
@@ -3253,18 +3228,34 @@ Do not include multiple summaries or "Final Summary" variants.
         if swarm_results:
             yield f"event: swarm\ndata: {json.dumps({'swarm_agents': swarm_results})}\n\n"
 
-        # If work mode steps exist, emit them as SSE events
-        if work_step_results:
-            # Emit the full plan first
+        # If work mode steps exist, execute and emit them live as SSE events
+        if work_steps:
+            import asyncio
+            # Emit the plan with all steps as "pending"
             work_plan_payload = {
                 "task": request.message,
-                "total_steps": len(work_step_results),
-                "steps": work_step_results
+                "total_steps": len(work_steps),
+                "steps": work_steps
             }
             yield f"event: work_plan\ndata: {json.dumps(work_plan_payload)}\n\n"
 
-            # Emit each step result individually for real-time UI updates
-            for step in work_step_results:
+            # Execute each step and stream results live
+            completed_results = []
+            for step in work_steps:
+                # Emit "running" status
+                step["status"] = "running"
+                yield f"event: work_step\ndata: {json.dumps({'step_id': step['id'], 'title': step['title'], 'kind': step.get('kind', 'llm'), 'status': 'running', 'result': '', 'elapsed_ms': 0, 'search_results': [], 'artifacts': []})}\n\n"
+
+                # Execute the step (blocking in thread pool to not block the event loop)
+                loop = asyncio.get_event_loop()
+                step = await loop.run_in_executor(
+                    None,
+                    _execute_work_step, step, request.message, llm, completed_results, context_chunks
+                )
+                completed_results.append(step)
+                logger.info(f"  Step {step['id']} [{step.get('kind', 'llm')}]: {step['status']} ({step.get('elapsed_ms', 0)}ms)")
+
+                # Emit completed/failed status
                 step_payload = {
                     "step_id": step["id"],
                     "title": step["title"],
@@ -3276,6 +3267,20 @@ Do not include multiple summaries or "Final Summary" variants.
                     "artifacts": step.get("artifacts", [])
                 }
                 yield f"event: work_step\ndata: {json.dumps(step_payload)}\n\n"
+
+            work_step_results = completed_results
+
+            # Now build the synthesis prompt with step results
+            nonlocal full_prompt, system_prompt
+            steps_context = []
+            for s in completed_results:
+                step_info = f"Step {s['id']}: {s['title']}"
+                if s.get("result"):
+                    step_info += f"\nResult: {s['result'][:500]}"
+                steps_context.append(step_info)
+            steps_text = "\n\n".join(steps_context)
+            system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
+            full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
         
         assistant_response = ""
         client_disconnected = False
