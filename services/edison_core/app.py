@@ -1575,7 +1575,24 @@ def _plan_work_steps(message: str, llm_model, has_image: bool = False, project_i
     """
     Use the LLM to break a task into actionable steps, then classify each step
     using the orchestration brain. Returns a list of WorkStep dicts.
+    Capped at 7 steps maximum.
     """
+    # Short-circuit: trivially simple messages don't need multi-step planning
+    stripped = message.strip().rstrip('?!.')
+    if len(stripped.split()) <= 3:
+        return [{
+            "id": 1,
+            "title": "Respond to the user's message",
+            "description": "",
+            "kind": "llm",
+            "status": "pending",
+            "result": None,
+            "error": None,
+            "artifacts": [],
+            "search_results": [],
+            "elapsed_ms": None
+        }]
+
     task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
 
 Task: {message}
@@ -1598,6 +1615,9 @@ Steps:"""
     task_breakdown = task_response["choices"][0]["text"].strip()
     raw_steps = [s.strip() for s in re.findall(r'\d+\.\s*(.+?)(?=\n\d+\.|$)', task_breakdown, re.DOTALL)]
     raw_steps = [s.replace('\n', ' ').strip() for s in raw_steps if s.strip()]
+
+    # Hard cap at 7 steps regardless of path
+    raw_steps = raw_steps[:7]
 
     if not raw_steps:
         # Fallback: split by newlines
