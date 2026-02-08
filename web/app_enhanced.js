@@ -711,6 +711,14 @@ class EdisonApp {
                                 // Init event with request_id
                                 this.currentRequestId = data.request_id;
                                 console.log(`📡 Streaming request started: ${this.currentRequestId}`);
+                            } else if (currentEventType === 'work_plan' && data.steps) {
+                                // Work mode: received full task plan
+                                console.log(`🖥️ Work plan received: ${data.total_steps} steps`);
+                                this.handleWorkPlan(assistantMessageEl, data);
+                            } else if (currentEventType === 'work_step' && data.step_id) {
+                                // Work mode: individual step result
+                                console.log(`🖥️ Work step ${data.step_id}: ${data.status}`);
+                                this.handleWorkStep(assistantMessageEl, data);
                             } else if (currentEventType === 'swarm' && data.swarm_agents) {
                                 if (!swarmInserted && data.swarm_agents.length > 0) {
                                     this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
@@ -733,6 +741,26 @@ class EdisonApp {
                                     if (!swarmInserted && data.swarm_agents && data.swarm_agents.length > 0) {
                                         this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
                                         swarmInserted = true;
+                                    }
+
+                                    // Display work mode step results in done event (fallback)
+                                    if (data.work_step_results && data.work_step_results.length > 0) {
+                                        this.displayWorkStepResults(assistantMessageEl, data.work_step_results);
+                                        // Update work desktop if visible
+                                        if (window.workModeActive && window.updateWorkDesktop) {
+                                            const searchRes = data.work_step_results
+                                                .filter(s => s.search_results && s.search_results.length)
+                                                .flatMap(s => s.search_results);
+                                            const artifacts = data.work_step_results
+                                                .filter(s => s.artifacts && s.artifacts.length)
+                                                .flatMap(s => s.artifacts.map(a => ({name: a})));
+                                            window.updateWorkDesktop(
+                                                message,
+                                                searchRes,
+                                                artifacts,
+                                                `Completed ${data.work_step_results.filter(s => s.status === 'completed').length}/${data.work_step_results.length} steps`
+                                            );
+                                        }
                                     }
 
                                     // Display generated files if available
@@ -943,6 +971,179 @@ class EdisonApp {
         // Insert all agent messages before the main assistant response
         this.messagesContainer.insertBefore(fragment, assistantMessageEl);
         this.scrollToBottom();
+    }
+
+    handleWorkPlan(assistantMessageEl, planData) {
+        /**Handle work_plan SSE event — show the full task plan in the work desktop and chat*/
+        const steps = planData.steps || [];
+        if (!steps.length) return;
+
+        // Show the work desktop overlay if not already visible
+        const workDesktop = document.getElementById('workDesktop');
+        if (workDesktop) {
+            workDesktop.style.display = 'block';
+            window.workModeActive = true;
+        }
+
+        // Update the current task
+        const currentTask = document.getElementById('currentTask');
+        if (currentTask) {
+            currentTask.innerHTML = `<strong>${this.escapeHtml(planData.task || '')}</strong>`;
+        }
+
+        // Clear and populate thinking log with plan
+        const thinkingLog = document.getElementById('thinkingLog');
+        if (thinkingLog) {
+            thinkingLog.innerHTML = '';
+            if (window.addThinkingLogEntry) {
+                window.addThinkingLogEntry(`📋 Task planned: ${steps.length} steps`);
+                steps.forEach(step => {
+                    const kindIcon = this._getStepKindIcon(step.kind || 'llm');
+                    window.addThinkingLogEntry(`${kindIcon} Step ${step.id}: ${step.title}`);
+                });
+            }
+        }
+
+        // Insert step plan before the assistant message
+        this.displayWorkStepResults(assistantMessageEl, steps);
+    }
+
+    handleWorkStep(assistantMessageEl, stepData) {
+        /**Handle work_step SSE event — update a single step's status in real-time*/
+        const stepId = stepData.step_id;
+        const statusEl = assistantMessageEl.parentElement?.querySelector(`.work-step-item[data-step-id="${stepId}"]`);
+
+        if (statusEl) {
+            const statusIcon = this._getStepStatusIcon(stepData.status);
+            const statusBadge = statusEl.querySelector('.step-status');
+            if (statusBadge) {
+                statusBadge.innerHTML = statusIcon;
+                statusBadge.className = `step-status step-${stepData.status}`;
+            }
+            // Show elapsed time
+            if (stepData.elapsed_ms) {
+                const timeEl = statusEl.querySelector('.step-time');
+                if (timeEl) {
+                    timeEl.textContent = `${(stepData.elapsed_ms / 1000).toFixed(1)}s`;
+                }
+            }
+        }
+
+        // Update thinking log in real-time
+        if (window.addThinkingLogEntry) {
+            const icon = this._getStepStatusIcon(stepData.status);
+            const timeStr = stepData.elapsed_ms ? ` (${(stepData.elapsed_ms / 1000).toFixed(1)}s)` : '';
+            window.addThinkingLogEntry(`${icon} Step ${stepId}: ${stepData.title} — ${stepData.status}${timeStr}`);
+        }
+
+        // Update search results panel if this step had search results
+        if (stepData.search_results && stepData.search_results.length > 0 && window.workModeActive) {
+            const searchResultsDiv = document.getElementById('searchResults');
+            if (searchResultsDiv) {
+                const newResults = stepData.search_results.map(r => `
+                    <div class="result-item">
+                        <div class="result-title">${this.escapeHtml(r.title || '')}</div>
+                        <div class="result-snippet">${this.escapeHtml((r.body || r.snippet || '').substring(0, 200))}</div>
+                        ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="result-url">${r.url}</a>` : ''}
+                    </div>
+                `).join('');
+                searchResultsDiv.innerHTML += newResults;
+            }
+        }
+
+        // Update documents panel if this step produced artifacts
+        if (stepData.artifacts && stepData.artifacts.length > 0 && window.workModeActive) {
+            const docsDiv = document.getElementById('workDocuments');
+            if (docsDiv) {
+                const newDocs = stepData.artifacts.map(a => `
+                    <div class="doc-item">
+                        <span class="doc-icon">📄</span>
+                        <span class="doc-name">${this.escapeHtml(a)}</span>
+                    </div>
+                `).join('');
+                docsDiv.innerHTML += newDocs;
+            }
+        }
+    }
+
+    displayWorkStepResults(assistantMessageEl, steps) {
+        /**Display work mode step results as a visual progress panel before the main response*/
+        if (!steps || steps.length === 0) return;
+
+        // Check if already inserted
+        if (assistantMessageEl.parentElement?.querySelector('.work-steps-panel')) return;
+
+        const panel = document.createElement('div');
+        panel.className = 'work-steps-panel';
+
+        const completedCount = steps.filter(s => s.status === 'completed').length;
+        const failedCount = steps.filter(s => s.status === 'failed').length;
+        const totalTime = steps.reduce((sum, s) => sum + (s.elapsed_ms || 0), 0);
+
+        panel.innerHTML = `
+            <div class="work-steps-header-bar">
+                <span class="work-steps-title">🖥️ Work Mode — Task Execution</span>
+                <span class="work-steps-summary">${completedCount}/${steps.length} steps completed${failedCount ? ` · ${failedCount} failed` : ''}${totalTime ? ` · ${(totalTime / 1000).toFixed(1)}s` : ''}</span>
+            </div>
+            <div class="work-steps-list">
+                ${steps.map(step => {
+                    const kindIcon = this._getStepKindIcon(step.kind || 'llm');
+                    const statusIcon = this._getStepStatusIcon(step.status);
+                    const timeStr = step.elapsed_ms ? `${(step.elapsed_ms / 1000).toFixed(1)}s` : '';
+                    const hasResult = step.result && step.result.length > 0;
+                    return `
+                        <div class="work-step-item step-${step.status}" data-step-id="${step.id}">
+                            <div class="step-header">
+                                <span class="step-kind">${kindIcon}</span>
+                                <span class="step-number">${step.id}</span>
+                                <span class="step-title">${this.escapeHtml(step.title)}</span>
+                                <span class="step-status step-${step.status}">${statusIcon}</span>
+                                <span class="step-time">${timeStr}</span>
+                            </div>
+                            ${hasResult ? `
+                                <div class="step-result-preview">
+                                    ${this.escapeHtml(step.result.substring(0, 200))}${step.result.length > 200 ? '...' : ''}
+                                </div>
+                            ` : ''}
+                            ${step.search_results && step.search_results.length ? `
+                                <div class="step-search-badge">🔍 ${step.search_results.length} result${step.search_results.length > 1 ? 's' : ''}</div>
+                            ` : ''}
+                            ${step.artifacts && step.artifacts.length ? `
+                                <div class="step-artifact-badge">📄 ${step.artifacts.join(', ')}</div>
+                            ` : ''}
+                        </div>
+                    `;
+                }).join('')}
+            </div>
+        `;
+
+        // Insert before the assistant message
+        this.messagesContainer.insertBefore(panel, assistantMessageEl);
+        this.scrollToBottom();
+    }
+
+    _getStepKindIcon(kind) {
+        const icons = {
+            'llm': '🧠',
+            'search': '🔍',
+            'code': '💻',
+            'artifact': '📄',
+            'vision': '👁️',
+            'tool': '🔧',
+            'comfyui': '🎨'
+        };
+        return icons[kind] || '⚙️';
+    }
+
+    _getStepStatusIcon(status) {
+        const icons = {
+            'pending': '⏳',
+            'running': '🔄',
+            'completed': '✅',
+            'failed': '❌',
+            'skipped': '⏭️'
+        };
+        return icons[status] || '⏳';
     }
 
     updateStatus(assistantMessageEl, data) {

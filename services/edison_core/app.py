@@ -34,6 +34,22 @@ logging.basicConfig(
 )
 logger = logging.getLogger(__name__)
 
+# Import orchestration modules (after logger is configured)
+try:
+    from .orchestration import AgentControllerBrain
+    from .contracts import WorkStep, WorkPlanResponse
+    logger.info("✓ Orchestration modules loaded")
+except ImportError:
+    try:
+        from orchestration import AgentControllerBrain
+        from contracts import WorkStep, WorkPlanResponse
+        logger.info("✓ Orchestration modules loaded (direct import)")
+    except ImportError:
+        AgentControllerBrain = None
+        WorkStep = None
+        WorkPlanResponse = None
+        logger.warning("⚠ Orchestration modules not available")
+
 # Force GPU usage - verify CUDA is available
 def verify_cuda():
     """Verify CUDA is available before loading models"""
@@ -145,6 +161,11 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Swarm mode → multi-agent collaboration with deep model")
+        elif mode == "work":
+            # Work mode uses step-by-step execution with deep model
+            tools_allowed = True
+            model_target = "deep"
+            reasons.append("Work mode → step-by-step execution with deep model and tools")
         elif mode == "thinking":
             mode = "reasoning"
             model_target = "reasoning"
@@ -1549,7 +1570,242 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
     except Exception as e:
         logger.warning(f"Memory storage failed: {e}")
 
-@app.post("/chat")
+
+def _plan_work_steps(message: str, llm_model, has_image: bool = False, project_id: str = None) -> list:
+    """
+    Use the LLM to break a task into actionable steps, then classify each step
+    using the orchestration brain. Returns a list of WorkStep dicts.
+    """
+    task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+
+Task: {message}
+
+Provide a numbered list of specific steps. Be concise and action-oriented.
+For each step, include what action to take (e.g., research, write code, create file, analyze).
+
+Steps:"""
+
+    task_lock = get_lock_for_model(llm_model)
+    with task_lock:
+        task_response = llm_model(
+            task_analysis_prompt,
+            max_tokens=500,
+            temperature=0.3,
+            stop=["Task:", "\n\n\n"],
+            echo=False
+        )
+
+    task_breakdown = task_response["choices"][0]["text"].strip()
+    raw_steps = [s.strip() for s in re.findall(r'\d+\.\s*(.+?)(?=\n\d+\.|$)', task_breakdown, re.DOTALL)]
+    raw_steps = [s.replace('\n', ' ').strip() for s in raw_steps if s.strip()]
+
+    if not raw_steps:
+        # Fallback: split by newlines
+        raw_steps = [line.strip().lstrip('0123456789.-) ') for line in task_breakdown.split('\n') if line.strip()]
+        raw_steps = [s for s in raw_steps if len(s) > 5][:7]
+
+    if not raw_steps:
+        raw_steps = ["Analyze the request and provide a comprehensive response"]
+
+    # Use orchestration brain to classify steps if available
+    if AgentControllerBrain is not None:
+        brain = AgentControllerBrain(config=config if config else {})
+        work_plan = brain.plan_work_steps(message, raw_steps, has_image=has_image, project_id=project_id)
+        return [step.model_dump() for step in work_plan.steps]
+    else:
+        # Manual classification fallback
+        steps = []
+        for i, step_text in enumerate(raw_steps):
+            text_lower = step_text.lower()
+            kind = "llm"
+            if any(kw in text_lower for kw in ["search", "research", "look up", "find", "browse", "web"]):
+                kind = "search"
+            elif any(kw in text_lower for kw in ["code", "implement", "write code", "script", "function", "program"]):
+                kind = "code"
+            elif any(kw in text_lower for kw in ["create file", "document", "report", "save", "export", "csv", "json"]):
+                kind = "artifact"
+            steps.append({
+                "id": i + 1,
+                "title": step_text,
+                "description": "",
+                "kind": kind,
+                "status": "pending",
+                "result": None,
+                "error": None,
+                "artifacts": [],
+                "search_results": [],
+                "elapsed_ms": None
+            })
+        return steps
+
+
+def _execute_work_step(step: dict, message: str, llm_model, previous_results: list,
+                        context_chunks: list = None) -> dict:
+    """
+    Execute a single work step using the appropriate tool.
+    Returns the updated step dict with status, result, and timing.
+    """
+    import time as _time
+    start = _time.time()
+    step["status"] = "running"
+
+    try:
+        kind = step.get("kind", "llm")
+        step_title = step.get("title", "")
+
+        # Build context from previous step results
+        prev_context = ""
+        if previous_results:
+            prev_lines = []
+            for prev in previous_results:
+                if prev.get("result"):
+                    prev_lines.append(f"Step {prev['id']} ({prev['title']}): {prev['result'][:300]}")
+            if prev_lines:
+                prev_context = "\nPrevious step results:\n" + "\n".join(prev_lines) + "\n"
+
+        rag_context = ""
+        if context_chunks:
+            rag_context = "\nRelevant memory:\n" + "\n".join(
+                [c[0] if isinstance(c, tuple) else c for c in context_chunks[:2]]
+            ) + "\n"
+
+        if kind == "search":
+            # Execute web search
+            if search_tool:
+                try:
+                    search_query = step_title
+                    # Extract key terms from step title for search
+                    for prefix in ["research", "search for", "look up", "find", "browse"]:
+                        search_query = re.sub(rf'^{prefix}\s+', '', search_query, flags=re.IGNORECASE)
+                    search_query = search_query.strip().rstrip('.')
+
+                    if hasattr(search_tool, "deep_search"):
+                        results, _meta = search_tool.deep_search(search_query, num_results=5)
+                    else:
+                        results = search_tool.search(search_query, num_results=3)
+
+                    step["search_results"] = results or []
+                    if results:
+                        summaries = []
+                        for r in results[:3]:
+                            title_r = r.get("title", "")
+                            snippet = r.get("body") or r.get("snippet", "")
+                            url = r.get("url", "")
+                            summaries.append(f"• {title_r}: {snippet[:200]} ({url})")
+                        step["result"] = f"Found {len(results)} results:\n" + "\n".join(summaries)
+                    else:
+                        step["result"] = "No search results found."
+                    step["status"] = "completed"
+                except Exception as e:
+                    logger.warning(f"Work step search failed: {e}")
+                    step["result"] = f"Search failed: {str(e)}"
+                    step["status"] = "failed"
+                    step["error"] = str(e)
+            else:
+                step["result"] = "Web search not available."
+                step["status"] = "completed"
+
+        elif kind == "code":
+            # Use LLM to generate code for this step
+            code_prompt = f"""Write code to accomplish this task step.
+
+Overall task: {message}
+Current step: {step_title}
+{prev_context}{rag_context}
+
+Provide working, complete code. Include comments explaining key parts."""
+
+            lock = get_lock_for_model(llm_model)
+            with lock:
+                response = llm_model(
+                    code_prompt,
+                    max_tokens=1500,
+                    temperature=0.4,
+                    stop=["User:", "Human:", "\n\n\n"],
+                    echo=False
+                )
+            step["result"] = response["choices"][0]["text"].strip()
+            step["status"] = "completed"
+
+        elif kind == "artifact":
+            # Generate artifact content using LLM
+            artifact_prompt = f"""Create the content for this deliverable.
+
+Overall task: {message}
+Current step: {step_title}
+{prev_context}{rag_context}
+
+Generate the complete content. Use appropriate formatting (markdown for docs, JSON for data, etc.)."""
+
+            lock = get_lock_for_model(llm_model)
+            with lock:
+                response = llm_model(
+                    artifact_prompt,
+                    max_tokens=2000,
+                    temperature=0.5,
+                    stop=["User:", "Human:", "\n\n\n"],
+                    echo=False
+                )
+            result_text = response["choices"][0]["text"].strip()
+            step["result"] = result_text
+
+            # Try to save as file artifact
+            try:
+                artifact_dir = REPO_ROOT / "outputs" / "work_artifacts"
+                artifact_dir.mkdir(parents=True, exist_ok=True)
+                # Determine file extension from step title
+                ext = ".md"
+                title_lower = step_title.lower()
+                if any(kw in title_lower for kw in ["json", "schema", "data"]):
+                    ext = ".json"
+                elif any(kw in title_lower for kw in ["csv", "spreadsheet"]):
+                    ext = ".csv"
+                elif any(kw in title_lower for kw in ["html", "website", "page"]):
+                    ext = ".html"
+                elif any(kw in title_lower for kw in ["code", "script", "program"]):
+                    ext = ".py"
+
+                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', step_title[:40]).strip('_').lower()
+                file_path = artifact_dir / f"{safe_name}{ext}"
+                file_path.write_text(result_text, encoding="utf-8")
+                step["artifacts"] = [str(file_path.relative_to(REPO_ROOT))]
+                logger.info(f"Work artifact saved: {file_path}")
+            except Exception as e:
+                logger.warning(f"Failed to save work artifact: {e}")
+
+            step["status"] = "completed"
+
+        else:
+            # Default LLM step — analyze/synthesize/reason
+            llm_prompt = f"""You are working through a multi-step task.
+
+Overall task: {message}
+Current step: {step_title}
+{prev_context}{rag_context}
+
+Provide a thorough, detailed response for this step. Be specific and actionable."""
+
+            lock = get_lock_for_model(llm_model)
+            with lock:
+                response = llm_model(
+                    llm_prompt,
+                    max_tokens=1200,
+                    temperature=0.5,
+                    stop=["User:", "Human:", "\n\n\n"],
+                    echo=False
+                )
+            step["result"] = response["choices"][0]["text"].strip()
+            step["status"] = "completed"
+
+    except Exception as e:
+        logger.error(f"Work step execution failed: {e}")
+        step["status"] = "failed"
+        step["error"] = str(e)
+        step["result"] = f"Step failed: {str(e)}"
+
+    elapsed = int((_time.time() - start) * 1000)
+    step["elapsed_ms"] = elapsed
+    return step
 async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
     
@@ -2018,43 +2274,44 @@ async def chat(request: ChatRequest):
     if mode != "swarm":
         status_steps.append({"stage": "Generating response"})
     
-    # Work mode: Break down task into actionable steps
+    # Work mode: Break down task and execute step-by-step
     work_steps = []
+    work_step_results = []
     if original_mode == "work" and not has_images:
         try:
-            task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+            logger.info("🖥️ Work mode: planning and executing steps")
+            # Plan steps using the new executor
+            work_steps = _plan_work_steps(request.message, llm, has_image=False,
+                                          project_id=getattr(request, 'project_id', None))
+            logger.info(f"Work mode: {len(work_steps)} steps planned")
 
-Task: {request.message}
+            # Execute each step sequentially, feeding results forward
+            completed_results = []
+            for step in work_steps:
+                step = _execute_work_step(step, request.message, llm, completed_results,
+                                          context_chunks=context_chunks)
+                completed_results.append(step)
+                logger.info(f"  Step {step['id']} [{step['kind']}]: {step['status']} ({step.get('elapsed_ms', 0)}ms)")
 
-Provide a numbered list of specific steps. Be concise and action-oriented.
+            work_step_results = completed_results
 
-Steps:"""
-            
-            # Acquire lock for model inference
-            task_lock = get_lock_for_model(llm)
-            with task_lock:
-                task_response = llm(
-                    task_analysis_prompt,
-                    max_tokens=400,
-                    temperature=0.3,
-                    stop=["Task:", "\\n\\n\\n"],
-                    echo=False
-                )
-            
-            task_breakdown = task_response["choices"][0]["text"].strip()
-            # Parse numbered steps
-            import re
-            work_steps = [s.strip() for s in re.findall(r'\\d+\\.\\s*(.+?)(?=\\n\\d+\\.|$)', task_breakdown, re.DOTALL)]
-            work_steps = [s.replace('\\n', ' ').strip() for s in work_steps if s.strip()]
-            
-            if work_steps:
-                logger.info(f"Task broken down into {len(work_steps)} steps")
-                # Add steps to prompt context
-                steps_text = "\\n".join([f"{i+1}. {step}" for i, step in enumerate(work_steps)])
-                system_prompt += f"\\n\\nTask Plan:\\n{steps_text}\\n\\nFollow these steps to complete the task thoroughly."
-            
+            # Build comprehensive system prompt with step results
+            steps_context = []
+            for step in completed_results:
+                step_info = f"Step {step['id']}: {step['title']}"
+                if step.get("result"):
+                    step_info += f"\nResult: {step['result'][:500]}"
+                steps_context.append(step_info)
+
+            steps_text = "\n\n".join(steps_context)
+            system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
+
         except Exception as e:
-            logger.warning(f"Task breakdown failed: {e}")
+            logger.warning(f"Work mode step execution failed: {e}")
+            # Fallback to simple task plan text
+            if work_steps:
+                steps_text = "\n".join([f"{s['id']}. {s['title']}" for s in work_steps])
+                system_prompt += f"\n\nTask Plan:\n{steps_text}\n\nFollow these steps to complete the task thoroughly."
     
     # For vision requests, handle images differently
     if has_images:
@@ -2190,6 +2447,7 @@ Steps:"""
         # Add work mode specific data
         if original_mode == "work" and work_steps:
             response_data["work_steps"] = work_steps
+            response_data["work_step_results"] = work_step_results if work_step_results else []
             response_data["context_used"] = len(context_chunks)
             response_data["search_results_count"] = len(search_results) if search_results else 0
         
@@ -2446,33 +2704,40 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
     work_steps = []
+    work_step_results = []
     if original_mode == "work" and not has_images:
         try:
-            task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+            logger.info("🖥️ Work mode (stream): planning and executing steps")
+            work_steps = _plan_work_steps(request.message, llm, has_image=False,
+                                          project_id=getattr(request, 'project_id', None))
+            logger.info(f"Work mode: {len(work_steps)} steps planned")
 
-Task: {request.message}
+            # Execute each step sequentially, feeding results forward
+            completed_results = []
+            for step in work_steps:
+                step = _execute_work_step(step, request.message, llm, completed_results,
+                                          context_chunks=context_chunks)
+                completed_results.append(step)
+                logger.info(f"  Step {step['id']} [{step['kind']}]: {step['status']} ({step.get('elapsed_ms', 0)}ms)")
 
-Provide a numbered list of specific steps. Be concise and action-oriented.
+            work_step_results = completed_results
 
-Steps:"""
-            task_lock = get_lock_for_model(llm)
-            with task_lock:
-                task_response = llm(
-                    task_analysis_prompt,
-                    max_tokens=400,
-                    temperature=0.3,
-                    stop=["Task:", "\\n\\n\\n"],
-                    echo=False
-                )
-            task_breakdown = task_response["choices"][0]["text"].strip()
-            import re
-            work_steps = [s.strip() for s in re.findall(r'\\d+\\.\\s*(.+?)(?=\\n\\d+\\.|$)', task_breakdown, re.DOTALL)]
-            work_steps = [s.replace('\\n', ' ').strip() for s in work_steps if s.strip()]
-            if work_steps:
-                steps_text = "\\n".join([f"{i+1}. {step}" for i, step in enumerate(work_steps)])
-                system_prompt += f"\\n\\nTask Plan:\\n{steps_text}\\n\\nFollow these steps to complete the task thoroughly."
+            # Build comprehensive system prompt with step results
+            steps_context = []
+            for step in completed_results:
+                step_info = f"Step {step['id']}: {step['title']}"
+                if step.get("result"):
+                    step_info += f"\nResult: {step['result'][:500]}"
+                steps_context.append(step_info)
+
+            steps_text = "\n\n".join(steps_context)
+            system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
+
         except Exception as e:
-            logger.warning(f"Task breakdown failed: {e}")
+            logger.warning(f"Work mode step execution failed: {e}")
+            if work_steps:
+                steps_text = "\n".join([f"{s['id']}. {s['title']}" for s in work_steps])
+                system_prompt += f"\n\nTask Plan:\n{steps_text}\n\nFollow these steps to complete the task thoroughly."
 
     if has_images:
         full_prompt = request.message
@@ -2967,6 +3232,30 @@ Do not include multiple summaries or "Final Summary" variants.
         # If swarm results exist, emit them before streaming the synthesis
         if swarm_results:
             yield f"event: swarm\ndata: {json.dumps({'swarm_agents': swarm_results})}\n\n"
+
+        # If work mode steps exist, emit them as SSE events
+        if work_step_results:
+            # Emit the full plan first
+            work_plan_payload = {
+                "task": request.message,
+                "total_steps": len(work_step_results),
+                "steps": work_step_results
+            }
+            yield f"event: work_plan\ndata: {json.dumps(work_plan_payload)}\n\n"
+
+            # Emit each step result individually for real-time UI updates
+            for step in work_step_results:
+                step_payload = {
+                    "step_id": step["id"],
+                    "title": step["title"],
+                    "kind": step.get("kind", "llm"),
+                    "status": step["status"],
+                    "result": (step.get("result") or "")[:500],
+                    "elapsed_ms": step.get("elapsed_ms", 0),
+                    "search_results": step.get("search_results", [])[:3],
+                    "artifacts": step.get("artifacts", [])
+                }
+                yield f"event: work_step\ndata: {json.dumps(step_payload)}\n\n"
         
         assistant_response = ""
         client_disconnected = False
@@ -3120,6 +3409,7 @@ Do not include multiple summaries or "Final Summary" variants.
             "mode_used": original_mode,
             "model_used": model_name,
             "work_steps": work_steps,
+            "work_step_results": work_step_results if work_step_results else [],
             "swarm_agents": swarm_results if swarm_results else [],  # Add swarm agent results
             "search_results": search_results if search_results else [],
             "response": cleaned_response,
@@ -4038,7 +4328,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
         "reasoning": base + " Think step-by-step and explain clearly.",
         "agent": base + " You can search the web for current information. Provide detailed, accurate answers based on search results.",
         "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
-        "work": base + " You are helping with a complex multi-step task. Follow the task plan provided, work through each step methodically, and provide comprehensive results. Be thorough and detail-oriented."
+        "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented."
     }
     
     return prompts.get(mode, base)

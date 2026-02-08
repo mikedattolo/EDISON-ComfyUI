@@ -52,20 +52,27 @@
         <!-- Work Mode Desktop View -->
         <div class="work-desktop" id="workDesktop" style="display: none;">
             <div class="work-header">
-                <h2>🖥️ AI Desktop - Task Workspace</h2>
-                <button class="work-close" id="workCloseBtn">×</button>
+                <h2>🖥️ AI Desktop — Task Workspace</h2>
+                <div class="work-header-controls">
+                    <span class="work-status-badge" id="workStatusBadge">Ready</span>
+                    <button class="work-close" id="workCloseBtn">&times;</button>
+                </div>
             </div>
             <div class="work-content">
                 <div class="work-panel">
                     <h3>📋 Current Task</h3>
                     <div id="currentTask" class="task-display">Waiting for task...</div>
+                    <div id="workStepProgress" class="step-progress-bar">
+                        <div class="step-progress-fill" id="stepProgressFill" style="width: 0%"></div>
+                    </div>
+                    <div id="workStepList" class="step-list"></div>
                 </div>
                 <div class="work-panel">
                     <h3>🔍 Search Results</h3>
                     <div id="searchResults" class="results-display"></div>
                 </div>
                 <div class="work-panel">
-                    <h3>📄 Documents</h3>
+                    <h3>📄 Documents &amp; Artifacts</h3>
                     <div id="workDocuments" class="docs-display"></div>
                 </div>
                 <div class="work-panel full-width">
@@ -342,6 +349,7 @@
                             <option value="reasoning">Reasoning (QwQ-32B)</option>
                             <option value="code">Code Assistant</option>
                             <option value="agent">Agent Mode</option>
+                            <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
                         </select>
                     </div>
@@ -546,7 +554,7 @@
     </script>
 
     <script src="gallery.js?v=13"></script>
-    <script src="app_enhanced.js?v=15"></script>
-    <script src="app_features.js?v=7"></script>
+    <script src="app_enhanced.js?v=16"></script>
+    <script src="app_features.js?v=8"></script>
 </body>
 </html>

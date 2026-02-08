@@ -6,7 +6,31 @@ Scaffolding for agent-driven OS features.
 from typing import List, Optional, Dict, Any, Literal
 from pydantic import BaseModel, Field
 
-AgentMode = Literal["instant", "thinking", "agent", "swarm"]
+AgentMode = Literal["instant", "thinking", "agent", "swarm", "work"]
+
+
+class WorkStep(BaseModel):
+    """A single step in a work mode task plan."""
+    id: int
+    title: str
+    description: str = ""
+    kind: Literal["llm", "search", "code", "artifact", "vision", "tool", "comfyui"] = "llm"
+    status: Literal["pending", "running", "completed", "failed", "skipped"] = "pending"
+    result: Optional[str] = None
+    error: Optional[str] = None
+    artifacts: List[str] = Field(default_factory=list)
+    search_results: List[Dict[str, Any]] = Field(default_factory=list)
+    elapsed_ms: Optional[int] = None
+
+
+class WorkPlanResponse(BaseModel):
+    """Full work mode execution plan with steps."""
+    task: str
+    steps: List[WorkStep]
+    project_id: Optional[str] = None
+    total_steps: int = 0
+    completed_steps: int = 0
+    status: Literal["planning", "executing", "completed", "failed"] = "planning"
 
 
 class AgentTask(BaseModel):

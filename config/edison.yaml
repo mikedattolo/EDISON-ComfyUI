@@ -51,6 +51,14 @@ edison:
     swarm:
       tools: true
       parallel: true
+    work:
+      max_tokens: 3072
+      tools: true
+      search: true
+      artifacts: true
+      max_steps: 7
+      step_by_step: true
+      model: "deep"
 
   projects:
     root: "outputs"

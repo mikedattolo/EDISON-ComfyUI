@@ -253,42 +253,128 @@ function initWorkMode() {
         workModeBtn.addEventListener('click', () => {
             workDesktop.style.display = 'block';
             workModeActive = true;
+            // Reset panels on fresh activation
+            resetWorkDesktop();
         });
     }
 }
 
+function resetWorkDesktop() {
+    const currentTask = document.getElementById('currentTask');
+    if (currentTask) currentTask.textContent = 'Waiting for task...';
+
+    const searchResults = document.getElementById('searchResults');
+    if (searchResults) searchResults.innerHTML = '<div class="result-item" style="opacity: 0.5;">No search results yet</div>';
+
+    const workDocs = document.getElementById('workDocuments');
+    if (workDocs) workDocs.innerHTML = '<div class="doc-item" style="opacity: 0.5;">No documents loaded</div>';
+
+    const thinkingLog = document.getElementById('thinkingLog');
+    if (thinkingLog) thinkingLog.innerHTML = '';
+
+    const stepList = document.getElementById('workStepList');
+    if (stepList) stepList.innerHTML = '';
+
+    const progressFill = document.getElementById('stepProgressFill');
+    if (progressFill) progressFill.style.width = '0%';
+
+    const statusBadge = document.getElementById('workStatusBadge');
+    if (statusBadge) {
+        statusBadge.textContent = 'Ready';
+        statusBadge.className = 'work-status-badge';
+    }
+}
+
 function updateWorkDesktop(task, searchResults, documents, thinkingLog) {
-    document.getElementById('currentTask').textContent = task || 'Waiting for task...';
+    const currentTask = document.getElementById('currentTask');
+    if (currentTask) {
+        if (typeof task === 'string') {
+            currentTask.textContent = task || 'Waiting for task...';
+        }
+    }
     
     // Update search results
     const searchResultsDiv = document.getElementById('searchResults');
-    if (searchResults && searchResults.length > 0) {
+    if (searchResultsDiv && searchResults && searchResults.length > 0) {
         searchResultsDiv.innerHTML = searchResults.map(result => `
             <div class="result-item">
-                <div class="result-title">${result.title}</div>
-                <div class="result-snippet">${result.snippet}</div>
+                <div class="result-title">${result.title || ''}</div>
+                <div class="result-snippet">${(result.body || result.snippet || '').substring(0, 200)}</div>
+                ${result.url ? `<a href="${result.url}" target="_blank" rel="noopener" class="result-url">${result.url}</a>` : ''}
             </div>
         `).join('');
-    } else {
-        searchResultsDiv.innerHTML = '<div class="result-item" style="opacity: 0.5;">No search results yet</div>';
     }
     
     // Update documents
     const docsDiv = document.getElementById('workDocuments');
-    if (documents && documents.length > 0) {
+    if (docsDiv && documents && documents.length > 0) {
         docsDiv.innerHTML = documents.map(doc => `
             <div class="doc-item">
                 <span class="doc-icon">📄</span>
-                <span class="doc-name">${doc.name}</span>
+                <span class="doc-name">${doc.name || doc}</span>
             </div>
         `).join('');
-    } else {
-        docsDiv.innerHTML = '<div class="doc-item" style="opacity: 0.5;">No documents loaded</div>';
     }
     
     // Update thinking log
     if (thinkingLog) {
         addThinkingLogEntry(thinkingLog);
+    }
+
+    // Update status badge
+    const statusBadge = document.getElementById('workStatusBadge');
+    if (statusBadge) {
+        statusBadge.textContent = 'Working...';
+        statusBadge.className = 'work-status-badge working';
+    }
+}
+
+function updateWorkStepProgress(steps) {
+    /**Update step progress bar and step list in work desktop*/
+    if (!steps || !steps.length) return;
+
+    const completed = steps.filter(s => s.status === 'completed').length;
+    const total = steps.length;
+    const pct = Math.round((completed / total) * 100);
+
+    const progressFill = document.getElementById('stepProgressFill');
+    if (progressFill) progressFill.style.width = `${pct}%`;
+
+    const stepList = document.getElementById('workStepList');
+    if (stepList) {
+        const kindIcons = {
+            'llm': '🧠', 'search': '🔍', 'code': '💻',
+            'artifact': '📄', 'vision': '👁️', 'tool': '🔧', 'comfyui': '🎨'
+        };
+        const statusIcons = {
+            'pending': '⏳', 'running': '🔄', 'completed': '✅', 'failed': '❌', 'skipped': '⏭️'
+        };
+
+        stepList.innerHTML = steps.map(step => {
+            const kindIcon = kindIcons[step.kind] || '⚙️';
+            const statusIcon = statusIcons[step.status] || '⏳';
+            const timeStr = step.elapsed_ms ? `${(step.elapsed_ms / 1000).toFixed(1)}s` : '';
+            return `
+                <div class="work-step-desktop-item step-${step.status}">
+                    <span class="step-icon">${kindIcon}</span>
+                    <span class="step-num">${step.id}.</span>
+                    <span class="step-text">${step.title || ''}</span>
+                    <span class="step-status-icon">${statusIcon}</span>
+                    ${timeStr ? `<span class="step-time-label">${timeStr}</span>` : ''}
+                </div>
+            `;
+        }).join('');
+    }
+
+    const statusBadge = document.getElementById('workStatusBadge');
+    if (statusBadge) {
+        if (completed === total) {
+            statusBadge.textContent = 'Complete';
+            statusBadge.className = 'work-status-badge complete';
+        } else {
+            statusBadge.textContent = `${completed}/${total}`;
+            statusBadge.className = 'work-status-badge working';
+        }
     }
 }
 
@@ -305,6 +391,8 @@ function addThinkingLogEntry(entry) {
 // Make functions globally available
 window.updateWorkDesktop = updateWorkDesktop;
 window.addThinkingLogEntry = addThinkingLogEntry;
+window.updateWorkStepProgress = updateWorkStepProgress;
+window.resetWorkDesktop = resetWorkDesktop;
 
 // Chat Search Functionality
 function initChatSearch() {
@@ -460,6 +548,8 @@ if (document.readyState === 'loading') {
 window.EDISON_Features = {
     removeFile,
     updateWorkDesktop,
+    updateWorkStepProgress,
+    resetWorkDesktop,
     addThinkingLogEntry,
     generateChatTitle,
     updateChatHistoryWithDynamicNames
