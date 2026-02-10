@@ -26,6 +26,7 @@ import base64
 import io
 import zipfile
 import numpy as np
+import gc
 
 # Configure logging
 logging.basicConfig(
@@ -336,6 +337,59 @@ lock_vision_code = threading.Lock()
 # Active request tracking for server-side cancellation
 active_requests = {}  # {request_id: {"cancelled": bool, "timestamp": float}}
 active_requests_lock = threading.Lock()
+
+# GPU VRAM management for image generation
+_models_unloaded_for_image_gen = False
+_image_gen_lock = threading.Lock()
+
+def unload_all_llm_models():
+    """Unload all LLM models to free GPU VRAM for image generation"""
+    global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
+    
+    logger.info("⏳ Unloading all LLM models to free GPU VRAM for image generation...")
+    
+    unloaded = []
+    for name, ref in [("fast", llm_fast), ("medium", llm_medium), ("deep", llm_deep),
+                       ("reasoning", llm_reasoning), ("vision", llm_vision), ("vision_code", llm_vision_code)]:
+        if ref is not None:
+            unloaded.append(name)
+    
+    # Set all globals to None first (prevents access during cleanup)
+    llm_fast = None
+    llm_medium = None
+    llm_deep = None
+    llm_reasoning = None
+    llm_vision = None
+    llm_vision_code = None
+    
+    # Force garbage collection to release VRAM
+    gc.collect()
+    
+    # Small delay to let CUDA release memory
+    time.sleep(1)
+    gc.collect()
+    
+    logger.info(f"✓ Unloaded LLM models: {', '.join(unloaded) if unloaded else 'none were loaded'}")
+    return unloaded
+
+def reload_llm_models_background():
+    """Reload LLM models in a background thread after image generation"""
+    global _models_unloaded_for_image_gen
+    
+    def _reload():
+        global _models_unloaded_for_image_gen
+        try:
+            logger.info("⏳ Reloading LLM models after image generation...")
+            load_llm_models()
+            _models_unloaded_for_image_gen = False
+            logger.info("✓ LLM models reloaded successfully")
+        except Exception as e:
+            logger.error(f"❌ Failed to reload LLM models: {e}")
+            _models_unloaded_for_image_gen = False
+    
+    thread = threading.Thread(target=_reload, daemon=True)
+    thread.start()
+    return thread
 
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
                          steps: int = 20, guidance_scale: float = 3.5) -> dict:
@@ -1528,6 +1582,36 @@ async def unload_model(request: dict):
     model_manager.unload_model(name)
     return {"ok": True, "name": name}
 
+@app.post("/models/unload-all")
+async def unload_all_models_endpoint():
+    """Unload all LLM models to free GPU VRAM"""
+    global _models_unloaded_for_image_gen
+    unloaded = unload_all_llm_models()
+    _models_unloaded_for_image_gen = True
+    return {"ok": True, "unloaded": unloaded}
+
+@app.post("/models/reload")
+async def reload_models_endpoint():
+    """Reload all LLM models (after image generation or manual unload)"""
+    global _models_unloaded_for_image_gen
+    if not _models_unloaded_for_image_gen and llm_fast is not None:
+        return {"ok": True, "message": "Models already loaded"}
+    reload_llm_models_background()
+    return {"ok": True, "message": "Model reload started in background"}
+
+@app.get("/models/status")
+async def models_status():
+    """Check which LLM models are currently loaded"""
+    return {
+        "models_unloaded_for_image_gen": _models_unloaded_for_image_gen,
+        "fast": llm_fast is not None,
+        "medium": llm_medium is not None,
+        "deep": llm_deep is not None,
+        "reasoning": llm_reasoning is not None,
+        "vision": llm_vision is not None,
+        "vision_code": llm_vision_code is not None
+    }
+
 def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
     if model is llm_vision:
@@ -2517,11 +2601,22 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     
     logger.info(f"=== Chat stream request received: '{request.message}' (mode: {request.mode}, request_id: {request_id}) ===")
 
-    if not llm_fast and not llm_medium and not llm_deep:
-        raise HTTPException(
-            status_code=503,
-            detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
-        )
+    # If models are unloaded for image generation, wait for reload or trigger it
+    if _models_unloaded_for_image_gen or (not llm_fast and not llm_medium and not llm_deep):
+        if _models_unloaded_for_image_gen:
+            logger.info("Models currently unloaded for image gen, triggering reload...")
+            reload_llm_models_background()
+            # Wait up to 60s for models to reload
+            for _ in range(120):
+                if llm_fast or llm_medium or llm_deep:
+                    break
+                await asyncio.sleep(0.5)
+        
+        if not llm_fast and not llm_medium and not llm_deep:
+            raise HTTPException(
+                status_code=503,
+                detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
+            )
 
     remember_result = should_remember_conversation(request.message)
     auto_remember = remember_result["remember"]
@@ -3802,6 +3897,13 @@ async def generate_image(request: dict):
         
         logger.info(f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale})")
         
+        # === FREE GPU VRAM: Unload LLM models so ComfyUI can use the GPU ===
+        global _models_unloaded_for_image_gen
+        with _image_gen_lock:
+            if not _models_unloaded_for_image_gen:
+                unload_all_llm_models()
+                _models_unloaded_for_image_gen = True
+        
         # Use provided ComfyUI URL or fall back to config
         if comfyui_url_override:
             comfyui_url = comfyui_url_override.rstrip('/')
@@ -3852,9 +3954,15 @@ async def generate_image(request: dict):
         
     except requests.RequestException as e:
         logger.error(f"ComfyUI connection error: {e}")
+        # Reload models since image gen failed
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
     except Exception as e:
         logger.error(f"Error generating image: {e}")
+        # Reload models since image gen failed
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/image-status/{prompt_id}")
@@ -3969,12 +4077,19 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                             logger.error(f"Failed to auto-save to gallery: {save_error}")
                             result["saved_to_gallery"] = False
                     
+                    # Reload LLM models in background now that image gen is done
+                    if _models_unloaded_for_image_gen:
+                        reload_llm_models_background()
+                    
                     return result
         
         return {"status": "processing", "message": "Still generating..."}
         
     except Exception as e:
         logger.error(f"Error checking image status: {e}")
+        # On error, still try to reload models if they were unloaded
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
         return {"status": "error", "message": str(e)}
 
 @app.get("/proxy-image")
