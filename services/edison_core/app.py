@@ -48,6 +48,34 @@ except ImportError:
         AgentControllerBrain = None
         WorkStep = None
         WorkPlanResponse = None
+
+# Import professional file generators
+try:
+    from .file_generators import (
+        FILE_GENERATION_PROMPT,
+        render_file_entry,
+        parse_markdown_to_pdf,
+        generate_professional_html,
+        generate_slideshow_html,
+    )
+    logger.info("✓ File generators loaded")
+except ImportError:
+    try:
+        from file_generators import (
+            FILE_GENERATION_PROMPT,
+            render_file_entry,
+            parse_markdown_to_pdf,
+            generate_professional_html,
+            generate_slideshow_html,
+        )
+        logger.info("✓ File generators loaded (direct import)")
+    except ImportError:
+        FILE_GENERATION_PROMPT = None
+        render_file_entry = None
+        parse_markdown_to_pdf = None
+        generate_professional_html = None
+        generate_slideshow_html = None
+        logger.warning("⚠ File generators not available")
         logger.warning("⚠ Orchestration modules not available")
 
 # Force GPU usage - verify CUDA is available
@@ -2944,7 +2972,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             def _is_file_request(text: str) -> bool:
                 if not text:
                     return False
-                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as)\b", text, re.IGNORECASE))
+                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as|presentation|slideshow|slides|slide deck|document|report|resume|letter|spreadsheet|create a?\s+(file|document|report|pdf|presentation))\b", text, re.IGNORECASE))
 
             file_request = _is_file_request(request.message or "")
             parallel_swarm = bool(
@@ -3163,7 +3191,7 @@ Your vote:"""
                 status_steps.append({"stage": "Voting"})
             
             # Synthesize with actual insight
-            file_instruction = "If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.txt\", \"content\": \"...\"}]\n```\n\nInclude a brief summary outside the block."
+            file_instruction = FILE_GENERATION_PROMPT if FILE_GENERATION_PROMPT else "If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML, presentations, slideshows), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use: ```files\n[{\"filename\": \"slides.html\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Include a brief summary outside the block."
 
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
 
@@ -3196,6 +3224,7 @@ Do not include multiple summaries or "Final Summary" variants.
         status_steps = []
 
     async def sse_generator():
+        nonlocal work_step_results, full_prompt, system_prompt
         if image_intent_payload is not None:
             yield f"event: done\ndata: {json.dumps(image_intent_payload)}\n\n"
             return
@@ -3268,10 +3297,8 @@ Do not include multiple summaries or "Final Summary" variants.
                 }
                 yield f"event: work_step\ndata: {json.dumps(step_payload)}\n\n"
 
-            work_step_results = completed_results
-
             # Now build the synthesis prompt with step results
-            nonlocal full_prompt, system_prompt
+            work_step_results = completed_results
             steps_context = []
             for s in completed_results:
                 step_info = f"Step {s['id']}: {s['title']}"
@@ -4377,7 +4404,10 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
 
     # Add file generation instruction for all modes
-    base += " If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.txt\", \"content\": \"...\"}]\n```\n\nInclude a brief summary outside the block."
+    if FILE_GENERATION_PROMPT:
+        base += " " + FILE_GENERATION_PROMPT
+    else:
+        base += " If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML, presentations, slideshows), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use: ```files\n[{\"filename\": \"slides.html\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Include a brief summary outside the block."
     
     prompts = {
         "chat": base + " Respond conversationally.",
@@ -4707,35 +4737,66 @@ def _write_artifacts(file_entries: list) -> list:
     temp_files = []
 
     for entry in file_entries:
-        filename = _safe_filename(entry.get("filename") or "output.txt")
-        content = entry.get("content", "")
-        ext = os.path.splitext(filename)[1].lower()
+        try:
+            # Use professional file generators if available
+            if render_file_entry is not None:
+                filename, data = render_file_entry(entry)
+                filename = _safe_filename(filename)
+            else:
+                # Fallback to basic rendering
+                filename = _safe_filename(entry.get("filename") or "output.txt")
+                content = entry.get("content", "")
+                ext = os.path.splitext(filename)[1].lower()
 
-        if ext == ".pdf":
-            data = _render_pdf_from_text(str(content))
-        elif isinstance(content, (dict, list)):
-            data = json.dumps(content, indent=2).encode("utf-8")
-        else:
-            data = str(content).encode("utf-8")
+                if ext == ".pdf":
+                    data = _render_pdf_from_text(str(content))
+                elif isinstance(content, (dict, list)):
+                    data = json.dumps(content, indent=2).encode("utf-8")
+                else:
+                    data = str(content).encode("utf-8")
 
-        out_path = root / filename
-        # Avoid collisions
-        if out_path.exists():
-            stem, suffix = os.path.splitext(filename)
-            filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+            ext = os.path.splitext(filename)[1].lower()
             out_path = root / filename
-        with open(out_path, "wb") as f:
-            f.write(data)
-        temp_files.append(out_path)
-        record = {
-            "name": filename,
-            "url": f"/artifacts/{filename}",
-            "size": out_path.stat().st_size,
-            "type": ext.lstrip(".") or "txt",
-            "created_at": now
-        }
-        files_db.append(record)
-        saved.append(record)
+            # Avoid collisions
+            if out_path.exists():
+                stem, suffix = os.path.splitext(filename)
+                filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+                out_path = root / filename
+            with open(out_path, "wb") as f:
+                f.write(data)
+            temp_files.append(out_path)
+            record = {
+                "name": filename,
+                "url": f"/artifacts/{filename}",
+                "size": out_path.stat().st_size,
+                "type": ext.lstrip(".") or "txt",
+                "created_at": now
+            }
+            files_db.append(record)
+            saved.append(record)
+        except Exception as e:
+            logger.error(f"Error rendering file {entry.get('filename', '?')}: {e}")
+            # Fallback: save as plain text
+            filename = _safe_filename(entry.get("filename") or "output.txt")
+            content = str(entry.get("content", ""))
+            out_path = root / filename
+            if out_path.exists():
+                stem, suffix = os.path.splitext(filename)
+                filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
+                out_path = root / filename
+            with open(out_path, "w", encoding="utf-8") as f:
+                f.write(content)
+            temp_files.append(out_path)
+            ext = os.path.splitext(filename)[1].lower()
+            record = {
+                "name": filename,
+                "url": f"/artifacts/{filename}",
+                "size": out_path.stat().st_size,
+                "type": ext.lstrip(".") or "txt",
+                "created_at": now
+            }
+            files_db.append(record)
+            saved.append(record)
 
     # If a zip was requested, create it from the other files
     zip_entries = [e for e in file_entries if str(e.get("filename", "")).lower().endswith(".zip")]

@@ -157,6 +157,7 @@ class EdisonApp {
         // Chat header user switcher
         this.chatUserSelect = document.getElementById('chatUserSelect');
         this.chatAddUserBtn = document.getElementById('chatAddUserBtn');
+        this.chatDeleteUserBtn = document.getElementById('chatDeleteUserBtn');
         this.chatCleanUsersBtn = document.getElementById('chatCleanUsersBtn');
         
         // Theme controls (in settings modal)
@@ -247,6 +248,9 @@ class EdisonApp {
         if (this.chatAddUserBtn) {
             this.chatAddUserBtn.addEventListener('click', () => this.addChatUser());
         }
+        if (this.chatDeleteUserBtn) {
+            this.chatDeleteUserBtn.addEventListener('click', () => this.deleteChatUser());
+        }
         if (this.chatCleanUsersBtn) {
             this.chatCleanUsersBtn.addEventListener('click', () => this.cleanupAutoUsers());
         }
@@ -296,6 +300,10 @@ class EdisonApp {
         this.sidebarCollapsed = !this.sidebarCollapsed;
         this.sidebar.classList.toggle('collapsed');
         document.querySelector('.main-content').classList.toggle('sidebar-collapsed');
+        // Show/hide the floating toggle button
+        if (this.sidebarToggle) {
+            this.sidebarToggle.classList.toggle('visible', this.sidebarCollapsed);
+        }
     }
 
     isMobileView() {
@@ -824,7 +832,7 @@ class EdisonApp {
                                     if (data.files && data.files.length > 0) {
                                         this.displayGeneratedFiles(assistantMessageEl, data.files);
                                     }
-                                    if (data.artifact && data.artifact.content) {
+                                    if (data.artifact && (data.artifact.code || data.artifact.content)) {
                                         this.showArtifactPanel(data.artifact);
                                     }
                                     this.clearStatus(assistantMessageEl);
@@ -1324,17 +1332,26 @@ class EdisonApp {
 
     displayGeneratedFiles(assistantMessageEl, files) {
         const contentEl = assistantMessageEl.querySelector('.message-content');
+        const fileIcons = {
+            pdf: '📄', html: '🌐', csv: '📊', json: '📋', txt: '📝',
+            md: '📝', zip: '📦', py: '🐍', js: '⚡', jsx: '⚛️',
+            svg: '🎨', css: '🎨', pptx: '📽️', docx: '📄', xlsx: '📊'
+        };
         const fileSection = document.createElement('div');
         fileSection.className = 'generated-files';
         fileSection.innerHTML = `
             <div class="generated-files-header">📁 Generated Files</div>
             <ul class="generated-files-list">
-                ${files.map(file => `
+                ${files.map(file => {
+                    const ext = (file.type || file.name?.split('.').pop() || 'file').toLowerCase();
+                    const icon = fileIcons[ext] || '📎';
+                    return `
                     <li>
+                        <span class="file-icon">${icon}</span>
                         <a href="${this.settings.apiEndpoint}${file.url}" target="_blank" rel="noopener" download>${file.name}</a>
-                        <span class="file-meta">${file.type?.toUpperCase() || 'FILE'} · ${this.formatFileSize(file.size || 0)}</span>
-                    </li>
-                `).join('')}
+                        <span class="file-meta">${ext.toUpperCase()} · ${this.formatFileSize(file.size || 0)}</span>
+                    </li>`;
+                }).join('')}
             </ul>
         `;
         contentEl.appendChild(fileSection);
@@ -2291,6 +2308,31 @@ class EdisonApp {
             await this.loadUsers();
         } catch (error) {
             alert('Error creating user: ' + error.message);
+        }
+    }
+
+    async deleteChatUser() {
+        const userId = this.chatUserSelect?.value;
+        if (!userId) return;
+        const selectedOption = this.chatUserSelect?.selectedOptions?.[0];
+        const userName = selectedOption ? selectedOption.textContent : userId;
+        if (!confirm(`Do you want to delete user "${userName}" and all their chats?\n\nThis cannot be undone.`)) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users/${userId}`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) throw new Error('Failed to delete user');
+            if (userId === this.userId) {
+                // Reset to a new local ID
+                this.setActiveUser(this.getOrCreateUserId(), true);
+                await this.syncChatsFromServer();
+                this.loadCurrentChat();
+            }
+            await this.loadChatHeaderUsers();
+            await this.loadUsers();
+            this.showNotification(`User "${userName}" deleted`);
+        } catch (error) {
+            alert('Error deleting user: ' + error.message);
         }
     }
 
