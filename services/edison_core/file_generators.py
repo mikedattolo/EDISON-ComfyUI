@@ -7,6 +7,7 @@ without external dependencies beyond Python stdlib.
 import json
 import re
 import os
+import io
 import textwrap
 import html
 import time
@@ -992,12 +993,336 @@ def generate_rich_markdown(title: str, sections: List[Dict[str, Any]]) -> str:
 #  File Generation Dispatch — Unified entry point
 # ──────────────────────────────────────────────────────────────────
 
+# ──────────────────────────────────────────────────────────────────
+#  PPTX (PowerPoint) Generation — Real .pptx files via python-pptx
+# ──────────────────────────────────────────────────────────────────
+
+def generate_pptx(slides: List[Dict[str, Any]], title: str = "Presentation") -> bytes:
+    """Generate a real .pptx PowerPoint file from slide data.
+    
+    Each slide dict can have:
+        - title: str
+        - content: str (plain text paragraph)
+        - bullets: List[str]
+        - layout: str (title, content, two-column)
+        - notes: str (speaker notes)
+    """
+    try:
+        from pptx import Presentation
+        from pptx.util import Inches, Pt, Emu
+        from pptx.dml.color import RGBColor
+        from pptx.enum.text import PP_ALIGN
+    except ImportError:
+        logger.warning("python-pptx not installed, falling back to HTML slideshow")
+        html_content = generate_slideshow_html(slides, title)
+        return html_content.encode("utf-8"), ".html"
+
+    prs = Presentation()
+    prs.slide_width = Inches(13.333)
+    prs.slide_height = Inches(7.5)
+
+    # Color scheme
+    primary_rgb = RGBColor(0x66, 0x7E, 0xEA)
+    dark_bg = RGBColor(0x0F, 0x0F, 0x1A)
+    light_text = RGBColor(0xE0, 0xE0, 0xF0)
+    muted_text = RGBColor(0xC4, 0xC4, 0xD4)
+
+    for i, slide_data in enumerate(slides):
+        slide_title = slide_data.get("title", "")
+        content = slide_data.get("content", "")
+        bullets = slide_data.get("bullets", [])
+        layout = slide_data.get("layout", "content")
+        notes = slide_data.get("notes", "")
+
+        # Use blank layout and build manually for consistent styling
+        blank_layout = prs.slide_layouts[6]  # Blank
+        slide = prs.slides.add_slide(blank_layout)
+
+        # Dark background
+        background = slide.background
+        fill = background.fill
+        fill.solid()
+        fill.fore_color.rgb = dark_bg
+
+        if layout == "title":
+            # Title slide - centered title and subtitle
+            title_box = slide.shapes.add_textbox(
+                Inches(1.5), Inches(2.0), Inches(10.333), Inches(2.0)
+            )
+            tf = title_box.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = slide_title
+            p.font.size = Pt(44)
+            p.font.bold = True
+            p.font.color.rgb = primary_rgb
+            p.alignment = PP_ALIGN.CENTER
+
+            if content:
+                subtitle_box = slide.shapes.add_textbox(
+                    Inches(2.0), Inches(4.2), Inches(9.333), Inches(1.5)
+                )
+                tf2 = subtitle_box.text_frame
+                tf2.word_wrap = True
+                p2 = tf2.paragraphs[0]
+                p2.text = content
+                p2.font.size = Pt(20)
+                p2.font.color.rgb = muted_text
+                p2.alignment = PP_ALIGN.CENTER
+        else:
+            # Content slide
+            # Title at top
+            title_box = slide.shapes.add_textbox(
+                Inches(0.8), Inches(0.5), Inches(11.733), Inches(1.0)
+            )
+            tf = title_box.text_frame
+            tf.word_wrap = True
+            p = tf.paragraphs[0]
+            p.text = slide_title
+            p.font.size = Pt(32)
+            p.font.bold = True
+            p.font.color.rgb = primary_rgb
+
+            # Accent line under title
+            line = slide.shapes.add_shape(
+                1,  # Rectangle
+                Inches(0.8), Inches(1.55), Inches(3), Pt(3)
+            )
+            line.fill.solid()
+            line.fill.fore_color.rgb = primary_rgb
+            line.line.fill.background()
+
+            # Content area
+            content_top = Inches(1.8)
+            content_box = slide.shapes.add_textbox(
+                Inches(0.8), content_top, Inches(11.733), Inches(5.0)
+            )
+            tf_content = content_box.text_frame
+            tf_content.word_wrap = True
+
+            if bullets:
+                for j, bullet in enumerate(bullets):
+                    if j == 0:
+                        p = tf_content.paragraphs[0]
+                    else:
+                        p = tf_content.add_paragraph()
+                    p.text = f"  \u25b8  {bullet}"
+                    p.font.size = Pt(20)
+                    p.font.color.rgb = light_text
+                    p.space_after = Pt(12)
+            elif content:
+                p = tf_content.paragraphs[0]
+                p.text = content
+                p.font.size = Pt(18)
+                p.font.color.rgb = light_text
+                p.line_spacing = Pt(28)
+
+        # Slide number
+        num_box = slide.shapes.add_textbox(
+            Inches(12.0), Inches(6.8), Inches(1.2), Inches(0.5)
+        )
+        num_tf = num_box.text_frame
+        num_p = num_tf.paragraphs[0]
+        num_p.text = f"{i + 1} / {len(slides)}"
+        num_p.font.size = Pt(10)
+        num_p.font.color.rgb = RGBColor(0x80, 0x80, 0x90)
+        num_p.alignment = PP_ALIGN.RIGHT
+
+        # Speaker notes
+        if notes:
+            slide.notes_slide.notes_text_frame.text = notes
+
+    import io
+    buffer = io.BytesIO()
+    prs.save(buffer)
+    return buffer.getvalue()
+
+
+# ──────────────────────────────────────────────────────────────────
+#  DOCX (Word) Generation — Real .docx files via python-docx
+# ──────────────────────────────────────────────────────────────────
+
+def _clean_markdown_text(text: str) -> str:
+    """Strip markdown formatting from text to produce clean prose."""
+    if not text:
+        return ""
+    # Remove markdown bold/italic
+    text = re.sub(r'\*\*\*(.+?)\*\*\*', r'\1', text)
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)
+    text = re.sub(r'\*(.+?)\*', r'\1', text)
+    text = re.sub(r'__(.+?)__', r'\1', text)
+    text = re.sub(r'_(.+?)_', r'\1', text)
+    # Remove inline code backticks
+    text = re.sub(r'`([^`]+)`', r'\1', text)
+    # Remove link syntax [text](url) → text
+    text = re.sub(r'\[(.+?)\]\(.+?\)', r'\1', text)
+    # Remove image syntax ![alt](url)
+    text = re.sub(r'!\[.*?\]\(.+?\)', '', text)
+    return text.strip()
+
+
+def generate_docx(content: str, title: str = "Document") -> bytes:
+    """Generate a real .docx Word document from markdown-formatted content.
+    
+    Parses markdown and converts it to properly formatted Word paragraphs
+    with headings, bullet points, numbered lists, and clean body text.
+    """
+    try:
+        from docx import Document
+        from docx.shared import Pt, Inches, RGBColor
+        from docx.enum.text import WD_ALIGN_PARAGRAPH
+    except ImportError:
+        logger.warning("python-docx not installed, falling back to plain text")
+        return content.encode("utf-8"), ".txt"
+
+    doc = Document()
+
+    # Set default font style
+    style = doc.styles['Normal']
+    font = style.font
+    font.name = 'Calibri'
+    font.size = Pt(11)
+    font.color.rgb = RGBColor(0x1A, 0x1A, 0x2E)
+
+    # Title
+    title_para = doc.add_heading(title, level=0)
+    title_para.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    # Date subtitle
+    date_str = datetime.now().strftime("%B %d, %Y")
+    subtitle = doc.add_paragraph(f"Generated on {date_str}")
+    subtitle.style = doc.styles['Subtitle']
+
+    doc.add_paragraph()  # Spacer
+
+    # Parse markdown content into the document
+    lines = content.splitlines()
+    i = 0
+    in_code_block = False
+    code_lines = []
+    numbered_counter = 0
+
+    while i < len(lines):
+        line = lines[i]
+        stripped = line.strip()
+
+        # Code blocks
+        if stripped.startswith("```"):
+            if in_code_block:
+                # End code block - add as a styled paragraph
+                code_text = "\n".join(code_lines)
+                code_para = doc.add_paragraph()
+                code_run = code_para.add_run(code_text)
+                code_run.font.name = 'Consolas'
+                code_run.font.size = Pt(9)
+                code_run.font.color.rgb = RGBColor(0x20, 0x20, 0x25)
+                code_lines = []
+                in_code_block = False
+            else:
+                in_code_block = True
+            i += 1
+            continue
+
+        if in_code_block:
+            code_lines.append(line)
+            i += 1
+            continue
+
+        # Empty line
+        if not stripped:
+            numbered_counter = 0
+            i += 1
+            continue
+
+        # Headings
+        if stripped.startswith("# ") and not stripped.startswith("## "):
+            doc.add_heading(_clean_markdown_text(stripped[2:]), level=1)
+            i += 1
+            continue
+        if stripped.startswith("## "):
+            doc.add_heading(_clean_markdown_text(stripped[3:]), level=2)
+            i += 1
+            continue
+        if stripped.startswith("### "):
+            doc.add_heading(_clean_markdown_text(stripped[4:]), level=3)
+            i += 1
+            continue
+        h_match = re.match(r"^(#{4,6})\s+(.+)$", stripped)
+        if h_match:
+            doc.add_heading(_clean_markdown_text(h_match.group(2)), level=4)
+            i += 1
+            continue
+
+        # Horizontal rule
+        if re.match(r"^[-*_]{3,}$", stripped):
+            doc.add_paragraph("─" * 50)
+            i += 1
+            continue
+
+        # Blockquote
+        if stripped.startswith("> "):
+            quote_text = _clean_markdown_text(stripped[2:])
+            quote_para = doc.add_paragraph(quote_text)
+            quote_para.style = doc.styles['Intense Quote'] if 'Intense Quote' in doc.styles else doc.styles['Quote']
+            i += 1
+            continue
+
+        # Bullet points
+        if re.match(r'^[-*+]\s+', stripped):
+            text = re.sub(r'^[-*+]\s+', '', stripped)
+            doc.add_paragraph(_clean_markdown_text(text), style='List Bullet')
+            i += 1
+            continue
+
+        # Sub-bullets
+        if re.match(r'^\s{2,}[-*+]\s+', line):
+            text = re.sub(r'^\s+[-*+]\s+', '', line)
+            doc.add_paragraph(_clean_markdown_text(text), style='List Bullet 2')
+            i += 1
+            continue
+
+        # Numbered items
+        num_match = re.match(r'^(\d+)[.)]\s+(.+)$', stripped)
+        if num_match:
+            text = num_match.group(2)
+            doc.add_paragraph(_clean_markdown_text(text), style='List Number')
+            i += 1
+            continue
+
+        # Regular paragraph - clean all markdown formatting
+        clean = _clean_markdown_text(stripped)
+        if clean:
+            doc.add_paragraph(clean)
+        i += 1
+
+    # Flush remaining code block
+    if code_lines:
+        code_text = "\n".join(code_lines)
+        code_para = doc.add_paragraph()
+        code_run = code_para.add_run(code_text)
+        code_run.font.name = 'Consolas'
+        code_run.font.size = Pt(9)
+
+    # Footer
+    doc.add_paragraph()
+    footer = doc.add_paragraph(f"Generated by EDISON AI — {date_str}")
+    footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    footer_run = footer.runs[0]
+    footer_run.font.size = Pt(8)
+    footer_run.font.color.rgb = RGBColor(0x88, 0x88, 0x88)
+
+    buffer = io.BytesIO()
+    doc.save(buffer)
+    return buffer.getvalue()
+
+
 FILE_GENERATION_PROMPT = """When the user asks you to create a downloadable file, you MUST output a FILES block. Follow these rules carefully:
 
 ## File Types You Can Create
 - **PDF documents**: Reports, essays, papers, guides, manuals, resumes, letters
-- **HTML documents**: Rich formatted reports, interactive pages, styled documents
-- **Presentations/Slideshows**: Slide decks with multiple slides
+- **Word documents (.docx)**: Essays, research papers, reports, formal documents
+- **Presentations/Slideshows (.pptx)**: PowerPoint slide decks with multiple slides
+- **HTML documents**: Rich formatted interactive pages
 - **Spreadsheets (CSV)**: Data tables, lists, organized data
 - **Text documents (TXT/MD)**: Notes, outlines, plain text files
 - **Code files**: Scripts, source code in any language
@@ -1006,42 +1331,48 @@ FILE_GENERATION_PROMPT = """When the user asks you to create a downloadable file
 
 ## Output Format
 
-For regular files (PDF, TXT, MD, CSV, JSON, code files):
+For essays, research papers, reports, and written documents use .docx:
 ```files
-[{"filename": "report.pdf", "content": "Your detailed content here with full markdown formatting..."}]
+[{"filename": "document.docx", "content": "# Title\\n\\nFull detailed content with markdown formatting. Use ## for sections, - for bullets, 1. for numbered lists. Write complete paragraphs of clean prose."}]
 ```
 
-For presentations/slideshows:
+For PDF documents (resumes, formal letters, technical specs):
 ```files
-[{"filename": "presentation.html", "content": "", "type": "slideshow", "slides": [
+[{"filename": "report.pdf", "content": "# Title\\n\\nFull detailed content with markdown formatting..."}]
+```
+
+For presentations/slideshows use .pptx (NOT .html):
+```files
+[{"filename": "presentation.pptx", "content": "", "type": "slideshow", "slides": [
   {"title": "Presentation Title", "content": "Subtitle or description", "layout": "title"},
   {"title": "Key Points", "bullets": ["First important point", "Second point with detail", "Third compelling point"], "layout": "content"},
-  {"title": "Details", "content": "<p>Rich HTML content for this slide...</p>", "layout": "content"},
+  {"title": "Details", "content": "Plain text content for this slide.", "layout": "content"},
   {"title": "Thank You", "content": "Questions and contact info", "layout": "title"}
 ]}]
 ```
 
-For rich HTML documents:
+For other files (TXT, MD, CSV, JSON, code files):
 ```files
-[{"filename": "report.html", "content": "<h2>Section Title</h2><p>Professional content...</p>", "type": "html_document", "title": "Document Title"}]
+[{"filename": "data.csv", "content": "col1,col2\\nval1,val2"}]
 ```
 
-## CRITICAL Rules for Quality
+## CRITICAL Rules
 1. **Be comprehensive**: Write FULL, DETAILED content. Never use placeholders like "[Add more here]"
 2. **Use proper structure**: Include headings, paragraphs, bullet points, numbered lists
-3. **Professional formatting**: Use markdown in PDF/TXT content (# headings, - bullets, **bold**, etc.)
-4. **PDF content**: Write in full markdown. It will be converted to a professionally styled PDF with headers, footers, page numbers, styled headings, tables, and code blocks
-5. **For data/spreadsheets**: Include realistic, complete data with proper column headers
-6. **For presentations**: Create 5-10 slides minimum, each with meaningful content
-7. **Always include a summary** outside the ```files block explaining what was created
+3. **Content is markdown**: It gets converted to the target format with proper styling. Use # headings, - bullets, **bold**, etc.
+4. **Presentations**: Use .pptx extension. Create 5-10 slides minimum, each with meaningful content
+5. **Word documents**: Use .docx extension for essays, research papers, reports
+6. **Do NOT repeat content**: Write each section once. Do NOT loop or duplicate paragraphs
+7. **Keep the ```files block compact**: Put all file content in the JSON. Add only a brief 1-sentence summary outside the block
 
-Include a brief description outside the files block explaining the file(s) you created."""
+Keep your summary outside the files block to just one brief sentence like "Here's your document."
+Do NOT repeat the file content outside the block."""
 
 
 def render_file_entry(entry: dict) -> Tuple[str, bytes]:
     """
     Render a file entry from LLM output into final filename + bytes.
-    Supports enhanced types: slideshow, html_document, and auto-detects
+    Supports enhanced types: slideshow/pptx, docx, html_document, and auto-detects
     markdown content for PDF conversion.
     
     Returns (filename, data_bytes)
@@ -1051,18 +1382,44 @@ def render_file_entry(entry: dict) -> Tuple[str, bytes]:
     file_type = entry.get("type", "").lower()
     ext = os.path.splitext(filename)[1].lower()
 
-    # ─── Slideshow ───
+    # ─── Slideshow / Presentation ───
     if file_type == "slideshow" or ext in (".pptx",):
         slides = entry.get("slides", [])
         if not slides:
             # Try to parse slides from content
             slides = [{"title": "Presentation", "content": str(content), "layout": "title"}]
         title = entry.get("title", os.path.splitext(filename)[0])
-        html_content = generate_slideshow_html(slides, title)
-        # Force .html extension for slideshow
-        if not filename.endswith(".html"):
-            filename = os.path.splitext(filename)[0] + ".html"
-        return filename, html_content.encode("utf-8")
+        try:
+            pptx_data = generate_pptx(slides, title)
+            if isinstance(pptx_data, tuple):
+                # Fallback returned (data, ext)
+                return os.path.splitext(filename)[0] + pptx_data[1], pptx_data[0]
+            # Force .pptx extension
+            if not filename.endswith(".pptx"):
+                filename = os.path.splitext(filename)[0] + ".pptx"
+            return filename, pptx_data
+        except Exception as e:
+            logger.warning(f"PPTX generation failed, falling back to HTML: {e}")
+            html_content = generate_slideshow_html(slides, title)
+            if not filename.endswith(".html"):
+                filename = os.path.splitext(filename)[0] + ".html"
+            return filename, html_content.encode("utf-8")
+
+    # ─── Word Document (.docx) ───
+    if ext == ".docx" or ext == ".doc":
+        title = entry.get("title", os.path.splitext(filename)[0].replace("_", " ").replace("-", " ").title())
+        try:
+            docx_data = generate_docx(str(content), title)
+            if isinstance(docx_data, tuple):
+                return os.path.splitext(filename)[0] + docx_data[1], docx_data[0]
+            if not filename.endswith(".docx"):
+                filename = os.path.splitext(filename)[0] + ".docx"
+            return filename, docx_data
+        except Exception as e:
+            logger.warning(f"DOCX generation failed, falling back to PDF: {e}")
+            data = parse_markdown_to_pdf(str(content), title)
+            filename = os.path.splitext(filename)[0] + ".pdf"
+            return filename, data
 
     # ─── Rich HTML Document ───
     if file_type == "html_document":

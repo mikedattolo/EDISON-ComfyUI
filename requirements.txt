@@ -34,4 +34,8 @@ numpy>=1.24.0  # Audio processing
 soundfile>=0.12.1  # Audio file I/O (optional)
 webrtcvad>=2.0.10  # Alternative VAD (optional)
 
+# Office document generation
+python-pptx>=1.0.0  # PowerPoint .pptx generation
+python-docx>=1.0.0  # Word .docx generation
+
 # Note: Silero VAD is loaded via torch.hub, no pip package needed

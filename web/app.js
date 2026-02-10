@@ -589,14 +589,21 @@ class EdisonApp {
 
     loadSettings() {
         const saved = localStorage.getItem('edison_settings');
+        const protocol = window.location.protocol || 'http:';
+        const host = window.location.hostname || 'localhost';
         const defaults = {
-            apiEndpoint: 'http://192.168.1.26:8811',
+            apiEndpoint: `${protocol}//${host}:8811`,
             defaultMode: 'auto',
             streamResponses: true,
             syntaxHighlight: true
         };
         
-        return saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+        const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+        // Migrate away from hardcoded legacy IP
+        if (settings.apiEndpoint && settings.apiEndpoint.includes('192.168.1.26')) {
+            settings.apiEndpoint = defaults.apiEndpoint;
+        }
+        return settings;
     }
 }
 

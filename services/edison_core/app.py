@@ -3286,7 +3286,7 @@ Your vote:"""
                 status_steps.append({"stage": "Voting"})
             
             # Synthesize with actual insight
-            file_instruction = FILE_GENERATION_PROMPT if FILE_GENERATION_PROMPT else "If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML, presentations, slideshows), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use: ```files\n[{\"filename\": \"slides.html\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Include a brief summary outside the block."
+            file_instruction = FILE_GENERATION_PROMPT if FILE_GENERATION_PROMPT else "If the user asks you to create downloadable files, output a FILES block. Use .pptx for presentations, .docx for Word documents, .pdf for PDFs. Write FULL content. Do NOT repeat content."
 
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
 
@@ -3454,10 +3454,21 @@ Do not include multiple summaries or "Final Summary" variants.
                             assistant_response += token
                             yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
             else:
+                # Detect file generation requests for higher token limit
+                _is_file_gen = bool(re.search(
+                    r"\b(pdf|docx|doc|pptx|presentation|slideshow|slides|document|report|essay|resume|letter|spreadsheet|create\s+a?\s*(file|document|report|pdf|presentation|word|powerpoint))\b",
+                    request.message or "", re.IGNORECASE
+                ))
                 # Estimate safe max_tokens based on prompt size to avoid context overflow
                 estimated_prompt_tokens = max(1, len(full_prompt) // 4)
                 ctx_limit = _get_ctx_limit(model_name)
-                max_tokens = 3072 if original_mode == "work" else 2048
+                # Use higher token limit for file generation to avoid truncation/looping
+                if _is_file_gen:
+                    max_tokens = 4096
+                elif original_mode == "work":
+                    max_tokens = 3072
+                else:
+                    max_tokens = 2048
                 safe_max_tokens = max(128, ctx_limit - estimated_prompt_tokens - 64)
                 if safe_max_tokens < max_tokens:
                     max_tokens = safe_max_tokens
@@ -3486,6 +3497,10 @@ Do not include multiple summaries or "Final Summary" variants.
                             client_disconnected = True
                             break
                         assistant_response += token
+                        # Check for repetition loop
+                        if _detect_repetition(assistant_response):
+                            logger.warning("Repetition detected in vLLM output, stopping generation")
+                            break
                         yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
                 else:
                     lock = get_lock_for_model(llm)
@@ -3497,7 +3512,7 @@ Do not include multiple summaries or "Final Summary" variants.
                             top_p=0.9,
                             frequency_penalty=0.3,
                             presence_penalty=0.2,
-                            repeat_penalty=1.1,
+                            repeat_penalty=1.15,
                             stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
                             echo=False,
                             stream=True
@@ -3520,6 +3535,10 @@ Do not include multiple summaries or "Final Summary" variants.
                             token = chunk["choices"][0].get("text", "")
                             if token:
                                 assistant_response += token
+                                # Check for repetition loop
+                                if _detect_repetition(assistant_response):
+                                    logger.warning("Repetition detected in LLM output, stopping generation")
+                                    break
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
         except Exception as e:
             logger.error(f"Streaming generation failed: {e}")
@@ -3543,8 +3562,8 @@ Do not include multiple summaries or "Final Summary" variants.
         file_entries = _parse_files_from_response(assistant_response)
         generated_files = _write_artifacts(file_entries) if file_entries else []
         cleaned_response = _strip_file_blocks(assistant_response)
-        if original_mode == "swarm":
-            cleaned_response = _dedupe_repeated_lines(cleaned_response)
+        # Always deduplicate repeated lines (fixes looping output)
+        cleaned_response = _dedupe_repeated_lines(cleaned_response)
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
@@ -4522,7 +4541,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     if FILE_GENERATION_PROMPT:
         base += " " + FILE_GENERATION_PROMPT
     else:
-        base += " If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML, presentations, slideshows), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use: ```files\n[{\"filename\": \"slides.html\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Include a brief summary outside the block."
+        base += " If the user asks you to create downloadable files, output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"report.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use .pptx: ```files\n[{\"filename\": \"slides.pptx\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nFor Word documents use .docx: ```files\n[{\"filename\": \"essay.docx\", \"content\": \"# Title\\n\\nContent...\"}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Do NOT repeat content. Keep summary outside the block to one brief sentence."
     
     prompts = {
         "chat": base + " Respond conversationally.",
@@ -4788,6 +4807,22 @@ def _render_pdf_from_text(text: str) -> bytes:
         pdf += f"{pos:010d} 00000 n \n".encode("ascii")
     pdf += b"trailer << /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%EOF" % (len(objects) + 1, xref_start)
     return pdf
+
+def _detect_repetition(text: str, window: int = 200) -> bool:
+    """Detect if the generated text has fallen into a repetition loop.
+    Checks if the last `window` characters repeat a pattern seen earlier."""
+    if len(text) < window * 2:
+        return False
+    tail = text[-window:]
+    # Check if this tail appears earlier in the text
+    earlier = text[:-window]
+    if tail in earlier:
+        return True
+    # Also check for shorter repeated phrases (100 chars)
+    short_tail = text[-100:]
+    if len(text) > 300 and earlier.count(short_tail) >= 2:
+        return True
+    return False
 
 def _parse_files_from_response(response: str) -> list:
     if not response:

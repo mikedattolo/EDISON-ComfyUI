@@ -10,10 +10,27 @@ class ImageGallery {
         this.galleryLoading = null;
         this.galleryEmpty = null;
         this.images = [];
-        this.apiEndpoint = localStorage.getItem('apiEndpoint') || 'http://192.168.1.26:8811';
+        this.apiEndpoint = this._resolveApiEndpoint();
         this.escapeListenerAdded = false;
         this.isOpen = false;
         this.init();
+    }
+
+    _resolveApiEndpoint() {
+        // Try to get endpoint from saved settings (shared with app_enhanced.js)
+        try {
+            const saved = localStorage.getItem('edison_settings');
+            if (saved) {
+                const settings = JSON.parse(saved);
+                if (settings.apiEndpoint && !settings.apiEndpoint.includes('192.168.1.26')) {
+                    return settings.apiEndpoint;
+                }
+            }
+        } catch (e) { /* ignore */ }
+        // Fall back to dynamic endpoint based on current host
+        const protocol = window.location.protocol || 'http:';
+        const host = window.location.hostname || 'localhost';
+        return `${protocol}//${host}:8811`;
     }
 
     init() {

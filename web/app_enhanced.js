@@ -794,13 +794,43 @@ class EdisonApp {
                             } else if (data.t) {
                                 // Token event
                                 accumulatedResponse += data.t;
-                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
+                                // Detect ```files block and hide raw file JSON from user
+                                const filesBlockStart = accumulatedResponse.indexOf('```files');
+                                if (filesBlockStart !== -1) {
+                                    const filesBlockEnd = accumulatedResponse.indexOf('```', filesBlockStart + 8);
+                                    const textBefore = accumulatedResponse.substring(0, filesBlockStart).trim();
+                                    if (filesBlockEnd !== -1) {
+                                        // Block complete - show text before it + generating indicator
+                                        const textAfter = accumulatedResponse.substring(filesBlockEnd + 3).trim();
+                                        const displayText = (textBefore || 'Here are your files:') + (textAfter ? '\n' + textAfter : '');
+                                        this.updateMessage(assistantMessageEl, displayText + '\n\n📄 *Generating file...*', mode);
+                                    } else {
+                                        // Block still streaming - show text before + indicator
+                                        this.updateMessage(assistantMessageEl, (textBefore || 'Generating your file...') + '\n\n📄 *Generating file...*', mode);
+                                    }
+                                } else {
+                                    this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
+                                }
                             } else if (data.ok !== undefined) {
                                 // Done event
                                 this.currentRequestId = null;  // Clear request ID
                                 if (data.ok) {
+                                    // Check if backend triggered image generation (e.g. via Coral intent)
+                                    if (data.image_generation && data.image_generation.prompt) {
+                                        console.log('🎨 Backend triggered image generation via streaming done event');
+                                        await this.handleImageGeneration(data.image_generation.prompt, assistantMessageEl);
+                                        return; // Exit stream processing after image gen
+                                    }
+                                    // Strip ```files blocks from displayed response
+                                    let displayResponse = accumulatedResponse.replace(/```files[\s\S]*?```/g, '').trim();
+                                    // Clean up leftover generating indicator
+                                    displayResponse = displayResponse.replace(/📄\s*\*Generating file\.\.\.\*/g, '').trim();
+                                    // If no text remains, provide a brief summary
+                                    if (!displayResponse && data.files && data.files.length > 0) {
+                                        displayResponse = 'Here are your files:';
+                                    }
                                     // Success
-                                    this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
+                                    this.updateMessage(assistantMessageEl, displayResponse, data.mode_used || mode);
                                     
                                     // Display swarm agent conversation if not already inserted
                                     if (!swarmInserted && data.swarm_agents && data.swarm_agents.length > 0) {
@@ -839,8 +869,8 @@ class EdisonApp {
                                     
                                     assistantMessageEl.classList.remove('streaming');
                                     
-                                    // Save to chat history
-                                    this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode);
+                                    // Save to chat history (use clean version without files blocks)
+                                    this.saveMessageToChat(message, displayResponse, data.mode_used || mode);
                                     
                                     // Generate smart title if first message
                                     const chat = this.chats.find(c => c.id === this.currentChatId);
@@ -1458,6 +1488,9 @@ class EdisonApp {
 
     formatMessage(content) {
         if (!content) return '';
+
+        // Strip ```files blocks from display
+        content = content.replace(/```files[\s\S]*?```/g, '').trim();
 
         let reasoningHtml = '';
         const thinkingMatch = content.match(/<thinking>([\s\S]*?)<\/thinking>/i);
