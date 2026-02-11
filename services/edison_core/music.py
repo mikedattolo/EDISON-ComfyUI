@@ -1,7 +1,7 @@
 """
 Music Generation Service for EDISON
 Generates music from text prompts, lyrics, and style descriptions
-using Meta's MusicGen (via audiocraft) or fallback to API-based services.
+using Meta's MusicGen via Hugging Face transformers.
 """
 
 import logging
@@ -21,17 +21,18 @@ MUSIC_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 
 class MusicGenerationService:
     """
-    Music generation using Meta's MusicGen (audiocraft library).
+    Music generation using Meta's MusicGen via Hugging Face transformers.
     Supports text-to-music with genre, mood, instruments, tempo, and lyrics.
     """
 
     def __init__(self, config: Dict[str, Any]):
         music_cfg = config.get("edison", {}).get("music", {})
-        self.model_size = music_cfg.get("model_size", "medium")  # small, medium, large, melody
+        self.model_size = music_cfg.get("model_size", "medium")  # small, medium, large
         self.default_duration = music_cfg.get("default_duration", 15)  # seconds
         self.max_duration = music_cfg.get("max_duration", 60)
         self.sample_rate = 32000
         self._model = None
+        self._processor = None
         self._model_loaded = False
         self._loading = False
         logger.info(f"✓ Music generation service initialized (model: musicgen-{self.model_size})")
@@ -39,7 +40,7 @@ class MusicGenerationService:
     # ── Model management ─────────────────────────────────────────────────
 
     def _load_model(self):
-        """Lazy-load MusicGen model on first use."""
+        """Lazy-load MusicGen model on first use via transformers."""
         if self._model_loaded and self._model is not None:
             return True
 
@@ -53,17 +54,28 @@ class MusicGenerationService:
 
         self._loading = True
         try:
-            from audiocraft.models import MusicGen
+            import torch
+            from transformers import MusicgenForConditionalGeneration, AutoProcessor
+
             model_name = f"facebook/musicgen-{self.model_size}"
-            logger.info(f"Loading MusicGen model: {model_name}...")
-            self._model = MusicGen.get_pretrained(model_name)
-            self._model.set_generation_params(duration=self.default_duration)
+            logger.info(f"Loading MusicGen model via transformers: {model_name}...")
+
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+            dtype = torch.float16 if device == "cuda" else torch.float32
+
+            self._processor = AutoProcessor.from_pretrained(model_name)
+            self._model = MusicgenForConditionalGeneration.from_pretrained(
+                model_name, torch_dtype=dtype
+            ).to(device)
+
+            self.sample_rate = self._model.config.audio_encoder.sampling_rate
             self._model_loaded = True
-            logger.info(f"✓ MusicGen model loaded: {model_name}")
+            logger.info(f"✓ MusicGen model loaded: {model_name} on {device} (sr={self.sample_rate})")
             return True
-        except ImportError:
+        except ImportError as e:
             logger.error(
-                "❌ audiocraft not installed. Install with: pip install audiocraft"
+                f"❌ transformers MusicGen not available: {e}. "
+                "Install with: pip install transformers torch torchaudio"
             )
             self._loading = False
             return False
@@ -76,7 +88,9 @@ class MusicGenerationService:
         """Unload model to free VRAM."""
         if self._model is not None:
             del self._model
+            del self._processor
             self._model = None
+            self._processor = None
             self._model_loaded = False
             import gc
             gc.collect()
@@ -147,7 +161,6 @@ class MusicGenerationService:
         lyrics: str = "",
         reference_artist: str = "",
         duration: int = 15,
-        melody_audio_path: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate music from a text prompt or structured parameters.
@@ -163,7 +176,6 @@ class MusicGenerationService:
             lyrics:            Song lyrics (used for theme extraction)
             reference_artist:  e.g. "inspired by Daft Punk"
             duration:          Length in seconds (max 60)
-            melody_audio_path: Path to a melody/audio file to condition on
         """
         duration = min(duration, self.max_duration)
 
@@ -182,17 +194,17 @@ class MusicGenerationService:
 
         logger.info(f"Generating music: '{prompt}' ({duration}s)")
 
-        # Try audiocraft (local GPU generation)
-        result = self._generate_with_audiocraft(prompt, duration, melody_audio_path)
+        # Generate via transformers MusicGen
+        result = self._generate_with_transformers(prompt, duration)
         if result.get("ok"):
             return result
 
-        # If audiocraft fails, return instructions for manual setup
+        # If generation fails, return instructions for setup
         return {
             "ok": False,
             "error": (
                 "MusicGen model not available. To enable music generation:\n"
-                "1. Install audiocraft: pip install audiocraft\n"
+                "1. Install: pip install transformers torch torchaudio scipy\n"
                 "2. Ensure you have a CUDA GPU with sufficient VRAM (4GB+ for small, 8GB+ for medium)\n"
                 "3. The model will be auto-downloaded on first use (~3.3GB for medium)"
             ),
@@ -200,46 +212,46 @@ class MusicGenerationService:
             "duration": duration,
         }
 
-    def _generate_with_audiocraft(
-        self, prompt: str, duration: int, melody_path: Optional[str] = None
+    def _generate_with_transformers(
+        self, prompt: str, duration: int
     ) -> Dict[str, Any]:
-        """Generate music using Meta's audiocraft MusicGen."""
+        """Generate music using MusicGen via Hugging Face transformers."""
         try:
             if not self._load_model():
                 return {"ok": False, "error": "MusicGen model not loaded"}
 
             import torch
-            import torchaudio
-
-            self._model.set_generation_params(duration=duration)
+            import scipy.io.wavfile
 
             output_id = uuid.uuid4().hex[:12]
 
-            if melody_path and Path(melody_path).exists() and self.model_size == "melody":
-                # Melody-conditioned generation
-                melody_waveform, sr = torchaudio.load(melody_path)
-                # Resample if needed
-                if sr != self.sample_rate:
-                    resampler = torchaudio.transforms.Resample(sr, self.sample_rate)
-                    melody_waveform = resampler(melody_waveform)
-                # Generate conditioned on melody
-                wav = self._model.generate_with_chroma(
-                    descriptions=[prompt],
-                    melody_wavs=melody_waveform.unsqueeze(0),
-                    melody_sample_rate=self.sample_rate,
-                    progress=True,
-                )
-            else:
-                # Standard text-to-music
-                wav = self._model.generate(
-                    descriptions=[prompt],
-                    progress=True,
+            # Calculate max_new_tokens from duration
+            # MusicGen generates at ~50 tokens/sec for the audio codec
+            tokens_per_second = 50
+            max_new_tokens = int(duration * tokens_per_second)
+
+            # Tokenize the prompt
+            inputs = self._processor(
+                text=[prompt],
+                padding=True,
+                return_tensors="pt",
+            ).to(self._model.device)
+
+            # Generate audio
+            with torch.no_grad():
+                audio_values = self._model.generate(
+                    **inputs,
+                    max_new_tokens=max_new_tokens,
                 )
 
-            # Save output
+            # audio_values shape: (batch, 1, samples)
+            audio_data = audio_values[0, 0].cpu().float().numpy()
+
+            # Save as WAV
             output_path = MUSIC_OUTPUT_DIR / f"EDISON_music_{output_id}.wav"
-            # wav shape: (batch, channels, samples)
-            torchaudio.save(str(output_path), wav[0].cpu(), self.sample_rate)
+            scipy.io.wavfile.write(
+                str(output_path), self.sample_rate, audio_data
+            )
 
             # Also save as MP3 if ffmpeg available
             mp3_path = None
@@ -256,7 +268,7 @@ class MusicGenerationService:
                 pass
 
             file_size = output_path.stat().st_size
-            duration_actual = wav.shape[-1] / self.sample_rate
+            duration_actual = len(audio_data) / self.sample_rate
 
             return {
                 "ok": True,
@@ -272,8 +284,8 @@ class MusicGenerationService:
                 },
             }
 
-        except ImportError:
-            return {"ok": False, "error": "audiocraft library not installed"}
+        except ImportError as e:
+            return {"ok": False, "error": f"transformers MusicGen not available: {e}"}
         except Exception as e:
             logger.error(f"MusicGen generation failed: {e}")
             return {"ok": False, "error": f"Music generation failed: {str(e)}"}
@@ -318,22 +330,15 @@ class MusicGenerationService:
                     "quality": "Highest text-to-music quality",
                     "description": "Best quality, requires more VRAM",
                 },
-                {
-                    "name": "musicgen-melody",
-                    "size": "~1.5B params",
-                    "vram": "~8GB",
-                    "quality": "Melody-conditioned generation",
-                    "description": "Can take an audio melody as input to guide generation",
-                },
             ],
             "current_model": f"musicgen-{self.model_size}",
-            "audiocraft_installed": self._check_audiocraft(),
+            "musicgen_available": self._check_musicgen(),
         }
 
     @staticmethod
-    def _check_audiocraft() -> bool:
+    def _check_musicgen() -> bool:
         try:
-            import audiocraft
+            from transformers import MusicgenForConditionalGeneration
             return True
         except ImportError:
             return False

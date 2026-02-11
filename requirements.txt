@@ -38,11 +38,9 @@ webrtcvad>=2.0.10  # Alternative VAD (optional)
 python-pptx>=1.0.0  # PowerPoint .pptx generation
 python-docx>=1.0.0  # Word .docx generation
 
-# Music generation (Meta's MusicGen via audiocraft)
-# Note: audiocraft requires torch>=2.0.0 (already included above)
-# Install separately for GPU music generation:
-#   pip install audiocraft
-# audiocraft>=1.3.0  # Uncomment when ready to enable music generation
+# Music generation (Meta's MusicGen via transformers)
+# Uses Hugging Face transformers (already included above) — no audiocraft needed
+scipy>=1.10.0  # WAV file writing for music output
 
 # Video generation helpers
 # ffmpeg must be installed system-wide: apt install ffmpeg
