@@ -2027,7 +2027,10 @@ class EdisonApp {
                             <source src="${videoUrl}" type="video/mp4">
                             Your browser does not support video playback.
                         </video>
-                        <p style="margin-top: 8px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>`;
+                        <p style="margin-top: 8px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
+                        <div style="margin-top: 10px;">
+                            <a href="${videoUrl}" download style="padding: 8px 16px; background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%); color: white; border-radius: 8px; text-decoration: none; font-size: 14px;">📥 Download Video</a>
+                        </div>`;
                     this.updateMessage(assistantMessageEl, videoHtml, 'video');
                     this.saveMessageToChat(prompt, videoHtml, 'video');
                     break;

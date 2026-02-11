@@ -4505,6 +4505,37 @@ async def video_status(prompt_id: str):
     result = video_service.check_video_status(prompt_id)
     status = result.get("data", {}).get("status", "unknown")
 
+    # Auto-save completed video to gallery
+    if status == "complete":
+        try:
+            videos = result.get("data", {}).get("videos", [])
+            if videos:
+                vid = videos[0]
+                video_id = str(uuid.uuid4())[:8]
+                video_filename = vid.get("filename", "")
+
+                db = load_gallery_db()
+                gallery_entry = {
+                    "id": video_id,
+                    "type": "video",
+                    "prompt": vid.get("prompt", prompt_id),
+                    "url": f"/video/{video_filename}",
+                    "filename": video_filename,
+                    "timestamp": int(time.time()),
+                    "model": result.get("data", {}).get("backend", "ComfyUI"),
+                    "settings": {},
+                }
+                items = db.get("images", [])
+                # Avoid duplicating if already saved (check filename)
+                if not any(i.get("filename") == video_filename for i in items):
+                    items.insert(0, gallery_entry)
+                    db["images"] = items
+                    save_gallery_db(db)
+                    result["saved_to_gallery"] = True
+                    logger.info(f"✓ Auto-saved video to gallery: {video_filename}")
+        except Exception as ge:
+            logger.error(f"Failed to auto-save video to gallery: {ge}")
+
     # Reload LLMs once generation is complete or failed
     if status in ("complete", "complete_frames") and _models_unloaded_for_image_gen:
         reload_llm_models_background()
@@ -4607,7 +4638,6 @@ async def generate_music_endpoint(request: dict):
             lyrics=request.get("lyrics", ""),
             reference_artist=request.get("reference_artist", ""),
             duration=request.get("duration", 15),
-            melody_audio_path=request.get("melody_audio_path"),
         )
 
         # Reload LLMs after generation
@@ -4616,6 +4646,41 @@ async def generate_music_endpoint(request: dict):
 
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "Music generation failed"))
+
+        # Auto-save music to gallery
+        try:
+            d = result.get("data", {})
+            music_id = str(uuid.uuid4())[:8]
+            # Determine which file to reference
+            music_filename = d.get("filename", "")
+            if d.get("mp3_path"):
+                music_filename = Path(d["mp3_path"]).name
+
+            db = load_gallery_db()
+            gallery_entry = {
+                "id": music_id,
+                "type": "music",
+                "prompt": request.get("prompt", ""),
+                "url": f"/music/{music_filename}",
+                "filename": music_filename,
+                "timestamp": int(time.time()),
+                "duration_seconds": d.get("duration_seconds", 0),
+                "model": d.get("model", "MusicGen"),
+                "settings": {
+                    "genre": request.get("genre", ""),
+                    "mood": request.get("mood", ""),
+                    "duration": request.get("duration", 15),
+                },
+            }
+            items = db.get("images", [])
+            items.insert(0, gallery_entry)
+            db["images"] = items
+            save_gallery_db(db)
+            result["saved_to_gallery"] = True
+            logger.info(f"\u2713 Auto-saved music to gallery: {music_filename}")
+        except Exception as ge:
+            logger.error(f"Failed to auto-save music to gallery: {ge}")
+            result["saved_to_gallery"] = False
 
         return result
 

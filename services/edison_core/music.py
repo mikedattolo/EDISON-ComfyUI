@@ -247,10 +247,17 @@ class MusicGenerationService:
             # audio_values shape: (batch, 1, samples)
             audio_data = audio_values[0, 0].cpu().float().numpy()
 
+            # Normalize and convert to int16 for proper WAV playback
+            import numpy as np
+            audio_max = np.abs(audio_data).max()
+            if audio_max > 0:
+                audio_data = audio_data / audio_max
+            audio_int16 = (audio_data * 32767).astype(np.int16)
+
             # Save as WAV
             output_path = MUSIC_OUTPUT_DIR / f"EDISON_music_{output_id}.wav"
             scipy.io.wavfile.write(
-                str(output_path), self.sample_rate, audio_data
+                str(output_path), self.sample_rate, audio_int16
             )
 
             # Also save as MP3 if ffmpeg available

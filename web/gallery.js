@@ -193,6 +193,9 @@ class ImageGallery {
         item.className = 'gallery-item';
         item.setAttribute('data-id', image.id);
 
+        // Detect media type
+        const mediaType = image.type || 'image';
+
         // Format date
         const date = new Date(image.timestamp * 1000);
         const dateStr = date.toLocaleDateString('en-US', { 
@@ -203,17 +206,42 @@ class ImageGallery {
         });
 
         // Truncate prompt
-        const prompt = image.prompt.length > 100 
-            ? image.prompt.substring(0, 100) + '...' 
-            : image.prompt;
+        const promptText = image.prompt || '';
+        const prompt = promptText.length > 100 
+            ? promptText.substring(0, 100) + '...' 
+            : promptText;
+
+        let mediaHtml = '';
+        if (mediaType === 'music') {
+            mediaHtml = `
+                <div class="gallery-item-media gallery-item-music" style="display: flex; align-items: center; justify-content: center; height: 180px; background: linear-gradient(135deg, rgba(102,126,234,0.15) 0%, rgba(118,75,162,0.15) 100%); border-radius: 8px 8px 0 0;">
+                    <div style="text-align: center;">
+                        <div style="font-size: 48px; margin-bottom: 8px;">🎵</div>
+                        <div style="font-size: 13px; color: #aaa;">${image.duration_seconds ? image.duration_seconds + 's' : 'Music'} • ${image.model || 'MusicGen'}</div>
+                    </div>
+                </div>
+                <audio controls style="width: 100%; margin-top: 4px;" preload="none">
+                    <source src="${this.apiEndpoint}${image.url}" type="${image.filename && image.filename.endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav'}">
+                </audio>`;
+        } else if (mediaType === 'video') {
+            mediaHtml = `
+                <div class="gallery-item-media" style="border-radius: 8px 8px 0 0; overflow: hidden;">
+                    <video style="width: 100%; display: block; max-height: 220px; object-fit: cover;" preload="metadata" muted>
+                        <source src="${this.apiEndpoint}${image.url}" type="video/mp4">
+                    </video>
+                </div>`;
+        } else {
+            mediaHtml = `
+                <img class="gallery-item-image" 
+                     src="${this.apiEndpoint}${image.url}" 
+                     alt="${promptText}"
+                     loading="lazy">`;
+        }
 
         item.innerHTML = `
-            <img class="gallery-item-image" 
-                 src="${this.apiEndpoint}${image.url}" 
-                 alt="${image.prompt}"
-                 loading="lazy">
+            ${mediaHtml}
             <div class="gallery-item-info">
-                <div class="gallery-item-prompt" title="${image.prompt}">${prompt}</div>
+                <div class="gallery-item-prompt" title="${promptText}">${prompt}</div>
                 <div class="gallery-item-meta">
                     <span class="gallery-item-date">
                         <svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor">
@@ -239,9 +267,16 @@ class ImageGallery {
             </div>
         `;
 
-        // Add click handler for full view
-        const img = item.querySelector('.gallery-item-image');
-        img.addEventListener('click', () => this.showFullImage(image));
+        // Add click handler for full view (images and videos)
+        if (mediaType === 'image') {
+            const img = item.querySelector('.gallery-item-image');
+            img.addEventListener('click', () => this.showFullImage(image));
+        } else if (mediaType === 'video') {
+            const vid = item.querySelector('video');
+            vid.addEventListener('click', () => {
+                if (vid.paused) vid.play(); else vid.pause();
+            });
+        }
 
         // Add download handler
         const downloadBtn = item.querySelector('.download');
@@ -270,20 +305,36 @@ class ImageGallery {
             document.body.appendChild(modal);
         }
 
+        const mediaType = image.type || 'image';
+
         // Format settings
         const settings = image.settings || {};
         const settingsStr = Object.entries(settings)
+            .filter(([, v]) => v)
             .map(([key, value]) => `${key}: ${value}`)
             .join(' • ');
+
+        let mediaContent = '';
+        if (mediaType === 'video') {
+            mediaContent = `<video controls autoplay style="max-width: 90vw; max-height: 70vh; border-radius: 8px;"><source src="${this.apiEndpoint}${image.url}" type="video/mp4"></video>`;
+        } else if (mediaType === 'music') {
+            mediaContent = `
+                <div style="text-align: center; padding: 40px;">
+                    <div style="font-size: 80px; margin-bottom: 20px;">🎵</div>
+                    <audio controls autoplay style="width: 100%; max-width: 500px;"><source src="${this.apiEndpoint}${image.url}" type="${image.filename && image.filename.endsWith('.mp3') ? 'audio/mpeg' : 'audio/wav'}"></audio>
+                </div>`;
+        } else {
+            mediaContent = `<img class="gallery-modal-image" src="${this.apiEndpoint}${image.url}" alt="${image.prompt}">`;
+        }
 
         modal.innerHTML = `
             <div class="gallery-modal-content">
                 <button class="gallery-modal-close">×</button>
-                <img class="gallery-modal-image" src="${this.apiEndpoint}${image.url}" alt="${image.prompt}">
+                ${mediaContent}
                 <div class="gallery-modal-info">
-                    <div class="gallery-modal-prompt">${image.prompt}</div>
+                    <div class="gallery-modal-prompt">${image.prompt || ''}</div>
                     <div class="gallery-modal-meta">
-                        <span>Size: ${image.width}x${image.height}</span>
+                        ${mediaType === 'image' ? `<span>Size: ${image.width}x${image.height}</span>` : ''}
                         <span>Model: ${image.model || 'SDXL'}</span>
                         ${settingsStr ? `<span>${settingsStr}</span>` : ''}
                     </div>
@@ -309,13 +360,19 @@ class ImageGallery {
 
     async downloadImage(image) {
         try {
+            const mediaType = image.type || 'image';
             const response = await fetch(`${this.apiEndpoint}${image.url}`);
             const blob = await response.blob();
             const url = window.URL.createObjectURL(blob);
             
+            let ext = 'png';
+            if (mediaType === 'music') ext = image.filename && image.filename.endsWith('.mp3') ? 'mp3' : 'wav';
+            else if (mediaType === 'video') ext = 'mp4';
+            else if (image.filename) ext = image.filename.split('.').pop();
+
             const a = document.createElement('a');
             a.href = url;
-            a.download = `edison-${image.id}.png`;
+            a.download = `edison-${image.id}.${ext}`;
             document.body.appendChild(a);
             a.click();
             document.body.removeChild(a);
