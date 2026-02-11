@@ -17,3 +17,15 @@ workflow_load
 model_info
 system_status
 help
+generate_video
+text_to_video
+create_video
+make_video
+generate_music
+text_to_music
+create_music
+make_music
+compose_music
+get_time
+get_weather
+get_news

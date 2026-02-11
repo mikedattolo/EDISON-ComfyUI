@@ -493,6 +493,12 @@ class EdisonApp {
                 if (response.image_generation && response.image_generation.prompt) {
                     console.log('🎨 Backend triggered image generation via Coral');
                     await this.handleImageGeneration(response.image_generation.prompt, assistantMessageEl);
+                } else if (response.video_generation && response.video_generation.prompt) {
+                    console.log('🎬 Backend triggered video generation');
+                    await this.handleVideoGeneration(response.video_generation.prompt, assistantMessageEl);
+                } else if (response.music_generation && response.music_generation.prompt) {
+                    console.log('🎵 Backend triggered music generation');
+                    await this.handleMusicGeneration(response.music_generation.prompt, assistantMessageEl);
                 } else {
                     // Update assistant message
                     this.updateMessage(assistantMessageEl, response.response, response.mode_used);
@@ -820,6 +826,16 @@ class EdisonApp {
                                         console.log('🎨 Backend triggered image generation via streaming done event');
                                         await this.handleImageGeneration(data.image_generation.prompt, assistantMessageEl);
                                         return; // Exit stream processing after image gen
+                                    }
+                                    if (data.video_generation && data.video_generation.prompt) {
+                                        console.log('🎬 Backend triggered video generation via streaming done event');
+                                        await this.handleVideoGeneration(data.video_generation.prompt, assistantMessageEl);
+                                        return;
+                                    }
+                                    if (data.music_generation && data.music_generation.prompt) {
+                                        console.log('🎵 Backend triggered music generation via streaming done event');
+                                        await this.handleMusicGeneration(data.music_generation.prompt, assistantMessageEl);
+                                        return;
                                     }
                                     // Strip ```files blocks from displayed response
                                     let displayResponse = accumulatedResponse.replace(/```files[\s\S]*?```/g, '').trim();
@@ -1965,6 +1981,118 @@ class EdisonApp {
         }
         
         return prompt;
+    }
+
+    async handleVideoGeneration(prompt, assistantMessageEl) {
+        try {
+            this.updateMessage(assistantMessageEl, '🎬 Generating video, please wait...', 'video');
+
+            const response = await fetch(`${this.settings.apiEndpoint}/generate-video`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt, width: 512, height: 512, frames: 16, fps: 8 })
+            });
+
+            if (!response.ok) throw new Error(`Video generation failed: ${response.statusText}`);
+            const result = await response.json();
+            const promptId = result.prompt_id;
+
+            const loadingHtml = `
+                <div style="text-align: center; padding: 20px;">
+                    <div style="display: inline-block; width: 300px; height: 200px; background: linear-gradient(135deg, rgba(255, 107, 107, 0.1) 0%, rgba(255, 142, 83, 0.1) 100%); border-radius: 12px; position: relative; overflow: hidden;">
+                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
+                            <div style="width: 60px; height: 60px; border: 4px solid rgba(255, 107, 107, 0.3); border-top-color: #ff6b6b; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
+                            <div style="font-size: 16px; color: #ff6b6b; font-weight: 500;">Generating Video...</div>
+                            <div id="video-progress-text" style="font-size: 14px; color: #888; margin-top: 8px;">Backend: ${result.backend || 'auto'}</div>
+                        </div>
+                    </div>
+                    <p style="margin-top: 16px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
+                </div>`;
+            this.updateMessage(assistantMessageEl, loadingHtml, 'video');
+
+            let attempts = 0;
+            const maxAttempts = 300; // 5 min timeout for video
+            while (attempts < maxAttempts) {
+                await new Promise(r => setTimeout(r, 2000));
+                const statusResp = await fetch(`${this.settings.apiEndpoint}/video-status/${promptId}`);
+                const status = await statusResp.json();
+                const s = status.data || status;
+
+                if (s.status === 'complete' && s.videos && s.videos.length > 0) {
+                    const vid = s.videos[0];
+                    const videoUrl = `${this.settings.apiEndpoint}/video/${vid.filename}`;
+                    const videoHtml = `
+                        <p>✅ Video generated successfully!</p>
+                        <video controls style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                            <source src="${videoUrl}" type="video/mp4">
+                            Your browser does not support video playback.
+                        </video>
+                        <p style="margin-top: 8px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>`;
+                    this.updateMessage(assistantMessageEl, videoHtml, 'video');
+                    this.saveMessageToChat(prompt, videoHtml, 'video');
+                    break;
+                } else if (s.status === 'complete_frames') {
+                    this.updateMessage(assistantMessageEl, '🎬 Frames generated, stitching video...', 'video');
+                    await fetch(`${this.settings.apiEndpoint}/stitch-frames`, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ prompt_id: promptId })
+                    });
+                } else if (s.status === 'error' || !status.ok) {
+                    throw new Error(status.error || s.message || 'Video generation failed');
+                }
+
+                const progEl = document.getElementById('video-progress-text');
+                if (progEl) progEl.textContent = `Generating... (${attempts * 2}s)`;
+                attempts++;
+            }
+            if (attempts >= maxAttempts) throw new Error('Video generation timed out');
+        } catch (error) {
+            console.error('Video generation error:', error);
+            this.updateMessage(assistantMessageEl, `⚠️ Error generating video: ${error.message}`, 'error');
+        }
+    }
+
+    async handleMusicGeneration(prompt, assistantMessageEl) {
+        try {
+            this.updateMessage(assistantMessageEl, '🎵 Generating music, please wait...', 'music');
+
+            const response = await fetch(`${this.settings.apiEndpoint}/generate-music`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt, duration: 15 })
+            });
+
+            if (!response.ok) throw new Error(`Music generation failed: ${response.statusText}`);
+            const result = await response.json();
+
+            if (result.ok && result.data) {
+                const d = result.data;
+                const audioUrl = d.mp3_path
+                    ? `${this.settings.apiEndpoint}/music/${d.mp3_path.split('/').pop()}`
+                    : `${this.settings.apiEndpoint}/music/${d.filename}`;
+                const musicHtml = `
+                    <p>✅ Music generated successfully!</p>
+                    <audio controls style="width: 100%; margin-top: 10px;">
+                        <source src="${audioUrl}" type="${d.mp3_path ? 'audio/mpeg' : 'audio/wav'}">
+                        Your browser does not support audio playback.
+                    </audio>
+                    <div style="margin-top: 8px; color: #888;">
+                        <strong>Duration:</strong> ${d.duration_seconds}s | <strong>Model:</strong> ${d.model || 'MusicGen'}
+                    </div>
+                    <p style="color: #888;"><strong>Prompt:</strong> ${prompt}</p>
+                    <div style="margin-top: 10px;">
+                        <a href="${audioUrl}" download style="padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px; text-decoration: none; font-size: 14px;">📥 Download</a>
+                    </div>`;
+                this.updateMessage(assistantMessageEl, musicHtml, 'music');
+                this.saveMessageToChat(prompt, musicHtml, 'music');
+            } else {
+                throw new Error(result.error || 'Music generation failed');
+            }
+        } catch (error) {
+            console.error('Music generation error:', error);
+            this.updateMessage(assistantMessageEl, `⚠️ Error generating music: ${error.message}`, 'error');
+        }
     }
 
     createNewChat() {

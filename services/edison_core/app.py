@@ -50,6 +50,40 @@ except ImportError:
         WorkStep = None
         WorkPlanResponse = None
 
+# Import real-time data, video, and music services
+try:
+    from .realtime import RealTimeDataService
+    logger.info("✓ Real-time data service loaded")
+except ImportError:
+    try:
+        from realtime import RealTimeDataService
+        logger.info("✓ Real-time data service loaded (direct import)")
+    except ImportError:
+        RealTimeDataService = None
+        logger.warning("⚠ Real-time data service not available")
+
+try:
+    from .video import VideoGenerationService
+    logger.info("✓ Video generation service loaded")
+except ImportError:
+    try:
+        from video import VideoGenerationService
+        logger.info("✓ Video generation service loaded (direct import)")
+    except ImportError:
+        VideoGenerationService = None
+        logger.warning("⚠ Video generation service not available")
+
+try:
+    from .music import MusicGenerationService
+    logger.info("✓ Music generation service loaded")
+except ImportError:
+    try:
+        from music import MusicGenerationService
+        logger.info("✓ Music generation service loaded (direct import)")
+    except ImportError:
+        MusicGenerationService = None
+        logger.warning("⚠ Music generation service not available")
+
 # Import professional file generators
 try:
     from .file_generators import (
@@ -209,6 +243,14 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "image"
                 model_target = "vision"
                 reasons.append(f"Coral intent '{coral_intent}' → image mode with vision model")
+            elif coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"]:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append(f"Coral intent '{coral_intent}' → agent mode for video generation")
+            elif coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"]:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append(f"Coral intent '{coral_intent}' → agent mode for music generation")
             elif coral_intent in ["code", "write", "implement", "debug"]:
                 mode = "code"
                 reasons.append(f"Coral intent '{coral_intent}' → code mode")
@@ -242,14 +284,53 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "who is", "where is", "when is", "show me", "get me",
                              "look for", "search for", "find information"]
 
+            # Real-time data patterns (time, date, weather, news)
+            realtime_patterns = ["what time", "current time", "the time", "what's the time",
+                                "whats the time", "what date", "today's date", "todays date",
+                                "what day is it", "what is today", "the date",
+                                "weather in", "weather for", "forecast", "temperature in",
+                                "is it raining", "is it cold", "is it hot", "is it snowing",
+                                "today's news", "todays news", "latest news", "top news",
+                                "news today", "headlines", "breaking news", "what's in the news",
+                                "news about"]
+
+            # Video generation patterns
+            video_patterns = ["make a video", "create a video", "generate a video",
+                             "make video", "create video", "generate video",
+                             "music video", "animate", "animation",
+                             "video of", "video about", "video from"]
+
+            # Music generation patterns
+            music_patterns = ["make music", "create music", "generate music",
+                             "make a song", "create a song", "generate a song",
+                             "compose", "make a beat", "produce music",
+                             "music like", "song about", "write a song",
+                             "make me a song", "generate a beat", "music from"]
+
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
 
             # Check if agent patterns match (for enabling web search)
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
+            has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
+            has_video = any(pattern in msg_lower for pattern in video_patterns)
+            has_music = any(pattern in msg_lower for pattern in music_patterns)
 
-            if any(pattern in msg_lower for pattern in work_patterns):
+            # Real-time queries get tools enabled for instant data retrieval
+            if has_realtime:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("Real-time data query detected → agent mode with tools")
+            elif has_video:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("Video generation request detected → agent mode with tools")
+            elif has_music:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("Music generation request detected → agent mode with tools")
+            elif any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
                 reasons.append("Work patterns detected → work mode with tools")
@@ -324,6 +405,9 @@ vllm_enabled = False
 vllm_url = None
 rag_system = None
 search_tool = None
+realtime_service = None
+video_service = None
+music_service = None
 config = None
 
 # Thread locks for concurrent model access safety
@@ -575,6 +659,39 @@ TOOL_REGISTRY = {
             "file_path": {"type": str, "required": True},
             "operation": {"type": str, "required": True}
         }
+    },
+    "get_current_time": {
+        "args": {
+            "timezone": {"type": str, "required": False, "default": "local"}
+        }
+    },
+    "get_weather": {
+        "args": {
+            "location": {"type": str, "required": True}
+        }
+    },
+    "get_news": {
+        "args": {
+            "topic": {"type": str, "required": False, "default": "top news today"},
+            "max_results": {"type": int, "required": False, "default": 8}
+        }
+    },
+    "generate_video": {
+        "args": {
+            "prompt": {"type": str, "required": True},
+            "width": {"type": int, "required": False, "default": 512},
+            "height": {"type": int, "required": False, "default": 512},
+            "frames": {"type": int, "required": False, "default": 16},
+            "fps": {"type": int, "required": False, "default": 8}
+        }
+    },
+    "generate_music": {
+        "args": {
+            "prompt": {"type": str, "required": True},
+            "genre": {"type": str, "required": False, "default": ""},
+            "mood": {"type": str, "required": False, "default": ""},
+            "duration": {"type": int, "required": False, "default": 15}
+        }
     }
 }
 
@@ -668,6 +785,29 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "generate_image":
         return result.get("message", "Image generation handled")
 
+    if tool_name == "get_current_time" and isinstance(data, dict):
+        return f"Current time: {data.get('day_of_week', '')}, {data.get('date', '')} at {data.get('time', '')} ({data.get('timezone', 'local')})"
+
+    if tool_name == "get_weather" and isinstance(data, dict):
+        return (
+            f"Weather in {data.get('location', '?')}: {data.get('temperature_f', '?')} "
+            f"({data.get('condition', '?')}), Humidity: {data.get('humidity', '?')}, "
+            f"Wind: {data.get('wind_mph', '?')} mph {data.get('wind_dir', '')}"
+        )
+
+    if tool_name == "get_news" and isinstance(data, dict):
+        articles = data.get("articles", [])
+        headlines = [f"{a['title']} ({a.get('source', 'unknown')})" for a in articles[:5]]
+        return f"News on '{data.get('topic', '?')}': " + " | ".join(headlines) if headlines else "No news found"
+
+    if tool_name == "generate_video":
+        return data.get("message", "Video generation requested") if isinstance(data, dict) else result.get("message", "Video generation handled")
+
+    if tool_name == "generate_music":
+        if isinstance(data, dict):
+            return f"Music generated: {data.get('filename', '?')} ({data.get('duration_seconds', '?')}s, model: {data.get('model', '?')})"
+        return result.get("message", "Music generation handled")
+
     if tool_name == "system_stats" and isinstance(data, dict):
         return "System stats: " + ", ".join([f"{k}={v}" for k, v in data.items()])
 
@@ -708,6 +848,42 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             return {
                 "ok": True,
                 "message": "Image generation requested. Use /generate-image endpoint to render.",
+                "data": args
+            }
+
+        if tool_name == "get_current_time":
+            if not realtime_service:
+                return {"ok": False, "error": "Real-time data service unavailable"}
+            tz = args.get("timezone", "local")
+            result = realtime_service.get_current_datetime(tz)
+            return result
+
+        if tool_name == "get_weather":
+            if not realtime_service:
+                return {"ok": False, "error": "Real-time data service unavailable"}
+            location = args.get("location", "New York")
+            result = realtime_service.get_weather(location)
+            return result
+
+        if tool_name == "get_news":
+            if not realtime_service:
+                return {"ok": False, "error": "Real-time data service unavailable"}
+            topic = args.get("topic", "top news today")
+            max_results = args.get("max_results", 8)
+            result = realtime_service.get_news(topic, max_results)
+            return result
+
+        if tool_name == "generate_video":
+            return {
+                "ok": True,
+                "message": "Video generation requested. Use /generate-video endpoint to render.",
+                "data": args
+            }
+
+        if tool_name == "generate_music":
+            return {
+                "ok": True,
+                "message": "Music generation requested. Use /generate-music endpoint to render.",
                 "data": args
             }
 
@@ -912,7 +1088,11 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
-        "list_files(directory:str), analyze_csv(file_path:str,operation:str)."
+        "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
+        "get_current_time(timezone:str), get_weather(location:str), "
+        "get_news(topic:str,max_results:int), "
+        "generate_video(prompt:str,width:int,height:int,frames:int,fps:int), "
+        "generate_music(prompt:str,genre:str,mood:str,duration:int)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
@@ -1379,6 +1559,48 @@ def init_search_tool():
         logger.error(f"Failed to initialize search tool: {e}")
         search_tool = None
 
+def init_realtime_service():
+    """Initialize real-time data service (time, weather, news)"""
+    global realtime_service
+    try:
+        if RealTimeDataService:
+            realtime_service = RealTimeDataService()
+            logger.info("✓ Real-time data service initialized")
+        else:
+            logger.warning("⚠ RealTimeDataService class not available")
+            realtime_service = None
+    except Exception as e:
+        logger.error(f"Failed to initialize real-time data service: {e}")
+        realtime_service = None
+
+def init_video_service():
+    """Initialize video generation service"""
+    global video_service
+    try:
+        if VideoGenerationService and config:
+            video_service = VideoGenerationService(config)
+            logger.info("✓ Video generation service initialized")
+        else:
+            logger.warning("⚠ VideoGenerationService class not available")
+            video_service = None
+    except Exception as e:
+        logger.error(f"Failed to initialize video service: {e}")
+        video_service = None
+
+def init_music_service():
+    """Initialize music generation service"""
+    global music_service
+    try:
+        if MusicGenerationService and config:
+            music_service = MusicGenerationService(config)
+            logger.info("✓ Music generation service initialized")
+        else:
+            logger.warning("⚠ MusicGenerationService class not available")
+            music_service = None
+    except Exception as e:
+        logger.error(f"Failed to initialize music service: {e}")
+        music_service = None
+
 def get_intent_from_coral(message: str) -> Optional[str]:
     """Try to get intent from coral service (with timeout fallback)"""
     try:
@@ -1415,6 +1637,9 @@ async def lifespan(app: FastAPI):
     load_llm_models()
     init_rag_system()
     init_search_tool()
+    init_realtime_service()
+    init_video_service()
+    init_music_service()
 
     # Optional model manager for hot-swap
     global model_manager
@@ -2381,8 +2606,13 @@ async def chat(request: ChatRequest):
             except Exception as e:
                 logger.error(f"Web search failed: {e}")
     
-    # Build prompt
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
+    # Build prompt with real-time data injection
+    rt_context = None
+    if realtime_service:
+        rt_context = realtime_service.build_realtime_context(request.message)
+        if rt_context:
+            logger.info(f"Injected real-time context: {rt_context[:80]}...")
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context)
     status_steps = []
 
     status_steps = [{"stage": "Analyzing request"}]
@@ -2637,6 +2867,9 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     # Precompute image intent response so the outer handler stays non-generator
     image_intent_payload = None
+    video_intent_payload = None
+    music_intent_payload = None
+
     if intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
         msg_lower = request.message.lower()
         for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
@@ -2646,6 +2879,28 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             "response": f"🎨 Generating image: \"{msg_lower}\"...",
             "mode_used": "image",
             "image_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
+        }
+
+    elif intent in ["generate_video", "text_to_video", "create_video", "make_video"] and request.mode != "swarm":
+        msg_lower = request.message.lower()
+        for prefix in ["generate", "create", "make", "a video of", "video of", "a video about", "video about", "a ", "an "]:
+            msg_lower = msg_lower.replace(prefix, "").strip()
+        video_intent_payload = {
+            "ok": True,
+            "response": f"🎬 Generating video: \"{msg_lower}\"...",
+            "mode_used": "video",
+            "video_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
+        }
+
+    elif intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] and request.mode != "swarm":
+        msg_lower = request.message.lower()
+        for prefix in ["generate", "create", "make", "compose", "a song about", "song about", "music about", "a ", "an "]:
+            msg_lower = msg_lower.replace(prefix, "").strip()
+        music_intent_payload = {
+            "ok": True,
+            "response": f"🎵 Generating music: \"{msg_lower}\"...",
+            "mode_used": "music",
+            "music_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
         }
 
     has_images = request.images and len(request.images) > 0
@@ -2845,7 +3100,12 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             except Exception as e:
                 logger.error(f"Web search failed: {e}")
 
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
+    rt_context_stream = None
+    if realtime_service:
+        rt_context_stream = realtime_service.build_realtime_context(request.message)
+        if rt_context_stream:
+            logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context_stream)
     work_steps = []
     work_step_results = []
     if original_mode == "work" and not has_images:
@@ -3322,6 +3582,12 @@ Do not include multiple summaries or "Final Summary" variants.
         nonlocal work_step_results, full_prompt, system_prompt
         if image_intent_payload is not None:
             yield f"event: done\ndata: {json.dumps(image_intent_payload)}\n\n"
+            return
+        if video_intent_payload is not None:
+            yield f"event: done\ndata: {json.dumps(video_intent_payload)}\n\n"
+            return
+        if music_intent_payload is not None:
+            yield f"event: done\ndata: {json.dumps(music_intent_payload)}\n\n"
             return
         # Send request_id as first event
         yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
@@ -4144,6 +4410,257 @@ async def proxy_image(filename: str, subfolder: str = "", type: str = "output"):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# ==================== REAL-TIME DATA ENDPOINTS ====================
+
+@app.get("/realtime/time")
+async def realtime_time(timezone: str = "local"):
+    """Get current date and time"""
+    if not realtime_service:
+        raise HTTPException(status_code=503, detail="Real-time data service not available")
+    return realtime_service.get_current_datetime(timezone)
+
+@app.get("/realtime/weather")
+async def realtime_weather(location: str = "New York"):
+    """Get current weather for a location"""
+    if not realtime_service:
+        raise HTTPException(status_code=503, detail="Real-time data service not available")
+    return realtime_service.get_weather(location)
+
+@app.get("/realtime/news")
+async def realtime_news(topic: str = "top news today", max_results: int = 8):
+    """Get current news headlines"""
+    if not realtime_service:
+        raise HTTPException(status_code=503, detail="Real-time data service not available")
+    return realtime_service.get_news(topic, max_results)
+
+
+# ==================== VIDEO GENERATION ENDPOINTS ====================
+
+@app.post("/generate-video")
+async def generate_video(request: dict):
+    """Generate a video from a text prompt using ComfyUI
+
+    Parameters:
+        - prompt (str): Video description prompt (required)
+        - width (int): Frame width in pixels (default: 512)
+        - height (int): Frame height in pixels (default: 512)
+        - frames (int): Number of frames (default: 16)
+        - fps (int): Frames per second (default: 8)
+        - steps (int): Sampling steps (default: 20)
+        - guidance_scale (float): CFG scale (default: 7.5)
+        - negative_prompt (str): Negative prompt (optional)
+        - audio_path (str): Path to audio file for music video (optional)
+    """
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+
+    prompt = request.get("prompt", "")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt is required")
+
+    # Unload LLMs to free VRAM for video generation
+    global _models_unloaded_for_image_gen
+    with _image_gen_lock:
+        if not _models_unloaded_for_image_gen:
+            unload_all_llm_models()
+            _models_unloaded_for_image_gen = True
+
+    try:
+        result = video_service.submit_video_generation(
+            prompt=prompt,
+            negative_prompt=request.get("negative_prompt", ""),
+            width=request.get("width"),
+            height=request.get("height"),
+            frames=request.get("frames"),
+            fps=request.get("fps"),
+            steps=request.get("steps"),
+            guidance_scale=request.get("guidance_scale", 7.5),
+            audio_path=request.get("audio_path"),
+        )
+
+        if not result.get("ok"):
+            if _models_unloaded_for_image_gen:
+                reload_llm_models_background()
+            raise HTTPException(status_code=500, detail=result.get("error", "Video generation failed"))
+
+        return {
+            "status": "generating",
+            "prompt_id": result["data"]["prompt_id"],
+            "backend": result["data"]["backend"],
+            "message": result["data"]["message"],
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/video-status/{prompt_id}")
+async def video_status(prompt_id: str):
+    """Check video generation status"""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+
+    result = video_service.check_video_status(prompt_id)
+    status = result.get("data", {}).get("status", "unknown")
+
+    # Reload LLMs once generation is complete or failed
+    if status in ("complete", "complete_frames") and _models_unloaded_for_image_gen:
+        reload_llm_models_background()
+
+    return result
+
+@app.post("/upload-audio")
+async def upload_audio(file: UploadFile = File(...)):
+    """Upload an audio file (MP3/WAV/etc.) for music video generation"""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+
+    allowed_extensions = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}. Allowed: {', '.join(allowed_extensions)}")
+
+    contents = await file.read()
+    if len(contents) > 100 * 1024 * 1024:  # 100MB limit
+        raise HTTPException(status_code=400, detail="Audio file too large (max 100MB)")
+
+    audio_path = video_service.save_uploaded_audio(contents, file.filename)
+    return {"ok": True, "audio_path": audio_path, "filename": file.filename}
+
+@app.post("/stitch-frames")
+async def stitch_frames(request: dict):
+    """Stitch generated frames into a video, optionally with audio"""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+
+    prompt_id = request.get("prompt_id", "")
+    fps = request.get("fps", 8)
+    audio_path = request.get("audio_path")
+
+    result = video_service.stitch_frames_to_video(prompt_id, fps, audio_path)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error"))
+
+    # Reload LLMs
+    if _models_unloaded_for_image_gen:
+        reload_llm_models_background()
+
+    return result
+
+@app.post("/mux-video-audio")
+async def mux_video_audio(request: dict):
+    """Combine a video with an audio file"""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+
+    video_path = request.get("video_path", "")
+    audio_path = request.get("audio_path", "")
+    if not video_path or not audio_path:
+        raise HTTPException(status_code=400, detail="Both video_path and audio_path are required")
+
+    result = video_service.mux_audio_to_video(video_path, audio_path)
+    if not result.get("ok"):
+        raise HTTPException(status_code=500, detail=result.get("error"))
+    return result
+
+
+# ==================== MUSIC GENERATION ENDPOINTS ====================
+
+@app.post("/generate-music")
+async def generate_music_endpoint(request: dict):
+    """Generate music from a text prompt
+
+    Parameters:
+        - prompt (str): Free-form music description
+        - genre (str): Music genre (e.g. rock, electronic, hip-hop)
+        - mood (str): Mood (e.g. happy, chill, energetic)
+        - instruments (str): Instruments to feature (e.g. guitar, piano)
+        - tempo (str): Tempo description or BPM
+        - style (str): Style (e.g. lo-fi, orchestral, 80s synth)
+        - lyrics (str): Song lyrics for theme extraction
+        - reference_artist (str): Artist for style inspiration
+        - duration (int): Length in seconds (default: 15, max: 60)
+        - melody_audio_path (str): Path to melody audio for conditioning
+    """
+    if not music_service:
+        raise HTTPException(status_code=503, detail="Music generation service not available. Install audiocraft: pip install audiocraft")
+
+    # Unload LLMs to free VRAM for music generation
+    global _models_unloaded_for_image_gen
+    with _image_gen_lock:
+        if not _models_unloaded_for_image_gen:
+            unload_all_llm_models()
+            _models_unloaded_for_image_gen = True
+
+    try:
+        result = await asyncio.to_thread(
+            music_service.generate_music,
+            prompt=request.get("prompt", ""),
+            description=request.get("description", ""),
+            genre=request.get("genre", ""),
+            mood=request.get("mood", ""),
+            instruments=request.get("instruments", ""),
+            tempo=request.get("tempo", ""),
+            style=request.get("style", ""),
+            lyrics=request.get("lyrics", ""),
+            reference_artist=request.get("reference_artist", ""),
+            duration=request.get("duration", 15),
+            melody_audio_path=request.get("melody_audio_path"),
+        )
+
+        # Reload LLMs after generation
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
+
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "Music generation failed"))
+
+        return result
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/music-models")
+async def music_models():
+    """Get available music generation models"""
+    if not music_service:
+        return {"models": [], "current_model": None, "audiocraft_installed": False}
+    return music_service.get_available_models()
+
+@app.get("/generated-music")
+async def list_generated_music():
+    """List all generated music files"""
+    if not music_service:
+        return {"files": []}
+    return {"files": music_service.list_generated_music()}
+
+@app.get("/music/{filename}")
+async def serve_music_file(filename: str):
+    """Serve a generated music file"""
+    from pathlib import Path
+    music_path = REPO_ROOT / "outputs" / "music" / filename
+    if not music_path.exists():
+        raise HTTPException(status_code=404, detail="Music file not found")
+
+    media_type = "audio/mpeg" if filename.endswith(".mp3") else "audio/wav"
+    return FileResponse(str(music_path), media_type=media_type, filename=filename)
+
+@app.get("/video/{filename}")
+async def serve_video_file(filename: str):
+    """Serve a generated video file"""
+    from pathlib import Path
+    video_path = REPO_ROOT / "outputs" / "videos" / filename
+    if not video_path.exists():
+        raise HTTPException(status_code=404, detail="Video file not found")
+    return FileResponse(str(video_path), media_type="video/mp4", filename=filename)
+
+
 # ==================== GALLERY ENDPOINTS ====================
 
 # Gallery directory setup
@@ -4519,12 +5036,23 @@ async def cleanup_auto_users(request: dict = None):
     return {"success": True, "removed": len(removed), "remaining": len(remaining)}
 
 
-def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
+def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
+                        realtime_context: str = None) -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
-    current_date = datetime.now().strftime("%B %d, %Y")
+    now = datetime.now()
+    current_date = now.strftime("%B %d, %Y")
+    current_time = now.strftime("%I:%M %p")
+    current_day = now.strftime("%A")
     
-    base = f"You are EDISON, a helpful AI assistant. Today's date is {current_date}."
+    base = (
+        f"You are EDISON, a helpful AI assistant. "
+        f"Today is {current_day}, {current_date}. The current time is {current_time}."
+    )
+
+    # Inject real-time data context if available (weather, news, etc.)
+    if realtime_context:
+        base += f" {realtime_context}"
     
     # Add instruction to use retrieved context if available
     if has_context:
@@ -4537,6 +5065,14 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
 
+    # Add media generation awareness
+    base += (
+        " You can generate videos from text prompts (use the generate_video tool or /generate-video endpoint). "
+        "You can generate music from text descriptions including genre, mood, instruments, and lyrics "
+        "(use the generate_music tool or /generate-music endpoint). "
+        "You can get real-time data like current time, weather, and news using get_current_time, get_weather, and get_news tools."
+    )
+
     # Add file generation instruction for all modes
     if FILE_GENERATION_PROMPT:
         base += " " + FILE_GENERATION_PROMPT
@@ -4546,7 +5082,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     prompts = {
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
-        "agent": base + " You can search the web for current information. Provide detailed, accurate answers based on search results.",
+        "agent": base + " You can search the web for current information. You can generate videos, music, and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
         "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
         "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented."
     }

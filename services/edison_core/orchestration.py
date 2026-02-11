@@ -51,6 +51,12 @@ class AgentControllerBrain:
                 tasks.append(self._task("web", "Web search", {"goal": goal}))
             if "image" in goal.lower() or "generate" in goal.lower():
                 tasks.append(self._task("comfyui", "Generate image workflow", {"goal": goal}))
+            if any(token in goal.lower() for token in ["video", "animate", "animation", "movie", "music video"]):
+                tasks.append(self._task("video", "Generate video", {"goal": goal}))
+            if any(token in goal.lower() for token in ["music", "song", "compose", "beat", "soundtrack"]):
+                tasks.append(self._task("music", "Generate music", {"goal": goal}))
+            if any(token in goal.lower() for token in ["time", "date", "weather", "news", "forecast", "headlines"]):
+                tasks.append(self._task("realtime", "Fetch real-time data", {"goal": goal}))
             if any(token in goal.lower() for token in ["document", "report", "slides", "presentation", "spreadsheet", "website", "repo", "repository", "schema"]):
                 tasks.append(self._task("artifact", "Generate artifact output", {"goal": goal, "project_id": project_id, "kind": "document"}))
         elif mode == "swarm":
@@ -63,6 +69,10 @@ class AgentControllerBrain:
                 tasks.append(self._task("vision", "Vision specialist", {"goal": goal}))
             if "image" in goal.lower() or "generate" in goal.lower():
                 tasks.append(self._task("comfyui", "Image workflow", {"goal": goal}))
+            if any(token in goal.lower() for token in ["video", "animate", "animation", "movie", "music video"]):
+                tasks.append(self._task("video", "Generate video", {"goal": goal}))
+            if any(token in goal.lower() for token in ["music", "song", "compose", "beat", "soundtrack"]):
+                tasks.append(self._task("music", "Generate music", {"goal": goal}))
             if any(token in goal.lower() for token in ["document", "report", "slides", "presentation", "spreadsheet", "website", "repo", "repository", "schema"]):
                 tasks.append(self._task("artifact", "Generate artifact output", {"goal": goal, "project_id": project_id, "kind": "document"}))
         else:
@@ -124,9 +134,21 @@ class AgentControllerBrain:
                         "website", "html", "pdf"]
         vision_kws = ["image", "photo", "picture", "screenshot", "visual", "analyze image",
                        "look at", "examine"]
+        video_kws = ["video", "animate", "animation", "movie", "clip", "motion",
+                      "music video", "generate video"]
+        music_kws = ["music", "song", "audio", "beat", "melody", "compose", "soundtrack",
+                      "generate music", "make music", "produce"]
+        realtime_kws = ["time", "date", "weather", "forecast", "news", "headlines",
+                         "temperature", "current time", "today"]
 
         if has_image and any(kw in step_text for kw in vision_kws):
             return "vision"
+        if any(kw in step_text for kw in video_kws):
+            return "video"
+        if any(kw in step_text for kw in music_kws):
+            return "music"
+        if any(kw in step_text for kw in realtime_kws):
+            return "realtime"
         if any(kw in step_text for kw in search_kws):
             return "search"
         if any(kw in step_text for kw in artifact_kws):

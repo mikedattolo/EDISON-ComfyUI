@@ -96,6 +96,20 @@ edison:
     port: 8188
     auto_start: true
   
+  video:
+    default_frames: 16
+    default_fps: 8
+    default_width: 512
+    default_height: 512
+    default_steps: 20
+    # Preferred backend: cogvideox, animatediff, wan21, framebased (auto-detected)
+    # preferred_backend: "auto"
+
+  music:
+    model_size: "medium"       # small (~4GB VRAM), medium (~8GB), large (~16GB), melody (~8GB)
+    default_duration: 15       # seconds
+    max_duration: 60           # max generation length
+
   logging:
     level: "INFO"
     file: "logs/edison.log"
