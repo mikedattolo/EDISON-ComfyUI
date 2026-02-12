@@ -183,12 +183,27 @@ class VideoGenerationService:
         if num_gpus < 2:
             return False
 
-        # Survey free VRAM on each GPU
+        # Survey free VRAM on each GPU, probing compatibility
         gpu_info = []
         for i in range(num_gpus):
             try:
                 free, total = torch.cuda.mem_get_info(i)
                 name = torch.cuda.get_device_name(i)
+
+                # Probe: run a small fp16 matmul to verify CUDA kernel support.
+                # RTX 5060 Ti (Blackwell) may fail if PyTorch lacks sm_120 kernels.
+                try:
+                    dev = f"cuda:{i}"
+                    a = torch.randn(4, 4, dtype=torch.float16, device=dev)
+                    _ = a @ a  # triggers kernel compilation / launch
+                    del a
+                    torch.cuda.empty_cache()
+                except Exception as probe_err:
+                    logger.warning(
+                        f"GPU {i} ({name}) failed CUDA probe — skipping: {probe_err}"
+                    )
+                    continue
+
                 gpu_info.append({
                     "id": i,
                     "free_gb": free / (1024**3),
@@ -200,6 +215,10 @@ class VideoGenerationService:
 
         gpu_info.sort(key=lambda g: g["free_gb"], reverse=True)
         logger.info(f"GPU VRAM survey: {[(g['id'], g['name'], f'{g["free_gb"]:.1f}GB free') for g in gpu_info]}")
+
+        if len(gpu_info) < 2:
+            logger.info(f"Only {len(gpu_info)} compatible GPU(s) found — need ≥2 for multi-GPU")
+            return False
 
         primary = gpu_info[0]  # Most free VRAM → transformer + VAE
         secondary = gpu_info[1]  # Second most → text encoder
