@@ -417,6 +417,34 @@ video_service = None
 music_service = None
 config = None
 
+def _is_file_request(text: str) -> bool:
+    """Check if user is explicitly requesting file/document creation.
+    
+    Must require clear creation intent — bare words like 'file' or 'document'
+    in normal conversation should NOT trigger file-generation mode.
+    """
+    if not text:
+        return False
+    import re
+    # Require explicit creation verbs + file-related nouns
+    creation_pattern = re.search(
+        r"\b(create|generate|make|write|build|draft|prepare|produce|save|export|download)\b"
+        r".*\b(file|document|report|pdf|csv|txt|json|spreadsheet|presentation|"
+        r"slideshow|slides|resume|letter|essay|paper|template|docx|pptx|xlsx)\b",
+        text, re.IGNORECASE
+    )
+    # Or explicit file extension requests like "as a .pdf" / "in pdf format"
+    extension_pattern = re.search(
+        r"\b(as a?|in|to)\s+\.?(pdf|docx|pptx|xlsx|csv|txt|json|html|md)\b",
+        text, re.IGNORECASE
+    )
+    # Or explicit "save as" / "export to" / "download as"
+    save_pattern = re.search(
+        r"\b(save|export|download)\s+(as|to|into)\b",
+        text, re.IGNORECASE
+    )
+    return bool(creation_pattern or extension_pattern or save_pattern)
+
 # Thread locks for concurrent model access safety
 lock_fast = threading.Lock()
 lock_medium = threading.Lock()
@@ -1865,17 +1893,48 @@ async def rag_search(request: dict):
 
 @app.get("/rag/stats")
 async def rag_stats():
-    """Get RAG system statistics"""
+    """Get RAG system statistics including sample facts for debugging."""
     if not rag_system or not rag_system.is_ready():
         return {"error": "RAG system not ready", "ready": False}
     
     try:
         collection_info = rag_system.client.get_collection(rag_system.collection_name)
-        return {
+        result = {
             "ready": True,
             "collection": rag_system.collection_name,
-            "points_count": collection_info.points_count
+            "points_count": collection_info.points_count,
         }
+        # Include sample facts for debugging
+        try:
+            from qdrant_client.models import Filter, FieldCondition, MatchValue
+            # Get facts
+            fact_results = rag_system.client.scroll(
+                collection_name=rag_system.collection_name,
+                scroll_filter=Filter(must=[FieldCondition(key="type", match=MatchValue(value="fact"))]),
+                limit=20, with_payload=True, with_vectors=False
+            )
+            facts, _ = fact_results
+            result["facts"] = [
+                {"text": p.payload.get("document", "")[:200], "type": p.payload.get("fact_type", "?"),
+                 "confidence": p.payload.get("confidence")}
+                for p in facts
+            ]
+            result["facts_count"] = len(facts)
+            # Get recent messages
+            msg_results = rag_system.client.scroll(
+                collection_name=rag_system.collection_name,
+                scroll_filter=Filter(must=[FieldCondition(key="type", match=MatchValue(value="message"))]),
+                limit=10, with_payload=True, with_vectors=False
+            )
+            msgs, _ = msg_results
+            result["recent_messages"] = [
+                {"text": p.payload.get("document", "")[:120], "role": p.payload.get("role", "?")}
+                for p in msgs
+            ]
+            result["messages_count"] = len(msgs)
+        except Exception as inner_e:
+            result["sample_error"] = str(inner_e)
+        return result
     except Exception as e:
         logger.error(f"Error getting RAG stats: {e}")
         return {"error": str(e), "ready": False}
@@ -2020,7 +2079,14 @@ def get_lock_for_model(model) -> threading.Lock:
 
 def store_conversation_exchange(request: ChatRequest, assistant_response: str, mode: str, remember: bool):
     """Persist user/assistant messages and extracted facts when enabled."""
-    if not remember or not rag_system:
+    if not remember:
+        logger.debug(f"Memory storage skipped: remember={remember}")
+        return
+    if not rag_system:
+        logger.warning("Memory storage skipped: rag_system is None")
+        return
+    if not rag_system.is_ready():
+        logger.warning("Memory storage skipped: rag_system not ready")
         return
     try:
         chat_id = getattr(request, 'chat_id', None) or str(int(time.time() * 1000))
@@ -2839,7 +2905,8 @@ async def chat(request: ChatRequest):
         rt_context = realtime_service.build_realtime_context(request.message)
         if rt_context:
             logger.info(f"Injected real-time context: {rt_context[:80]}...")
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context)
+    file_requested = _is_file_request(request.message or "")
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context, is_file_request=file_requested)
     status_steps = []
 
     status_steps = [{"stage": "Analyzing request"}]
@@ -3389,7 +3456,8 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         rt_context_stream = realtime_service.build_realtime_context(request.message)
         if rt_context_stream:
             logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context_stream)
+    file_requested = _is_file_request(request.message or "")
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context_stream, is_file_request=file_requested)
     work_steps = []
     work_step_results = []
     if original_mode == "work" and not has_images:
@@ -3608,11 +3676,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             max_rounds = 4
             rounds = 2
             
-            def _is_file_request(text: str) -> bool:
-                if not text:
-                    return False
-                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as|presentation|slideshow|slides|slide deck|document|report|resume|letter|spreadsheet|create a?\s+(file|document|report|pdf|presentation))\b", text, re.IGNORECASE))
-
+            # Use module-level _is_file_request
             file_request = _is_file_request(request.message or "")
             parallel_swarm = bool(
                 config.get("edison", {})
@@ -5403,7 +5467,7 @@ async def cleanup_auto_users(request: dict = None):
 
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
-                        realtime_context: str = None) -> str:
+                        realtime_context: str = None, is_file_request: bool = False) -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
     now = datetime.now()
@@ -5439,11 +5503,12 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
         "You can get real-time data like current time, weather, and news using get_current_time, get_weather, and get_news tools."
     )
 
-    # Add file generation instruction for all modes
-    if FILE_GENERATION_PROMPT:
-        base += " " + FILE_GENERATION_PROMPT
-    else:
-        base += " If the user asks you to create downloadable files, output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"report.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use .pptx: ```files\n[{\"filename\": \"slides.pptx\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nFor Word documents use .docx: ```files\n[{\"filename\": \"essay.docx\", \"content\": \"# Title\\n\\nContent...\"}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Do NOT repeat content. Keep summary outside the block to one brief sentence."
+    # Add file generation instruction ONLY when user is requesting files
+    if is_file_request:
+        if FILE_GENERATION_PROMPT:
+            base += " " + FILE_GENERATION_PROMPT
+        else:
+            base += " If the user asks you to create downloadable files, output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"report.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use .pptx: ```files\n[{\"filename\": \"slides.pptx\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nFor Word documents use .docx: ```files\n[{\"filename\": \"essay.docx\", \"content\": \"# Title\\n\\nContent...\"}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Do NOT repeat content. Keep summary outside the block to one brief sentence."
     
     prompts = {
         "chat": base + " Respond conversationally.",
