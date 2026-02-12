@@ -145,13 +145,10 @@ class VideoGenerationService:
                     pipe.vae.enable_slicing()
                     pipe.vae.enable_tiling()
 
-                    # Try multi-GPU distribution first
-                    if self.multi_gpu and self._setup_multi_gpu(pipe, torch):
-                        return pipe
-
-                    # Fallback: single GPU with CPU offload
-                    logger.info("Using single-GPU with CPU offload")
-                    pipe.enable_model_cpu_offload()
+                    # Find best compatible GPU and use CPU offload on it
+                    best_gpu = self._find_best_gpu(torch)
+                    logger.info(f"Using GPU {best_gpu} with CPU offload")
+                    pipe.enable_model_cpu_offload(gpu_id=best_gpu)
                     return pipe
                 except Exception as e:
                     logger.warning(f"{PipeClass.__name__} + {dtype} failed: {e}")
@@ -166,36 +163,33 @@ class VideoGenerationService:
         pipe = DiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
         pipe.vae.enable_slicing()
         pipe.vae.enable_tiling()
-        pipe.enable_model_cpu_offload()
+        best_gpu = self._find_best_gpu(torch)
+        pipe.enable_model_cpu_offload(gpu_id=best_gpu)
         return pipe
 
-    def _setup_multi_gpu(self, pipe, torch) -> bool:
-        """Distribute pipeline components across GPUs for faster generation.
+    def _find_best_gpu(self, torch) -> int:
+        """Find the compatible GPU with the most free VRAM.
 
-        Layout:
-          - Transformer + VAE → GPU with most free VRAM (heaviest, ~16 GB)
-          - Text encoder → GPU with second-most free VRAM (~5 GB)
-
-        This eliminates CPU offload overhead — model stays on GPU between
-        segments for long videos.
+        Probes each GPU with a small fp16 matmul to verify CUDA kernel support
+        (filters out GPUs like RTX 5060 Ti whose architecture isn't supported
+        by the installed PyTorch). Returns the GPU id with the most free VRAM,
+        or 0 as a fallback.
         """
         num_gpus = torch.cuda.device_count()
-        if num_gpus < 2:
-            return False
+        if num_gpus < 1:
+            return 0
 
-        # Survey free VRAM on each GPU, probing compatibility
         gpu_info = []
         for i in range(num_gpus):
             try:
                 free, total = torch.cuda.mem_get_info(i)
                 name = torch.cuda.get_device_name(i)
 
-                # Probe: run a small fp16 matmul to verify CUDA kernel support.
-                # RTX 5060 Ti (Blackwell) may fail if PyTorch lacks sm_120 kernels.
+                # Probe: run a small fp16 matmul to verify CUDA kernel support
                 try:
                     dev = f"cuda:{i}"
                     a = torch.randn(4, 4, dtype=torch.float16, device=dev)
-                    _ = a @ a  # triggers kernel compilation / launch
+                    _ = a @ a
                     del a
                     torch.cuda.empty_cache()
                 except Exception as probe_err:
@@ -207,62 +201,22 @@ class VideoGenerationService:
                 gpu_info.append({
                     "id": i,
                     "free_gb": free / (1024**3),
-                    "total_gb": total / (1024**3),
                     "name": name,
                 })
             except Exception:
                 continue
 
+        if not gpu_info:
+            logger.warning("No compatible GPUs found via probe — defaulting to GPU 0")
+            return 0
+
         gpu_info.sort(key=lambda g: g["free_gb"], reverse=True)
-        logger.info(f"GPU VRAM survey: {[(g['id'], g['name'], f'{g["free_gb"]:.1f}GB free') for g in gpu_info]}")
-
-        if len(gpu_info) < 2:
-            logger.info(f"Only {len(gpu_info)} compatible GPU(s) found — need ≥2 for multi-GPU")
-            return False
-
-        primary = gpu_info[0]  # Most free VRAM → transformer + VAE
-        secondary = gpu_info[1]  # Second most → text encoder
-
-        # Transformer needs ~12-16 GB for 5B model
-        if primary["free_gb"] < 12:
-            logger.warning(
-                f"Primary GPU {primary['id']} ({primary['name']}) only has "
-                f"{primary['free_gb']:.1f}GB free — need ≥12GB for transformer"
-            )
-            return False
-
-        # Text encoder needs ~5 GB
-        if secondary["free_gb"] < 4:
-            logger.warning(
-                f"Secondary GPU {secondary['id']} ({secondary['name']}) only has "
-                f"{secondary['free_gb']:.1f}GB free — need ≥4GB for text encoder"
-            )
-            return False
-
-        try:
-            transformer_dev = f"cuda:{primary['id']}"
-            text_encoder_dev = f"cuda:{secondary['id']}"
-
-            pipe.text_encoder.to(text_encoder_dev)
-            pipe.transformer.to(transformer_dev)
-            pipe.vae.to(transformer_dev)
-
-            logger.info(
-                f"✓ Multi-GPU distributed: "
-                f"text_encoder → GPU {secondary['id']} ({secondary['name']}, "
-                f"{secondary['free_gb']:.1f}GB free), "
-                f"transformer+VAE → GPU {primary['id']} ({primary['name']}, "
-                f"{primary['free_gb']:.1f}GB free)"
-            )
-            return True
-        except Exception as e:
-            logger.warning(f"Multi-GPU placement failed: {e}")
-            try:
-                pipe.to("cpu")
-            except Exception:
-                pass
-            gc.collect()
-            return False
+        best = gpu_info[0]
+        logger.info(
+            f"GPU survey: {[(g['id'], g['name'], f'{g['free_gb']:.1f}GB free') for g in gpu_info]} "
+            f"→ using GPU {best['id']} ({best['name']}, {best['free_gb']:.1f}GB free)"
+        )
+        return best["id"]
 
     def _unload_pipeline(self):
         """Free the pipeline and reclaim VRAM."""
