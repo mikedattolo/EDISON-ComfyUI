@@ -51,6 +51,9 @@ class VideoGenerationService:
         self.default_width = video_cfg.get("default_width", 512)
         self.default_height = video_cfg.get("default_height", 512)
         self.default_steps = video_cfg.get("default_steps", 20)
+        # Checkpoint names (SD1.5 for AnimateDiff, SDXL for framebased)
+        self.sd15_checkpoint = video_cfg.get("sd15_checkpoint", "v1-5-pruned-emaonly.safetensors")
+        self.sdxl_checkpoint = video_cfg.get("sdxl_checkpoint", "sd_xl_base_1.0.safetensors")
 
         # Track stitched videos so status checks return 'complete'
         self._stitched_videos: Dict[str, Dict[str, Any]] = {}
@@ -76,14 +79,25 @@ class VideoGenerationService:
             if resp.ok:
                 nodes = resp.json()
                 if "CogVideoXSampler" in nodes or "CogVideoXLoader" in nodes:
+                    logger.info("Detected CogVideoX nodes")
                     return "cogvideox"
                 if "Wan21VideoSampler" in nodes or "WanVideoSampler" in nodes:
+                    logger.info("Detected Wan2.1 nodes")
                     return "wan21"
-                if "ADE_AnimateDiffLoaderWithContext" in nodes or "AnimateDiffLoaderV1" in nodes:
+                # AnimateDiff Evolved uses ADE_ prefix
+                animatediff_nodes = [n for n in nodes if n.startswith("ADE_") or "AnimateDiff" in n]
+                if animatediff_nodes:
+                    logger.info(f"Detected AnimateDiff nodes: {animatediff_nodes[:5]}")
                     return "animatediff"
+                # Log available custom nodes for debugging
+                custom_nodes = [n for n in nodes if any(prefix in n for prefix in ("VHS_", "ADE_", "Cog", "Wan", "Animate"))]
+                logger.info(f"No video generation nodes found. Custom nodes available: {custom_nodes[:10]}")
+            else:
+                logger.warning(f"ComfyUI /object_info returned {resp.status_code}")
         except Exception as e:
             logger.warning(f"Could not query ComfyUI nodes: {e}")
 
+        logger.info("Using framebased fallback (no specialized video nodes detected)")
         return "framebased"  # fallback: generate frames then stitch
 
     # ── Workflow builders ────────────────────────────────────────────────
@@ -99,14 +113,17 @@ class VideoGenerationService:
         steps: int = 20,
         guidance_scale: float = 7.5,
     ) -> Dict[str, Any]:
-        """Build an AnimateDiff ComfyUI workflow."""
+        """Build an AnimateDiff ComfyUI workflow.
+        
+        Uses SD 1.5 checkpoint (required for AnimateDiff motion model compatibility).
+        """
         seed = random.randint(0, 2**32 - 1)
         neg = negative_prompt or "nsfw, nude, worst quality, low quality, blurry, static"
         prefix = f"EDISON_video_{uuid.uuid4().hex[:8]}"
 
         return {
             "1": {
-                "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"},
+                "inputs": {"ckpt_name": self.sd15_checkpoint},
                 "class_type": "CheckpointLoaderSimple",
             },
             "2": {
@@ -232,11 +249,18 @@ class VideoGenerationService:
     ) -> Dict[str, Any]:
         """
         Fallback: generate a batch of images as frames using standard SDXL,
-        then stitch them into a video server-side.
+        then stitch them into a video server-side with motion interpolation.
+        Uses a fixed seed and enhanced prompt for visual consistency.
         """
         seed = random.randint(0, 2**32 - 1)
-        neg = negative_prompt or "nsfw, worst quality, low quality, blurry"
+        neg = negative_prompt or "nsfw, worst quality, low quality, blurry, text, watermark, inconsistent style, different scenes"
         prefix = f"EDISON_frames_{uuid.uuid4().hex[:8]}"
+
+        # Enhance prompt for frame consistency
+        enhanced_prompt = (
+            f"{prompt}, consistent style, same scene, smooth motion, "
+            "cinematic, high quality, detailed, cohesive color palette"
+        )
 
         return {
             "3": {
@@ -255,7 +279,7 @@ class VideoGenerationService:
                 "class_type": "KSampler",
             },
             "4": {
-                "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"},
+                "inputs": {"ckpt_name": self.sdxl_checkpoint},
                 "class_type": "CheckpointLoaderSimple",
             },
             "5": {
@@ -263,7 +287,7 @@ class VideoGenerationService:
                 "class_type": "EmptyLatentImage",
             },
             "6": {
-                "inputs": {"text": prompt, "clip": ["4", 1]},
+                "inputs": {"text": enhanced_prompt, "clip": ["4", 1]},
                 "class_type": "CLIPTextEncode",
             },
             "7": {
@@ -284,6 +308,34 @@ class VideoGenerationService:
         }
 
     # ── Submit generation ────────────────────────────────────────────────
+
+    def _detect_checkpoint(self, prefer_sd15: bool = False) -> str:
+        """Auto-detect an available checkpoint in ComfyUI's models/checkpoints dir."""
+        ckpt_dir = REPO_ROOT / "ComfyUI" / "models" / "checkpoints"
+        if not ckpt_dir.exists():
+            return self.sd15_checkpoint if prefer_sd15 else self.sdxl_checkpoint
+        
+        available = [f.name for f in ckpt_dir.glob("*.safetensors")] + \
+                    [f.name for f in ckpt_dir.glob("*.ckpt")]
+        
+        if not available:
+            return self.sd15_checkpoint if prefer_sd15 else self.sdxl_checkpoint
+        
+        logger.info(f"Available checkpoints: {available}")
+        
+        if prefer_sd15:
+            # Prefer SD 1.5 for AnimateDiff
+            sd15_names = [n for n in available if "v1-5" in n.lower() or "sd15" in n.lower() or "sd-v1" in n.lower()]
+            if sd15_names:
+                return sd15_names[0]
+        
+        # Prefer SDXL for framebased
+        sdxl_names = [n for n in available if "xl" in n.lower() or "sdxl" in n.lower()]
+        if sdxl_names:
+            return sdxl_names[0]
+        
+        # Return whatever is available
+        return available[0]
 
     def submit_video_generation(
         self,
@@ -317,10 +369,17 @@ class VideoGenerationService:
                 prompt, negative_prompt, width, height, frames, fps, steps, guidance_scale
             )
         elif backend == "animatediff":
+            # AnimateDiff requires SD 1.5 checkpoint
+            self.sd15_checkpoint = self._detect_checkpoint(prefer_sd15=True)
+            logger.info(f"AnimateDiff using checkpoint: {self.sd15_checkpoint}")
             workflow = self.create_animatediff_workflow(
                 prompt, negative_prompt, width, height, frames, fps, steps, guidance_scale
             )
         else:
+            # Framebased uses whatever checkpoint is available
+            detected_ckpt = self._detect_checkpoint(prefer_sd15=False)
+            logger.info(f"Framebased using checkpoint: {detected_ckpt}")
+            self.sdxl_checkpoint = detected_ckpt
             workflow = self.create_framebased_workflow(
                 prompt, negative_prompt, width, height, frames, steps, guidance_scale
             )
@@ -492,15 +551,21 @@ class VideoGenerationService:
 
             output_file = VIDEO_OUTPUT_DIR / f"EDISON_video_{uuid.uuid4().hex[:8]}.mp4"
 
-            # Use ffmpeg to create video
+            # Use ffmpeg to create video with motion interpolation for smoother playback
+            # Step 1: Create raw video from frames
+            # Step 2: Apply minterpolate to generate intermediate frames for fluid motion
+            target_fps = max(fps * 3, 24)  # Interpolate up to at least 24fps
+            
             cmd = [
                 FFMPEG_BIN, "-y",
                 "-framerate", str(fps),
                 "-pattern_type", "glob",
                 "-i", str(comfyui_output / "EDISON_frames_*.png"),
+                "-vf", f"minterpolate=fps={target_fps}:mi_mode=blend,setpts=N/({target_fps}*TB)",
                 "-c:v", "libx264",
                 "-pix_fmt", "yuv420p",
-                "-crf", "23",
+                "-crf", "20",
+                "-preset", "medium",
             ]
 
             if audio_path and Path(audio_path).exists():
@@ -508,7 +573,25 @@ class VideoGenerationService:
 
             cmd.append(str(output_file))
 
+            logger.info(f"Stitching {len(frames)} frames → {target_fps}fps video with motion interpolation...")
             result = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+
+            # If minterpolate fails (not available on all builds), fall back to simple stitching
+            if result.returncode != 0:
+                logger.warning(f"Interpolated stitching failed, trying simple stitching: {result.stderr[:200]}")
+                cmd_simple = [
+                    FFMPEG_BIN, "-y",
+                    "-framerate", str(fps),
+                    "-pattern_type", "glob",
+                    "-i", str(comfyui_output / "EDISON_frames_*.png"),
+                    "-c:v", "libx264",
+                    "-pix_fmt", "yuv420p",
+                    "-crf", "20",
+                ]
+                if audio_path and Path(audio_path).exists():
+                    cmd_simple.extend(["-i", audio_path, "-c:a", "aac", "-shortest"])
+                cmd_simple.append(str(output_file))
+                result = subprocess.run(cmd_simple, capture_output=True, text=True, timeout=120)
 
             if result.returncode != 0:
                 logger.error(f"ffmpeg error: {result.stderr}")

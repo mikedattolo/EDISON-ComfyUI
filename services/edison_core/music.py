@@ -40,7 +40,7 @@ class MusicGenerationService:
 
     def __init__(self, config: Dict[str, Any]):
         music_cfg = config.get("edison", {}).get("music", {})
-        self.model_size = music_cfg.get("model_size", "medium")  # small, medium, large
+        self.model_size = music_cfg.get("model_size", "small")  # small, medium, large
         self.default_duration = music_cfg.get("default_duration", 15)  # seconds
         self.max_duration = music_cfg.get("max_duration", 60)
         self.sample_rate = 32000
@@ -74,15 +74,25 @@ class MusicGenerationService:
             logger.info(f"Loading MusicGen model via transformers: {model_name}...")
 
             device = "cuda" if torch.cuda.is_available() else "cpu"
-            dtype = torch.float16 if device == "cuda" else torch.float32
+            compute_dtype = torch.float16 if device == "cuda" else torch.float32
 
+            logger.info(f"Downloading/loading processor for {model_name}...")
             self._processor = AutoProcessor.from_pretrained(model_name)
-            self._model = MusicgenForConditionalGeneration.from_pretrained(
-                model_name, torch_dtype=dtype
-            ).to(device)
+            
+            logger.info(f"Downloading/loading model weights for {model_name} (this may take several minutes on first use)...")
+            # Try 'dtype' first (newer transformers), fall back to 'torch_dtype'
+            try:
+                self._model = MusicgenForConditionalGeneration.from_pretrained(
+                    model_name, torch_dtype=compute_dtype
+                ).to(device)
+            except TypeError:
+                self._model = MusicgenForConditionalGeneration.from_pretrained(
+                    model_name
+                ).to(device)
 
             self.sample_rate = self._model.config.audio_encoder.sampling_rate
             self._model_loaded = True
+            self._loading = False
             logger.info(f"✓ MusicGen model loaded: {model_name} on {device} (sr={self.sample_rate})")
             return True
         except ImportError as e:

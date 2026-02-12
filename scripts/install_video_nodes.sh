@@ -55,6 +55,22 @@ else
     echo "  ✓ AnimateDiff motion model already downloaded"
 fi
 
+# 4b. Download SD 1.5 checkpoint (required for AnimateDiff — uses SD 1.5, NOT SDXL)
+CKPT_DIR="$MODELS_DIR/checkpoints"
+mkdir -p "$CKPT_DIR"
+
+if [ ! -f "$CKPT_DIR/v1-5-pruned-emaonly.safetensors" ]; then
+    echo "📥 Downloading SD 1.5 checkpoint for AnimateDiff (~4.3GB)..."
+    wget -q --show-progress -O "$CKPT_DIR/v1-5-pruned-emaonly.safetensors" \
+        "https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5/resolve/main/v1-5-pruned-emaonly.safetensors" || {
+        echo "  ⚠ Download failed. You can manually download from:"
+        echo "    https://huggingface.co/stable-diffusion-v1-5/stable-diffusion-v1-5"
+        echo "    Place v1-5-pruned-emaonly.safetensors in: $CKPT_DIR/"
+    }
+else
+    echo "  ✓ SD 1.5 checkpoint already downloaded"
+fi
+
 # 5. Ensure ffmpeg is installed (for video stitching)
 echo "📦 Checking ffmpeg..."
 if command -v ffmpeg &>/dev/null; then
