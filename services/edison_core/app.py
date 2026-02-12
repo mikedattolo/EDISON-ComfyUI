@@ -4798,66 +4798,11 @@ async def generate_3d_model(request: dict):
             logger.info(f"3D model generated via Shap-E: {output_file}")
 
         except ImportError:
-            # Fallback: generate a placeholder OBJ (simple cube) with a message
-            logger.warning("Shap-E not installed. Generating placeholder 3D model. Install with: pip install shap-e")
-            if output_format == 'obj':
-                obj_content = f"""# EDISON 3D Model Generator
-# Prompt: {prompt or 'from image'}
-# Install shap-e for AI-generated 3D models: pip install shap-e
-# This is a placeholder cube model
-o Cube
-v -0.5 -0.5  0.5
-v  0.5 -0.5  0.5
-v  0.5  0.5  0.5
-v -0.5  0.5  0.5
-v -0.5 -0.5 -0.5
-v  0.5 -0.5 -0.5
-v  0.5  0.5 -0.5
-v -0.5  0.5 -0.5
-f 1 2 3 4
-f 5 8 7 6
-f 1 5 6 2
-f 2 6 7 3
-f 3 7 8 4
-f 4 8 5 1
-"""
-                with open(str(output_file), 'w') as f:
-                    f.write(obj_content)
-            elif output_format == 'ply':
-                ply_content = f"""ply
-format ascii 1.0
-comment EDISON 3D Model Generator - Placeholder cube
-comment Prompt: {prompt or 'from image'}
-element vertex 8
-property float x
-property float y
-property float z
-element face 6
-property list uchar int vertex_indices
-end_header
--0.5 -0.5  0.5
- 0.5 -0.5  0.5
- 0.5  0.5  0.5
--0.5  0.5  0.5
--0.5 -0.5 -0.5
- 0.5 -0.5 -0.5
- 0.5  0.5 -0.5
--0.5  0.5 -0.5
-4 0 1 2 3
-4 5 4 7 6
-4 0 4 5 1
-4 1 5 6 2
-4 2 6 7 3
-4 3 7 4 0
-"""
-                with open(str(output_file), 'w') as f:
-                    f.write(ply_content)
-            else:  # glb placeholder
-                # Write minimal valid GLB
-                output_file = output_file.with_suffix('.obj')
-                output_format = 'obj'
-                with open(str(output_file), 'w') as f:
-                    f.write(f"# EDISON Placeholder - install shap-e for real 3D\no Cube\nv -0.5 -0.5 0.5\nv 0.5 -0.5 0.5\nv 0.5 0.5 0.5\nv -0.5 0.5 0.5\nv -0.5 -0.5 -0.5\nv 0.5 -0.5 -0.5\nv 0.5 0.5 -0.5\nv -0.5 0.5 -0.5\nf 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 4 8 5 1\n")
+            logger.error("Shap-E not installed. Cannot generate 3D models without it.")
+            raise HTTPException(
+                status_code=503,
+                detail="Shap-E is not installed. Install it with: pip install git+https://github.com/openai/shap-e.git"
+            )
 
         return {
             "status": "complete",

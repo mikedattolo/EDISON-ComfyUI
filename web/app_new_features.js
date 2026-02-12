@@ -357,20 +357,18 @@ console.log('🧊 app_new_features.js v1 loading...');
                 model = new THREE.Mesh(geometry, material);
             }
         } catch (e) {
-            console.warn('3D loader failed, using fallback mesh:', e);
+            console.error('3D model loading failed:', e);
         }
 
         if (!model) {
-            const fallbackGeom = ext === 'obj'
-                ? new THREE.BoxGeometry(1, 1, 1)
-                : (ext === 'ply' ? new THREE.IcosahedronGeometry(0.8, 1) : new THREE.TorusKnotGeometry(0.45, 0.16, 110, 18));
-            const fallbackMat = new THREE.MeshStandardMaterial({
-                color: 0x9c7bff,
-                roughness: 0.3,
-                metalness: 0.35,
-                wireframe: threeDViewer.wireframe,
-            });
-            model = new THREE.Mesh(fallbackGeom, fallbackMat);
+            // Show error in viewer instead of a fake mesh
+            const info = document.getElementById('threeDViewerInfo');
+            if (info) {
+                info.textContent = `Failed to load 3D model (${ext.toUpperCase() || 'unknown format'}). The file may be corrupted or the format unsupported.`;
+            }
+            set3DProgress(0, 'Model loading failed. Try a different format.');
+            setTimeout(() => set3DOverlayVisible(false), 2000);
+            return;
         }
 
         threeDViewer.modelRoot = normalizeRoot(model);

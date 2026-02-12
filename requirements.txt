@@ -52,4 +52,10 @@ accelerate>=0.25.0
 imageio[pyav]>=2.31.0
 sentencepiece>=0.1.99  # Required for T5 tokenizer used by CogVideoX
 
+# 3D Model Generation (Shap-E)
+shap-e @ git+https://github.com/openai/shap-e.git
+
+# Image processing (Minecraft texture resizing, etc.)
+Pillow>=10.0.0
+
 # Note: Silero VAD is loaded via torch.hub, no pip package needed
