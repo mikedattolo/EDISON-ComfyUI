@@ -50,5 +50,6 @@ scipy>=1.10.0  # WAV file writing for music output
 diffusers>=0.30.0
 accelerate>=0.25.0
 imageio[pyav]>=2.31.0
+sentencepiece>=0.1.99  # Required for T5 tokenizer used by CogVideoX
 
 # Note: Silero VAD is loaded via torch.hub, no pip package needed

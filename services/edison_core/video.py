@@ -97,26 +97,69 @@ class VideoGenerationService:
                 return
 
             import torch
-            from diffusers import CogVideoXPipeline
 
-            logger.info(f"⏳ Loading CogVideoX pipeline: {self.model_id} ...")
             t0 = time.time()
 
-            self._pipe = CogVideoXPipeline.from_pretrained(
-                self.model_id,
-                torch_dtype=torch.float16,
+            # Build list of models to try (primary + fallback)
+            models_to_try = [self.model_id]
+            if "5b" in self.model_id.lower():
+                models_to_try.append("THUDM/CogVideoX-2b")
+
+            last_error = None
+            for model_id in models_to_try:
+                for strategy in ("specific_fp16", "specific_bf16", "auto_fp16"):
+                    try:
+                        logger.info(
+                            f"⏳ Loading CogVideoX pipeline: {model_id} "
+                            f"(strategy={strategy})..."
+                        )
+                        pipe = self._try_load(model_id, strategy, torch)
+                        pipe.enable_model_cpu_offload()
+                        pipe.vae.enable_slicing()
+                        pipe.vae.enable_tiling()
+
+                        self._pipe = pipe
+                        self.model_id = model_id
+                        elapsed = time.time() - t0
+                        logger.info(
+                            f"✓ CogVideoX pipeline loaded in {elapsed:.1f}s "
+                            f"(model={model_id}, strategy={strategy})"
+                        )
+                        return
+                    except Exception as e:
+                        logger.warning(
+                            f"Strategy {strategy} failed for {model_id}: {e}"
+                        )
+                        last_error = e
+                        # Clean up partial state
+                        gc.collect()
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+
+            raise RuntimeError(
+                f"Could not load any CogVideoX model. Last error: {last_error}"
             )
 
-            # enable_model_cpu_offload moves layers to GPU only when needed,
-            # keeps peak VRAM around 12-13 GB for the 5B model.
-            self._pipe.enable_model_cpu_offload()
-
-            # VAE slicing reduces memory for the decode step
-            self._pipe.vae.enable_slicing()
-            self._pipe.vae.enable_tiling()
-
-            elapsed = time.time() - t0
-            logger.info(f"✓ CogVideoX pipeline loaded in {elapsed:.1f}s")
+    @staticmethod
+    def _try_load(model_id: str, strategy: str, torch):
+        """Attempt to load a pipeline with a specific strategy."""
+        if strategy == "specific_fp16":
+            from diffusers import CogVideoXPipeline
+            return CogVideoXPipeline.from_pretrained(
+                model_id, torch_dtype=torch.float16,
+            )
+        elif strategy == "specific_bf16":
+            from diffusers import CogVideoXPipeline
+            return CogVideoXPipeline.from_pretrained(
+                model_id, torch_dtype=torch.bfloat16,
+            )
+        else:  # "auto_fp16" — use DiffusionPipeline auto-detect
+            from diffusers import DiffusionPipeline
+            return DiffusionPipeline.from_pretrained(
+                model_id, torch_dtype=torch.float16,
+            )
 
     def _unload_pipeline(self):
         """Free the pipeline and reclaim VRAM."""
