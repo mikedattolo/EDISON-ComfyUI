@@ -15,6 +15,18 @@ from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
 
+def _find_ffmpeg() -> str:
+    """Find ffmpeg binary, checking common paths if not on PATH."""
+    ff = shutil.which("ffmpeg")
+    if ff:
+        return ff
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/snap/bin/ffmpeg"]:
+        if Path(p).exists():
+            return p
+    return "ffmpeg"  # fallback, let subprocess raise a clear error
+
+FFMPEG_BIN = _find_ffmpeg()
+
 # ── Repo root resolution ────────────────────────────────────────────────
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 UPLOAD_DIR = REPO_ROOT / "uploads" / "audio"
@@ -467,7 +479,7 @@ class VideoGenerationService:
 
             # Use ffmpeg to create video
             cmd = [
-                "ffmpeg", "-y",
+                FFMPEG_BIN, "-y",
                 "-framerate", str(fps),
                 "-pattern_type", "glob",
                 "-i", str(comfyui_output / "EDISON_frames_*.png"),
@@ -516,7 +528,7 @@ class VideoGenerationService:
             output_file = VIDEO_OUTPUT_DIR / f"EDISON_musicvideo_{uuid.uuid4().hex[:8]}.mp4"
 
             cmd = [
-                "ffmpeg", "-y",
+                FFMPEG_BIN, "-y",
                 "-i", str(video_p),
                 "-i", str(audio_p),
                 "-c:v", "copy",

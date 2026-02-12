@@ -8,11 +8,24 @@ import logging
 import json
 import uuid
 import time
+import shutil
 import asyncio
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
+
+def _find_ffmpeg() -> str:
+    """Find ffmpeg binary, checking common paths if not on PATH."""
+    ff = shutil.which("ffmpeg")
+    if ff:
+        return ff
+    for p in ["/usr/bin/ffmpeg", "/usr/local/bin/ffmpeg", "/snap/bin/ffmpeg"]:
+        if Path(p).exists():
+            return p
+    return "ffmpeg"
+
+FFMPEG_BIN = _find_ffmpeg()
 
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 MUSIC_OUTPUT_DIR = REPO_ROOT / "outputs" / "music"
@@ -266,7 +279,7 @@ class MusicGenerationService:
                 import subprocess
                 mp3_file = MUSIC_OUTPUT_DIR / f"EDISON_music_{output_id}.mp3"
                 result = subprocess.run(
-                    ["ffmpeg", "-y", "-i", str(output_path), "-b:a", "192k", str(mp3_file)],
+                    [FFMPEG_BIN, "-y", "-i", str(output_path), "-b:a", "192k", str(mp3_file)],
                     capture_output=True, text=True, timeout=30,
                 )
                 if result.returncode == 0:
