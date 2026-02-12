@@ -52,6 +52,9 @@ class VideoGenerationService:
         self.default_height = video_cfg.get("default_height", 512)
         self.default_steps = video_cfg.get("default_steps", 20)
 
+        # Track stitched videos so status checks return 'complete'
+        self._stitched_videos: Dict[str, Dict[str, Any]] = {}
+
         # Ensure directories exist
         UPLOAD_DIR.mkdir(parents=True, exist_ok=True)
         VIDEO_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
@@ -368,6 +371,18 @@ class VideoGenerationService:
         """Check video generation status from ComfyUI history."""
         import requests
 
+        # If this prompt was already stitched, return the cached complete result
+        if prompt_id in self._stitched_videos:
+            cached = self._stitched_videos[prompt_id]
+            return {
+                "ok": True,
+                "data": {
+                    "status": "complete",
+                    "prompt_id": prompt_id,
+                    "videos": [cached],
+                },
+            }
+
         try:
             resp = requests.get(f"{self.comfyui_url}/history/{prompt_id}", timeout=5)
             if not resp.ok:
@@ -499,15 +514,18 @@ class VideoGenerationService:
                 logger.error(f"ffmpeg error: {result.stderr}")
                 return {"ok": False, "error": f"ffmpeg failed: {result.stderr[:500]}"}
 
-            return {
-                "ok": True,
-                "data": {
-                    "video_path": str(output_file),
-                    "filename": output_file.name,
-                    "fps": fps,
-                    "has_audio": bool(audio_path),
-                },
+            video_info = {
+                "video_path": str(output_file),
+                "filename": output_file.name,
+                "fps": fps,
+                "has_audio": bool(audio_path),
             }
+
+            # Cache so subsequent status checks return 'complete'
+            self._stitched_videos[prompt_id] = video_info
+            logger.info(f"✓ Video stitched: {output_file.name} (prompt_id={prompt_id})")
+
+            return {"ok": True, "data": video_info}
 
         except Exception as e:
             logger.error(f"Frame stitching failed: {e}")

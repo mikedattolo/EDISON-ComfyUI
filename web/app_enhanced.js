@@ -2036,11 +2036,29 @@ class EdisonApp {
                     break;
                 } else if (s.status === 'complete_frames') {
                     this.updateMessage(assistantMessageEl, '🎬 Frames generated, stitching video...', 'video');
-                    await fetch(`${this.settings.apiEndpoint}/stitch-frames`, {
+                    const stitchResp = await fetch(`${this.settings.apiEndpoint}/stitch-frames`, {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ prompt_id: promptId })
                     });
+                    const stitchResult = await stitchResp.json();
+                    if (stitchResult.ok && stitchResult.data && stitchResult.data.filename) {
+                        const videoUrl = `${this.settings.apiEndpoint}/video/${stitchResult.data.filename}`;
+                        const videoHtml = `
+                            <p>✅ Video generated successfully!</p>
+                            <video controls style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                                <source src="${videoUrl}" type="video/mp4">
+                                Your browser does not support video playback.
+                            </video>
+                            <p style="margin-top: 8px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
+                            <div style="margin-top: 10px;">
+                                <a href="${videoUrl}" download style="padding: 8px 16px; background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%); color: white; border-radius: 8px; text-decoration: none; font-size: 14px;">📥 Download Video</a>
+                            </div>`;
+                        this.updateMessage(assistantMessageEl, videoHtml, 'video');
+                        this.saveMessageToChat(prompt, videoHtml, 'video');
+                        break;
+                    }
+                    // If stitch failed, continue polling — status check will catch it next time
                 } else if (s.status === 'error' || !status.ok) {
                     throw new Error(status.error || s.message || 'Video generation failed');
                 }
