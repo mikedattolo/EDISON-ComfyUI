@@ -97,13 +97,20 @@ edison:
     auto_start: true
   
   video:
+    # CogVideoX via HuggingFace diffusers (primary backend)
+    cogvideox_model: "THUDM/CogVideoX-5b"  # or "THUDM/CogVideoX-2b" for lower VRAM
+    num_frames: 49          # 49 frames at 8fps = ~6 second video
+    width: 720
+    height: 480
+    fps: 8
+    guidance_scale: 6.0
+    num_inference_steps: 50  # higher = better quality, slower
+    # Legacy ComfyUI fallback settings (only used if diffusers unavailable)
     default_frames: 16
     default_fps: 8
     default_width: 512
     default_height: 512
     default_steps: 20
-    # Preferred backend: cogvideox, animatediff, wan21, framebased (auto-detected)
-    # preferred_backend: "auto"
 
   music:
     model_size: "medium"       # small (~4GB VRAM), medium (~8GB), large (~16GB), melody (~8GB)

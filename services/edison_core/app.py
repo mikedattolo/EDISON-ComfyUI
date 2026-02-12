@@ -766,9 +766,9 @@ TOOL_REGISTRY = {
     "generate_video": {
         "args": {
             "prompt": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 512},
-            "height": {"type": int, "required": False, "default": 512},
-            "frames": {"type": int, "required": False, "default": 16},
+            "width": {"type": int, "required": False, "default": 720},
+            "height": {"type": int, "required": False, "default": 480},
+            "frames": {"type": int, "required": False, "default": 49},
             "fps": {"type": int, "required": False, "default": 8}
         }
     },
@@ -4687,16 +4687,16 @@ async def realtime_news(topic: str = "top news today", max_results: int = 8):
 
 @app.post("/generate-video")
 async def generate_video(request: dict):
-    """Generate a video from a text prompt using ComfyUI
+    """Generate a video from a text prompt using CogVideoX diffusers pipeline.
 
     Parameters:
         - prompt (str): Video description prompt (required)
-        - width (int): Frame width in pixels (default: 512)
-        - height (int): Frame height in pixels (default: 512)
-        - frames (int): Number of frames (default: 16)
+        - width (int): Frame width (default: 720)
+        - height (int): Frame height (default: 480)
+        - frames (int): Number of frames (default: 49)
         - fps (int): Frames per second (default: 8)
-        - steps (int): Sampling steps (default: 20)
-        - guidance_scale (float): CFG scale (default: 7.5)
+        - steps (int): Inference steps (default: 50)
+        - guidance_scale (float): CFG scale (default: 6.0)
         - negative_prompt (str): Negative prompt (optional)
         - audio_path (str): Path to audio file for music video (optional)
     """
@@ -4723,7 +4723,7 @@ async def generate_video(request: dict):
             frames=request.get("frames"),
             fps=request.get("fps"),
             steps=request.get("steps"),
-            guidance_scale=request.get("guidance_scale", 7.5),
+            guidance_scale=request.get("guidance_scale", 6.0),
             audio_path=request.get("audio_path"),
         )
 
@@ -4786,7 +4786,10 @@ async def video_status(prompt_id: str):
             logger.error(f"Failed to auto-save video to gallery: {ge}")
 
     # Reload LLMs once generation is complete or failed
-    if status in ("complete", "complete_frames") and _models_unloaded_for_image_gen:
+    if status in ("complete", "complete_frames", "error") and _models_unloaded_for_image_gen:
+        reload_llm_models_background()
+    # Also reload if result itself indicates failure
+    if not result.get("ok") and _models_unloaded_for_image_gen:
         reload_llm_models_background()
 
     return result

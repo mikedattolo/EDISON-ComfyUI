@@ -1985,12 +1985,13 @@ class EdisonApp {
 
     async handleVideoGeneration(prompt, assistantMessageEl) {
         try {
-            this.updateMessage(assistantMessageEl, '🎬 Generating video, please wait...', 'video');
+            this.updateMessage(assistantMessageEl, '🎬 Starting AI video generation...', 'video');
 
+            // CogVideoX defaults: 720×480, 49 frames @ 8fps = ~6 second video
             const response = await fetch(`${this.settings.apiEndpoint}/generate-video`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, width: 512, height: 512, frames: 16, fps: 8 })
+                body: JSON.stringify({ prompt })
             });
 
             if (!response.ok) throw new Error(`Video generation failed: ${response.statusText}`);
@@ -1999,11 +2000,12 @@ class EdisonApp {
 
             const loadingHtml = `
                 <div style="text-align: center; padding: 20px;">
-                    <div style="display: inline-block; width: 300px; height: 200px; background: linear-gradient(135deg, rgba(255, 107, 107, 0.1) 0%, rgba(255, 142, 83, 0.1) 100%); border-radius: 12px; position: relative; overflow: hidden;">
+                    <div style="display: inline-block; width: 360px; height: 240px; background: linear-gradient(135deg, rgba(255, 107, 107, 0.1) 0%, rgba(255, 142, 83, 0.1) 100%); border-radius: 12px; position: relative; overflow: hidden;">
                         <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
                             <div style="width: 60px; height: 60px; border: 4px solid rgba(255, 107, 107, 0.3); border-top-color: #ff6b6b; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
-                            <div style="font-size: 16px; color: #ff6b6b; font-weight: 500;">Generating Video...</div>
-                            <div id="video-progress-text" style="font-size: 14px; color: #888; margin-top: 8px;">Backend: ${result.backend || 'auto'}</div>
+                            <div style="font-size: 16px; color: #ff6b6b; font-weight: 500;">Generating AI Video...</div>
+                            <div id="video-progress-text" style="font-size: 13px; color: #888; margin-top: 8px;">${result.backend || 'CogVideoX'} — this takes 2-5 minutes</div>
+                            <div id="video-progress-stage" style="font-size: 12px; color: #aaa; margin-top: 4px;">Preparing model...</div>
                         </div>
                     </div>
                     <p style="margin-top: 16px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
@@ -2011,7 +2013,7 @@ class EdisonApp {
             this.updateMessage(assistantMessageEl, loadingHtml, 'video');
 
             let attempts = 0;
-            const maxAttempts = 300; // 5 min timeout for video
+            const maxAttempts = 600; // 20 min timeout (CogVideoX can take 2-8 min)
             while (attempts < maxAttempts) {
                 await new Promise(r => setTimeout(r, 2000));
                 const statusResp = await fetch(`${this.settings.apiEndpoint}/video-status/${promptId}`);
@@ -2022,8 +2024,8 @@ class EdisonApp {
                     const vid = s.videos[0];
                     const videoUrl = `${this.settings.apiEndpoint}/video/${vid.filename}`;
                     const videoHtml = `
-                        <p>✅ Video generated successfully!</p>
-                        <video controls style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+                        <p>✅ AI video generated successfully!</p>
+                        <video controls autoplay muted style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
                             <source src="${videoUrl}" type="video/mp4">
                             Your browser does not support video playback.
                         </video>
@@ -2034,40 +2036,22 @@ class EdisonApp {
                     this.updateMessage(assistantMessageEl, videoHtml, 'video');
                     this.saveMessageToChat(prompt, videoHtml, 'video');
                     break;
-                } else if (s.status === 'complete_frames') {
-                    this.updateMessage(assistantMessageEl, '🎬 Frames generated, stitching video...', 'video');
-                    const stitchResp = await fetch(`${this.settings.apiEndpoint}/stitch-frames`, {
-                        method: 'POST',
-                        headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ prompt_id: promptId })
-                    });
-                    const stitchResult = await stitchResp.json();
-                    if (stitchResult.ok && stitchResult.data && stitchResult.data.filename) {
-                        const videoUrl = `${this.settings.apiEndpoint}/video/${stitchResult.data.filename}`;
-                        const videoHtml = `
-                            <p>✅ Video generated successfully!</p>
-                            <video controls style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                                <source src="${videoUrl}" type="video/mp4">
-                                Your browser does not support video playback.
-                            </video>
-                            <p style="margin-top: 8px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
-                            <div style="margin-top: 10px;">
-                                <a href="${videoUrl}" download style="padding: 8px 16px; background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%); color: white; border-radius: 8px; text-decoration: none; font-size: 14px;">📥 Download Video</a>
-                            </div>`;
-                        this.updateMessage(assistantMessageEl, videoHtml, 'video');
-                        this.saveMessageToChat(prompt, videoHtml, 'video');
-                        break;
-                    }
-                    // If stitch failed, continue polling — status check will catch it next time
                 } else if (s.status === 'error' || !status.ok) {
                     throw new Error(status.error || s.message || 'Video generation failed');
                 }
 
+                // Update progress text with elapsed time and stage info
+                const elapsed = attempts * 2;
+                const minutes = Math.floor(elapsed / 60);
+                const seconds = elapsed % 60;
+                const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
                 const progEl = document.getElementById('video-progress-text');
-                if (progEl) progEl.textContent = `Generating... (${attempts * 2}s)`;
+                if (progEl) progEl.textContent = `Generating... ${timeStr}`;
+                const stageEl = document.getElementById('video-progress-stage');
+                if (stageEl && s.message) stageEl.textContent = s.message;
                 attempts++;
             }
-            if (attempts >= maxAttempts) throw new Error('Video generation timed out');
+            if (attempts >= maxAttempts) throw new Error('Video generation timed out (20 minutes)');
         } catch (error) {
             console.error('Video generation error:', error);
             this.updateMessage(assistantMessageEl, `⚠️ Error generating video: ${error.message}`, 'error');

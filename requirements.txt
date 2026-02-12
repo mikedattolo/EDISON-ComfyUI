@@ -46,4 +46,9 @@ scipy>=1.10.0  # WAV file writing for music output
 # ffmpeg must be installed system-wide: apt install ffmpeg
 # ComfyUI video nodes (AnimateDiff, CogVideoX) are installed as custom_nodes
 
+# CogVideoX via HuggingFace diffusers (primary video backend)
+diffusers>=0.30.0
+accelerate>=0.25.0
+imageio[pyav]>=2.31.0
+
 # Note: Silero VAD is loaded via torch.hub, no pip package needed
