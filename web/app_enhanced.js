@@ -984,7 +984,11 @@ class EdisonApp {
             const speakBtn = messageEl.querySelector('.speak-btn');
             const regenerateBtn = messageEl.querySelector('.regenerate-btn');
             
-            copyBtn.addEventListener('click', () => this.copyToClipboard(content));
+            copyBtn.addEventListener('click', () => {
+                // Read current content from DOM to avoid stale closure
+                const currentContent = messageEl.querySelector('.message-content')?.textContent || content;
+                this.copyToClipboard(currentContent);
+            });
             if (speakBtn) {
                 speakBtn.addEventListener('click', () => this.playTtsForMessage(messageEl));
             }
@@ -1528,13 +1532,16 @@ class EdisonApp {
                 return `<pre><code class="language-${lang || 'text'}">${this.escapeHtml(code.trim())}</code></pre>`;
             })
             // Inline code
-            .replace(/`([^`]+)`/g, '<code>$1</code>')
+            .replace(/`([^`]+)`/g, (match, code) => `<code>${this.escapeHtml(code)}</code>`)
             // Bold
-            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+            .replace(/\*\*([^*]+)\*\*/g, (match, text) => `<strong>${this.escapeHtml(text)}</strong>`)
             // Italic
-            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-            // Links
-            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
+            .replace(/\*([^*]+)\*/g, (match, text) => `<em>${this.escapeHtml(text)}</em>`)
+            // Links (sanitize href - block javascript: URIs)
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, href) => {
+                const safeHref = href.replace(/^\s*javascript\s*:/i, '#blocked:');
+                return `<a href="${this.escapeHtml(safeHref)}" target="_blank">${this.escapeHtml(text)}</a>`;
+            })
             // Line breaks
             .replace(/\n/g, '<br>');
         

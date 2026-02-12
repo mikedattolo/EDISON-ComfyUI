@@ -429,6 +429,16 @@ lock_vision_code = threading.Lock()
 active_requests = {}  # {request_id: {"cancelled": bool, "timestamp": float}}
 active_requests_lock = threading.Lock()
 
+def _prune_active_requests(max_age_secs: int = 600):
+    """Remove active_requests entries older than max_age_secs to prevent memory leaks."""
+    cutoff = time.time() - max_age_secs
+    with active_requests_lock:
+        stale = [rid for rid, r in active_requests.items() if r.get("timestamp", 0) < cutoff]
+        for rid in stale:
+            del active_requests[rid]
+        if stale:
+            logger.info(f"Pruned {len(stale)} stale active_requests entries")
+
 # GPU VRAM management for image generation
 _models_unloaded_for_image_gen = False
 _image_gen_lock = threading.Lock()
@@ -924,9 +934,9 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             chunks = await asyncio.to_thread(
                 rag_system.get_context,
                 query,
-                limit,
-                chat_id,
-                use_global
+                n_results=limit,
+                chat_id=chat_id,
+                global_search=use_global
             )
             return {"ok": True, "data": chunks}
 
@@ -1103,6 +1113,18 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 # Resolve absolute path
                 abs_dir = dir_path if dir_path.is_absolute() else REPO_ROOT / dir_path
                 abs_dir = abs_dir.resolve()
+                
+                # Security: only allow listing from allowed directories
+                allowed_dirs = [
+                    REPO_ROOT / "gallery",
+                    REPO_ROOT / "uploads",
+                    REPO_ROOT / "outputs",
+                    Path("/opt/edison/gallery"),
+                    Path("/opt/edison/uploads"),
+                    Path("/opt/edison/outputs"),
+                ]
+                if not any(str(abs_dir).startswith(str(d.resolve())) for d in allowed_dirs):
+                    return {"ok": False, "error": "Access denied: directory not in allowed paths"}
                 
                 if not abs_dir.exists():
                     return {"ok": False, "error": f"Directory not found: {dir_path}"}
@@ -1861,6 +1883,8 @@ async def rag_stats():
 @app.get("/health", response_model=HealthResponse)
 async def health():
     """Health check endpoint"""
+    # Periodic cleanup of stale active_requests
+    _prune_active_requests()
     return {
         "status": "healthy",
         "service": "edison-core",
@@ -1999,7 +2023,7 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
     if not remember or not rag_system:
         return
     try:
-        chat_id = str(int(time.time() * 1000))
+        chat_id = getattr(request, 'chat_id', None) or str(int(time.time() * 1000))
         current_timestamp = int(time.time())
         facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
         rag_system.add_documents(
@@ -4963,21 +4987,29 @@ async def list_generated_music():
 async def serve_music_file(filename: str):
     """Serve a generated music file"""
     from pathlib import Path
-    music_path = REPO_ROOT / "outputs" / "music" / filename
+    import os
+    safe_name = os.path.basename(filename)
+    music_path = (REPO_ROOT / "outputs" / "music" / safe_name).resolve()
+    if not str(music_path).startswith(str((REPO_ROOT / "outputs" / "music").resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not music_path.exists():
         raise HTTPException(status_code=404, detail="Music file not found")
 
-    media_type = "audio/mpeg" if filename.endswith(".mp3") else "audio/wav"
-    return FileResponse(str(music_path), media_type=media_type, filename=filename)
+    media_type = "audio/mpeg" if safe_name.endswith(".mp3") else "audio/wav"
+    return FileResponse(str(music_path), media_type=media_type, filename=safe_name)
 
 @app.get("/video/{filename}")
 async def serve_video_file(filename: str):
     """Serve a generated video file"""
     from pathlib import Path
-    video_path = REPO_ROOT / "outputs" / "videos" / filename
+    import os
+    safe_name = os.path.basename(filename)
+    video_path = (REPO_ROOT / "outputs" / "videos" / safe_name).resolve()
+    if not str(video_path).startswith(str((REPO_ROOT / "outputs" / "videos").resolve())):
+        raise HTTPException(status_code=403, detail="Access denied")
     if not video_path.exists():
         raise HTTPException(status_code=404, detail="Video file not found")
-    return FileResponse(str(video_path), media_type="video/mp4", filename=filename)
+    return FileResponse(str(video_path), media_type="video/mp4", filename=safe_name)
 
 
 # ==================== GALLERY ENDPOINTS ====================
@@ -5234,7 +5266,11 @@ async def delete_from_gallery(image_id: str):
 async def get_gallery_image(filename: str):
     """Serve an image from the gallery"""
     try:
-        image_path = GALLERY_DIR / filename
+        import os
+        safe_name = os.path.basename(filename)
+        image_path = (GALLERY_DIR / safe_name).resolve()
+        if not str(image_path).startswith(str(GALLERY_DIR.resolve())):
+            raise HTTPException(status_code=403, detail="Access denied")
         
         if not image_path.exists():
             raise HTTPException(status_code=404, detail="Image not found")
@@ -5242,8 +5278,8 @@ async def get_gallery_image(filename: str):
         from fastapi.responses import FileResponse
         return FileResponse(
             image_path,
-            media_type=f"image/{filename.split('.')[-1]}",
-            headers={"Content-Disposition": f'inline; filename="{filename}"'}
+            media_type=f"image/{safe_name.split('.')[-1]}",
+            headers={"Content-Disposition": f'inline; filename="{safe_name}"'}
         )
     except HTTPException:
         raise

@@ -6,8 +6,8 @@
 
 console.log('📦 app_features.js v7 loading - VLM enabled...');
 
-// Wait for main app to initialize
-let API_ENDPOINT = 'http://192.168.1.26:8811';
+// Wait for main app to initialize — derive endpoint from current page or saved settings
+let API_ENDPOINT = localStorage.getItem('edisonApiEndpoint') || `${window.location.protocol}//${window.location.hostname}:8811`;
 
 // File Upload Handling - make it globally accessible
 window.uploadedFiles = [];

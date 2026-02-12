@@ -10,6 +10,8 @@ import uuid
 import time
 import shutil
 import asyncio
+import threading
+import gc
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
@@ -48,6 +50,7 @@ class MusicGenerationService:
         self._processor = None
         self._model_loaded = False
         self._loading = False
+        self._load_lock = threading.Lock()
         logger.info(f"✓ Music generation service initialized (model: musicgen-{self.model_size})")
 
     # ── Model management ─────────────────────────────────────────────────
@@ -57,16 +60,18 @@ class MusicGenerationService:
         if self._model_loaded and self._model is not None:
             return True
 
-        if self._loading:
-            # Wait for another thread to finish loading
-            for _ in range(60):
-                if self._model_loaded:
-                    return True
-                time.sleep(1)
+        # Use lock to prevent concurrent loads (avoids double VRAM usage)
+        if not self._load_lock.acquire(blocking=True, timeout=120):
+            logger.warning("Timed out waiting for model load lock")
             return False
 
-        self._loading = True
         try:
+            # Re-check after acquiring lock
+            if self._model_loaded and self._model is not None:
+                return True
+
+            self._loading = True
+
             import torch
             from transformers import MusicgenForConditionalGeneration, AutoProcessor
 
@@ -100,30 +105,30 @@ class MusicGenerationService:
                 f"❌ transformers MusicGen not available: {e}. "
                 "Install with: pip install transformers torch torchaudio"
             )
+            self._processor = None
             self._loading = False
             return False
         except Exception as e:
             logger.error(f"❌ Failed to load MusicGen: {e}")
+            self._processor = None
             self._loading = False
             return False
+        finally:
+            self._load_lock.release()
 
     def _unload_model(self):
         """Unload model to free VRAM."""
-        if self._model is not None:
-            del self._model
-            del self._processor
-            self._model = None
-            self._processor = None
-            self._model_loaded = False
-            import gc
-            gc.collect()
-            try:
-                import torch
-                if torch.cuda.is_available():
-                    torch.cuda.empty_cache()
-            except ImportError:
-                pass
-            logger.info("✓ MusicGen model unloaded")
+        self._model_loaded = False
+        self._model = None
+        self._processor = None
+        gc.collect()
+        try:
+            import torch
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except ImportError:
+            pass
+        logger.info("✓ MusicGen model unloaded")
 
     # ── Prompt builder ───────────────────────────────────────────────────
 
@@ -261,7 +266,7 @@ class MusicGenerationService:
             ).to(self._model.device)
 
             # Generate audio
-            with torch.no_grad():
+            with torch.inference_mode():
                 audio_values = self._model.generate(
                     **inputs,
                     max_new_tokens=max_new_tokens,
@@ -319,6 +324,14 @@ class MusicGenerationService:
         except Exception as e:
             logger.error(f"MusicGen generation failed: {e}")
             return {"ok": False, "error": f"Music generation failed: {str(e)}"}
+        finally:
+            # Always free GPU tensors
+            try:
+                import torch
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
+            except Exception:
+                pass
 
     # ── Utility ──────────────────────────────────────────────────────────
 

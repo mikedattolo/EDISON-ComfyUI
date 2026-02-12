@@ -240,7 +240,7 @@ class VideoGenerationService:
 
     def _generate_worker(self, job_id: str, prompt: str,
                          negative_prompt: str, audio_path: Optional[str],
-                         duration: float = 6.0):
+                         duration: float = 6.0, gen_params: Optional[Dict[str, Any]] = None):
         """Background thread: load model → generate (multi-segment if needed) → export."""
         try:
             self._update_job(job_id, status="loading_model",
@@ -254,8 +254,18 @@ class VideoGenerationService:
 
             neg = negative_prompt or "nsfw, worst quality, low quality, blurry"
 
+            # Use per-request params (never read from self to avoid race conditions)
+            p = gen_params or {}
+            local_width = p.get("width", self.width)
+            local_height = p.get("height", self.height)
+            local_frames = p.get("num_frames", self.num_frames)
+            local_fps = p.get("fps", self.fps)
+            local_steps = p.get("num_inference_steps", self.num_inference_steps)
+            local_guidance = p.get("guidance_scale", self.guidance_scale)
+            local_overlap = p.get("segment_overlap", self.segment_overlap)
+
             # Calculate segments needed for requested duration
-            segment_secs = self.num_frames / self.fps  # ~6.125s per segment
+            segment_secs = local_frames / local_fps  # ~6.125s per segment
             num_segments = max(1, round(duration / segment_secs))
             num_segments = min(num_segments, 5)  # Cap at 5 segments (~30s)
 
@@ -266,7 +276,7 @@ class VideoGenerationService:
                     f"segment {seg + 1}/{num_segments} "
                     if num_segments > 1 else ""
                 )
-                est_min = int(self.num_inference_steps * 11.5 / 60)
+                est_min = int(local_steps * 11.5 / 60)
                 self._update_job(
                     job_id, status="generating",
                     message=(
@@ -283,18 +293,18 @@ class VideoGenerationService:
                         f"seamless motion"
                     )
 
-                with torch.no_grad():
+                import random
+                seed = random.randint(0, 2**32 - 1) + seg
+                with torch.inference_mode():
                     output = self._pipe(
                         prompt=seg_prompt,
                         negative_prompt=neg,
-                        num_frames=self.num_frames,
-                        width=self.width,
-                        height=self.height,
-                        guidance_scale=self.guidance_scale,
-                        num_inference_steps=self.num_inference_steps,
-                        generator=torch.Generator(device="cpu").manual_seed(
-                            int(time.time()) % (2**32) + seg
-                        ),
+                        num_frames=local_frames,
+                        width=local_width,
+                        height=local_height,
+                        guidance_scale=local_guidance,
+                        num_inference_steps=local_steps,
+                        generator=torch.Generator(device="cpu").manual_seed(seed),
                     )
 
                 segment_frames = output.frames[0]  # list of PIL Images
@@ -304,7 +314,7 @@ class VideoGenerationService:
                 else:
                     # Crossfade overlap region between segments
                     overlap = min(
-                        self.segment_overlap,
+                        local_overlap,
                         len(all_frames),
                         len(segment_frames),
                     )
@@ -319,12 +329,16 @@ class VideoGenerationService:
                     # Append non-overlapping frames
                     all_frames.extend(segment_frames[overlap:])
 
+                # Free intermediate tensors between segments
+                del output
+                torch.cuda.empty_cache()
+
                 logger.info(
                     f"Segment {seg + 1}/{num_segments} complete: "
                     f"{len(segment_frames)} frames"
                 )
 
-            total_secs = len(all_frames) / self.fps
+            total_secs = len(all_frames) / local_fps
             self._update_job(
                 job_id, status="encoding",
                 message=f"Encoding {len(all_frames)} frames ({total_secs:.1f}s) to MP4...",
@@ -359,13 +373,20 @@ class VideoGenerationService:
             logger.error(f"❌ Video generation failed for job {job_id}: {e}",
                          exc_info=True)
             self._update_job(job_id, status="error", message=str(e))
+            # Clean up partial output files
+            for partial in VIDEO_OUTPUT_DIR.glob(f"*{job_id}*"):
+                try:
+                    partial.unlink(missing_ok=True)
+                except Exception:
+                    pass
         finally:
             # Always free model VRAM so LLMs can reload
             self._unload_pipeline()
 
-    def _export_frames_to_mp4(self, frames, output_path: Path):
+    def _export_frames_to_mp4(self, frames, output_path: Path, fps: Optional[int] = None):
         """Convert a list of PIL Images to an MP4 file."""
         import numpy as np
+        out_fps = fps or self.fps
 
         # Try imageio first (cleanest approach)
         try:
@@ -375,7 +396,7 @@ class VideoGenerationService:
             iio.imwrite(
                 str(output_path),
                 frame_arrays,
-                fps=self.fps,
+                fps=out_fps,
                 codec="libx264",
                 plugin="pyav",
             )
@@ -384,16 +405,15 @@ class VideoGenerationService:
         except Exception as e:
             logger.warning(f"imageio export failed ({e}), falling back to ffmpeg pipe")
 
-        # Fallback: pipe raw frames to ffmpeg
-        frame_arrays = [np.array(f) for f in frames]
-        h, w = frame_arrays[0].shape[:2]
+        # Fallback: stream frames one-by-one to ffmpeg (no bulk materialization)
+        h, w = np.array(frames[0]).shape[:2]
         cmd = [
             FFMPEG_BIN, "-y",
             "-f", "rawvideo",
             "-vcodec", "rawvideo",
             "-s", f"{w}x{h}",
             "-pix_fmt", "rgb24",
-            "-r", str(self.fps),
+            "-r", str(out_fps),
             "-i", "-",
             "-c:v", "libx264",
             "-pix_fmt", "yuv420p",
@@ -402,13 +422,20 @@ class VideoGenerationService:
             str(output_path),
         ]
         proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stderr=subprocess.PIPE)
-        for arr in frame_arrays:
-            proc.stdin.write(arr.astype(np.uint8).tobytes())
-        proc.stdin.close()
+        try:
+            for f in frames:
+                proc.stdin.write(np.array(f, dtype=np.uint8).tobytes())
+            proc.stdin.close()
+        except BrokenPipeError:
+            pass
         proc.wait(timeout=120)
         if proc.returncode != 0:
-            err = proc.stderr.read().decode()[:500]
-            raise RuntimeError(f"ffmpeg encode failed: {err}")
+            stderr_out = b""
+            try:
+                stderr_out = proc.stderr.read()
+            except Exception:
+                pass
+            raise RuntimeError(f"ffmpeg encode failed: {stderr_out.decode(errors='replace')[:500]}")
         logger.info(f"Exported {len(frames)} frames via ffmpeg pipe → {output_path.name}")
 
     @staticmethod
@@ -421,7 +448,9 @@ class VideoGenerationService:
             "-c:v", "copy", "-c:a", "aac", "-shortest",
             str(output),
         ]
-        subprocess.run(cmd, capture_output=True, timeout=120)
+        result = subprocess.run(cmd, capture_output=True, timeout=120)
+        if result.returncode != 0:
+            logger.warning(f"Audio mux failed (rc={result.returncode}): {result.stderr.decode(errors='replace')[:300]}")
 
     # ── Job tracking helpers ─────────────────────────────────────────────
 
@@ -451,30 +480,38 @@ class VideoGenerationService:
         """
         job_id = uuid.uuid4().hex[:12]
 
-        # Allow per-request overrides
-        if width:
-            self.width = width
-        if height:
-            self.height = height
-        if frames:
-            self.num_frames = frames
-        if fps:
-            self.fps = fps
-        if steps:
-            self.num_inference_steps = steps
-        if guidance_scale != 6.0:
-            self.guidance_scale = guidance_scale
+        # Snapshot per-request params (never mutate self)
+        local_width = width or self.width
+        local_height = height or self.height
+        local_frames = frames or self.num_frames
+        local_fps = fps or self.fps
+        local_steps = steps or self.num_inference_steps
+        local_guidance = guidance_scale if guidance_scale != 6.0 else self.guidance_scale
 
         # Calculate duration
-        segment_secs = self.num_frames / self.fps
+        segment_secs = local_frames / local_fps
         req_duration = duration if duration else segment_secs
         req_duration = min(req_duration, self.max_duration)
         num_segments = max(1, round(req_duration / segment_secs))
         total_secs = num_segments * segment_secs
 
         # Estimate generation time
-        est_per_segment = self.num_inference_steps * 11.5  # seconds
+        est_per_segment = local_steps * 11.5  # seconds
         est_total_min = (est_per_segment * num_segments) / 60
+
+        # Prune old completed/errored jobs to prevent memory leak
+        self._prune_old_jobs()
+
+        # Build params dict for the worker thread
+        gen_params = {
+            "width": local_width,
+            "height": local_height,
+            "num_frames": local_frames,
+            "fps": local_fps,
+            "num_inference_steps": local_steps,
+            "guidance_scale": local_guidance,
+            "segment_overlap": self.segment_overlap,
+        }
 
         # Register the job
         with self._jobs_lock:
@@ -492,7 +529,7 @@ class VideoGenerationService:
         # Launch background thread
         thread = threading.Thread(
             target=self._generate_worker,
-            args=(job_id, prompt, negative_prompt, audio_path, req_duration),
+            args=(job_id, prompt, negative_prompt, audio_path, req_duration, gen_params),
             daemon=True,
         )
         thread.start()
@@ -502,19 +539,31 @@ class VideoGenerationService:
             "data": {
                 "prompt_id": job_id,
                 "backend": "cogvideox-diffusers",
-                "frames": self.num_frames,
-                "fps": self.fps,
+                "frames": local_frames,
+                "fps": local_fps,
                 "duration": total_secs,
                 "segments": num_segments,
                 "audio_path": audio_path,
                 "message": (
                     f"Video generation started using CogVideoX "
-                    f"({self.width}×{self.height}, ~{total_secs:.0f}s"
+                    f"({local_width}×{local_height}, ~{total_secs:.0f}s"
                     f"{', ' + str(num_segments) + ' segments' if num_segments > 1 else ''}). "
                     f"Estimated time: ~{est_total_min:.0f} minutes."
                 ),
             },
         }
+
+    def _prune_old_jobs(self, max_age_secs: int = 3600):
+        """Remove completed/errored jobs older than max_age_secs to prevent memory leak."""
+        cutoff = time.time() - max_age_secs
+        with self._jobs_lock:
+            stale = [
+                jid for jid, job in self._jobs.items()
+                if job.get("status") in ("complete", "error")
+                and job.get("created", 0) < cutoff
+            ]
+            for jid in stale:
+                del self._jobs[jid]
 
     def check_video_status(self, prompt_id: str) -> Dict[str, Any]:
         """Check video generation status."""

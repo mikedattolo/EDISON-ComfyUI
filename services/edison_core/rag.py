@@ -8,6 +8,7 @@ from pathlib import Path
 import logging
 import uuid
 import time
+import threading
 
 logger = logging.getLogger(__name__)
 
@@ -22,6 +23,7 @@ class RAGSystem:
         self.encoder = None
         self.collection_name = "edison_memory"
         self.vector_size = 384  # all-MiniLM-L6-v2 dimension
+        self._lock = threading.Lock()  # Protects encoder and client operations
         
         self._initialize_encoder()
         self._initialize_qdrant()
@@ -96,8 +98,9 @@ class RAGSystem:
         try:
             from qdrant_client.models import PointStruct
             
-            # Generate embeddings
-            embeddings = self.encoder.encode(documents, show_progress_bar=False)
+            # Generate embeddings (thread-safe)
+            with self._lock:
+                embeddings = self.encoder.encode(documents, show_progress_bar=False)
             
             # Prepare points
             points = []
@@ -151,8 +154,9 @@ class RAGSystem:
         try:
             from qdrant_client.models import Filter, FieldCondition, MatchValue
             
-            # Generate query embedding
-            query_vector = self.encoder.encode([query], show_progress_bar=False)[0]
+            # Generate query embedding (thread-safe)
+            with self._lock:
+                query_vector = self.encoder.encode([query], show_progress_bar=False)[0]
             
             # Build filter for chat-scoped search
             query_filter = None
@@ -191,8 +195,6 @@ class RAGSystem:
             
             # Extract text and metadata from results
             # Backward compatible: works with old entries that only have "text" field
-            import time
-            
             current_time = int(time.time())
             contexts = []
             points = search_results.points if hasattr(search_results, 'points') else search_results
@@ -240,9 +242,10 @@ class RAGSystem:
             return
         
         try:
-            self.client.delete_collection(self.collection_name)
-            logger.info(f"Deleted collection: {self.collection_name}")
-            self._initialize_qdrant()
+            with self._lock:
+                self.client.delete_collection(self.collection_name)
+                logger.info(f"Deleted collection: {self.collection_name}")
+                self._initialize_qdrant()
         except Exception as e:
             logger.error(f"Error clearing collection: {e}")
     
