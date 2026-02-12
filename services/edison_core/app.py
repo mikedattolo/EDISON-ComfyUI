@@ -432,6 +432,40 @@ active_requests_lock = threading.Lock()
 # GPU VRAM management for image generation
 _models_unloaded_for_image_gen = False
 _image_gen_lock = threading.Lock()
+_reload_lock = threading.Lock()
+_reload_in_progress = False
+
+def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
+    """Get free VRAM in MiB for a specific GPU"""
+    try:
+        import torch
+        if torch.cuda.is_available() and device_id < torch.cuda.device_count():
+            free, total = torch.cuda.mem_get_info(device_id)
+            return free / (1024 * 1024)
+    except Exception:
+        pass
+    # Fallback: parse nvidia-smi
+    try:
+        import subprocess
+        out = subprocess.check_output(
+            ["nvidia-smi", f"--id={device_id}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            timeout=5
+        ).decode().strip()
+        return float(out)
+    except Exception:
+        return 0.0
+
+def _flush_gpu_memory():
+    """Force garbage collection and clear CUDA caches"""
+    gc.collect()
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+            torch.cuda.synchronize()
+    except Exception:
+        pass
+    gc.collect()
 
 def unload_all_llm_models():
     """Unload all LLM models to free GPU VRAM for image generation"""
@@ -453,30 +487,76 @@ def unload_all_llm_models():
     llm_vision = None
     llm_vision_code = None
     
-    # Force garbage collection to release VRAM
-    gc.collect()
+    # Force garbage collection and flush CUDA caches
+    _flush_gpu_memory()
     
     # Small delay to let CUDA release memory
     time.sleep(1)
-    gc.collect()
+    _flush_gpu_memory()
     
     logger.info(f"✓ Unloaded LLM models: {', '.join(unloaded) if unloaded else 'none were loaded'}")
     return unloaded
 
 def reload_llm_models_background():
-    """Reload LLM models in a background thread after image generation"""
-    global _models_unloaded_for_image_gen
+    """Reload LLM models in a background thread after image/video generation.
+    
+    Uses a lock to prevent concurrent reloads, waits for VRAM to be available,
+    and retries with exponential backoff if allocation fails.
+    """
+    global _models_unloaded_for_image_gen, _reload_in_progress
+    
+    # Don't spawn duplicate reloads
+    if _reload_in_progress:
+        logger.info("⏭ LLM reload already in progress, skipping duplicate request")
+        return None
     
     def _reload():
-        global _models_unloaded_for_image_gen
+        global _models_unloaded_for_image_gen, _reload_in_progress
+        
+        # Acquire lock — only one reload at a time
+        if not _reload_lock.acquire(blocking=False):
+            logger.info("⏭ LLM reload lock held by another thread, skipping")
+            return
+        
+        _reload_in_progress = True
         try:
-            logger.info("⏳ Reloading LLM models after image generation...")
+            # Flush GPU caches before attempting reload
+            _flush_gpu_memory()
+            
+            # Wait for VRAM to be available with exponential backoff
+            # The fast model (14B q4) needs ~5 GB on GPU 0
+            MIN_VRAM_MB = 4500
+            max_retries = 8
+            delay = 3  # start with 3 seconds
+            
+            for attempt in range(max_retries):
+                free_mb = _get_gpu_free_vram_mb(0)
+                logger.info(f"🔍 VRAM check (attempt {attempt+1}/{max_retries}): GPU 0 has {free_mb:.0f} MiB free (need {MIN_VRAM_MB} MiB)")
+                
+                if free_mb >= MIN_VRAM_MB:
+                    break
+                
+                # Flush and wait
+                _flush_gpu_memory()
+                logger.info(f"⏳ Waiting {delay}s for VRAM to free up...")
+                time.sleep(delay)
+                delay = min(delay * 1.5, 30)  # cap at 30s
+            else:
+                # Final check after all retries
+                free_mb = _get_gpu_free_vram_mb(0)
+                if free_mb < MIN_VRAM_MB:
+                    logger.warning(f"⚠ VRAM still low ({free_mb:.0f} MiB) after {max_retries} retries, attempting load anyway...")
+            
+            logger.info("⏳ Reloading LLM models after media generation...")
             load_llm_models()
             _models_unloaded_for_image_gen = False
             logger.info("✓ LLM models reloaded successfully")
         except Exception as e:
             logger.error(f"❌ Failed to reload LLM models: {e}")
             _models_unloaded_for_image_gen = False
+        finally:
+            _reload_in_progress = False
+            _reload_lock.release()
     
     thread = threading.Thread(target=_reload, daemon=True)
     thread.start()
@@ -1385,9 +1465,12 @@ def load_llm_models():
     
     # Verify CUDA before loading models
     if not verify_cuda():
-        logger.error("❌ Cannot start without GPU acceleration. Please check NVIDIA drivers and CUDA installation.")
+        logger.error("❌ Cannot load models without GPU acceleration.")
         logger.error("Run: nvidia-smi to verify GPUs are visible")
-        sys.exit(1)  # Exit if GPU not available - don't allow CPU fallback
+        # Only exit during initial startup, not during reload
+        if not _models_unloaded_for_image_gen:
+            sys.exit(1)
+        return
     
     # Get model paths relative to repo root
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
@@ -1431,6 +1514,7 @@ def load_llm_models():
     
     # Try to load fast model
     fast_model_path = models_path / fast_model_name
+    fast_loaded = False
     if fast_model_path.exists():
         try:
             logger.info(f"Loading fast model: {fast_model_path}")
@@ -1441,52 +1525,69 @@ def load_llm_models():
                 **common_kwargs
             )
             logger.info("✓ Fast model loaded successfully")
+            fast_loaded = True
         except Exception as e:
             logger.error(f"Failed to load fast model: {e}")
     else:
         logger.warning(f"Fast model not found at {fast_model_path}")
     
+    # If fast model failed (likely OOM), skip larger models
+    if not fast_loaded:
+        logger.warning("⚠ Fast model failed to load — skipping medium/deep models (insufficient VRAM)")
+        return
+    
     # Try to load medium model (e.g., 32B - fallback for deep mode)
     medium_model_path = models_path / medium_model_name
     if medium_model_path.exists():
-        try:
-            logger.info(f"Loading medium model: {medium_model_path}")
-            file_size_gb = medium_model_path.stat().st_size / (1024**3)
-            logger.info(f"Medium model file size: {file_size_gb:.1f} GB")
-            
-            llm_medium = Llama(
-                model_path=str(medium_model_path),
-                n_ctx=medium_n_ctx,
-                n_gpu_layers=medium_n_gpu_layers,
-                **common_kwargs
-            )
-            logger.info("✓ Medium model loaded successfully")
-        except Exception as e:
-            llm_medium = None
-            logger.warning(f"Failed to load medium model: {e}")
+        # Pre-check: estimate if enough total VRAM across all GPUs
+        total_free_mb = sum(_get_gpu_free_vram_mb(i) for i in range(3))
+        file_size_gb = medium_model_path.stat().st_size / (1024**3)
+        needed_mb = file_size_gb * 1024 * 0.85  # rough: ~85% of file size goes to GPU
+        if total_free_mb < needed_mb:
+            logger.info(f"⏭ Skipping medium model ({file_size_gb:.1f} GB) — not enough VRAM ({total_free_mb:.0f} MiB free, need ~{needed_mb:.0f} MiB)")
+        else:
+            try:
+                logger.info(f"Loading medium model: {medium_model_path}")
+                logger.info(f"Medium model file size: {file_size_gb:.1f} GB")
+                
+                llm_medium = Llama(
+                    model_path=str(medium_model_path),
+                    n_ctx=medium_n_ctx,
+                    n_gpu_layers=medium_n_gpu_layers,
+                    **common_kwargs
+                )
+                logger.info("✓ Medium model loaded successfully")
+            except Exception as e:
+                llm_medium = None
+                logger.warning(f"Failed to load medium model: {e}")
     else:
         logger.info(f"Medium model not found at {medium_model_path} (optional - will use fast model as fallback)")
     
     # Try to load deep model (e.g., 72B)
     deep_model_path = models_path / deep_model_name
     if deep_model_path.exists():
-        try:
-            logger.info(f"Loading deep model: {deep_model_path}")
-            # Check file size to warn about VRAM requirements
-            file_size_gb = deep_model_path.stat().st_size / (1024**3)
-            logger.info(f"Deep model file size: {file_size_gb:.1f} GB")
-            
-            llm_deep = Llama(
-                model_path=str(deep_model_path),
-                n_ctx=deep_n_ctx,
-                n_gpu_layers=deep_n_gpu_layers,
-                **common_kwargs
-            )
-            logger.info("✓ Deep model loaded successfully")
-        except Exception as e:
-            llm_deep = None  # Explicitly set to None to avoid cleanup errors
-            logger.warning(f"Failed to load deep model (will fall back to medium or fast model): {e}")
-            logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
+        # Pre-check VRAM
+        total_free_mb = sum(_get_gpu_free_vram_mb(i) for i in range(3))
+        file_size_gb = deep_model_path.stat().st_size / (1024**3)
+        needed_mb = file_size_gb * 1024 * 0.85
+        if total_free_mb < needed_mb:
+            logger.info(f"⏭ Skipping deep model ({file_size_gb:.1f} GB) — not enough VRAM ({total_free_mb:.0f} MiB free, need ~{needed_mb:.0f} MiB)")
+        else:
+            try:
+                logger.info(f"Loading deep model: {deep_model_path}")
+                logger.info(f"Deep model file size: {file_size_gb:.1f} GB")
+                
+                llm_deep = Llama(
+                    model_path=str(deep_model_path),
+                    n_ctx=deep_n_ctx,
+                    n_gpu_layers=deep_n_gpu_layers,
+                    **common_kwargs
+                )
+                logger.info("✓ Deep model loaded successfully")
+            except Exception as e:
+                llm_deep = None
+                logger.warning(f"Failed to load deep model (will fall back to medium or fast model): {e}")
+                logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
     else:
         logger.warning(f"Deep model not found at {deep_model_path}")
 
