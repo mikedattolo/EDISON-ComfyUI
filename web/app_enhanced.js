@@ -1987,16 +1987,29 @@ class EdisonApp {
         try {
             this.updateMessage(assistantMessageEl, '🎬 Starting AI video generation...', 'video');
 
-            // CogVideoX defaults: 720×480, 49 frames @ 8fps = ~6 second video
+            // Parse duration from prompt (e.g. "make a 20 second video of...")
+            let duration = 6; // default single segment
+            const durMatch = prompt.match(/(\d+)\s*(?:second|sec|s)\b/i);
+            if (durMatch) {
+                duration = Math.min(Math.max(parseInt(durMatch[1]), 6), 30);
+            }
+            // Also check for "long video" / "longer video" keywords
+            if (/\b(long|longer|extended)\s*(video|clip)\b/i.test(prompt)) {
+                duration = Math.max(duration, 18); // 3 segments
+            }
+
+            // CogVideoX: 720×480, multi-GPU, multi-segment for longer videos
             const response = await fetch(`${this.settings.apiEndpoint}/generate-video`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt })
+                body: JSON.stringify({ prompt, duration })
             });
 
             if (!response.ok) throw new Error(`Video generation failed: ${response.statusText}`);
             const result = await response.json();
             const promptId = result.prompt_id;
+            const segments = result.segments || 1;
+            const estDuration = result.duration || 6;
 
             const loadingHtml = `
                 <div style="text-align: center; padding: 20px;">
@@ -2004,7 +2017,7 @@ class EdisonApp {
                         <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
                             <div style="width: 60px; height: 60px; border: 4px solid rgba(255, 107, 107, 0.3); border-top-color: #ff6b6b; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
                             <div style="font-size: 16px; color: #ff6b6b; font-weight: 500;">Generating AI Video...</div>
-                            <div id="video-progress-text" style="font-size: 13px; color: #888; margin-top: 8px;">${result.backend || 'CogVideoX'} — this takes 2-5 minutes</div>
+                            <div id="video-progress-text" style="font-size: 13px; color: #888; margin-top: 8px;">${result.backend || 'CogVideoX'} — ~${Math.round(estDuration)}s video${segments > 1 ? ' (' + segments + ' segments)' : ''}</div>
                             <div id="video-progress-stage" style="font-size: 12px; color: #aaa; margin-top: 4px;">Preparing model...</div>
                         </div>
                     </div>
@@ -2013,7 +2026,7 @@ class EdisonApp {
             this.updateMessage(assistantMessageEl, loadingHtml, 'video');
 
             let attempts = 0;
-            const maxAttempts = 600; // 20 min timeout (CogVideoX can take 2-8 min)
+            const maxAttempts = 900; // 30 min timeout (multi-segment can take longer)
             while (attempts < maxAttempts) {
                 await new Promise(r => setTimeout(r, 2000));
                 const statusResp = await fetch(`${this.settings.apiEndpoint}/video-status/${promptId}`);
@@ -2051,7 +2064,7 @@ class EdisonApp {
                 if (stageEl && s.message) stageEl.textContent = s.message;
                 attempts++;
             }
-            if (attempts >= maxAttempts) throw new Error('Video generation timed out (20 minutes)');
+            if (attempts >= maxAttempts) throw new Error('Video generation timed out (30 minutes)');
         } catch (error) {
             console.error('Video generation error:', error);
             this.updateMessage(assistantMessageEl, `⚠️ Error generating video: ${error.message}`, 'error');

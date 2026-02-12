@@ -1,7 +1,8 @@
 """
 Video Generation Service for EDISON
 Primary: CogVideoX-5B via HuggingFace diffusers (real AI video generation)
-Fallback: ComfyUI-based AnimateDiff / framebased stitching
+Multi-GPU: distributes model components across all available GPUs
+Long video: generates multiple segments with crossfade blending
 """
 
 import gc
@@ -13,7 +14,7 @@ import threading
 import time
 import uuid
 from pathlib import Path
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
 
@@ -43,8 +44,9 @@ class VideoGenerationService:
 
     Primary backend: CogVideoX-5B via HuggingFace diffusers — produces
     temporally-coherent 6-second clips (49 frames @ 8 fps, 720×480).
-    Falls back to CogVideoX-2B if VRAM is tight.
-    Last-resort fallback: ComfyUI framebased pipeline.
+    Multi-GPU: text encoder on secondary GPU, transformer+VAE on primary GPU
+    (eliminates CPU offload overhead).
+    Long video: generates multiple segments with crossfade blending.
     """
 
     def __init__(self, config: Dict[str, Any]):
@@ -58,7 +60,12 @@ class VideoGenerationService:
         self.height: int = video_cfg.get("height", 480)
         self.fps: int = video_cfg.get("fps", 8)
         self.guidance_scale: float = video_cfg.get("guidance_scale", 6.0)
-        self.num_inference_steps: int = video_cfg.get("num_inference_steps", 50)
+        self.num_inference_steps: int = video_cfg.get("num_inference_steps", 30)
+
+        # Multi-GPU and long video settings
+        self.multi_gpu: bool = video_cfg.get("multi_gpu", True)
+        self.max_duration: int = video_cfg.get("max_duration", 30)  # seconds
+        self.segment_overlap: int = video_cfg.get("segment_overlap", 8)  # crossfade frames
 
         # ComfyUI fallback
         host = comfyui_cfg.get("host", "127.0.0.1")
@@ -82,13 +89,14 @@ class VideoGenerationService:
         logger.info(
             f"✓ Video generation service initialized "
             f"(model={self.model_id}, {self.width}×{self.height}, "
-            f"{self.num_frames}f@{self.fps}fps)"
+            f"{self.num_frames}f@{self.fps}fps, multi_gpu={self.multi_gpu}, "
+            f"max_duration={self.max_duration}s)"
         )
 
     # ── Pipeline management ──────────────────────────────────────────────
 
     def _load_pipeline(self):
-        """Lazy-load the CogVideoX diffusers pipeline."""
+        """Load CogVideoX pipeline with multi-GPU distribution."""
         if self._pipe is not None:
             return
 
@@ -100,66 +108,142 @@ class VideoGenerationService:
 
             t0 = time.time()
 
-            # Build list of models to try (primary + fallback)
             models_to_try = [self.model_id]
             if "5b" in self.model_id.lower():
                 models_to_try.append("THUDM/CogVideoX-2b")
 
             last_error = None
             for model_id in models_to_try:
-                for strategy in ("specific_fp16", "specific_bf16", "auto_fp16"):
+                try:
+                    logger.info(f"⏳ Loading CogVideoX pipeline: {model_id}...")
+                    pipe = self._load_model(model_id, torch)
+                    self._pipe = pipe
+                    self.model_id = model_id
+                    elapsed = time.time() - t0
+                    logger.info(f"✓ CogVideoX loaded in {elapsed:.1f}s (model={model_id})")
+                    return
+                except Exception as e:
+                    logger.warning(f"Failed to load {model_id}: {e}", exc_info=True)
+                    last_error = e
+                    gc.collect()
                     try:
-                        logger.info(
-                            f"⏳ Loading CogVideoX pipeline: {model_id} "
-                            f"(strategy={strategy})..."
-                        )
-                        pipe = self._try_load(model_id, strategy, torch)
-                        pipe.enable_model_cpu_offload()
-                        pipe.vae.enable_slicing()
-                        pipe.vae.enable_tiling()
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
 
-                        self._pipe = pipe
-                        self.model_id = model_id
-                        elapsed = time.time() - t0
-                        logger.info(
-                            f"✓ CogVideoX pipeline loaded in {elapsed:.1f}s "
-                            f"(model={model_id}, strategy={strategy})"
-                        )
-                        return
-                    except Exception as e:
-                        logger.warning(
-                            f"Strategy {strategy} failed for {model_id}: {e}"
-                        )
-                        last_error = e
-                        # Clean up partial state
-                        gc.collect()
-                        try:
-                            torch.cuda.empty_cache()
-                        except Exception:
-                            pass
+            raise RuntimeError(f"Could not load CogVideoX. Last error: {last_error}")
 
-            raise RuntimeError(
-                f"Could not load any CogVideoX model. Last error: {last_error}"
-            )
+    def _load_model(self, model_id: str, torch):
+        """Load pipeline, trying multi-GPU first then single-GPU CPU offload."""
+        from diffusers import CogVideoXPipeline
 
-    @staticmethod
-    def _try_load(model_id: str, strategy: str, torch):
-        """Attempt to load a pipeline with a specific strategy."""
-        if strategy == "specific_fp16":
-            from diffusers import CogVideoXPipeline
-            return CogVideoXPipeline.from_pretrained(
-                model_id, torch_dtype=torch.float16,
+        # Try CogVideoXPipeline first, fall back to DiffusionPipeline
+        for PipeClass in (CogVideoXPipeline,):
+            for dtype in (torch.float16, torch.bfloat16):
+                try:
+                    pipe = PipeClass.from_pretrained(model_id, torch_dtype=dtype)
+                    pipe.vae.enable_slicing()
+                    pipe.vae.enable_tiling()
+
+                    # Try multi-GPU distribution first
+                    if self.multi_gpu and self._setup_multi_gpu(pipe, torch):
+                        return pipe
+
+                    # Fallback: single GPU with CPU offload
+                    logger.info("Using single-GPU with CPU offload")
+                    pipe.enable_model_cpu_offload()
+                    return pipe
+                except Exception as e:
+                    logger.warning(f"{PipeClass.__name__} + {dtype} failed: {e}")
+                    gc.collect()
+                    try:
+                        torch.cuda.empty_cache()
+                    except Exception:
+                        pass
+
+        # Last resort: DiffusionPipeline auto-detect
+        from diffusers import DiffusionPipeline
+        pipe = DiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
+        pipe.vae.enable_slicing()
+        pipe.vae.enable_tiling()
+        pipe.enable_model_cpu_offload()
+        return pipe
+
+    def _setup_multi_gpu(self, pipe, torch) -> bool:
+        """Distribute pipeline components across GPUs for faster generation.
+
+        Layout:
+          - Transformer + VAE → GPU with most free VRAM (heaviest, ~16 GB)
+          - Text encoder → GPU with second-most free VRAM (~5 GB)
+
+        This eliminates CPU offload overhead — model stays on GPU between
+        segments for long videos.
+        """
+        num_gpus = torch.cuda.device_count()
+        if num_gpus < 2:
+            return False
+
+        # Survey free VRAM on each GPU
+        gpu_info = []
+        for i in range(num_gpus):
+            try:
+                free, total = torch.cuda.mem_get_info(i)
+                name = torch.cuda.get_device_name(i)
+                gpu_info.append({
+                    "id": i,
+                    "free_gb": free / (1024**3),
+                    "total_gb": total / (1024**3),
+                    "name": name,
+                })
+            except Exception:
+                continue
+
+        gpu_info.sort(key=lambda g: g["free_gb"], reverse=True)
+        logger.info(f"GPU VRAM survey: {[(g['id'], g['name'], f'{g["free_gb"]:.1f}GB free') for g in gpu_info]}")
+
+        primary = gpu_info[0]  # Most free VRAM → transformer + VAE
+        secondary = gpu_info[1]  # Second most → text encoder
+
+        # Transformer needs ~12-16 GB for 5B model
+        if primary["free_gb"] < 12:
+            logger.warning(
+                f"Primary GPU {primary['id']} ({primary['name']}) only has "
+                f"{primary['free_gb']:.1f}GB free — need ≥12GB for transformer"
             )
-        elif strategy == "specific_bf16":
-            from diffusers import CogVideoXPipeline
-            return CogVideoXPipeline.from_pretrained(
-                model_id, torch_dtype=torch.bfloat16,
+            return False
+
+        # Text encoder needs ~5 GB
+        if secondary["free_gb"] < 4:
+            logger.warning(
+                f"Secondary GPU {secondary['id']} ({secondary['name']}) only has "
+                f"{secondary['free_gb']:.1f}GB free — need ≥4GB for text encoder"
             )
-        else:  # "auto_fp16" — use DiffusionPipeline auto-detect
-            from diffusers import DiffusionPipeline
-            return DiffusionPipeline.from_pretrained(
-                model_id, torch_dtype=torch.float16,
+            return False
+
+        try:
+            transformer_dev = f"cuda:{primary['id']}"
+            text_encoder_dev = f"cuda:{secondary['id']}"
+
+            pipe.text_encoder.to(text_encoder_dev)
+            pipe.transformer.to(transformer_dev)
+            pipe.vae.to(transformer_dev)
+
+            logger.info(
+                f"✓ Multi-GPU distributed: "
+                f"text_encoder → GPU {secondary['id']} ({secondary['name']}, "
+                f"{secondary['free_gb']:.1f}GB free), "
+                f"transformer+VAE → GPU {primary['id']} ({primary['name']}, "
+                f"{primary['free_gb']:.1f}GB free)"
             )
+            return True
+        except Exception as e:
+            logger.warning(f"Multi-GPU placement failed: {e}")
+            try:
+                pipe.to("cpu")
+            except Exception:
+                pass
+            gc.collect()
+            return False
 
     def _unload_pipeline(self):
         """Free the pipeline and reclaim VRAM."""
@@ -182,43 +266,99 @@ class VideoGenerationService:
     # ── Core generation (runs in background thread) ──────────────────────
 
     def _generate_worker(self, job_id: str, prompt: str,
-                         negative_prompt: str, audio_path: Optional[str]):
-        """Background thread: load model → generate → export mp4 → unload."""
+                         negative_prompt: str, audio_path: Optional[str],
+                         duration: float = 6.0):
+        """Background thread: load model → generate (multi-segment if needed) → export."""
         try:
             self._update_job(job_id, status="loading_model",
                              message="Loading CogVideoX model...")
 
             self._load_pipeline()
 
-            self._update_job(job_id, status="generating",
-                             message="Generating video frames (this takes 2-5 minutes)...")
-
             import torch
+            import numpy as np
+            from PIL import Image
 
             neg = negative_prompt or "nsfw, worst quality, low quality, blurry"
 
-            with torch.no_grad():
-                output = self._pipe(
-                    prompt=prompt,
-                    negative_prompt=neg,
-                    num_frames=self.num_frames,
-                    width=self.width,
-                    height=self.height,
-                    guidance_scale=self.guidance_scale,
-                    num_inference_steps=self.num_inference_steps,
-                    generator=torch.Generator(device="cpu").manual_seed(
-                        int(time.time()) % (2**32)
+            # Calculate segments needed for requested duration
+            segment_secs = self.num_frames / self.fps  # ~6.125s per segment
+            num_segments = max(1, round(duration / segment_secs))
+            num_segments = min(num_segments, 5)  # Cap at 5 segments (~30s)
+
+            all_frames: List = []
+
+            for seg in range(num_segments):
+                seg_label = (
+                    f"segment {seg + 1}/{num_segments} "
+                    if num_segments > 1 else ""
+                )
+                est_min = int(self.num_inference_steps * 11.5 / 60)
+                self._update_job(
+                    job_id, status="generating",
+                    message=(
+                        f"Generating {seg_label}video frames "
+                        f"(~{est_min} min per segment)..."
                     ),
                 )
 
-            frames = output.frames[0]  # list of PIL Images
+                # Vary prompt slightly for continuation segments
+                seg_prompt = prompt
+                if seg > 0:
+                    seg_prompt = (
+                        f"{prompt}, smooth continuation, consistent style, "
+                        f"seamless motion"
+                    )
 
-            self._update_job(job_id, status="encoding",
-                             message="Encoding video to MP4...")
+                with torch.no_grad():
+                    output = self._pipe(
+                        prompt=seg_prompt,
+                        negative_prompt=neg,
+                        num_frames=self.num_frames,
+                        width=self.width,
+                        height=self.height,
+                        guidance_scale=self.guidance_scale,
+                        num_inference_steps=self.num_inference_steps,
+                        generator=torch.Generator(device="cpu").manual_seed(
+                            int(time.time()) % (2**32) + seg
+                        ),
+                    )
 
-            # Export frames → mp4 via imageio (or PIL fallback)
+                segment_frames = output.frames[0]  # list of PIL Images
+
+                if seg == 0:
+                    all_frames.extend(segment_frames)
+                else:
+                    # Crossfade overlap region between segments
+                    overlap = min(
+                        self.segment_overlap,
+                        len(all_frames),
+                        len(segment_frames),
+                    )
+                    for i in range(overlap):
+                        alpha = (i + 1) / (overlap + 1)
+                        prev = np.array(all_frames[-(overlap - i)])
+                        curr = np.array(segment_frames[i])
+                        blended = (
+                            prev * (1 - alpha) + curr * alpha
+                        ).astype(np.uint8)
+                        all_frames[-(overlap - i)] = Image.fromarray(blended)
+                    # Append non-overlapping frames
+                    all_frames.extend(segment_frames[overlap:])
+
+                logger.info(
+                    f"Segment {seg + 1}/{num_segments} complete: "
+                    f"{len(segment_frames)} frames"
+                )
+
+            total_secs = len(all_frames) / self.fps
+            self._update_job(
+                job_id, status="encoding",
+                message=f"Encoding {len(all_frames)} frames ({total_secs:.1f}s) to MP4...",
+            )
+
             output_file = VIDEO_OUTPUT_DIR / f"EDISON_video_{job_id}.mp4"
-            self._export_frames_to_mp4(frames, output_file)
+            self._export_frames_to_mp4(all_frames, output_file)
 
             # Optionally mux audio
             if audio_path and Path(audio_path).exists():
@@ -230,11 +370,17 @@ class VideoGenerationService:
             self._update_job(
                 job_id,
                 status="complete",
-                message="Video generated successfully!",
+                message=(
+                    f"Video generated! {len(all_frames)} frames, "
+                    f"{total_secs:.1f}s{' (' + str(num_segments) + ' segments)' if num_segments > 1 else ''}"
+                ),
                 filename=output_file.name,
                 video_path=str(output_file),
             )
-            logger.info(f"✓ Video generation complete: {output_file.name}")
+            logger.info(
+                f"✓ Video generation complete: {output_file.name} "
+                f"({len(all_frames)} frames, {total_secs:.1f}s)"
+            )
 
         except Exception as e:
             logger.error(f"❌ Video generation failed for job {job_id}: {e}",
@@ -324,10 +470,11 @@ class VideoGenerationService:
         steps: Optional[int] = None,
         guidance_scale: float = 6.0,
         audio_path: Optional[str] = None,
+        duration: Optional[float] = None,
     ) -> Dict[str, Any]:
         """
         Submit a video generation job.
-        Uses CogVideoX diffusers pipeline (primary) with internal status tracking.
+        Uses CogVideoX diffusers pipeline with multi-GPU and multi-segment support.
         """
         job_id = uuid.uuid4().hex[:12]
 
@@ -345,6 +492,17 @@ class VideoGenerationService:
         if guidance_scale != 6.0:
             self.guidance_scale = guidance_scale
 
+        # Calculate duration
+        segment_secs = self.num_frames / self.fps
+        req_duration = duration if duration else segment_secs
+        req_duration = min(req_duration, self.max_duration)
+        num_segments = max(1, round(req_duration / segment_secs))
+        total_secs = num_segments * segment_secs
+
+        # Estimate generation time
+        est_per_segment = self.num_inference_steps * 11.5  # seconds
+        est_total_min = (est_per_segment * num_segments) / 60
+
         # Register the job
         with self._jobs_lock:
             self._jobs[job_id] = {
@@ -354,12 +512,14 @@ class VideoGenerationService:
                 "audio_path": audio_path,
                 "created": time.time(),
                 "message": "Video generation queued...",
+                "num_segments": num_segments,
+                "duration": total_secs,
             }
 
         # Launch background thread
         thread = threading.Thread(
             target=self._generate_worker,
-            args=(job_id, prompt, negative_prompt, audio_path),
+            args=(job_id, prompt, negative_prompt, audio_path, req_duration),
             daemon=True,
         )
         thread.start()
@@ -371,11 +531,14 @@ class VideoGenerationService:
                 "backend": "cogvideox-diffusers",
                 "frames": self.num_frames,
                 "fps": self.fps,
+                "duration": total_secs,
+                "segments": num_segments,
                 "audio_path": audio_path,
                 "message": (
                     f"Video generation started using CogVideoX "
-                    f"({self.width}×{self.height}, {self.num_frames} frames). "
-                    f"This takes 2-5 minutes."
+                    f"({self.width}×{self.height}, ~{total_secs:.0f}s"
+                    f"{', ' + str(num_segments) + ' segments' if num_segments > 1 else ''}). "
+                    f"Estimated time: ~{est_total_min:.0f} minutes."
                 ),
             },
         }

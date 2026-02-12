@@ -99,12 +99,16 @@ edison:
   video:
     # CogVideoX via HuggingFace diffusers (primary backend)
     cogvideox_model: "THUDM/CogVideoX-5b"  # or "THUDM/CogVideoX-2b" for lower VRAM
-    num_frames: 49          # 49 frames at 8fps = ~6 second video
+    num_frames: 49          # 49 frames at 8fps = ~6 second segment
     width: 720
     height: 480
     fps: 8
     guidance_scale: 6.0
-    num_inference_steps: 50  # higher = better quality, slower
+    num_inference_steps: 30  # 30 steps = ~6 min/segment (50 = better quality, ~10 min)
+    # Multi-GPU and long video
+    multi_gpu: true          # Distribute model across all GPUs (faster, no CPU offload)
+    max_duration: 30         # Max video length in seconds (5 segments × 6s)
+    segment_overlap: 8       # Crossfade frames between segments
     # Legacy ComfyUI fallback settings (only used if diffusers unavailable)
     default_frames: 16
     default_fps: 8
