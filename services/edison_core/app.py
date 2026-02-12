@@ -2297,33 +2297,55 @@ async def chat(request: ChatRequest):
     # Keep original_mode for special handling (like work mode with steps)
     original_mode = mode
 
-    # Check for video/music intent (Coral or heuristic fallback)
+    # Check for video/music intent (Coral or direct message pattern matching)
     if request.mode != "swarm":
-        reasons_str = " ".join(routing.get("reasons", []))
         msg_lower_clean = request.message.lower()
 
+        # Video generation patterns
+        _video_patterns = ["make a video", "create a video", "generate a video",
+                          "make video", "create video", "generate video",
+                          "music video", "animate", "animation",
+                          "video of", "video about", "video from",
+                          "make me a video", "short video", "video clip",
+                          "text to video", "text-to-video"]
+
+        # Music generation patterns
+        _music_patterns = ["make music", "create music", "generate music",
+                          "make a song", "create a song", "generate a song",
+                          "compose", "make a beat", "produce music",
+                          "music like", "song about", "write a song",
+                          "make me a song", "generate a beat", "music from",
+                          "make me music", "create a beat", "lo-fi", "lofi",
+                          "lo fi", "hip hop beat", "hip-hop beat", "edm",
+                          "make a track", "generate song", "generate beat",
+                          "play me", "sing me", "beat for", "instrumental",
+                          "background music", "soundtrack",
+                          "generate a lo", "make a lo", "create a lo"]
+
         is_video = coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"] or \
-                   "video generation" in reasons_str.lower()
+                   any(p in msg_lower_clean for p in _video_patterns)
         is_music = coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] or \
-                   "music generation" in reasons_str.lower()
+                   any(p in msg_lower_clean for p in _music_patterns)
 
         if is_video:
+            clean_prompt = msg_lower_clean
             for prefix in ["generate", "create", "make", "a video of", "video of",
                            "a video about", "video about", "a ", "an "]:
-                msg_lower_clean = msg_lower_clean.replace(prefix, "").strip()
+                clean_prompt = clean_prompt.replace(prefix, "").strip()
             return {
-                "response": f"🎬 Generating video: \"{msg_lower_clean}\"...",
+                "response": f"🎬 Generating video: \"{clean_prompt}\"...",
                 "mode_used": "video",
-                "video_generation": {"prompt": msg_lower_clean, "trigger": "intent"}
+                "video_generation": {"prompt": clean_prompt, "trigger": "intent"}
             }
         elif is_music:
+            clean_prompt = msg_lower_clean
             for prefix in ["generate", "create", "make", "compose", "a song about",
                            "song about", "music about", "some ", "a ", "an ", "me "]:
-                msg_lower_clean = msg_lower_clean.replace(prefix, "").strip()
+                clean_prompt = clean_prompt.replace(prefix, "").strip()
             return {
-                "response": f"🎵 Generating music: \"{msg_lower_clean}\"...",
+                "response": f"🎵 Generating music: \"{clean_prompt}\"...",
                 "mode_used": "music",
-                "music_generation": {"prompt": msg_lower_clean, "trigger": "intent"}
+                "music_generation": {"prompt": clean_prompt, "trigger": "intent"}
             }
     
     # Check if user selected a specific model (overrides routing)
@@ -2983,13 +3005,35 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     original_mode = mode
 
     # Heuristic fallback: if Coral didn't trigger video/music intents,
-    # check routing reasons for heuristic-detected music/video patterns
+    # check the actual message text for video/music patterns directly
     if video_intent_payload is None and music_intent_payload is None and request.mode != "swarm":
-        reasons_str = " ".join(routing.get("reasons", []))
         msg_lower = request.message.lower()
 
-        if "video generation" in reasons_str.lower() or "video" in reasons_str.lower():
-            # Clean prompt
+        # Video generation patterns
+        video_patterns = ["make a video", "create a video", "generate a video",
+                         "make video", "create video", "generate video",
+                         "music video", "animate", "animation",
+                         "video of", "video about", "video from",
+                         "make me a video", "short video", "video clip",
+                         "text to video", "text-to-video"]
+
+        # Music generation patterns
+        music_patterns = ["make music", "create music", "generate music",
+                         "make a song", "create a song", "generate a song",
+                         "compose", "make a beat", "produce music",
+                         "music like", "song about", "write a song",
+                         "make me a song", "generate a beat", "music from",
+                         "make me music", "create a beat", "lo-fi", "lofi",
+                         "lo fi", "hip hop beat", "hip-hop beat", "edm",
+                         "make a track", "generate song", "generate beat",
+                         "play me", "sing me", "beat for", "instrumental",
+                         "background music", "soundtrack",
+                         "generate a lo", "make a lo", "create a lo"]
+
+        has_video = any(pattern in msg_lower for pattern in video_patterns)
+        has_music = any(pattern in msg_lower for pattern in music_patterns)
+
+        if has_video:
             clean_prompt = msg_lower
             for prefix in ["generate", "create", "make", "a video of", "video of",
                            "a video about", "video about", "a short video of",
@@ -3003,7 +3047,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             }
             logger.info(f"Heuristic video intent detected: {clean_prompt}")
 
-        elif "music generation" in reasons_str.lower() or "music" in reasons_str.lower():
+        elif has_music:
             clean_prompt = msg_lower
             for prefix in ["generate", "create", "make", "compose", "a song about",
                            "song about", "music about", "some ", "a ", "an ", "me "]:
