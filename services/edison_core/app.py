@@ -2051,7 +2051,17 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
         if facts_extracted:
             for fact in facts_extracted:
                 if fact.get("confidence", 0) >= 0.85:
-                    fact_text = f"User {fact['value']}"
+                    fact_type = fact.get("type", "other")
+                    value = fact['value']
+                    # Store facts as natural-language sentences for better embedding recall
+                    if fact_type == "name":
+                        fact_text = f"The user's name is {value}. My name is {value}. Call me {value}."
+                    elif fact_type == "preference":
+                        fact_text = f"The user's preference: {value}. My favorite {value}."
+                    elif fact_type == "project":
+                        fact_text = f"The user is working on: {value}."
+                    else:
+                        fact_text = f"User fact: {value}"
                     rag_system.add_documents(
                         documents=[fact_text],
                         metadatas=[{
@@ -2625,8 +2635,8 @@ async def chat(request: ChatRequest):
             # Detect question patterns and extract key terms
             import re
             
-            # Pattern: "what is my X" or "what's my X" -> extract X
-            what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
+            # Pattern: "what is my X" or "what's my X" or "whats my X" -> extract X
+            what_match = re.search(r"what(?:'?s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
             if what_match:
                 topic = what_match.group(1).strip()
                 # Search for STATEMENTS about this topic, not questions
@@ -3259,6 +3269,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     expanded_count = 0
     main_count = 0
     current_chat_id = request.chat_id
+    # Identity/recall questions should ALWAYS search globally across all chats
     global_search = is_recall or request.global_memory_search or not current_chat_id
 
     if rag_system and rag_system.is_ready():
@@ -3297,7 +3308,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
             search_queries = [request.message]
             import re
-            what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
+            what_match = re.search(r"what(?:'?s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
             if what_match:
                 topic = what_match.group(1).strip()
                 if "name" in topic:
@@ -6370,11 +6381,27 @@ def detect_recall_intent(message: str) -> tuple[bool, str]:
             search_query = match.group(group_idx) if match.lastindex >= group_idx else message
             return (True, search_query)
     
+    # Identity / personal recall patterns — these are memory lookups
+    identity_patterns = [
+        r"what(?:'?s| is) my (\w+)",       # "whats my name", "what's my age"
+        r"do you (?:know|remember) my (\w+)",  # "do you know my name"
+        r"who am i",
+        r"tell me about (?:me|myself)",
+        r"what do you (?:know|remember) about me",
+    ]
+    for pattern in identity_patterns:
+        match = re.search(pattern, msg_lower)
+        if match:
+            # Build a useful search query from the matched topic
+            topic = match.group(1) if match.lastindex else "identity"
+            return (True, f"my {topic} is" if topic != "identity" else "my name is")
+
     # Simple recall keywords
     recall_keywords = [
         "recall", "remember when", "what did we", "our conversation",
         "search my chats", "find in history", "previous conversation",
-        "earlier we talked", "you mentioned", "we discussed"
+        "earlier we talked", "you mentioned", "we discussed",
+        "do you remember", "you should know",
     ]
     
     if any(keyword in msg_lower for keyword in recall_keywords):
