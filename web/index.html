@@ -4,11 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=15">
+    <link rel="stylesheet" href="styles.css?v=13">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="theme-device.js?v=3"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -52,35 +57,25 @@
         <!-- Work Mode Desktop View -->
         <div class="work-desktop" id="workDesktop" style="display: none;">
             <div class="work-header">
-                <h2>🖥️ Task Progress</h2>
-                <div class="work-header-controls">
-                    <span class="work-status-badge" id="workStatusBadge">Working...</span>
-                    <button class="work-close" id="workCloseBtn">&times;</button>
-                </div>
+                <h2>🖥️ AI Desktop - Task Workspace</h2>
+                <button class="work-close" id="workCloseBtn">×</button>
             </div>
             <div class="work-content">
                 <div class="work-panel">
-                    <h3>📋 Task</h3>
+                    <h3>📋 Current Task</h3>
                     <div id="currentTask" class="task-display">Waiting for task...</div>
-                    <div id="workStepProgress" class="step-progress-bar">
-                        <div class="step-progress-fill" id="stepProgressFill" style="width: 0%"></div>
-                    </div>
-                </div>
-                <div class="work-panel">
-                    <h3>📝 Steps</h3>
-                    <div id="workStepList" class="step-list"></div>
-                </div>
-                <div class="work-panel">
-                    <h3>💭 Log</h3>
-                    <div id="thinkingLog" class="log-display"></div>
                 </div>
                 <div class="work-panel">
                     <h3>🔍 Search Results</h3>
                     <div id="searchResults" class="results-display"></div>
                 </div>
                 <div class="work-panel">
-                    <h3>📄 Artifacts</h3>
+                    <h3>📄 Documents</h3>
                     <div id="workDocuments" class="docs-display"></div>
+                </div>
+                <div class="work-panel full-width">
+                    <h3>💭 Thinking Process</h3>
+                    <div id="thinkingLog" class="log-display"></div>
                 </div>
             </div>
         </div>
@@ -124,6 +119,36 @@
                     </svg>
                     Gallery
                 </button>
+                
+                <!-- 3D Model Generation Button -->
+                <button class="sidebar-feature-btn" id="threeDBtn" title="Generate 3D models" onclick="event.stopPropagation(); window.toggle3DPanel && window.toggle3DPanel();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M10 2L18 7V13L10 18L2 13V7L10 2Z"/>
+                        <path d="M10 18V12"/>
+                        <path d="M18 7L10 12L2 7"/>
+                    </svg>
+                    3D Models
+                </button>
+
+                <!-- Minecraft Tools Button -->
+                <button class="sidebar-feature-btn" id="minecraftBtn" title="Minecraft 1.7.10 Tools" onclick="event.stopPropagation(); window.toggleMinecraftPanel && window.toggleMinecraftPanel();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="3" y="3" width="14" height="14" rx="1"/>
+                        <rect x="6" y="6" width="3" height="3"/>
+                        <rect x="11" y="6" width="3" height="3"/>
+                        <rect x="6" y="11" width="3" height="3"/>
+                        <rect x="11" y="11" width="3" height="3"/>
+                    </svg>
+                    Minecraft
+                </button>
+
+                <!-- File Manager Button -->
+                <button class="sidebar-feature-btn" id="fileManagerBtn" title="Data Management Console" onclick="event.stopPropagation(); window.toggleFileManager && window.toggleFileManager();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M2 5C2 4 3 3 4 3H8L10 5H16C17 5 18 6 18 7V15C18 16 17 17 16 17H4C3 17 2 16 2 15V5Z"/>
+                    </svg>
+                    Files
+                </button>
             </div>
             
             <!-- Search bar for chat history -->
@@ -157,21 +182,6 @@
 
         <!-- Main Content -->
         <main class="main-content">
-            <!-- Chat Header Bar -->
-            <div class="chat-header-bar">
-                <div class="chat-user-switcher">
-                    <label for="chatUserSelect" class="chat-user-label">👤</label>
-                    <select id="chatUserSelect" class="chat-user-select" title="Switch user"></select>
-                    <button class="chat-user-add-btn" id="chatAddUserBtn" title="Add new user">+</button>
-                    <button class="chat-user-delete-btn" id="chatDeleteUserBtn" title="Delete selected user">
-                        <svg width="16" height="16" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-                            <path d="M2 4h12M5.33 4V2.67a1.33 1.33 0 011.34-1.34h2.66a1.33 1.33 0 011.34 1.34V4M12.67 4v9.33a1.33 1.33 0 01-1.34 1.34H4.67a1.33 1.33 0 01-1.34-1.34V4h9.34z"/>
-                            <path d="M6.67 7.33v4M9.33 7.33v4"/>
-                        </svg>
-                    </button>
-                    <button class="chat-user-add-btn" id="chatCleanUsersBtn" title="Remove auto-generated users">🧹</button>
-                </div>
-            </div>
             <div class="chat-container">
                 <div class="messages-container" id="messagesContainer">
                     <div class="welcome-screen" id="welcomeScreen">
@@ -367,7 +377,6 @@
                             <option value="reasoning">Reasoning (QwQ-32B)</option>
                             <option value="code">Code Assistant</option>
                             <option value="agent">Agent Mode</option>
-                            <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
                         </select>
                     </div>
@@ -490,6 +499,263 @@
         </div>
     </div>
 
+    <!-- 3D Model Generation Panel -->
+    <div class="feature-panel" id="threeDPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🧊 3D Model Generator</h2>
+            <button class="feature-panel-close" onclick="window.toggle3DPanel && window.toggle3DPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
+            <div class="feature-section">
+                <label class="feature-label">Input Method</label>
+                <div class="feature-toggle-row">
+                    <button class="feature-toggle active" data-3d-mode="text" onclick="window.set3DMode && window.set3DMode('text')">Text Prompt</button>
+                    <button class="feature-toggle" data-3d-mode="image" onclick="window.set3DMode && window.set3DMode('image')">From Image</button>
+                </div>
+            </div>
+            <div class="feature-section" id="threeDTextInput">
+                <label class="feature-label">Describe the 3D model</label>
+                <textarea id="threeDPrompt" class="feature-textarea" placeholder="e.g., A low-poly treasure chest with gold trim..." rows="3"></textarea>
+            </div>
+            <div class="feature-section" id="threeDImageInput" style="display: none;">
+                <label class="feature-label">Upload Reference Image</label>
+                <div class="feature-dropzone" id="threeDDropzone">
+                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V8m0 0l-4 4m4-4l4 4"/><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
+                    <p>Drop image here or click to upload</p>
+                    <input type="file" id="threeDImageFile" accept="image/*" style="display:none;">
+                </div>
+                <div id="threeDImagePreview" style="display:none;" class="feature-img-preview"></div>
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Output Format</label>
+                <select id="threeDFormat" class="feature-select">
+                    <option value="glb">GLB (recommended)</option>
+                    <option value="obj">OBJ</option>
+                    <option value="ply">PLY</option>
+                </select>
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Quality Steps: <span id="threeDStepsVal">64</span></label>
+                <input type="range" id="threeDSteps" class="feature-range" min="16" max="128" value="64" oninput="document.getElementById('threeDStepsVal').textContent=this.value">
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Guidance Scale: <span id="threeDGuidanceVal">15.0</span></label>
+                <input type="range" id="threeDGuidance" class="feature-range" min="1" max="20" step="0.5" value="15" oninput="document.getElementById('threeDGuidanceVal').textContent=parseFloat(this.value).toFixed(1)">
+            </div>
+            <button class="feature-generate-btn" id="threeDGenerateBtn" onclick="window.generate3DModel && window.generate3DModel();">
+                🧊 Generate 3D Model
+            </button>
+            <div class="feature-status" id="threeDStatus" style="display:none;"></div>
+
+            <!-- Live 3D Viewport -->
+            <div class="viewer3d-container" id="threeDViewerContainer" style="display:none;">
+                <div class="viewer3d-header">
+                    <span class="viewer3d-title">🧊 3D Preview</span>
+                    <div class="viewer3d-controls">
+                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DResetCamera && window.viewer3DResetCamera()" title="Reset camera">🔄</button>
+                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DToggleWireframe && window.viewer3DToggleWireframe()" title="Toggle wireframe">🔲</button>
+                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DToggleAutoRotate && window.viewer3DToggleAutoRotate()" title="Toggle auto-rotate">🔁</button>
+                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DFullscreen && window.viewer3DFullscreen()" title="Fullscreen">⛶</button>
+                    </div>
+                </div>
+                <div class="viewer3d-canvas-wrap" id="threeDCanvasWrap">
+                    <canvas id="threeDCanvas"></canvas>
+                    <div class="viewer3d-overlay" id="threeDOverlay">
+                        <div class="viewer3d-progress">
+                            <div class="viewer3d-progress-ring">
+                                <svg viewBox="0 0 100 100">
+                                    <circle class="ring-bg" cx="50" cy="50" r="45"/>
+                                    <circle class="ring-fg" id="threeDProgressRing" cx="50" cy="50" r="45"/>
+                                </svg>
+                                <span class="ring-pct" id="threeDProgressPct">0%</span>
+                            </div>
+                            <p class="viewer3d-progress-text" id="threeDProgressText">Initializing...</p>
+                        </div>
+                    </div>
+                </div>
+                <div class="viewer3d-info">
+                    <span id="threeDViewerInfo">Drag to rotate · Scroll to zoom · Right-click to pan</span>
+                </div>
+            </div>
+
+            <div class="feature-results" id="threeDResults"></div>
+        </div>
+    </div>
+
+    <!-- Minecraft Tools Panel -->
+    <div class="feature-panel" id="minecraftPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header mc-header">
+            <h2>⛏️ Minecraft 1.7.10 Tools</h2>
+            <button class="feature-panel-close" onclick="window.toggleMinecraftPanel && window.toggleMinecraftPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
+            <!-- Tab Selector -->
+            <div class="mc-tabs">
+                <button class="mc-tab active" data-mc-tab="textures" onclick="window.switchMCTab && window.switchMCTab('textures')">🎨 Textures</button>
+                <button class="mc-tab" data-mc-tab="models" onclick="window.switchMCTab && window.switchMCTab('models')">🧱 Models</button>
+                <button class="mc-tab" data-mc-tab="gallery" onclick="window.switchMCTab && window.switchMCTab('gallery')">📦 Gallery</button>
+            </div>
+
+            <!-- Texture Generation Tab -->
+            <div class="mc-tab-content active" id="mcTexturesTab">
+                <div class="feature-section">
+                    <label class="feature-label">Texture Type</label>
+                    <select id="mcTextureType" class="feature-select">
+                        <option value="block">🧱 Block</option>
+                        <option value="item">🗡️ Item</option>
+                        <option value="crop">🌾 Crop</option>
+                        <option value="skin">👤 Skin</option>
+                        <option value="mob">🐺 Mob</option>
+                        <option value="armor">🛡️ Armor</option>
+                        <option value="gui">📋 GUI Element</option>
+                        <option value="particle">✨ Particle</option>
+                        <option value="environment">🌍 Environment</option>
+                    </select>
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Style</label>
+                    <select id="mcStyle" class="feature-select">
+                        <option value="pixel_art">Pixel Art (Classic)</option>
+                        <option value="faithful">Faithful (Detailed)</option>
+                        <option value="painterly">Painterly (Soft)</option>
+                    </select>
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Resolution</label>
+                    <select id="mcResolution" class="feature-select">
+                        <option value="16">16×16 (Default)</option>
+                        <option value="32">32×32 (HD)</option>
+                        <option value="64">64×64 (Ultra)</option>
+                        <option value="128">128×128 (Extreme)</option>
+                    </select>
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Describe
+ your texture</label>
+                    <textarea id="mcPrompt" class="feature-textarea" placeholder="e.g., Ruby ore block with red crystals in stone..." rows="3"></textarea>
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Reference Image (optional)</label>
+                    <div class="feature-dropzone small" id="mcDropzone">
+                        <p>📎 Drop image or click</p>
+                        <input type="file" id="mcImageFile" accept="image/*" style="display:none;">
+                    </div>
+                    <div id="mcImagePreview" style="display:none;" class="feature-img-preview"></div>
+                </div>
+                <button class="feature-generate-btn mc-btn" id="mcGenerateBtn" onclick="window.generateMinecraftTexture && window.generateMinecraftTexture();">
+                    ⛏️ Generate Texture
+                </button>
+                <div class="feature-status" id="mcTextureStatus" style="display:none;"></div>
+            </div>
+
+            <!-- Model Generation Tab -->
+            <div class="mc-tab-content" id="mcModelsTab" style="display:none;">
+                <div class="feature-section">
+                    <label class="feature-label">Select a Generated Texture</label>
+                    <select id="mcModelTexture" class="feature-select">
+                        <option value="">-- Generate a texture first --</option>
+                    </select>
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Model Type</label>
+                    <select id="mcModelType" class="feature-select">
+                        <option value="block">🧱 Full Block</option>
+                        <option value="item">🗡️ Item</option>
+                        <option value="crop">🌾 Crop</option>
+                        <option value="slab">📐 Slab</option>
+                        <option value="stairs">🪜 Stairs</option>
+                        <option value="fence">🏗️ Fence</option>
+                        <option value="wall">🧱 Wall</option>
+                        <option value="cross">✖️ Cross (Flowers)</option>
+                        <option value="pane">🪟 Pane (Glass)</option>
+                    </select>
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Block/Item Name</label>
+                    <input type="text" id="mcModelName" class="feature-input" placeholder="e.g., ruby_ore">
+                </div>
+                <button class="feature-generate-btn mc-btn" id="mcModelGenBtn" onclick="window.generateMinecraftModel && window.generateMinecraftModel();">
+                    🧱 Generate Model Package
+                </button>
+                <div class="feature-status" id="mcModelStatus" style="display:none;"></div>
+
+                <!-- Minecraft 3D Block Preview -->
+                <div class="mc-3d-preview" id="mc3DPreview" style="display:none;">
+                    <div class="viewer3d-header mc-viewer-header">
+                        <span class="viewer3d-title">🧱 Block Preview</span>
+                        <div class="viewer3d-controls">
+                            <button class="viewer3d-ctrl-btn" onclick="window.mcResetCamera && window.mcResetCamera()" title="Reset">🔄</button>
+                            <button class="viewer3d-ctrl-btn" onclick="window.mcToggleAutoRotate && window.mcToggleAutoRotate()" title="Auto-rotate">🔁</button>
+                        </div>
+                    </div>
+                    <div class="viewer3d-canvas-wrap mc-canvas-wrap" id="mcCanvasWrap">
+                        <canvas id="mcPreviewCanvas"></canvas>
+                    </div>
+                    <div class="viewer3d-info">
+                        <span>Drag to rotate · Scroll to zoom</span>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Gallery Tab -->
+            <div class="mc-tab-content" id="mcGalleryTab" style="display:none;">
+                <div class="mc-gallery-grid" id="mcGalleryGrid">
+                    <p class="mc-empty">No Minecraft assets generated yet. Create some textures!</p>
+                </div>
+            </div>
+
+            <!-- Install Status -->
+            <div class="mc-install-status" id="mcInstallStatus"></div>
+        </div>
+    </div>
+
+    <!-- File Manager Panel -->
+    <div class="feature-panel file-manager-panel" id="fileManagerPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header fm-header">
+            <h2>📁 Data Management Console</h2>
+            <button class="feature-panel-close" onclick="window.toggleFileManager && window.toggleFileManager();">×</button>
+        </div>
+        <div class="feature-panel-body fm-body">
+            <!-- Storage Overview -->
+            <div class="fm-storage-section" id="fmStorageSection">
+                <h3 class="fm-section-title">💾 Storage Drives</h3>
+                <div class="fm-drives" id="fmDrives">
+                    <div class="fm-loading">Loading drives...</div>
+                </div>
+            </div>
+
+            <!-- File Browser -->
+            <div class="fm-browser-section">
+                <!-- Breadcrumb -->
+                <div class="fm-breadcrumb" id="fmBreadcrumb">
+                    <span class="fm-crumb" onclick="window.fmNavigate && window.fmNavigate('')">🏠 EDISON</span>
+                </div>
+
+                <!-- Search -->
+                <div class="fm-search">
+                    <input type="text" id="fmSearch" class="feature-input" placeholder="🔍 Search files..." onkeyup="window.fmSearchFiles && window.fmSearchFiles(this.value)">
+                </div>
+
+                <!-- File List -->
+                <div class="fm-file-list" id="fmFileList">
+                    <div class="fm-loading">Loading files...</div>
+                </div>
+            </div>
+
+            <!-- Delete Confirmation -->
+            <div class="fm-delete-confirm" id="fmDeleteConfirm" style="display:none;">
+                <div class="fm-delete-dialog">
+                    <h3>⚠️ Confirm Delete</h3>
+                    <p id="fmDeleteMsg">Are you sure?</p>
+                    <div class="fm-delete-actions">
+                        <button class="fm-btn fm-btn-cancel" onclick="window.fmCancelDelete && window.fmCancelDelete();">Cancel</button>
+                        <button class="fm-btn fm-btn-delete" onclick="window.fmConfirmDelete && window.fmConfirmDelete();">Delete</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Gallery Panel - Placed outside app-container to avoid flex layout interference -->
     <div class="gallery-panel" id="galleryPanel" style="transform: translateX(100%); visibility: hidden;">
         <div class="gallery-header">
@@ -572,7 +838,8 @@
     </script>
 
     <script src="gallery.js?v=13"></script>
-    <script src="app_enhanced.js?v=18"></script>
-    <script src="app_features.js?v=10"></script>
+    <script src="app_enhanced.js?v=15"></script>
+    <script src="app_features.js?v=7"></script>
+    <script src="app_new_features.js?v=1"></script>
 </body>
 </html>

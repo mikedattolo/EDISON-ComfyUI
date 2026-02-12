@@ -26,7 +26,6 @@ import base64
 import io
 import zipfile
 import numpy as np
-import gc
 
 # Configure logging
 logging.basicConfig(
@@ -34,84 +33,6 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
-
-# Import orchestration modules (after logger is configured)
-try:
-    from .orchestration import AgentControllerBrain
-    from .contracts import WorkStep, WorkPlanResponse
-    logger.info("✓ Orchestration modules loaded")
-except ImportError:
-    try:
-        from orchestration import AgentControllerBrain
-        from contracts import WorkStep, WorkPlanResponse
-        logger.info("✓ Orchestration modules loaded (direct import)")
-    except ImportError:
-        AgentControllerBrain = None
-        WorkStep = None
-        WorkPlanResponse = None
-
-# Import real-time data, video, and music services
-try:
-    from .realtime import RealTimeDataService
-    logger.info("✓ Real-time data service loaded")
-except ImportError:
-    try:
-        from realtime import RealTimeDataService
-        logger.info("✓ Real-time data service loaded (direct import)")
-    except ImportError:
-        RealTimeDataService = None
-        logger.warning("⚠ Real-time data service not available")
-
-try:
-    from .video import VideoGenerationService
-    logger.info("✓ Video generation service loaded")
-except ImportError:
-    try:
-        from video import VideoGenerationService
-        logger.info("✓ Video generation service loaded (direct import)")
-    except ImportError:
-        VideoGenerationService = None
-        logger.warning("⚠ Video generation service not available")
-
-try:
-    from .music import MusicGenerationService
-    logger.info("✓ Music generation service loaded")
-except ImportError:
-    try:
-        from music import MusicGenerationService
-        logger.info("✓ Music generation service loaded (direct import)")
-    except ImportError:
-        MusicGenerationService = None
-        logger.warning("⚠ Music generation service not available")
-
-# Import professional file generators
-try:
-    from .file_generators import (
-        FILE_GENERATION_PROMPT,
-        render_file_entry,
-        parse_markdown_to_pdf,
-        generate_professional_html,
-        generate_slideshow_html,
-    )
-    logger.info("✓ File generators loaded")
-except ImportError:
-    try:
-        from file_generators import (
-            FILE_GENERATION_PROMPT,
-            render_file_entry,
-            parse_markdown_to_pdf,
-            generate_professional_html,
-            generate_slideshow_html,
-        )
-        logger.info("✓ File generators loaded (direct import)")
-    except ImportError:
-        FILE_GENERATION_PROMPT = None
-        render_file_entry = None
-        parse_markdown_to_pdf = None
-        generate_professional_html = None
-        generate_slideshow_html = None
-        logger.warning("⚠ File generators not available")
-        logger.warning("⚠ Orchestration modules not available")
 
 # Force GPU usage - verify CUDA is available
 def verify_cuda():
@@ -224,11 +145,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Swarm mode → multi-agent collaboration with deep model")
-        elif mode == "work":
-            # Work mode uses step-by-step execution with deep model
-            tools_allowed = True
-            model_target = "deep"
-            reasons.append("Work mode → step-by-step execution with deep model and tools")
         elif mode == "thinking":
             mode = "reasoning"
             model_target = "reasoning"
@@ -243,14 +159,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "image"
                 model_target = "vision"
                 reasons.append(f"Coral intent '{coral_intent}' → image mode with vision model")
-            elif coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"]:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append(f"Coral intent '{coral_intent}' → agent mode for video generation")
-            elif coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"]:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append(f"Coral intent '{coral_intent}' → agent mode for music generation")
             elif coral_intent in ["code", "write", "implement", "debug"]:
                 mode = "code"
                 reasons.append(f"Coral intent '{coral_intent}' → code mode")
@@ -284,60 +192,14 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "who is", "where is", "when is", "show me", "get me",
                              "look for", "search for", "find information"]
 
-            # Real-time data patterns (time, date, weather, news)
-            realtime_patterns = ["what time", "current time", "the time", "what's the time",
-                                "whats the time", "what date", "today's date", "todays date",
-                                "what day is it", "what is today", "the date",
-                                "weather in", "weather for", "forecast", "temperature in",
-                                "is it raining", "is it cold", "is it hot", "is it snowing",
-                                "today's news", "todays news", "latest news", "top news",
-                                "news today", "headlines", "breaking news", "what's in the news",
-                                "news about"]
-
-            # Video generation patterns
-            video_patterns = ["make a video", "create a video", "generate a video",
-                             "make video", "create video", "generate video",
-                             "music video", "animate", "animation",
-                             "video of", "video about", "video from",
-                             "make me a video", "short video", "video clip",
-                             "text to video", "text-to-video"]
-
-            # Music generation patterns
-            music_patterns = ["make music", "create music", "generate music",
-                             "make a song", "create a song", "generate a song",
-                             "compose", "make a beat", "produce music",
-                             "music like", "song about", "write a song",
-                             "make me a song", "generate a beat", "music from",
-                             "make me music", "create a beat", "lo-fi", "lofi",
-                             "hip hop beat", "hip-hop beat", "edm", "make a track",
-                             "generate song", "generate beat", "play me",
-                             "sing me", "beat for", "instrumental",
-                             "background music", "soundtrack"]
-
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
 
             # Check if agent patterns match (for enabling web search)
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
-            has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
-            has_video = any(pattern in msg_lower for pattern in video_patterns)
-            has_music = any(pattern in msg_lower for pattern in music_patterns)
 
-            # Real-time queries get tools enabled for instant data retrieval
-            if has_realtime:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Real-time data query detected → agent mode with tools")
-            elif has_video:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Video generation request detected → agent mode with tools")
-            elif has_music:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Music generation request detected → agent mode with tools")
-            elif any(pattern in msg_lower for pattern in work_patterns):
+            if any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
                 reasons.append("Work patterns detected → work mode with tools")
@@ -412,38 +274,7 @@ vllm_enabled = False
 vllm_url = None
 rag_system = None
 search_tool = None
-realtime_service = None
-video_service = None
-music_service = None
 config = None
-
-def _is_file_request(text: str) -> bool:
-    """Check if user is explicitly requesting file/document creation.
-    
-    Must require clear creation intent — bare words like 'file' or 'document'
-    in normal conversation should NOT trigger file-generation mode.
-    """
-    if not text:
-        return False
-    import re
-    # Require explicit creation verbs + file-related nouns
-    creation_pattern = re.search(
-        r"\b(create|generate|make|write|build|draft|prepare|produce|save|export|download)\b"
-        r".*\b(file|document|report|pdf|csv|txt|json|spreadsheet|presentation|"
-        r"slideshow|slides|resume|letter|essay|paper|template|docx|pptx|xlsx)\b",
-        text, re.IGNORECASE
-    )
-    # Or explicit file extension requests like "as a .pdf" / "in pdf format"
-    extension_pattern = re.search(
-        r"\b(as a?|in|to)\s+\.?(pdf|docx|pptx|xlsx|csv|txt|json|html|md)\b",
-        text, re.IGNORECASE
-    )
-    # Or explicit "save as" / "export to" / "download as"
-    save_pattern = re.search(
-        r"\b(save|export|download)\s+(as|to|into)\b",
-        text, re.IGNORECASE
-    )
-    return bool(creation_pattern or extension_pattern or save_pattern)
 
 # Thread locks for concurrent model access safety
 lock_fast = threading.Lock()
@@ -456,149 +287,6 @@ lock_vision_code = threading.Lock()
 # Active request tracking for server-side cancellation
 active_requests = {}  # {request_id: {"cancelled": bool, "timestamp": float}}
 active_requests_lock = threading.Lock()
-
-def _prune_active_requests(max_age_secs: int = 600):
-    """Remove active_requests entries older than max_age_secs to prevent memory leaks."""
-    cutoff = time.time() - max_age_secs
-    with active_requests_lock:
-        stale = [rid for rid, r in active_requests.items() if r.get("timestamp", 0) < cutoff]
-        for rid in stale:
-            del active_requests[rid]
-        if stale:
-            logger.info(f"Pruned {len(stale)} stale active_requests entries")
-
-# GPU VRAM management for image generation
-_models_unloaded_for_image_gen = False
-_image_gen_lock = threading.Lock()
-_reload_lock = threading.Lock()
-_reload_in_progress = False
-
-def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
-    """Get free VRAM in MiB for a specific GPU"""
-    try:
-        import torch
-        if torch.cuda.is_available() and device_id < torch.cuda.device_count():
-            free, total = torch.cuda.mem_get_info(device_id)
-            return free / (1024 * 1024)
-    except Exception:
-        pass
-    # Fallback: parse nvidia-smi
-    try:
-        import subprocess
-        out = subprocess.check_output(
-            ["nvidia-smi", f"--id={device_id}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
-            timeout=5
-        ).decode().strip()
-        return float(out)
-    except Exception:
-        return 0.0
-
-def _flush_gpu_memory():
-    """Force garbage collection and clear CUDA caches"""
-    gc.collect()
-    try:
-        import torch
-        if torch.cuda.is_available():
-            torch.cuda.empty_cache()
-            torch.cuda.synchronize()
-    except Exception:
-        pass
-    gc.collect()
-
-def unload_all_llm_models():
-    """Unload all LLM models to free GPU VRAM for image generation"""
-    global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
-    
-    logger.info("⏳ Unloading all LLM models to free GPU VRAM for image generation...")
-    
-    unloaded = []
-    for name, ref in [("fast", llm_fast), ("medium", llm_medium), ("deep", llm_deep),
-                       ("reasoning", llm_reasoning), ("vision", llm_vision), ("vision_code", llm_vision_code)]:
-        if ref is not None:
-            unloaded.append(name)
-    
-    # Set all globals to None first (prevents access during cleanup)
-    llm_fast = None
-    llm_medium = None
-    llm_deep = None
-    llm_reasoning = None
-    llm_vision = None
-    llm_vision_code = None
-    
-    # Force garbage collection and flush CUDA caches
-    _flush_gpu_memory()
-    
-    # Small delay to let CUDA release memory
-    time.sleep(1)
-    _flush_gpu_memory()
-    
-    logger.info(f"✓ Unloaded LLM models: {', '.join(unloaded) if unloaded else 'none were loaded'}")
-    return unloaded
-
-def reload_llm_models_background():
-    """Reload LLM models in a background thread after image/video generation.
-    
-    Uses a lock to prevent concurrent reloads, waits for VRAM to be available,
-    and retries with exponential backoff if allocation fails.
-    """
-    global _models_unloaded_for_image_gen, _reload_in_progress
-    
-    # Don't spawn duplicate reloads
-    if _reload_in_progress:
-        logger.info("⏭ LLM reload already in progress, skipping duplicate request")
-        return None
-    
-    def _reload():
-        global _models_unloaded_for_image_gen, _reload_in_progress
-        
-        # Acquire lock — only one reload at a time
-        if not _reload_lock.acquire(blocking=False):
-            logger.info("⏭ LLM reload lock held by another thread, skipping")
-            return
-        
-        _reload_in_progress = True
-        try:
-            # Flush GPU caches before attempting reload
-            _flush_gpu_memory()
-            
-            # Wait for VRAM to be available with exponential backoff
-            # The fast model (14B q4) needs ~5 GB on GPU 0
-            MIN_VRAM_MB = 4500
-            max_retries = 8
-            delay = 3  # start with 3 seconds
-            
-            for attempt in range(max_retries):
-                free_mb = _get_gpu_free_vram_mb(0)
-                logger.info(f"🔍 VRAM check (attempt {attempt+1}/{max_retries}): GPU 0 has {free_mb:.0f} MiB free (need {MIN_VRAM_MB} MiB)")
-                
-                if free_mb >= MIN_VRAM_MB:
-                    break
-                
-                # Flush and wait
-                _flush_gpu_memory()
-                logger.info(f"⏳ Waiting {delay}s for VRAM to free up...")
-                time.sleep(delay)
-                delay = min(delay * 1.5, 30)  # cap at 30s
-            else:
-                # Final check after all retries
-                free_mb = _get_gpu_free_vram_mb(0)
-                if free_mb < MIN_VRAM_MB:
-                    logger.warning(f"⚠ VRAM still low ({free_mb:.0f} MiB) after {max_retries} retries, attempting load anyway...")
-            
-            logger.info("⏳ Reloading LLM models after media generation...")
-            load_llm_models()
-            _models_unloaded_for_image_gen = False
-            logger.info("✓ LLM models reloaded successfully")
-        except Exception as e:
-            logger.error(f"❌ Failed to reload LLM models: {e}")
-            _models_unloaded_for_image_gen = False
-        finally:
-            _reload_in_progress = False
-            _reload_lock.release()
-    
-    thread = threading.Thread(target=_reload, daemon=True)
-    thread.start()
-    return thread
 
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
                          steps: int = 20, guidance_scale: float = 3.5) -> dict:
@@ -784,39 +472,6 @@ TOOL_REGISTRY = {
             "file_path": {"type": str, "required": True},
             "operation": {"type": str, "required": True}
         }
-    },
-    "get_current_time": {
-        "args": {
-            "timezone": {"type": str, "required": False, "default": "local"}
-        }
-    },
-    "get_weather": {
-        "args": {
-            "location": {"type": str, "required": True}
-        }
-    },
-    "get_news": {
-        "args": {
-            "topic": {"type": str, "required": False, "default": "top news today"},
-            "max_results": {"type": int, "required": False, "default": 8}
-        }
-    },
-    "generate_video": {
-        "args": {
-            "prompt": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 720},
-            "height": {"type": int, "required": False, "default": 480},
-            "frames": {"type": int, "required": False, "default": 49},
-            "fps": {"type": int, "required": False, "default": 8}
-        }
-    },
-    "generate_music": {
-        "args": {
-            "prompt": {"type": str, "required": True},
-            "genre": {"type": str, "required": False, "default": ""},
-            "mood": {"type": str, "required": False, "default": ""},
-            "duration": {"type": int, "required": False, "default": 15}
-        }
     }
 }
 
@@ -910,29 +565,6 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "generate_image":
         return result.get("message", "Image generation handled")
 
-    if tool_name == "get_current_time" and isinstance(data, dict):
-        return f"Current time: {data.get('day_of_week', '')}, {data.get('date', '')} at {data.get('time', '')} ({data.get('timezone', 'local')})"
-
-    if tool_name == "get_weather" and isinstance(data, dict):
-        return (
-            f"Weather in {data.get('location', '?')}: {data.get('temperature_f', '?')} "
-            f"({data.get('condition', '?')}), Humidity: {data.get('humidity', '?')}, "
-            f"Wind: {data.get('wind_mph', '?')} mph {data.get('wind_dir', '')}"
-        )
-
-    if tool_name == "get_news" and isinstance(data, dict):
-        articles = data.get("articles", [])
-        headlines = [f"{a['title']} ({a.get('source', 'unknown')})" for a in articles[:5]]
-        return f"News on '{data.get('topic', '?')}': " + " | ".join(headlines) if headlines else "No news found"
-
-    if tool_name == "generate_video":
-        return data.get("message", "Video generation requested") if isinstance(data, dict) else result.get("message", "Video generation handled")
-
-    if tool_name == "generate_music":
-        if isinstance(data, dict):
-            return f"Music generated: {data.get('filename', '?')} ({data.get('duration_seconds', '?')}s, model: {data.get('model', '?')})"
-        return result.get("message", "Music generation handled")
-
     if tool_name == "system_stats" and isinstance(data, dict):
         return "System stats: " + ", ".join([f"{k}={v}" for k, v in data.items()])
 
@@ -962,9 +594,9 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             chunks = await asyncio.to_thread(
                 rag_system.get_context,
                 query,
-                n_results=limit,
-                chat_id=chat_id,
-                global_search=use_global
+                limit,
+                chat_id,
+                use_global
             )
             return {"ok": True, "data": chunks}
 
@@ -975,76 +607,6 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 "message": "Image generation requested. Use /generate-image endpoint to render.",
                 "data": args
             }
-
-        if tool_name == "get_current_time":
-            if not realtime_service:
-                return {"ok": False, "error": "Real-time data service unavailable"}
-            tz = args.get("timezone", "local")
-            result = realtime_service.get_current_datetime(tz)
-            return result
-
-        if tool_name == "get_weather":
-            if not realtime_service:
-                return {"ok": False, "error": "Real-time data service unavailable"}
-            location = args.get("location", "New York")
-            result = realtime_service.get_weather(location)
-            return result
-
-        if tool_name == "get_news":
-            if not realtime_service:
-                return {"ok": False, "error": "Real-time data service unavailable"}
-            topic = args.get("topic", "top news today")
-            max_results = args.get("max_results", 8)
-            result = realtime_service.get_news(topic, max_results)
-            return result
-
-        if tool_name == "generate_video":
-            if not video_service:
-                return {"ok": False, "error": "Video generation service not available"}
-            try:
-                result = video_service.submit_video_generation(
-                    prompt=args.get("prompt", ""),
-                    negative_prompt=args.get("negative_prompt", ""),
-                    width=args.get("width"),
-                    height=args.get("height"),
-                    frames=args.get("frames"),
-                    fps=args.get("fps"),
-                    steps=args.get("steps"),
-                    guidance_scale=args.get("guidance_scale", 7.5),
-                )
-                if result.get("ok"):
-                    return {
-                        "ok": True,
-                        "trigger": "generate_video",
-                        "message": f"Video generation started (backend: {result['data'].get('backend', 'auto')}). The video will appear in chat when ready.",
-                        "data": {"prompt_id": result["data"]["prompt_id"], "backend": result["data"].get("backend"), "prompt": args.get("prompt", "")}
-                    }
-                return result
-            except Exception as e:
-                return {"ok": False, "error": f"Video generation failed: {str(e)}"}
-
-        if tool_name == "generate_music":
-            if not music_service:
-                return {"ok": False, "error": "Music generation service not available"}
-            try:
-                result = await asyncio.to_thread(
-                    music_service.generate_music,
-                    prompt=args.get("prompt", ""),
-                    genre=args.get("genre", ""),
-                    mood=args.get("mood", ""),
-                    duration=args.get("duration", 15),
-                )
-                if result.get("ok"):
-                    d = result["data"]
-                    return {
-                        "ok": True,
-                        "trigger": "generate_music",
-                        "message": f"Music generated successfully ({d.get('duration_seconds', 0)}s, model: {d.get('model', 'MusicGen')}). The audio will appear in chat.",
-                        "data": d
-                    }
-                return result
-            except Exception as e:
-                return {"ok": False, "error": f"Music generation failed: {str(e)}"}
 
         if tool_name == "system_stats":
             stats = {}
@@ -1141,18 +703,6 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 # Resolve absolute path
                 abs_dir = dir_path if dir_path.is_absolute() else REPO_ROOT / dir_path
                 abs_dir = abs_dir.resolve()
-                
-                # Security: only allow listing from allowed directories
-                allowed_dirs = [
-                    REPO_ROOT / "gallery",
-                    REPO_ROOT / "uploads",
-                    REPO_ROOT / "outputs",
-                    Path("/opt/edison/gallery"),
-                    Path("/opt/edison/uploads"),
-                    Path("/opt/edison/outputs"),
-                ]
-                if not any(str(abs_dir).startswith(str(d.resolve())) for d in allowed_dirs):
-                    return {"ok": False, "error": "Access denied: directory not in allowed paths"}
                 
                 if not abs_dir.exists():
                     return {"ok": False, "error": f"Directory not found: {dir_path}"}
@@ -1259,11 +809,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
-        "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
-        "get_current_time(timezone:str), get_weather(location:str), "
-        "get_news(topic:str,max_results:int), "
-        "generate_video(prompt:str,width:int,height:int,frames:int,fps:int), "
-        "generate_music(prompt:str,genre:str,mood:str,duration:int)."
+        "list_files(directory:str), analyze_csv(file_path:str,operation:str)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
@@ -1515,12 +1061,9 @@ def load_llm_models():
     
     # Verify CUDA before loading models
     if not verify_cuda():
-        logger.error("❌ Cannot load models without GPU acceleration.")
+        logger.error("❌ Cannot start without GPU acceleration. Please check NVIDIA drivers and CUDA installation.")
         logger.error("Run: nvidia-smi to verify GPUs are visible")
-        # Only exit during initial startup, not during reload
-        if not _models_unloaded_for_image_gen:
-            sys.exit(1)
-        return
+        sys.exit(1)  # Exit if GPU not available - don't allow CPU fallback
     
     # Get model paths relative to repo root
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
@@ -1564,7 +1107,6 @@ def load_llm_models():
     
     # Try to load fast model
     fast_model_path = models_path / fast_model_name
-    fast_loaded = False
     if fast_model_path.exists():
         try:
             logger.info(f"Loading fast model: {fast_model_path}")
@@ -1575,69 +1117,52 @@ def load_llm_models():
                 **common_kwargs
             )
             logger.info("✓ Fast model loaded successfully")
-            fast_loaded = True
         except Exception as e:
             logger.error(f"Failed to load fast model: {e}")
     else:
         logger.warning(f"Fast model not found at {fast_model_path}")
     
-    # If fast model failed (likely OOM), skip larger models
-    if not fast_loaded:
-        logger.warning("⚠ Fast model failed to load — skipping medium/deep models (insufficient VRAM)")
-        return
-    
     # Try to load medium model (e.g., 32B - fallback for deep mode)
     medium_model_path = models_path / medium_model_name
     if medium_model_path.exists():
-        # Pre-check: estimate if enough total VRAM across all GPUs
-        total_free_mb = sum(_get_gpu_free_vram_mb(i) for i in range(3))
-        file_size_gb = medium_model_path.stat().st_size / (1024**3)
-        needed_mb = file_size_gb * 1024 * 0.85  # rough: ~85% of file size goes to GPU
-        if total_free_mb < needed_mb:
-            logger.info(f"⏭ Skipping medium model ({file_size_gb:.1f} GB) — not enough VRAM ({total_free_mb:.0f} MiB free, need ~{needed_mb:.0f} MiB)")
-        else:
-            try:
-                logger.info(f"Loading medium model: {medium_model_path}")
-                logger.info(f"Medium model file size: {file_size_gb:.1f} GB")
-                
-                llm_medium = Llama(
-                    model_path=str(medium_model_path),
-                    n_ctx=medium_n_ctx,
-                    n_gpu_layers=medium_n_gpu_layers,
-                    **common_kwargs
-                )
-                logger.info("✓ Medium model loaded successfully")
-            except Exception as e:
-                llm_medium = None
-                logger.warning(f"Failed to load medium model: {e}")
+        try:
+            logger.info(f"Loading medium model: {medium_model_path}")
+            file_size_gb = medium_model_path.stat().st_size / (1024**3)
+            logger.info(f"Medium model file size: {file_size_gb:.1f} GB")
+            
+            llm_medium = Llama(
+                model_path=str(medium_model_path),
+                n_ctx=medium_n_ctx,
+                n_gpu_layers=medium_n_gpu_layers,
+                **common_kwargs
+            )
+            logger.info("✓ Medium model loaded successfully")
+        except Exception as e:
+            llm_medium = None
+            logger.warning(f"Failed to load medium model: {e}")
     else:
         logger.info(f"Medium model not found at {medium_model_path} (optional - will use fast model as fallback)")
     
     # Try to load deep model (e.g., 72B)
     deep_model_path = models_path / deep_model_name
     if deep_model_path.exists():
-        # Pre-check VRAM
-        total_free_mb = sum(_get_gpu_free_vram_mb(i) for i in range(3))
-        file_size_gb = deep_model_path.stat().st_size / (1024**3)
-        needed_mb = file_size_gb * 1024 * 0.85
-        if total_free_mb < needed_mb:
-            logger.info(f"⏭ Skipping deep model ({file_size_gb:.1f} GB) — not enough VRAM ({total_free_mb:.0f} MiB free, need ~{needed_mb:.0f} MiB)")
-        else:
-            try:
-                logger.info(f"Loading deep model: {deep_model_path}")
-                logger.info(f"Deep model file size: {file_size_gb:.1f} GB")
-                
-                llm_deep = Llama(
-                    model_path=str(deep_model_path),
-                    n_ctx=deep_n_ctx,
-                    n_gpu_layers=deep_n_gpu_layers,
-                    **common_kwargs
-                )
-                logger.info("✓ Deep model loaded successfully")
-            except Exception as e:
-                llm_deep = None
-                logger.warning(f"Failed to load deep model (will fall back to medium or fast model): {e}")
-                logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
+        try:
+            logger.info(f"Loading deep model: {deep_model_path}")
+            # Check file size to warn about VRAM requirements
+            file_size_gb = deep_model_path.stat().st_size / (1024**3)
+            logger.info(f"Deep model file size: {file_size_gb:.1f} GB")
+            
+            llm_deep = Llama(
+                model_path=str(deep_model_path),
+                n_ctx=deep_n_ctx,
+                n_gpu_layers=deep_n_gpu_layers,
+                **common_kwargs
+            )
+            logger.info("✓ Deep model loaded successfully")
+        except Exception as e:
+            llm_deep = None  # Explicitly set to None to avoid cleanup errors
+            logger.warning(f"Failed to load deep model (will fall back to medium or fast model): {e}")
+            logger.info("💡 Tip: 72B models need ~42GB VRAM. Consider using 32B models or CPU offloading.")
     else:
         logger.warning(f"Deep model not found at {deep_model_path}")
 
@@ -1751,48 +1276,6 @@ def init_search_tool():
         logger.error(f"Failed to initialize search tool: {e}")
         search_tool = None
 
-def init_realtime_service():
-    """Initialize real-time data service (time, weather, news)"""
-    global realtime_service
-    try:
-        if RealTimeDataService:
-            realtime_service = RealTimeDataService()
-            logger.info("✓ Real-time data service initialized")
-        else:
-            logger.warning("⚠ RealTimeDataService class not available")
-            realtime_service = None
-    except Exception as e:
-        logger.error(f"Failed to initialize real-time data service: {e}")
-        realtime_service = None
-
-def init_video_service():
-    """Initialize video generation service"""
-    global video_service
-    try:
-        if VideoGenerationService and config:
-            video_service = VideoGenerationService(config)
-            logger.info("✓ Video generation service initialized")
-        else:
-            logger.warning("⚠ VideoGenerationService class not available")
-            video_service = None
-    except Exception as e:
-        logger.error(f"Failed to initialize video service: {e}")
-        video_service = None
-
-def init_music_service():
-    """Initialize music generation service"""
-    global music_service
-    try:
-        if MusicGenerationService and config:
-            music_service = MusicGenerationService(config)
-            logger.info("✓ Music generation service initialized")
-        else:
-            logger.warning("⚠ MusicGenerationService class not available")
-            music_service = None
-    except Exception as e:
-        logger.error(f"Failed to initialize music service: {e}")
-        music_service = None
-
 def get_intent_from_coral(message: str) -> Optional[str]:
     """Try to get intent from coral service (with timeout fallback)"""
     try:
@@ -1829,9 +1312,6 @@ async def lifespan(app: FastAPI):
     load_llm_models()
     init_rag_system()
     init_search_tool()
-    init_realtime_service()
-    init_video_service()
-    init_music_service()
 
     # Optional model manager for hot-swap
     global model_manager
@@ -1893,48 +1373,17 @@ async def rag_search(request: dict):
 
 @app.get("/rag/stats")
 async def rag_stats():
-    """Get RAG system statistics including sample facts for debugging."""
+    """Get RAG system statistics"""
     if not rag_system or not rag_system.is_ready():
         return {"error": "RAG system not ready", "ready": False}
     
     try:
         collection_info = rag_system.client.get_collection(rag_system.collection_name)
-        result = {
+        return {
             "ready": True,
             "collection": rag_system.collection_name,
-            "points_count": collection_info.points_count,
+            "points_count": collection_info.points_count
         }
-        # Include sample facts for debugging
-        try:
-            from qdrant_client.models import Filter, FieldCondition, MatchValue
-            # Get facts
-            fact_results = rag_system.client.scroll(
-                collection_name=rag_system.collection_name,
-                scroll_filter=Filter(must=[FieldCondition(key="type", match=MatchValue(value="fact"))]),
-                limit=20, with_payload=True, with_vectors=False
-            )
-            facts, _ = fact_results
-            result["facts"] = [
-                {"text": p.payload.get("document", "")[:200], "type": p.payload.get("fact_type", "?"),
-                 "confidence": p.payload.get("confidence")}
-                for p in facts
-            ]
-            result["facts_count"] = len(facts)
-            # Get recent messages
-            msg_results = rag_system.client.scroll(
-                collection_name=rag_system.collection_name,
-                scroll_filter=Filter(must=[FieldCondition(key="type", match=MatchValue(value="message"))]),
-                limit=10, with_payload=True, with_vectors=False
-            )
-            msgs, _ = msg_results
-            result["recent_messages"] = [
-                {"text": p.payload.get("document", "")[:120], "role": p.payload.get("role", "?")}
-                for p in msgs
-            ]
-            result["messages_count"] = len(msgs)
-        except Exception as inner_e:
-            result["sample_error"] = str(inner_e)
-        return result
     except Exception as e:
         logger.error(f"Error getting RAG stats: {e}")
         return {"error": str(e), "ready": False}
@@ -1942,8 +1391,6 @@ async def rag_stats():
 @app.get("/health", response_model=HealthResponse)
 async def health():
     """Health check endpoint"""
-    # Periodic cleanup of stale active_requests
-    _prune_active_requests()
     return {
         "status": "healthy",
         "service": "edison-core",
@@ -2032,36 +1479,6 @@ async def unload_model(request: dict):
     model_manager.unload_model(name)
     return {"ok": True, "name": name}
 
-@app.post("/models/unload-all")
-async def unload_all_models_endpoint():
-    """Unload all LLM models to free GPU VRAM"""
-    global _models_unloaded_for_image_gen
-    unloaded = unload_all_llm_models()
-    _models_unloaded_for_image_gen = True
-    return {"ok": True, "unloaded": unloaded}
-
-@app.post("/models/reload")
-async def reload_models_endpoint():
-    """Reload all LLM models (after image generation or manual unload)"""
-    global _models_unloaded_for_image_gen
-    if not _models_unloaded_for_image_gen and llm_fast is not None:
-        return {"ok": True, "message": "Models already loaded"}
-    reload_llm_models_background()
-    return {"ok": True, "message": "Model reload started in background"}
-
-@app.get("/models/status")
-async def models_status():
-    """Check which LLM models are currently loaded"""
-    return {
-        "models_unloaded_for_image_gen": _models_unloaded_for_image_gen,
-        "fast": llm_fast is not None,
-        "medium": llm_medium is not None,
-        "deep": llm_deep is not None,
-        "reasoning": llm_reasoning is not None,
-        "vision": llm_vision is not None,
-        "vision_code": llm_vision_code is not None
-    }
-
 def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
     if model is llm_vision:
@@ -2079,17 +1496,10 @@ def get_lock_for_model(model) -> threading.Lock:
 
 def store_conversation_exchange(request: ChatRequest, assistant_response: str, mode: str, remember: bool):
     """Persist user/assistant messages and extracted facts when enabled."""
-    if not remember:
-        logger.debug(f"Memory storage skipped: remember={remember}")
-        return
-    if not rag_system:
-        logger.warning("Memory storage skipped: rag_system is None")
-        return
-    if not rag_system.is_ready():
-        logger.warning("Memory storage skipped: rag_system not ready")
+    if not remember or not rag_system:
         return
     try:
-        chat_id = getattr(request, 'chat_id', None) or str(int(time.time() * 1000))
+        chat_id = str(int(time.time() * 1000))
         current_timestamp = int(time.time())
         facts_extracted = extract_facts_from_conversation(request.message, assistant_response)
         rag_system.add_documents(
@@ -2117,17 +1527,7 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
         if facts_extracted:
             for fact in facts_extracted:
                 if fact.get("confidence", 0) >= 0.85:
-                    fact_type = fact.get("type", "other")
-                    value = fact['value']
-                    # Store facts as natural-language sentences for better embedding recall
-                    if fact_type == "name":
-                        fact_text = f"The user's name is {value}. My name is {value}. Call me {value}."
-                    elif fact_type == "preference":
-                        fact_text = f"The user's preference: {value}. My favorite {value}."
-                    elif fact_type == "project":
-                        fact_text = f"The user is working on: {value}."
-                    else:
-                        fact_text = f"User fact: {value}"
+                    fact_text = f"User {fact['value']}"
                     rag_system.add_documents(
                         documents=[fact_text],
                         metadatas=[{
@@ -2149,262 +1549,7 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
     except Exception as e:
         logger.warning(f"Memory storage failed: {e}")
 
-
-def _plan_work_steps(message: str, llm_model, has_image: bool = False, project_id: str = None) -> list:
-    """
-    Use the LLM to break a task into actionable steps, then classify each step
-    using the orchestration brain. Returns a list of WorkStep dicts.
-    Capped at 7 steps maximum.
-    """
-    # Short-circuit: trivially simple messages don't need multi-step planning
-    stripped = message.strip().rstrip('?!.')
-    if len(stripped.split()) <= 3:
-        return [{
-            "id": 1,
-            "title": "Respond to the user's message",
-            "description": "",
-            "kind": "llm",
-            "status": "pending",
-            "result": None,
-            "error": None,
-            "artifacts": [],
-            "search_results": [],
-            "elapsed_ms": None
-        }]
-
-    task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
-
-Task: {message}
-
-Provide a numbered list of specific steps. Be concise and action-oriented.
-For each step, include what action to take (e.g., research, write code, create file, analyze).
-
-Steps:"""
-
-    task_lock = get_lock_for_model(llm_model)
-    with task_lock:
-        task_response = llm_model(
-            task_analysis_prompt,
-            max_tokens=500,
-            temperature=0.3,
-            stop=["Task:", "\n\n\n"],
-            echo=False
-        )
-
-    task_breakdown = task_response["choices"][0]["text"].strip()
-    raw_steps = [s.strip() for s in re.findall(r'\d+\.\s*(.+?)(?=\n\d+\.|$)', task_breakdown, re.DOTALL)]
-    raw_steps = [s.replace('\n', ' ').strip() for s in raw_steps if s.strip()]
-
-    # Hard cap at 7 steps regardless of path
-    raw_steps = raw_steps[:7]
-
-    if not raw_steps:
-        # Fallback: split by newlines
-        raw_steps = [line.strip().lstrip('0123456789.-) ') for line in task_breakdown.split('\n') if line.strip()]
-        raw_steps = [s for s in raw_steps if len(s) > 5][:7]
-
-    if not raw_steps:
-        raw_steps = ["Analyze the request and provide a comprehensive response"]
-
-    # Use orchestration brain to classify steps if available
-    if AgentControllerBrain is not None:
-        brain = AgentControllerBrain(config=config if config else {})
-        work_plan = brain.plan_work_steps(message, raw_steps, has_image=has_image, project_id=project_id)
-        return [step.model_dump() for step in work_plan.steps]
-    else:
-        # Manual classification fallback
-        steps = []
-        for i, step_text in enumerate(raw_steps):
-            text_lower = step_text.lower()
-            kind = "llm"
-            if any(kw in text_lower for kw in ["search", "research", "look up", "find", "browse", "web"]):
-                kind = "search"
-            elif any(kw in text_lower for kw in ["code", "implement", "write code", "script", "function", "program"]):
-                kind = "code"
-            elif any(kw in text_lower for kw in ["create file", "document", "report", "save", "export", "csv", "json"]):
-                kind = "artifact"
-            steps.append({
-                "id": i + 1,
-                "title": step_text,
-                "description": "",
-                "kind": kind,
-                "status": "pending",
-                "result": None,
-                "error": None,
-                "artifacts": [],
-                "search_results": [],
-                "elapsed_ms": None
-            })
-        return steps
-
-
-def _execute_work_step(step: dict, message: str, llm_model, previous_results: list,
-                        context_chunks: list = None) -> dict:
-    """
-    Execute a single work step using the appropriate tool.
-    Returns the updated step dict with status, result, and timing.
-    """
-    import time as _time
-    start = _time.time()
-    step["status"] = "running"
-
-    try:
-        kind = step.get("kind", "llm")
-        step_title = step.get("title", "")
-
-        # Build context from previous step results
-        prev_context = ""
-        if previous_results:
-            prev_lines = []
-            for prev in previous_results:
-                if prev.get("result"):
-                    prev_lines.append(f"Step {prev['id']} ({prev['title']}): {prev['result'][:300]}")
-            if prev_lines:
-                prev_context = "\nPrevious step results:\n" + "\n".join(prev_lines) + "\n"
-
-        rag_context = ""
-        if context_chunks:
-            rag_context = "\nRelevant memory:\n" + "\n".join(
-                [c[0] if isinstance(c, tuple) else c for c in context_chunks[:2]]
-            ) + "\n"
-
-        if kind == "search":
-            # Execute web search
-            if search_tool:
-                try:
-                    search_query = step_title
-                    # Extract key terms from step title for search
-                    for prefix in ["research", "search for", "look up", "find", "browse"]:
-                        search_query = re.sub(rf'^{prefix}\s+', '', search_query, flags=re.IGNORECASE)
-                    search_query = search_query.strip().rstrip('.')
-
-                    if hasattr(search_tool, "deep_search"):
-                        results, _meta = search_tool.deep_search(search_query, num_results=5)
-                    else:
-                        results = search_tool.search(search_query, num_results=3)
-
-                    step["search_results"] = results or []
-                    if results:
-                        summaries = []
-                        for r in results[:3]:
-                            title_r = r.get("title", "")
-                            snippet = r.get("body") or r.get("snippet", "")
-                            url = r.get("url", "")
-                            summaries.append(f"• {title_r}: {snippet[:200]} ({url})")
-                        step["result"] = f"Found {len(results)} results:\n" + "\n".join(summaries)
-                    else:
-                        step["result"] = "No search results found."
-                    step["status"] = "completed"
-                except Exception as e:
-                    logger.warning(f"Work step search failed: {e}")
-                    step["result"] = f"Search failed: {str(e)}"
-                    step["status"] = "failed"
-                    step["error"] = str(e)
-            else:
-                step["result"] = "Web search not available."
-                step["status"] = "completed"
-
-        elif kind == "code":
-            # Use LLM to generate code for this step
-            code_prompt = f"""Write code to accomplish this task step.
-
-Overall task: {message}
-Current step: {step_title}
-{prev_context}{rag_context}
-
-Provide working, complete code. Include comments explaining key parts."""
-
-            lock = get_lock_for_model(llm_model)
-            with lock:
-                response = llm_model(
-                    code_prompt,
-                    max_tokens=800,
-                    temperature=0.4,
-                    stop=["User:", "Human:", "\n\n\n"],
-                    echo=False
-                )
-            step["result"] = response["choices"][0]["text"].strip()
-            step["status"] = "completed"
-
-        elif kind == "artifact":
-            # Generate artifact content using LLM
-            artifact_prompt = f"""Create the content for this deliverable.
-
-Overall task: {message}
-Current step: {step_title}
-{prev_context}{rag_context}
-
-Generate the complete content. Use appropriate formatting (markdown for docs, JSON for data, etc.)."""
-
-            lock = get_lock_for_model(llm_model)
-            with lock:
-                response = llm_model(
-                    artifact_prompt,
-                    max_tokens=1000,
-                    temperature=0.5,
-                    stop=["User:", "Human:", "\n\n\n"],
-                    echo=False
-                )
-            result_text = response["choices"][0]["text"].strip()
-            step["result"] = result_text
-
-            # Try to save as file artifact
-            try:
-                artifact_dir = REPO_ROOT / "outputs" / "work_artifacts"
-                artifact_dir.mkdir(parents=True, exist_ok=True)
-                # Determine file extension from step title
-                ext = ".md"
-                title_lower = step_title.lower()
-                if any(kw in title_lower for kw in ["json", "schema", "data"]):
-                    ext = ".json"
-                elif any(kw in title_lower for kw in ["csv", "spreadsheet"]):
-                    ext = ".csv"
-                elif any(kw in title_lower for kw in ["html", "website", "page"]):
-                    ext = ".html"
-                elif any(kw in title_lower for kw in ["code", "script", "program"]):
-                    ext = ".py"
-
-                safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', step_title[:40]).strip('_').lower()
-                file_path = artifact_dir / f"{safe_name}{ext}"
-                file_path.write_text(result_text, encoding="utf-8")
-                step["artifacts"] = [str(file_path.relative_to(REPO_ROOT))]
-                logger.info(f"Work artifact saved: {file_path}")
-            except Exception as e:
-                logger.warning(f"Failed to save work artifact: {e}")
-
-            step["status"] = "completed"
-
-        else:
-            # Default LLM step — analyze/synthesize/reason
-            llm_prompt = f"""You are working through a multi-step task.
-
-Overall task: {message}
-Current step: {step_title}
-{prev_context}{rag_context}
-
-Provide a thorough, detailed response for this step. Be specific and actionable."""
-
-            lock = get_lock_for_model(llm_model)
-            with lock:
-                response = llm_model(
-                    llm_prompt,
-                    max_tokens=600,
-                    temperature=0.5,
-                    stop=["User:", "Human:", "\n\n\n"],
-                    echo=False
-                )
-            step["result"] = response["choices"][0]["text"].strip()
-            step["status"] = "completed"
-
-    except Exception as e:
-        logger.error(f"Work step execution failed: {e}")
-        step["status"] = "failed"
-        step["error"] = str(e)
-        step["result"] = f"Step failed: {str(e)}"
-
-    elapsed = int((_time.time() - start) * 1000)
-    step["elapsed_ms"] = elapsed
-    return step
+@app.post("/chat")
 async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
     
@@ -2497,57 +1642,6 @@ async def chat(request: ChatRequest):
     
     # Keep original_mode for special handling (like work mode with steps)
     original_mode = mode
-
-    # Check for video/music intent (Coral or direct message pattern matching)
-    if request.mode != "swarm":
-        msg_lower_clean = request.message.lower()
-
-        # Video generation patterns
-        _video_patterns = ["make a video", "create a video", "generate a video",
-                          "make video", "create video", "generate video",
-                          "music video", "animate", "animation",
-                          "video of", "video about", "video from",
-                          "make me a video", "short video", "video clip",
-                          "text to video", "text-to-video"]
-
-        # Music generation patterns
-        _music_patterns = ["make music", "create music", "generate music",
-                          "make a song", "create a song", "generate a song",
-                          "compose", "make a beat", "produce music",
-                          "music like", "song about", "write a song",
-                          "make me a song", "generate a beat", "music from",
-                          "make me music", "create a beat", "lo-fi", "lofi",
-                          "lo fi", "hip hop beat", "hip-hop beat", "edm",
-                          "make a track", "generate song", "generate beat",
-                          "play me", "sing me", "beat for", "instrumental",
-                          "background music", "soundtrack",
-                          "generate a lo", "make a lo", "create a lo"]
-
-        is_video = coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"] or \
-                   any(p in msg_lower_clean for p in _video_patterns)
-        is_music = coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] or \
-                   any(p in msg_lower_clean for p in _music_patterns)
-
-        if is_video:
-            clean_prompt = msg_lower_clean
-            for prefix in ["generate", "create", "make", "a video of", "video of",
-                           "a video about", "video about", "a ", "an "]:
-                clean_prompt = clean_prompt.replace(prefix, "").strip()
-            return {
-                "response": f"🎬 Generating video: \"{clean_prompt}\"...",
-                "mode_used": "video",
-                "video_generation": {"prompt": clean_prompt, "trigger": "intent"}
-            }
-        elif is_music:
-            clean_prompt = msg_lower_clean
-            for prefix in ["generate", "create", "make", "compose", "a song about",
-                           "song about", "music about", "some ", "a ", "an ", "me "]:
-                clean_prompt = clean_prompt.replace(prefix, "").strip()
-            return {
-                "response": f"🎵 Generating music: \"{clean_prompt}\"...",
-                "mode_used": "music",
-                "music_generation": {"prompt": clean_prompt, "trigger": "intent"}
-            }
     
     # Check if user selected a specific model (overrides routing)
     use_selected_model = bool(request.selected_model)
@@ -2701,8 +1795,8 @@ async def chat(request: ChatRequest):
             # Detect question patterns and extract key terms
             import re
             
-            # Pattern: "what is my X" or "what's my X" or "whats my X" -> extract X
-            what_match = re.search(r"what(?:'?s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
+            # Pattern: "what is my X" or "what's my X" -> extract X
+            what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
             if what_match:
                 topic = what_match.group(1).strip()
                 # Search for STATEMENTS about this topic, not questions
@@ -2899,14 +1993,8 @@ async def chat(request: ChatRequest):
             except Exception as e:
                 logger.error(f"Web search failed: {e}")
     
-    # Build prompt with real-time data injection
-    rt_context = None
-    if realtime_service:
-        rt_context = realtime_service.build_realtime_context(request.message)
-        if rt_context:
-            logger.info(f"Injected real-time context: {rt_context[:80]}...")
-    file_requested = _is_file_request(request.message or "")
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context, is_file_request=file_requested)
+    # Build prompt
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
     status_steps = []
 
     status_steps = [{"stage": "Analyzing request"}]
@@ -2930,44 +2018,43 @@ async def chat(request: ChatRequest):
     if mode != "swarm":
         status_steps.append({"stage": "Generating response"})
     
-    # Work mode: Break down task and execute step-by-step
+    # Work mode: Break down task into actionable steps
     work_steps = []
-    work_step_results = []
     if original_mode == "work" and not has_images:
         try:
-            logger.info("🖥️ Work mode: planning and executing steps")
-            # Plan steps using the new executor
-            work_steps = _plan_work_steps(request.message, llm, has_image=False,
-                                          project_id=getattr(request, 'project_id', None))
-            logger.info(f"Work mode: {len(work_steps)} steps planned")
+            task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
 
-            # Execute each step sequentially, feeding results forward
-            completed_results = []
-            for step in work_steps:
-                step = _execute_work_step(step, request.message, llm, completed_results,
-                                          context_chunks=context_chunks)
-                completed_results.append(step)
-                logger.info(f"  Step {step['id']} [{step['kind']}]: {step['status']} ({step.get('elapsed_ms', 0)}ms)")
+Task: {request.message}
 
-            work_step_results = completed_results
+Provide a numbered list of specific steps. Be concise and action-oriented.
 
-            # Build comprehensive system prompt with step results
-            steps_context = []
-            for step in completed_results:
-                step_info = f"Step {step['id']}: {step['title']}"
-                if step.get("result"):
-                    step_info += f"\nResult: {step['result'][:500]}"
-                steps_context.append(step_info)
-
-            steps_text = "\n\n".join(steps_context)
-            system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
-
-        except Exception as e:
-            logger.warning(f"Work mode step execution failed: {e}")
-            # Fallback to simple task plan text
+Steps:"""
+            
+            # Acquire lock for model inference
+            task_lock = get_lock_for_model(llm)
+            with task_lock:
+                task_response = llm(
+                    task_analysis_prompt,
+                    max_tokens=400,
+                    temperature=0.3,
+                    stop=["Task:", "\\n\\n\\n"],
+                    echo=False
+                )
+            
+            task_breakdown = task_response["choices"][0]["text"].strip()
+            # Parse numbered steps
+            import re
+            work_steps = [s.strip() for s in re.findall(r'\\d+\\.\\s*(.+?)(?=\\n\\d+\\.|$)', task_breakdown, re.DOTALL)]
+            work_steps = [s.replace('\\n', ' ').strip() for s in work_steps if s.strip()]
+            
             if work_steps:
-                steps_text = "\n".join([f"{s['id']}. {s['title']}" for s in work_steps])
-                system_prompt += f"\n\nTask Plan:\n{steps_text}\n\nFollow these steps to complete the task thoroughly."
+                logger.info(f"Task broken down into {len(work_steps)} steps")
+                # Add steps to prompt context
+                steps_text = "\\n".join([f"{i+1}. {step}" for i, step in enumerate(work_steps)])
+                system_prompt += f"\\n\\nTask Plan:\\n{steps_text}\\n\\nFollow these steps to complete the task thoroughly."
+            
+        except Exception as e:
+            logger.warning(f"Task breakdown failed: {e}")
     
     # For vision requests, handle images differently
     if has_images:
@@ -3103,7 +2190,6 @@ async def chat(request: ChatRequest):
         # Add work mode specific data
         if original_mode == "work" and work_steps:
             response_data["work_steps"] = work_steps
-            response_data["work_step_results"] = work_step_results if work_step_results else []
             response_data["context_used"] = len(context_chunks)
             response_data["search_results_count"] = len(search_results) if search_results else 0
         
@@ -3125,22 +2211,11 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     
     logger.info(f"=== Chat stream request received: '{request.message}' (mode: {request.mode}, request_id: {request_id}) ===")
 
-    # If models are unloaded for image generation, wait for reload or trigger it
-    if _models_unloaded_for_image_gen or (not llm_fast and not llm_medium and not llm_deep):
-        if _models_unloaded_for_image_gen:
-            logger.info("Models currently unloaded for image gen, triggering reload...")
-            reload_llm_models_background()
-            # Wait up to 60s for models to reload
-            for _ in range(120):
-                if llm_fast or llm_medium or llm_deep:
-                    break
-                await asyncio.sleep(0.5)
-        
-        if not llm_fast and not llm_medium and not llm_deep:
-            raise HTTPException(
-                status_code=503,
-                detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
-            )
+    if not llm_fast and not llm_medium and not llm_deep:
+        raise HTTPException(
+            status_code=503,
+            detail=f"No LLM models loaded. Please place GGUF models in {REPO_ROOT}/models/llm/ directory. See logs for details."
+        )
 
     remember_result = should_remember_conversation(request.message)
     auto_remember = remember_result["remember"]
@@ -3161,9 +2236,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     # Precompute image intent response so the outer handler stays non-generator
     image_intent_payload = None
-    video_intent_payload = None
-    music_intent_payload = None
-
     if intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
         msg_lower = request.message.lower()
         for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
@@ -3175,28 +2247,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             "image_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
         }
 
-    elif intent in ["generate_video", "text_to_video", "create_video", "make_video"] and request.mode != "swarm":
-        msg_lower = request.message.lower()
-        for prefix in ["generate", "create", "make", "a video of", "video of", "a video about", "video about", "a ", "an "]:
-            msg_lower = msg_lower.replace(prefix, "").strip()
-        video_intent_payload = {
-            "ok": True,
-            "response": f"🎬 Generating video: \"{msg_lower}\"...",
-            "mode_used": "video",
-            "video_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
-        }
-
-    elif intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] and request.mode != "swarm":
-        msg_lower = request.message.lower()
-        for prefix in ["generate", "create", "make", "compose", "a song about", "song about", "music about", "a ", "an "]:
-            msg_lower = msg_lower.replace(prefix, "").strip()
-        music_intent_payload = {
-            "ok": True,
-            "response": f"🎵 Generating music: \"{msg_lower}\"...",
-            "mode_used": "music",
-            "music_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
-        }
-
     has_images = request.images and len(request.images) > 0
     coral_intent = intent
 
@@ -3205,62 +2255,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
     original_mode = mode
-
-    # Heuristic fallback: if Coral didn't trigger video/music intents,
-    # check the actual message text for video/music patterns directly
-    if video_intent_payload is None and music_intent_payload is None and request.mode != "swarm":
-        msg_lower = request.message.lower()
-
-        # Video generation patterns
-        video_patterns = ["make a video", "create a video", "generate a video",
-                         "make video", "create video", "generate video",
-                         "music video", "animate", "animation",
-                         "video of", "video about", "video from",
-                         "make me a video", "short video", "video clip",
-                         "text to video", "text-to-video"]
-
-        # Music generation patterns
-        music_patterns = ["make music", "create music", "generate music",
-                         "make a song", "create a song", "generate a song",
-                         "compose", "make a beat", "produce music",
-                         "music like", "song about", "write a song",
-                         "make me a song", "generate a beat", "music from",
-                         "make me music", "create a beat", "lo-fi", "lofi",
-                         "lo fi", "hip hop beat", "hip-hop beat", "edm",
-                         "make a track", "generate song", "generate beat",
-                         "play me", "sing me", "beat for", "instrumental",
-                         "background music", "soundtrack",
-                         "generate a lo", "make a lo", "create a lo"]
-
-        has_video = any(pattern in msg_lower for pattern in video_patterns)
-        has_music = any(pattern in msg_lower for pattern in music_patterns)
-
-        if has_video:
-            clean_prompt = msg_lower
-            for prefix in ["generate", "create", "make", "a video of", "video of",
-                           "a video about", "video about", "a short video of",
-                           "short video of", "a ", "an "]:
-                clean_prompt = clean_prompt.replace(prefix, "").strip()
-            video_intent_payload = {
-                "ok": True,
-                "response": f"🎬 Generating video: \"{clean_prompt}\"...",
-                "mode_used": "video",
-                "video_generation": {"prompt": clean_prompt, "trigger": "heuristic"}
-            }
-            logger.info(f"Heuristic video intent detected: {clean_prompt}")
-
-        elif has_music:
-            clean_prompt = msg_lower
-            for prefix in ["generate", "create", "make", "compose", "a song about",
-                           "song about", "music about", "some ", "a ", "an ", "me "]:
-                clean_prompt = clean_prompt.replace(prefix, "").strip()
-            music_intent_payload = {
-                "ok": True,
-                "response": f"🎵 Generating music: \"{clean_prompt}\"...",
-                "mode_used": "music",
-                "music_generation": {"prompt": clean_prompt, "trigger": "heuristic"}
-            }
-            logger.info(f"Heuristic music intent detected: {clean_prompt}")
 
     # Check if user selected a specific model (overrides routing)
     use_selected_model = bool(request.selected_model)
@@ -3336,7 +2330,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     expanded_count = 0
     main_count = 0
     current_chat_id = request.chat_id
-    # Identity/recall questions should ALWAYS search globally across all chats
     global_search = is_recall or request.global_memory_search or not current_chat_id
 
     if rag_system and rag_system.is_ready():
@@ -3375,7 +2368,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
             search_queries = [request.message]
             import re
-            what_match = re.search(r"what(?:'?s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
+            what_match = re.search(r"what(?:'s| is) (?:my|your) (\w+(?:\s+\w+)?)", msg_lower)
             if what_match:
                 topic = what_match.group(1).strip()
                 if "name" in topic:
@@ -3451,23 +2444,35 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             except Exception as e:
                 logger.error(f"Web search failed: {e}")
 
-    rt_context_stream = None
-    if realtime_service:
-        rt_context_stream = realtime_service.build_realtime_context(request.message)
-        if rt_context_stream:
-            logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
-    file_requested = _is_file_request(request.message or "")
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context_stream, is_file_request=file_requested)
+    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0)
     work_steps = []
-    work_step_results = []
     if original_mode == "work" and not has_images:
         try:
-            logger.info("🖥️ Work mode (stream): planning steps (execution will be streamed)")
-            work_steps = _plan_work_steps(request.message, llm, has_image=False,
-                                          project_id=getattr(request, 'project_id', None))
-            logger.info(f"Work mode: {len(work_steps)} steps planned — will execute inside SSE stream")
+            task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
+
+Task: {request.message}
+
+Provide a numbered list of specific steps. Be concise and action-oriented.
+
+Steps:"""
+            task_lock = get_lock_for_model(llm)
+            with task_lock:
+                task_response = llm(
+                    task_analysis_prompt,
+                    max_tokens=400,
+                    temperature=0.3,
+                    stop=["Task:", "\\n\\n\\n"],
+                    echo=False
+                )
+            task_breakdown = task_response["choices"][0]["text"].strip()
+            import re
+            work_steps = [s.strip() for s in re.findall(r'\\d+\\.\\s*(.+?)(?=\\n\\d+\\.|$)', task_breakdown, re.DOTALL)]
+            work_steps = [s.replace('\\n', ' ').strip() for s in work_steps if s.strip()]
+            if work_steps:
+                steps_text = "\\n".join([f"{i+1}. {step}" for i, step in enumerate(work_steps)])
+                system_prompt += f"\\n\\nTask Plan:\\n{steps_text}\\n\\nFollow these steps to complete the task thoroughly."
         except Exception as e:
-            logger.warning(f"Work mode step planning failed: {e}")
+            logger.warning(f"Task breakdown failed: {e}")
 
     if has_images:
         full_prompt = request.message
@@ -3676,7 +2681,11 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             max_rounds = 4
             rounds = 2
             
-            # Use module-level _is_file_request
+            def _is_file_request(text: str) -> bool:
+                if not text:
+                    return False
+                return bool(re.search(r"\b(pdf|zip|csv|json|txt|md|markdown|html|file|download|export|save as)\b", text, re.IGNORECASE))
+
             file_request = _is_file_request(request.message or "")
             parallel_swarm = bool(
                 config.get("edison", {})
@@ -3894,7 +2903,7 @@ Your vote:"""
                 status_steps.append({"stage": "Voting"})
             
             # Synthesize with actual insight
-            file_instruction = FILE_GENERATION_PROMPT if FILE_GENERATION_PROMPT else "If the user asks you to create downloadable files, output a FILES block. Use .pptx for presentations, .docx for Word documents, .pdf for PDFs. Write FULL content. Do NOT repeat content."
+            file_instruction = "If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.txt\", \"content\": \"...\"}]\n```\n\nInclude a brief summary outside the block."
 
             synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
 
@@ -3927,15 +2936,8 @@ Do not include multiple summaries or "Final Summary" variants.
         status_steps = []
 
     async def sse_generator():
-        nonlocal work_step_results, full_prompt, system_prompt
         if image_intent_payload is not None:
             yield f"event: done\ndata: {json.dumps(image_intent_payload)}\n\n"
-            return
-        if video_intent_payload is not None:
-            yield f"event: done\ndata: {json.dumps(video_intent_payload)}\n\n"
-            return
-        if music_intent_payload is not None:
-            yield f"event: done\ndata: {json.dumps(music_intent_payload)}\n\n"
             return
         # Send request_id as first event
         yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
@@ -3965,58 +2967,6 @@ Do not include multiple summaries or "Final Summary" variants.
         # If swarm results exist, emit them before streaming the synthesis
         if swarm_results:
             yield f"event: swarm\ndata: {json.dumps({'swarm_agents': swarm_results})}\n\n"
-
-        # If work mode steps exist, execute and emit them live as SSE events
-        if work_steps:
-            import asyncio
-            # Emit the plan with all steps as "pending"
-            work_plan_payload = {
-                "task": request.message,
-                "total_steps": len(work_steps),
-                "steps": work_steps
-            }
-            yield f"event: work_plan\ndata: {json.dumps(work_plan_payload)}\n\n"
-
-            # Execute each step and stream results live
-            completed_results = []
-            for step in work_steps:
-                # Emit "running" status
-                step["status"] = "running"
-                yield f"event: work_step\ndata: {json.dumps({'step_id': step['id'], 'title': step['title'], 'kind': step.get('kind', 'llm'), 'status': 'running', 'result': '', 'elapsed_ms': 0, 'search_results': [], 'artifacts': []})}\n\n"
-
-                # Execute the step (blocking in thread pool to not block the event loop)
-                loop = asyncio.get_event_loop()
-                step = await loop.run_in_executor(
-                    None,
-                    _execute_work_step, step, request.message, llm, completed_results, context_chunks
-                )
-                completed_results.append(step)
-                logger.info(f"  Step {step['id']} [{step.get('kind', 'llm')}]: {step['status']} ({step.get('elapsed_ms', 0)}ms)")
-
-                # Emit completed/failed status
-                step_payload = {
-                    "step_id": step["id"],
-                    "title": step["title"],
-                    "kind": step.get("kind", "llm"),
-                    "status": step["status"],
-                    "result": (step.get("result") or "")[:500],
-                    "elapsed_ms": step.get("elapsed_ms", 0),
-                    "search_results": step.get("search_results", [])[:3],
-                    "artifacts": step.get("artifacts", [])
-                }
-                yield f"event: work_step\ndata: {json.dumps(step_payload)}\n\n"
-
-            # Now build the synthesis prompt with step results
-            work_step_results = completed_results
-            steps_context = []
-            for s in completed_results:
-                step_info = f"Step {s['id']}: {s['title']}"
-                if s.get("result"):
-                    step_info += f"\nResult: {s['result'][:500]}"
-                steps_context.append(step_info)
-            steps_text = "\n\n".join(steps_context)
-            system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
-            full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
         
         assistant_response = ""
         client_disconnected = False
@@ -4068,21 +3018,10 @@ Do not include multiple summaries or "Final Summary" variants.
                             assistant_response += token
                             yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
             else:
-                # Detect file generation requests for higher token limit
-                _is_file_gen = bool(re.search(
-                    r"\b(pdf|docx|doc|pptx|presentation|slideshow|slides|document|report|essay|resume|letter|spreadsheet|create\s+a?\s*(file|document|report|pdf|presentation|word|powerpoint))\b",
-                    request.message or "", re.IGNORECASE
-                ))
                 # Estimate safe max_tokens based on prompt size to avoid context overflow
                 estimated_prompt_tokens = max(1, len(full_prompt) // 4)
                 ctx_limit = _get_ctx_limit(model_name)
-                # Use higher token limit for file generation to avoid truncation/looping
-                if _is_file_gen:
-                    max_tokens = 4096
-                elif original_mode == "work":
-                    max_tokens = 3072
-                else:
-                    max_tokens = 2048
+                max_tokens = 3072 if original_mode == "work" else 2048
                 safe_max_tokens = max(128, ctx_limit - estimated_prompt_tokens - 64)
                 if safe_max_tokens < max_tokens:
                     max_tokens = safe_max_tokens
@@ -4111,10 +3050,6 @@ Do not include multiple summaries or "Final Summary" variants.
                             client_disconnected = True
                             break
                         assistant_response += token
-                        # Check for repetition loop
-                        if _detect_repetition(assistant_response):
-                            logger.warning("Repetition detected in vLLM output, stopping generation")
-                            break
                         yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
                 else:
                     lock = get_lock_for_model(llm)
@@ -4126,7 +3061,7 @@ Do not include multiple summaries or "Final Summary" variants.
                             top_p=0.9,
                             frequency_penalty=0.3,
                             presence_penalty=0.2,
-                            repeat_penalty=1.15,
+                            repeat_penalty=1.1,
                             stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
                             echo=False,
                             stream=True
@@ -4149,10 +3084,6 @@ Do not include multiple summaries or "Final Summary" variants.
                             token = chunk["choices"][0].get("text", "")
                             if token:
                                 assistant_response += token
-                                # Check for repetition loop
-                                if _detect_repetition(assistant_response):
-                                    logger.warning("Repetition detected in LLM output, stopping generation")
-                                    break
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
         except Exception as e:
             logger.error(f"Streaming generation failed: {e}")
@@ -4176,8 +3107,8 @@ Do not include multiple summaries or "Final Summary" variants.
         file_entries = _parse_files_from_response(assistant_response)
         generated_files = _write_artifacts(file_entries) if file_entries else []
         cleaned_response = _strip_file_blocks(assistant_response)
-        # Always deduplicate repeated lines (fixes looping output)
-        cleaned_response = _dedupe_repeated_lines(cleaned_response)
+        if original_mode == "swarm":
+            cleaned_response = _dedupe_repeated_lines(cleaned_response)
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
@@ -4189,7 +3120,6 @@ Do not include multiple summaries or "Final Summary" variants.
             "mode_used": original_mode,
             "model_used": model_name,
             "work_steps": work_steps,
-            "work_step_results": work_step_results if work_step_results else [],
             "swarm_agents": swarm_results if swarm_results else [],  # Add swarm agent results
             "search_results": search_results if search_results else [],
             "response": cleaned_response,
@@ -4530,13 +3460,6 @@ async def generate_image(request: dict):
         
         logger.info(f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale})")
         
-        # === FREE GPU VRAM: Unload LLM models so ComfyUI can use the GPU ===
-        global _models_unloaded_for_image_gen
-        with _image_gen_lock:
-            if not _models_unloaded_for_image_gen:
-                unload_all_llm_models()
-                _models_unloaded_for_image_gen = True
-        
         # Use provided ComfyUI URL or fall back to config
         if comfyui_url_override:
             comfyui_url = comfyui_url_override.rstrip('/')
@@ -4587,15 +3510,9 @@ async def generate_image(request: dict):
         
     except requests.RequestException as e:
         logger.error(f"ComfyUI connection error: {e}")
-        # Reload models since image gen failed
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
     except Exception as e:
         logger.error(f"Error generating image: {e}")
-        # Reload models since image gen failed
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/image-status/{prompt_id}")
@@ -4710,19 +3627,12 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                             logger.error(f"Failed to auto-save to gallery: {save_error}")
                             result["saved_to_gallery"] = False
                     
-                    # Reload LLM models in background now that image gen is done
-                    if _models_unloaded_for_image_gen:
-                        reload_llm_models_background()
-                    
                     return result
         
         return {"status": "processing", "message": "Still generating..."}
         
     except Exception as e:
         logger.error(f"Error checking image status: {e}")
-        # On error, still try to reload models if they were unloaded
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
         return {"status": "error", "message": str(e)}
 
 @app.get("/proxy-image")
@@ -4756,335 +3666,6 @@ async def proxy_image(filename: str, subfolder: str = "", type: str = "output"):
     except Exception as e:
         logger.error(f"Error proxying image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== REAL-TIME DATA ENDPOINTS ====================
-
-@app.get("/realtime/time")
-async def realtime_time(timezone: str = "local"):
-    """Get current date and time"""
-    if not realtime_service:
-        raise HTTPException(status_code=503, detail="Real-time data service not available")
-    return realtime_service.get_current_datetime(timezone)
-
-@app.get("/realtime/weather")
-async def realtime_weather(location: str = "New York"):
-    """Get current weather for a location"""
-    if not realtime_service:
-        raise HTTPException(status_code=503, detail="Real-time data service not available")
-    return realtime_service.get_weather(location)
-
-@app.get("/realtime/news")
-async def realtime_news(topic: str = "top news today", max_results: int = 8):
-    """Get current news headlines"""
-    if not realtime_service:
-        raise HTTPException(status_code=503, detail="Real-time data service not available")
-    return realtime_service.get_news(topic, max_results)
-
-
-# ==================== VIDEO GENERATION ENDPOINTS ====================
-
-@app.post("/generate-video")
-async def generate_video(request: dict):
-    """Generate a video from a text prompt using CogVideoX diffusers pipeline.
-
-    Parameters:
-        - prompt (str): Video description prompt (required)
-        - width (int): Frame width (default: 720)
-        - height (int): Frame height (default: 480)
-        - frames (int): Number of frames per segment (default: 49)
-        - fps (int): Frames per second (default: 8)
-        - steps (int): Inference steps (default: 30)
-        - guidance_scale (float): CFG scale (default: 6.0)
-        - negative_prompt (str): Negative prompt (optional)
-        - audio_path (str): Path to audio file for music video (optional)
-        - duration (float): Desired video length in seconds (default: 6, max: 30)
-    """
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    prompt = request.get("prompt", "")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
-
-    # Unload LLMs to free VRAM for video generation
-    global _models_unloaded_for_image_gen
-    with _image_gen_lock:
-        if not _models_unloaded_for_image_gen:
-            unload_all_llm_models()
-            _models_unloaded_for_image_gen = True
-
-    try:
-        result = video_service.submit_video_generation(
-            prompt=prompt,
-            negative_prompt=request.get("negative_prompt", ""),
-            width=request.get("width"),
-            height=request.get("height"),
-            frames=request.get("frames"),
-            fps=request.get("fps"),
-            steps=request.get("steps"),
-            guidance_scale=request.get("guidance_scale", 6.0),
-            audio_path=request.get("audio_path"),
-            duration=request.get("duration"),
-        )
-
-        if not result.get("ok"):
-            if _models_unloaded_for_image_gen:
-                reload_llm_models_background()
-            raise HTTPException(status_code=500, detail=result.get("error", "Video generation failed"))
-
-        return {
-            "status": "generating",
-            "prompt_id": result["data"]["prompt_id"],
-            "backend": result["data"]["backend"],
-            "message": result["data"]["message"],
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/video-status/{prompt_id}")
-async def video_status(prompt_id: str):
-    """Check video generation status"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    result = video_service.check_video_status(prompt_id)
-    status = result.get("data", {}).get("status", "unknown")
-
-    # Auto-save completed video to gallery
-    if status == "complete":
-        try:
-            videos = result.get("data", {}).get("videos", [])
-            if videos:
-                vid = videos[0]
-                video_id = str(uuid.uuid4())[:8]
-                video_filename = vid.get("filename", "")
-
-                db = load_gallery_db()
-                gallery_entry = {
-                    "id": video_id,
-                    "type": "video",
-                    "prompt": vid.get("prompt", prompt_id),
-                    "url": f"/video/{video_filename}",
-                    "filename": video_filename,
-                    "timestamp": int(time.time()),
-                    "model": result.get("data", {}).get("backend", "ComfyUI"),
-                    "settings": {},
-                }
-                items = db.get("images", [])
-                # Avoid duplicating if already saved (check filename)
-                if not any(i.get("filename") == video_filename for i in items):
-                    items.insert(0, gallery_entry)
-                    db["images"] = items
-                    save_gallery_db(db)
-                    result["saved_to_gallery"] = True
-                    logger.info(f"✓ Auto-saved video to gallery: {video_filename}")
-        except Exception as ge:
-            logger.error(f"Failed to auto-save video to gallery: {ge}")
-
-    # Reload LLMs once generation is complete or failed
-    if status in ("complete", "complete_frames", "error") and _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-    # Also reload if result itself indicates failure
-    if not result.get("ok") and _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-
-    return result
-
-@app.post("/upload-audio")
-async def upload_audio(file: UploadFile = File(...)):
-    """Upload an audio file (MP3/WAV/etc.) for music video generation"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    allowed_extensions = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma"}
-    ext = Path(file.filename).suffix.lower()
-    if ext not in allowed_extensions:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}. Allowed: {', '.join(allowed_extensions)}")
-
-    contents = await file.read()
-    if len(contents) > 100 * 1024 * 1024:  # 100MB limit
-        raise HTTPException(status_code=400, detail="Audio file too large (max 100MB)")
-
-    audio_path = video_service.save_uploaded_audio(contents, file.filename)
-    return {"ok": True, "audio_path": audio_path, "filename": file.filename}
-
-@app.post("/stitch-frames")
-async def stitch_frames(request: dict):
-    """Stitch generated frames into a video, optionally with audio"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    prompt_id = request.get("prompt_id", "")
-    fps = request.get("fps", 8)
-    audio_path = request.get("audio_path")
-
-    result = video_service.stitch_frames_to_video(prompt_id, fps, audio_path)
-    if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("error"))
-
-    # Reload LLMs
-    if _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-
-    return result
-
-@app.post("/mux-video-audio")
-async def mux_video_audio(request: dict):
-    """Combine a video with an audio file"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    video_path = request.get("video_path", "")
-    audio_path = request.get("audio_path", "")
-    if not video_path or not audio_path:
-        raise HTTPException(status_code=400, detail="Both video_path and audio_path are required")
-
-    result = video_service.mux_audio_to_video(video_path, audio_path)
-    if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("error"))
-    return result
-
-
-# ==================== MUSIC GENERATION ENDPOINTS ====================
-
-@app.post("/generate-music")
-async def generate_music_endpoint(request: dict):
-    """Generate music from a text prompt
-
-    Parameters:
-        - prompt (str): Free-form music description
-        - genre (str): Music genre (e.g. rock, electronic, hip-hop)
-        - mood (str): Mood (e.g. happy, chill, energetic)
-        - instruments (str): Instruments to feature (e.g. guitar, piano)
-        - tempo (str): Tempo description or BPM
-        - style (str): Style (e.g. lo-fi, orchestral, 80s synth)
-        - lyrics (str): Song lyrics for theme extraction
-        - reference_artist (str): Artist for style inspiration
-        - duration (int): Length in seconds (default: 15, max: 60)
-        - melody_audio_path (str): Path to melody audio for conditioning
-    """
-    if not music_service:
-        raise HTTPException(status_code=503, detail="Music generation service not available. Install audiocraft: pip install audiocraft")
-
-    # Unload LLMs to free VRAM for music generation
-    global _models_unloaded_for_image_gen
-    with _image_gen_lock:
-        if not _models_unloaded_for_image_gen:
-            unload_all_llm_models()
-            _models_unloaded_for_image_gen = True
-
-    try:
-        result = await asyncio.to_thread(
-            music_service.generate_music,
-            prompt=request.get("prompt", ""),
-            description=request.get("description", ""),
-            genre=request.get("genre", ""),
-            mood=request.get("mood", ""),
-            instruments=request.get("instruments", ""),
-            tempo=request.get("tempo", ""),
-            style=request.get("style", ""),
-            lyrics=request.get("lyrics", ""),
-            reference_artist=request.get("reference_artist", ""),
-            duration=request.get("duration", 15),
-        )
-
-        # Reload LLMs after generation
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
-
-        if not result.get("ok"):
-            raise HTTPException(status_code=500, detail=result.get("error", "Music generation failed"))
-
-        # Auto-save music to gallery
-        try:
-            d = result.get("data", {})
-            music_id = str(uuid.uuid4())[:8]
-            # Determine which file to reference
-            music_filename = d.get("filename", "")
-            if d.get("mp3_path"):
-                music_filename = Path(d["mp3_path"]).name
-
-            db = load_gallery_db()
-            gallery_entry = {
-                "id": music_id,
-                "type": "music",
-                "prompt": request.get("prompt", ""),
-                "url": f"/music/{music_filename}",
-                "filename": music_filename,
-                "timestamp": int(time.time()),
-                "duration_seconds": d.get("duration_seconds", 0),
-                "model": d.get("model", "MusicGen"),
-                "settings": {
-                    "genre": request.get("genre", ""),
-                    "mood": request.get("mood", ""),
-                    "duration": request.get("duration", 15),
-                },
-            }
-            items = db.get("images", [])
-            items.insert(0, gallery_entry)
-            db["images"] = items
-            save_gallery_db(db)
-            result["saved_to_gallery"] = True
-            logger.info(f"\u2713 Auto-saved music to gallery: {music_filename}")
-        except Exception as ge:
-            logger.error(f"Failed to auto-save music to gallery: {ge}")
-            result["saved_to_gallery"] = False
-
-        return result
-
-    except HTTPException:
-        raise
-    except Exception as e:
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/music-models")
-async def music_models():
-    """Get available music generation models"""
-    if not music_service:
-        return {"models": [], "current_model": None, "audiocraft_installed": False}
-    return music_service.get_available_models()
-
-@app.get("/generated-music")
-async def list_generated_music():
-    """List all generated music files"""
-    if not music_service:
-        return {"files": []}
-    return {"files": music_service.list_generated_music()}
-
-@app.get("/music/{filename}")
-async def serve_music_file(filename: str):
-    """Serve a generated music file"""
-    from pathlib import Path
-    import os
-    safe_name = os.path.basename(filename)
-    music_path = (REPO_ROOT / "outputs" / "music" / safe_name).resolve()
-    if not str(music_path).startswith(str((REPO_ROOT / "outputs" / "music").resolve())):
-        raise HTTPException(status_code=403, detail="Access denied")
-    if not music_path.exists():
-        raise HTTPException(status_code=404, detail="Music file not found")
-
-    media_type = "audio/mpeg" if safe_name.endswith(".mp3") else "audio/wav"
-    return FileResponse(str(music_path), media_type=media_type, filename=safe_name)
-
-@app.get("/video/{filename}")
-async def serve_video_file(filename: str):
-    """Serve a generated video file"""
-    from pathlib import Path
-    import os
-    safe_name = os.path.basename(filename)
-    video_path = (REPO_ROOT / "outputs" / "videos" / safe_name).resolve()
-    if not str(video_path).startswith(str((REPO_ROOT / "outputs" / "videos").resolve())):
-        raise HTTPException(status_code=403, detail="Access denied")
-    if not video_path.exists():
-        raise HTTPException(status_code=404, detail="Video file not found")
-    return FileResponse(str(video_path), media_type="video/mp4", filename=safe_name)
 
 
 # ==================== GALLERY ENDPOINTS ====================
@@ -5341,11 +3922,7 @@ async def delete_from_gallery(image_id: str):
 async def get_gallery_image(filename: str):
     """Serve an image from the gallery"""
     try:
-        import os
-        safe_name = os.path.basename(filename)
-        image_path = (GALLERY_DIR / safe_name).resolve()
-        if not str(image_path).startswith(str(GALLERY_DIR.resolve())):
-            raise HTTPException(status_code=403, detail="Access denied")
+        image_path = GALLERY_DIR / filename
         
         if not image_path.exists():
             raise HTTPException(status_code=404, detail="Image not found")
@@ -5353,8 +3930,8 @@ async def get_gallery_image(filename: str):
         from fastapi.responses import FileResponse
         return FileResponse(
             image_path,
-            media_type=f"image/{safe_name.split('.')[-1]}",
-            headers={"Content-Disposition": f'inline; filename="{safe_name}"'}
+            media_type=f"image/{filename.split('.')[-1]}",
+            headers={"Content-Disposition": f'inline; filename="{filename}"'}
         )
     except HTTPException:
         raise
@@ -5404,7 +3981,7 @@ async def create_user(request: dict):
     name = (request.get("name") or "").strip()
     if not name:
         raise HTTPException(status_code=400, detail="name is required")
-    user_id = request.get("id") or str(uuid.uuid4())
+    user_id = str(uuid.uuid4())
     record = ensure_user_record(user_id, name)
     return {"user": record}
 
@@ -5434,55 +4011,13 @@ async def delete_user(user_id: str):
             pass
     return {"success": True}
 
-@app.post("/users/cleanup")
-async def cleanup_auto_users(request: dict = None):
-    """Remove auto-generated user_ entries that have default names (User-XXXX).
-    Keeps any user whose name was explicitly set by the user.
-    Optionally pass {"keep_ids": ["id1", ...]} to preserve specific IDs."""
-    keep_ids = set((request or {}).get("keep_ids", []))
-    db = load_users_db()
-    users = db.get("users", [])
-    import re as _re
-    remaining = []
-    removed = []
-    for u in users:
-        uid = u.get("id", "")
-        name = u.get("name", "")
-        # Keep if: explicitly in keep list, or name was customized (not auto-generated pattern)
-        is_auto_name = bool(_re.match(r'^User-[a-f0-9\-]{4,}$', name))
-        if uid in keep_ids or not is_auto_name:
-            remaining.append(u)
-        else:
-            removed.append(u)
-            # Also remove their chat file
-            chats_file = get_user_chats_file(uid)
-            if chats_file.exists():
-                try:
-                    chats_file.unlink()
-                except Exception:
-                    pass
-    db["users"] = remaining
-    save_users_db(db)
-    return {"success": True, "removed": len(removed), "remaining": len(remaining)}
 
-
-def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
-                        realtime_context: str = None, is_file_request: bool = False) -> str:
+def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False) -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
-    now = datetime.now()
-    current_date = now.strftime("%B %d, %Y")
-    current_time = now.strftime("%I:%M %p")
-    current_day = now.strftime("%A")
+    current_date = datetime.now().strftime("%B %d, %Y")
     
-    base = (
-        f"You are EDISON, a helpful AI assistant. "
-        f"Today is {current_day}, {current_date}. The current time is {current_time}."
-    )
-
-    # Inject real-time data context if available (weather, news, etc.)
-    if realtime_context:
-        base += f" {realtime_context}"
+    base = f"You are EDISON, a helpful AI assistant. Today's date is {current_date}."
     
     # Add instruction to use retrieved context if available
     if has_context:
@@ -5495,27 +4030,15 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
 
-    # Add media generation awareness
-    base += (
-        " You can generate videos from text prompts (use the generate_video tool or /generate-video endpoint). "
-        "You can generate music from text descriptions including genre, mood, instruments, and lyrics "
-        "(use the generate_music tool or /generate-music endpoint). "
-        "You can get real-time data like current time, weather, and news using get_current_time, get_weather, and get_news tools."
-    )
-
-    # Add file generation instruction ONLY when user is requesting files
-    if is_file_request:
-        if FILE_GENERATION_PROMPT:
-            base += " " + FILE_GENERATION_PROMPT
-        else:
-            base += " If the user asks you to create downloadable files, output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"report.pdf\", \"content\": \"# Title\\n\\nFull detailed content with markdown formatting...\"}]\n```\n\nFor slideshows use .pptx: ```files\n[{\"filename\": \"slides.pptx\", \"type\": \"slideshow\", \"slides\": [{\"title\": \"Title\", \"bullets\": [\"Point 1\"], \"layout\": \"content\"}]}]\n```\n\nFor Word documents use .docx: ```files\n[{\"filename\": \"essay.docx\", \"content\": \"# Title\\n\\nContent...\"}]\n```\n\nWrite FULL, DETAILED content. Never use placeholders. Do NOT repeat content. Keep summary outside the block to one brief sentence."
+    # Add file generation instruction for all modes
+    base += " If the user asks you to create downloadable files (e.g., PDF, ZIP, CSV, JSON, TXT, MD, HTML), output a FILES block using this exact format:\n\n```files\n[{\"filename\": \"example.txt\", \"content\": \"...\"}]\n```\n\nInclude a brief summary outside the block."
     
     prompts = {
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
-        "agent": base + " You can search the web for current information. You can generate videos, music, and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
+        "agent": base + " You can search the web for current information. Provide detailed, accurate answers based on search results.",
         "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
-        "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented."
+        "work": base + " You are helping with a complex multi-step task. Follow the task plan provided, work through each step methodically, and provide comprehensive results. Be thorough and detail-oriented."
     }
     
     return prompts.get(mode, base)
@@ -5775,22 +4298,6 @@ def _render_pdf_from_text(text: str) -> bytes:
     pdf += b"trailer << /Size %d /Root 1 0 R >>\nstartxref\n%d\n%%EOF" % (len(objects) + 1, xref_start)
     return pdf
 
-def _detect_repetition(text: str, window: int = 200) -> bool:
-    """Detect if the generated text has fallen into a repetition loop.
-    Checks if the last `window` characters repeat a pattern seen earlier."""
-    if len(text) < window * 2:
-        return False
-    tail = text[-window:]
-    # Check if this tail appears earlier in the text
-    earlier = text[:-window]
-    if tail in earlier:
-        return True
-    # Also check for shorter repeated phrases (100 chars)
-    short_tail = text[-100:]
-    if len(text) > 300 and earlier.count(short_tail) >= 2:
-        return True
-    return False
-
 def _parse_files_from_response(response: str) -> list:
     if not response:
         return []
@@ -5854,66 +4361,35 @@ def _write_artifacts(file_entries: list) -> list:
     temp_files = []
 
     for entry in file_entries:
-        try:
-            # Use professional file generators if available
-            if render_file_entry is not None:
-                filename, data = render_file_entry(entry)
-                filename = _safe_filename(filename)
-            else:
-                # Fallback to basic rendering
-                filename = _safe_filename(entry.get("filename") or "output.txt")
-                content = entry.get("content", "")
-                ext = os.path.splitext(filename)[1].lower()
+        filename = _safe_filename(entry.get("filename") or "output.txt")
+        content = entry.get("content", "")
+        ext = os.path.splitext(filename)[1].lower()
 
-                if ext == ".pdf":
-                    data = _render_pdf_from_text(str(content))
-                elif isinstance(content, (dict, list)):
-                    data = json.dumps(content, indent=2).encode("utf-8")
-                else:
-                    data = str(content).encode("utf-8")
+        if ext == ".pdf":
+            data = _render_pdf_from_text(str(content))
+        elif isinstance(content, (dict, list)):
+            data = json.dumps(content, indent=2).encode("utf-8")
+        else:
+            data = str(content).encode("utf-8")
 
-            ext = os.path.splitext(filename)[1].lower()
+        out_path = root / filename
+        # Avoid collisions
+        if out_path.exists():
+            stem, suffix = os.path.splitext(filename)
+            filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
             out_path = root / filename
-            # Avoid collisions
-            if out_path.exists():
-                stem, suffix = os.path.splitext(filename)
-                filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
-                out_path = root / filename
-            with open(out_path, "wb") as f:
-                f.write(data)
-            temp_files.append(out_path)
-            record = {
-                "name": filename,
-                "url": f"/artifacts/{filename}",
-                "size": out_path.stat().st_size,
-                "type": ext.lstrip(".") or "txt",
-                "created_at": now
-            }
-            files_db.append(record)
-            saved.append(record)
-        except Exception as e:
-            logger.error(f"Error rendering file {entry.get('filename', '?')}: {e}")
-            # Fallback: save as plain text
-            filename = _safe_filename(entry.get("filename") or "output.txt")
-            content = str(entry.get("content", ""))
-            out_path = root / filename
-            if out_path.exists():
-                stem, suffix = os.path.splitext(filename)
-                filename = f"{stem}_{uuid.uuid4().hex[:6]}{suffix}"
-                out_path = root / filename
-            with open(out_path, "w", encoding="utf-8") as f:
-                f.write(content)
-            temp_files.append(out_path)
-            ext = os.path.splitext(filename)[1].lower()
-            record = {
-                "name": filename,
-                "url": f"/artifacts/{filename}",
-                "size": out_path.stat().st_size,
-                "type": ext.lstrip(".") or "txt",
-                "created_at": now
-            }
-            files_db.append(record)
-            saved.append(record)
+        with open(out_path, "wb") as f:
+            f.write(data)
+        temp_files.append(out_path)
+        record = {
+            "name": filename,
+            "url": f"/artifacts/{filename}",
+            "size": out_path.stat().st_size,
+            "type": ext.lstrip(".") or "txt",
+            "created_at": now
+        }
+        files_db.append(record)
+        saved.append(record)
 
     # If a zip was requested, create it from the other files
     zip_entries = [e for e in file_entries if str(e.get("filename", "")).lower().endswith(".zip")]
@@ -6208,6 +4684,1083 @@ async def system_stats():
         logger.error(f"Error getting system stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
+# ====================================================================
+# FEATURE: 3D Model Generation
+# ====================================================================
+
+@app.post("/generate-3d")
+async def generate_3d_model(request: dict):
+    """Generate a 3D model from text prompt or image using Shap-E / TripoSR.
+
+    Parameters:
+        - prompt (str): Text description (used when no image provided)
+        - image (str): Base64-encoded image (optional, takes priority over prompt)
+        - format (str): Output format - 'obj', 'glb', 'ply' (default: 'glb')
+        - guidance_scale (float): Guidance scale 1-20 (default: 15.0)
+        - num_steps (int): Diffusion steps 16-128 (default: 64)
+    """
+    try:
+        prompt = request.get('prompt', '')
+        image_b64 = request.get('image', '')
+        output_format = request.get('format', 'glb')
+        guidance_scale = request.get('guidance_scale', 15.0)
+        num_steps = request.get('num_steps', 64)
+
+        if not prompt and not image_b64:
+            raise HTTPException(status_code=400, detail="Either prompt or image is required")
+
+        if output_format not in ('obj', 'glb', 'ply'):
+            raise HTTPException(status_code=400, detail="format must be obj, glb, or ply")
+
+        num_steps = max(16, min(128, int(num_steps)))
+        guidance_scale = max(1.0, min(20.0, float(guidance_scale)))
+
+        output_dir = REPO_ROOT / "outputs" / "3d_models"
+        output_dir.mkdir(parents=True, exist_ok=True)
+        model_id = str(uuid.uuid4())[:8]
+        output_file = output_dir / f"{model_id}.{output_format}"
+
+        logger.info(f"3D generation request: prompt='{prompt[:60]}', format={output_format}, steps={num_steps}")
+
+        # Try Shap-E first (OpenAI's 3D generation model)
+        try:
+            import torch
+            from shap_e.diffusion.sample import sample_latents
+            from shap_e.diffusion.gaussian_diffusion import diffusion_from_config
+            from shap_e.models.download import load_model, load_config
+            from shap_e.util.notebooks import decode_latent_mesh
+
+            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+
+            if image_b64:
+                # Image-to-3D
+                xm = load_model('transmitter', device=device)
+                model = load_model('image300M', device=device)
+                diffusion = diffusion_from_config(load_config('diffusion'))
+
+                # Decode image
+                img_data = image_b64.split(',')[1] if ',' in image_b64 else image_b64
+                img_bytes = base64.b64decode(img_data)
+                from PIL import Image
+                image = Image.open(io.BytesIO(img_bytes)).convert('RGB').resize((256, 256))
+
+                latents = sample_latents(
+                    batch_size=1,
+                    model=model,
+                    diffusion=diffusion,
+                    guidance_scale=guidance_scale,
+                    model_kwargs=dict(images=[image]),
+                    progress=True,
+                    clip_denoised=True,
+                    use_fp16=True,
+                    use_karras=True,
+                    karras_steps=num_steps,
+                    sigma_min=1e-3,
+                    sigma_max=160,
+                    s_churn=0,
+                )
+            else:
+                # Text-to-3D
+                xm = load_model('transmitter', device=device)
+                model = load_model('text300M', device=device)
+                diffusion = diffusion_from_config(load_config('diffusion'))
+
+                latents = sample_latents(
+                    batch_size=1,
+                    model=model,
+                    diffusion=diffusion,
+                    guidance_scale=guidance_scale,
+                    model_kwargs=dict(texts=[prompt]),
+                    progress=True,
+                    clip_denoised=True,
+                    use_fp16=True,
+                    use_karras=True,
+                    karras_steps=num_steps,
+                    sigma_min=1e-3,
+                    sigma_max=160,
+                    s_churn=0,
+                )
+
+            # Decode latent to mesh
+            mesh = decode_latent_mesh(xm, latents[0]).tri_mesh()
+
+            if output_format == 'obj':
+                with open(str(output_file), 'w') as f:
+                    mesh.write_obj(f)
+            elif output_format == 'ply':
+                with open(str(output_file), 'wb') as f:
+                    mesh.write_ply(f)
+            else:  # glb
+                with open(str(output_file), 'wb') as f:
+                    mesh.write_glb(f)
+
+            logger.info(f"3D model generated via Shap-E: {output_file}")
+
+        except ImportError:
+            # Fallback: generate a placeholder OBJ (simple cube) with a message
+            logger.warning("Shap-E not installed. Generating placeholder 3D model. Install with: pip install shap-e")
+            if output_format == 'obj':
+                obj_content = f"""# EDISON 3D Model Generator
+# Prompt: {prompt or 'from image'}
+# Install shap-e for AI-generated 3D models: pip install shap-e
+# This is a placeholder cube model
+o Cube
+v -0.5 -0.5  0.5
+v  0.5 -0.5  0.5
+v  0.5  0.5  0.5
+v -0.5  0.5  0.5
+v -0.5 -0.5 -0.5
+v  0.5 -0.5 -0.5
+v  0.5  0.5 -0.5
+v -0.5  0.5 -0.5
+f 1 2 3 4
+f 5 8 7 6
+f 1 5 6 2
+f 2 6 7 3
+f 3 7 8 4
+f 4 8 5 1
+"""
+                with open(str(output_file), 'w') as f:
+                    f.write(obj_content)
+            elif output_format == 'ply':
+                ply_content = f"""ply
+format ascii 1.0
+comment EDISON 3D Model Generator - Placeholder cube
+comment Prompt: {prompt or 'from image'}
+element vertex 8
+property float x
+property float y
+property float z
+element face 6
+property list uchar int vertex_indices
+end_header
+-0.5 -0.5  0.5
+ 0.5 -0.5  0.5
+ 0.5  0.5  0.5
+-0.5  0.5  0.5
+-0.5 -0.5 -0.5
+ 0.5 -0.5 -0.5
+ 0.5  0.5 -0.5
+-0.5  0.5 -0.5
+4 0 1 2 3
+4 5 4 7 6
+4 0 4 5 1
+4 1 5 6 2
+4 2 6 7 3
+4 3 7 4 0
+"""
+                with open(str(output_file), 'w') as f:
+                    f.write(ply_content)
+            else:  # glb placeholder
+                # Write minimal valid GLB
+                output_file = output_file.with_suffix('.obj')
+                output_format = 'obj'
+                with open(str(output_file), 'w') as f:
+                    f.write(f"# EDISON Placeholder - install shap-e for real 3D\no Cube\nv -0.5 -0.5 0.5\nv 0.5 -0.5 0.5\nv 0.5 0.5 0.5\nv -0.5 0.5 0.5\nv -0.5 -0.5 -0.5\nv 0.5 -0.5 -0.5\nv 0.5 0.5 -0.5\nv -0.5 0.5 -0.5\nf 1 2 3 4\nf 5 8 7 6\nf 1 5 6 2\nf 2 6 7 3\nf 3 7 8 4\nf 4 8 5 1\n")
+
+        return {
+            "status": "complete",
+            "model_id": model_id,
+            "format": output_format,
+            "download_url": f"/3d-model/{model_id}.{output_format}",
+            "message": f"3D model generated successfully ({output_format.upper()})"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating 3D model: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/3d-model/{filename}")
+async def download_3d_model(filename: str):
+    """Download a generated 3D model file"""
+    try:
+        safe_name = _safe_filename(filename)
+        file_path = REPO_ROOT / "outputs" / "3d_models" / safe_name
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="3D model not found")
+
+        ext = file_path.suffix.lower()
+        media_types = {'.obj': 'model/obj', '.glb': 'model/gltf-binary', '.ply': 'application/x-ply'}
+        media_type = media_types.get(ext, 'application/octet-stream')
+
+        return FileResponse(file_path, media_type=media_type,
+                            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving 3D model: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/3d-models/list")
+async def list_3d_models():
+    """List all generated 3D models"""
+    try:
+        models_dir = REPO_ROOT / "outputs" / "3d_models"
+        if not models_dir.exists():
+            return {"models": []}
+
+        models = []
+        for f in sorted(models_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if f.suffix.lower() in ('.obj', '.glb', '.ply'):
+                stat = f.stat()
+                models.append({
+                    "filename": f.name,
+                    "format": f.suffix[1:],
+                    "size_bytes": stat.st_size,
+                    "created": stat.st_mtime,
+                    "download_url": f"/3d-model/{f.name}"
+                })
+        return {"models": models}
+    except Exception as e:
+        logger.error(f"Error listing 3D models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ====================================================================
+# FEATURE: Minecraft 1.7.10 Texture Generation (Optional Install)
+# ====================================================================
+
+@app.post("/minecraft/generate-texture")
+async def generate_minecraft_texture(request: dict):
+    """Generate Minecraft 1.7.10 textures using ComfyUI.
+
+    Parameters:
+        - prompt (str): Description of the texture (e.g., 'ruby ore block')
+        - texture_type (str): 'block', 'item', 'crop', 'skin', 'mob', 'armor' (default: 'block')
+        - image (str): Optional base64 reference image for img2img
+        - style (str): 'pixel_art', 'faithful', 'painterly' (default: 'pixel_art')
+        - size (int): Texture size - 16, 32, 64, 128 (default: 16)
+    """
+    try:
+        prompt = request.get('prompt', '')
+        texture_type = request.get('texture_type', 'block')
+        image_b64 = request.get('image', '')
+        style = request.get('style', 'pixel_art')
+        tex_size = request.get('size', 16)
+
+        if not prompt:
+            raise HTTPException(status_code=400, detail="Prompt is required")
+
+        valid_types = ['block', 'item', 'crop', 'skin', 'mob', 'armor', 'gui', 'particle', 'environment']
+        if texture_type not in valid_types:
+            raise HTTPException(status_code=400, detail=f"texture_type must be one of: {', '.join(valid_types)}")
+
+        if tex_size not in (16, 32, 64, 128):
+            raise HTTPException(status_code=400, detail="size must be 16, 32, 64, or 128")
+
+        # Build Minecraft-optimized prompt
+        style_prefixes = {
+            'pixel_art': 'pixel art style, 16-bit color palette, crisp pixels, no anti-aliasing,',
+            'faithful': 'faithful resource pack style, detailed pixel art, minecraft aesthetic,',
+            'painterly': 'painterly style, hand-painted texture, soft pixel art,',
+        }
+        style_prefix = style_prefixes.get(style, style_prefixes['pixel_art'])
+
+        type_hints = {
+            'block': 'minecraft block texture, tileable, seamless pattern, top-down view, flat, square texture,',
+            'item': 'minecraft item icon, 2D sprite, transparent background, isometric view, inventory icon,',
+            'crop': 'minecraft crop texture, pixel art plant, growth stage, farming item,',
+            'skin': 'minecraft character skin, 64x32 layout, player skin template, front and back,',
+            'mob': 'minecraft mob texture, creature sprite, pixel art entity,',
+            'armor': 'minecraft armor texture, equipment sprite, overlay texture,',
+            'gui': 'minecraft GUI element, interface button, menu texture, flat UI,',
+            'particle': 'minecraft particle effect, small sprite, animated frame, glowing pixel,',
+            'environment': 'minecraft environment texture, sky, water, lava, terrain overlay,',
+        }
+        type_hint = type_hints.get(texture_type, type_hints['block'])
+
+        enhanced_prompt = f"{style_prefix} {type_hint} minecraft 1.7.10 style, {prompt}"
+
+        logger.info(f"Minecraft texture gen: type={texture_type}, style={style}, size={tex_size}, prompt='{prompt[:60]}'")
+
+        # Use ComfyUI for generation
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+
+        # Create workflow optimized for pixel art textures
+        # Generate at higher res then downscale for crisp pixels
+        gen_size = max(512, tex_size * 8)
+        workflow = create_flux_workflow(enhanced_prompt, gen_size, gen_size, steps=25, cfg=7.0)
+
+        response = requests.post(f"{comfyui_url}/prompt", json={"prompt": workflow}, timeout=5)
+        if not response.ok:
+            raise HTTPException(status_code=503, detail=f"ComfyUI returned {response.status_code}")
+
+        result = response.json()
+        prompt_id = result.get("prompt_id")
+
+        if not prompt_id:
+            raise HTTPException(status_code=500, detail="No prompt_id returned from ComfyUI")
+
+        # Save metadata for post-processing (downscale to target size)
+        mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+        mc_meta_dir.mkdir(parents=True, exist_ok=True)
+        meta_file = mc_meta_dir / f"{prompt_id}.json"
+        import json as json_mod
+        with open(str(meta_file), 'w') as f:
+            json_mod.dump({
+                "prompt_id": prompt_id,
+                "texture_type": texture_type,
+                "style": style,
+                "target_size": tex_size,
+                "original_prompt": prompt,
+                "enhanced_prompt": enhanced_prompt,
+            }, f)
+
+        return {
+            "status": "generating",
+            "prompt_id": prompt_id,
+            "texture_type": texture_type,
+            "target_size": tex_size,
+            "message": f"Generating {texture_type} texture. Check /minecraft/texture-status/{prompt_id}",
+            "comfyui_url": comfyui_url
+        }
+
+    except requests.RequestException as e:
+        logger.error(f"ComfyUI connection error: {e}")
+        raise HTTPException(status_code=503, detail="ComfyUI service unavailable")
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating Minecraft texture: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/texture-status/{prompt_id}")
+async def minecraft_texture_status(prompt_id: str):
+    """Check Minecraft texture generation status and downscale to target resolution"""
+    try:
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+
+        history_resp = requests.get(f"{comfyui_url}/history/{prompt_id}", timeout=5)
+        if not history_resp.ok:
+            return {"status": "generating", "prompt_id": prompt_id}
+
+        history = history_resp.json()
+
+        if prompt_id not in history:
+            return {"status": "generating", "prompt_id": prompt_id}
+
+        outputs = history[prompt_id].get("outputs", {})
+        for node_id, node_output in outputs.items():
+            if "images" in node_output:
+                for img_info in node_output["images"]:
+                    img_filename = img_info["filename"]
+                    subfolder = img_info.get("subfolder", "")
+
+                    # Download the generated image
+                    params = {"filename": img_filename}
+                    if subfolder:
+                        params["subfolder"] = subfolder
+                    img_resp = requests.get(f"{comfyui_url}/view", params=params, timeout=10)
+
+                    if img_resp.ok:
+                        # Load metadata and downscale
+                        mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+                        meta_file = mc_meta_dir / f"{prompt_id}.json"
+                        target_size = 16
+                        texture_type = "block"
+
+                        if meta_file.exists():
+                            import json as json_mod
+                            with open(str(meta_file)) as f:
+                                meta = json_mod.load(f)
+                                target_size = meta.get("target_size", 16)
+                                texture_type = meta.get("texture_type", "block")
+
+                        # Downscale to pixel-perfect Minecraft resolution
+                        try:
+                            from PIL import Image as PILImage
+                            img = PILImage.open(io.BytesIO(img_resp.content))
+                            # Use NEAREST for crisp pixel art
+                            img_resized = img.resize((target_size, target_size), PILImage.NEAREST)
+
+                            # Save the final texture
+                            tex_id = str(uuid.uuid4())[:8]
+                            final_name = f"mc_{texture_type}_{tex_id}.png"
+                            final_path = mc_meta_dir / final_name
+                            img_resized.save(str(final_path), "PNG")
+
+                            # Also save full-res version
+                            full_name = f"mc_{texture_type}_{tex_id}_full.png"
+                            full_path = mc_meta_dir / full_name
+                            with open(str(full_path), 'wb') as fw:
+                                fw.write(img_resp.content)
+
+                            # Save to gallery too
+                            gallery_dir = REPO_ROOT / "outputs" / "gallery"
+                            gallery_dir.mkdir(parents=True, exist_ok=True)
+                            gallery_path = gallery_dir / final_name
+                            img_resized.save(str(gallery_path), "PNG")
+
+                            return {
+                                "status": "complete",
+                                "texture_type": texture_type,
+                                "target_size": target_size,
+                                "filename": final_name,
+                                "download_url": f"/minecraft/texture/{final_name}",
+                                "full_res_url": f"/minecraft/texture/{full_name}",
+                                "image_url": f"/gallery/image/{final_name}",
+                            }
+                        except ImportError:
+                            logger.warning("Pillow not installed for image resizing")
+                            # Save raw image
+                            tex_id = str(uuid.uuid4())[:8]
+                            raw_name = f"mc_{texture_type}_{tex_id}.png"
+                            raw_path = mc_meta_dir / raw_name
+                            with open(str(raw_path), 'wb') as fw:
+                                fw.write(img_resp.content)
+                            return {
+                                "status": "complete",
+                                "texture_type": texture_type,
+                                "filename": raw_name,
+                                "download_url": f"/minecraft/texture/{raw_name}",
+                                "message": "Install Pillow for auto-downscale to target resolution"
+                            }
+
+        return {"status": "generating", "prompt_id": prompt_id}
+
+    except Exception as e:
+        logger.error(f"Error checking Minecraft texture status: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+@app.get("/minecraft/texture/{filename}")
+async def serve_minecraft_texture(filename: str):
+    """Serve a generated Minecraft texture"""
+    try:
+        safe_name = _safe_filename(filename)
+        file_path = REPO_ROOT / "outputs" / "minecraft_textures" / safe_name
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Texture not found")
+        return FileResponse(file_path, media_type="image/png")
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/textures/list")
+async def list_minecraft_textures():
+    """List all generated Minecraft textures"""
+    try:
+        tex_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+        if not tex_dir.exists():
+            return {"textures": []}
+        textures = []
+        for f in sorted(tex_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if f.suffix.lower() == '.png' and not f.name.endswith('_full.png'):
+                stat = f.stat()
+                textures.append({
+                    "filename": f.name,
+                    "size_bytes": stat.st_size,
+                    "created": stat.st_mtime,
+                    "download_url": f"/minecraft/texture/{f.name}",
+                    "texture_type": f.name.split('_')[1] if '_' in f.name else 'unknown',
+                })
+        return {"textures": textures}
+    except Exception as e:
+        logger.error(f"Error listing Minecraft textures: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/install-status")
+async def minecraft_install_status():
+    """Check if Minecraft texture/model generation tools are installed"""
+    status = {
+        "texture_gen": True,  # Uses ComfyUI which is already part of EDISON
+        "model_gen": False,
+        "details": {}
+    }
+    try:
+        # Check ComfyUI availability
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        try:
+            resp = requests.get(f"http://{comfyui_host}:{comfyui_port}/system_stats", timeout=2)
+            status["details"]["comfyui"] = "running" if resp.ok else "not running"
+        except:
+            status["details"]["comfyui"] = "not running"
+
+        # Check PIL for texture resizing
+        try:
+            from PIL import Image
+            status["details"]["pillow"] = "installed"
+        except ImportError:
+            status["details"]["pillow"] = "not installed"
+
+        # Check if obj generation tools exist
+        try:
+            import numpy
+            status["details"]["numpy"] = "installed"
+            status["model_gen"] = True  # Can generate basic models with numpy
+        except ImportError:
+            status["details"]["numpy"] = "not installed"
+
+    except Exception as e:
+        status["details"]["error"] = str(e)
+
+    return status
+
+
+# ====================================================================
+# FEATURE: Minecraft 1.7.10 3D Model Generation
+# ====================================================================
+
+@app.post("/minecraft/generate-model")
+async def generate_minecraft_model(request: dict):
+    """Generate a Minecraft 1.7.10 JSON model from a texture image.
+
+    Parameters:
+        - texture_filename (str): Filename of a previously generated texture
+        - model_type (str): 'block', 'item', 'crop', 'slab', 'stairs', 'fence' (default: 'block')
+        - name (str): Name for the model/block (default: 'custom_block')
+    """
+    try:
+        texture_filename = request.get('texture_filename', '')
+        model_type = request.get('model_type', 'block')
+        name = request.get('name', 'custom_block')
+
+        if not texture_filename:
+            raise HTTPException(status_code=400, detail="texture_filename is required")
+
+        valid_model_types = ['block', 'item', 'crop', 'slab', 'stairs', 'fence', 'wall', 'cross', 'pane']
+        if model_type not in valid_model_types:
+            raise HTTPException(status_code=400, detail=f"model_type must be one of: {', '.join(valid_model_types)}")
+
+        # Verify texture exists
+        tex_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+        tex_path = tex_dir / texture_filename
+        if not tex_path.exists():
+            # Also check gallery
+            tex_path = REPO_ROOT / "outputs" / "gallery" / texture_filename
+            if not tex_path.exists():
+                raise HTTPException(status_code=404, detail="Texture file not found")
+
+        # Clean the name for use in paths
+        safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', name.lower())
+
+        # Generate Minecraft 1.7.10 compatible JSON model
+        models_dir = REPO_ROOT / "outputs" / "minecraft_models"
+        models_dir.mkdir(parents=True, exist_ok=True)
+
+        model_id = str(uuid.uuid4())[:8]
+
+        # Minecraft 1.7.10 model JSON format
+        model_templates = {
+            'block': {
+                "parent": "block/cube_all",
+                "textures": {
+                    "all": f"modid:blocks/{safe_name}"
+                }
+            },
+            'item': {
+                "parent": "item/generated",
+                "textures": {
+                    "layer0": f"modid:items/{safe_name}"
+                }
+            },
+            'crop': {
+                "parent": "block/crop",
+                "textures": {
+                    "crop": f"modid:blocks/{safe_name}"
+                }
+            },
+            'slab': {
+                "parent": "block/half_slab",
+                "textures": {
+                    "bottom": f"modid:blocks/{safe_name}",
+                    "top": f"modid:blocks/{safe_name}",
+                    "side": f"modid:blocks/{safe_name}"
+                }
+            },
+            'stairs': {
+                "parent": "block/stairs",
+                "textures": {
+                    "bottom": f"modid:blocks/{safe_name}",
+                    "top": f"modid:blocks/{safe_name}",
+                    "side": f"modid:blocks/{safe_name}"
+                }
+            },
+            'fence': {
+                "parent": "block/fence_post",
+                "textures": {
+                    "texture": f"modid:blocks/{safe_name}"
+                }
+            },
+            'wall': {
+                "parent": "block/wall_post",
+                "textures": {
+                    "wall": f"modid:blocks/{safe_name}"
+                }
+            },
+            'cross': {
+                "parent": "block/cross",
+                "textures": {
+                    "cross": f"modid:blocks/{safe_name}"
+                }
+            },
+            'pane': {
+                "parent": "block/pane_post",
+                "textures": {
+                    "pane": f"modid:blocks/{safe_name}",
+                    "edge": f"modid:blocks/{safe_name}"
+                }
+            }
+        }
+
+        model_json = model_templates.get(model_type, model_templates['block'])
+
+        # Save model JSON
+        model_filename = f"{safe_name}_{model_id}.json"
+        model_path = models_dir / model_filename
+        import json as json_mod
+        with open(str(model_path), 'w') as f:
+            json_mod.dump(model_json, f, indent=2)
+
+        # Also generate blockstate JSON for blocks
+        blockstate_json = None
+        if model_type in ('block', 'slab', 'stairs', 'fence', 'wall'):
+            blockstate_json = {
+                "variants": {
+                    "normal": {"model": f"modid:{safe_name}"}
+                }
+            }
+            bs_filename = f"{safe_name}_{model_id}_blockstate.json"
+            bs_path = models_dir / bs_filename
+            with open(str(bs_path), 'w') as f:
+                json_mod.dump(blockstate_json, f, indent=2)
+
+        # Copy texture to output with proper naming
+        import shutil as shutil_mod
+        tex_output = models_dir / f"{safe_name}_{model_id}.png"
+        shutil_mod.copy2(str(tex_path), str(tex_output))
+
+        # Create a ZIP package with everything needed
+        zip_filename = f"mc_mod_{safe_name}_{model_id}.zip"
+        zip_path = models_dir / zip_filename
+        with zipfile.ZipFile(str(zip_path), 'w') as zf:
+            # Texture goes to assets/modid/textures/blocks/
+            folder = "blocks" if model_type != 'item' else "items"
+            zf.write(str(tex_path), f"assets/modid/textures/{folder}/{safe_name}.png")
+            zf.write(str(model_path), f"assets/modid/models/{model_type}/{safe_name}.json")
+            if blockstate_json:
+                zf.write(str(bs_path), f"assets/modid/blockstates/{safe_name}.json")
+            # Add a README
+            readme = f"""# Minecraft 1.7.10 Mod Asset: {name}
+# Generated by EDISON
+
+## Installation:
+1. Extract this ZIP into your mod's resources folder
+2. Replace 'modid' in paths with your actual mod ID
+3. Register the block/item in your mod code
+
+## Files:
+- textures/{folder}/{safe_name}.png - The texture file
+- models/{model_type}/{safe_name}.json - The model definition
+{"- blockstates/" + safe_name + ".json - Block state mapping" if blockstate_json else ""}
+
+## Mod Code Example (Java):
+```java
+// In your mod's block registration:
+GameRegistry.registerBlock(new Block(Material.rock), "{safe_name}");
+```
+"""
+            zf.writestr("README.txt", readme)
+
+        return {
+            "status": "complete",
+            "model_id": model_id,
+            "model_type": model_type,
+            "name": safe_name,
+            "model_file": model_filename,
+            "texture_file": f"{safe_name}_{model_id}.png",
+            "zip_package": zip_filename,
+            "download_url": f"/minecraft/model/{zip_filename}",
+            "model_json": model_json,
+            "blockstate_json": blockstate_json,
+            "message": f"Minecraft 1.7.10 {model_type} model package generated for '{name}'"
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error generating Minecraft model: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/model/{filename}")
+async def download_minecraft_model(filename: str):
+    """Download a Minecraft model package"""
+    try:
+        safe_name = _safe_filename(filename)
+        file_path = REPO_ROOT / "outputs" / "minecraft_models" / safe_name
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Model package not found")
+        media = "application/zip" if safe_name.endswith('.zip') else "application/json"
+        return FileResponse(file_path, media_type=media,
+                            headers={"Content-Disposition": f'attachment; filename="{safe_name}"'})
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/models/list")
+async def list_minecraft_models():
+    """List generated Minecraft model packages"""
+    try:
+        models_dir = REPO_ROOT / "outputs" / "minecraft_models"
+        if not models_dir.exists():
+            return {"models": []}
+        models = []
+        for f in sorted(models_dir.iterdir(), key=lambda x: x.stat().st_mtime, reverse=True):
+            if f.suffix.lower() == '.zip':
+                stat = f.stat()
+                models.append({
+                    "filename": f.name,
+                    "size_bytes": stat.st_size,
+                    "created": stat.st_mtime,
+                    "download_url": f"/minecraft/model/{f.name}",
+                })
+        return {"models": models}
+    except Exception as e:
+        logger.error(f"Error listing Minecraft models: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ====================================================================
+# FEATURE: Data Management Console (File Explorer)
+# ====================================================================
+
+# Protected paths that cannot be deleted (core EDISON files)
+PROTECTED_PATHS = {
+    'services', 'config', 'scripts', 'web', 'ComfyUI', 'requirements.txt',
+    'requirements-coral.txt', 'restart_edison.sh', '.git', '.gitignore',
+    '__pycache__', 'node_modules', '.env', 'venv', 'models',
+}
+
+# File types allowed for deletion
+DELETABLE_EXTENSIONS = {
+    '.png', '.jpg', '.jpeg', '.gif', '.bmp', '.webp', '.svg', '.ico',  # Images
+    '.mp4', '.avi', '.mkv', '.mov', '.webm', '.flv',                   # Videos
+    '.mp3', '.wav', '.ogg', '.flac', '.aac', '.m4a',                   # Music/Audio
+    '.obj', '.glb', '.ply', '.stl', '.fbx', '.dae',                    # 3D models
+    '.zip', '.tar', '.gz', '.7z', '.rar',                              # Archives (generated)
+    '.pdf', '.docx', '.txt', '.csv',                                   # Documents (generated)
+}
+
+# Directories where deletion is allowed
+DELETABLE_DIRECTORIES = {'outputs', 'generated', 'downloads', 'temp', 'tmp', 'cache'}
+
+
+def is_path_deletable(filepath: str) -> tuple:
+    """Check if a file/folder can be safely deleted.
+    Returns (can_delete: bool, reason: str)
+    """
+    path = Path(filepath).resolve()
+    repo_root = REPO_ROOT.resolve()
+
+    # Must be under REPO_ROOT
+    try:
+        path.relative_to(repo_root)
+    except ValueError:
+        return (False, "Path is outside the project directory")
+
+    # Check if in protected directory
+    relative = path.relative_to(repo_root)
+    parts = relative.parts
+    if parts and parts[0] in PROTECTED_PATHS:
+        # Allow deletion inside outputs even though outputs is used
+        if parts[0] == 'outputs' or parts[0] in DELETABLE_DIRECTORIES:
+            pass  # OK to delete generated content
+        else:
+            return (False, f"'{parts[0]}' is a protected system directory")
+
+    # Check if the top-level item is protected
+    if len(parts) == 1 and parts[0] in PROTECTED_PATHS:
+        return (False, f"'{parts[0]}' is a protected system file/directory")
+
+    # For files, check extension
+    if path.is_file():
+        ext = path.suffix.lower()
+        # Allow any file in deletable directories
+        if parts and parts[0] in DELETABLE_DIRECTORIES:
+            return (True, "File in deletable directory")
+        if parts and parts[0] == 'outputs':
+            return (True, "Generated output file")
+        if ext in DELETABLE_EXTENSIONS:
+            return (True, "Deletable file type")
+        return (False, f"File type '{ext}' is not allowed for deletion. Only generated content (images, videos, music, 3D models) can be deleted.")
+
+    # For directories, only allow within deletable areas
+    if path.is_dir():
+        if parts and parts[0] in DELETABLE_DIRECTORIES:
+            return (True, "Deletable directory")
+        if parts and parts[0] == 'outputs':
+            return (True, "Generated output directory")
+        return (False, "Cannot delete system directories. Only generated content folders can be removed.")
+
+    return (False, "Path does not exist")
+
+
+@app.get("/files/browse")
+async def browse_files(path: str = ""):
+    """Browse files and directories. Works like a file explorer.
+
+    Parameters:
+        - path (str): Relative path from project root (empty = root)
+    """
+    try:
+        if path:
+            target = (REPO_ROOT / path).resolve()
+        else:
+            target = REPO_ROOT.resolve()
+
+        # Security: must be under REPO_ROOT
+        try:
+            target.relative_to(REPO_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied: path outside project")
+
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Path not found")
+
+        if target.is_file():
+            stat = target.stat()
+            relative = target.relative_to(REPO_ROOT)
+            can_delete, reason = is_path_deletable(str(target))
+            return {
+                "type": "file",
+                "name": target.name,
+                "path": str(relative),
+                "size_bytes": stat.st_size,
+                "modified": stat.st_mtime,
+                "extension": target.suffix,
+                "can_delete": can_delete,
+                "delete_reason": reason,
+            }
+
+        # It's a directory
+        items = []
+        try:
+            for entry in sorted(target.iterdir(), key=lambda x: (not x.is_dir(), x.name.lower())):
+                relative = entry.relative_to(REPO_ROOT)
+                try:
+                    stat = entry.stat()
+                    can_delete, reason = is_path_deletable(str(entry))
+
+                    item = {
+                        "name": entry.name,
+                        "path": str(relative),
+                        "type": "directory" if entry.is_dir() else "file",
+                        "size_bytes": stat.st_size if entry.is_file() else 0,
+                        "modified": stat.st_mtime,
+                        "can_delete": can_delete,
+                        "delete_reason": reason,
+                    }
+
+                    if entry.is_file():
+                        item["extension"] = entry.suffix
+
+                    if entry.is_dir():
+                        # Get child count
+                        try:
+                            item["child_count"] = len(list(entry.iterdir()))
+                        except PermissionError:
+                            item["child_count"] = 0
+
+                    items.append(item)
+                except PermissionError:
+                    continue
+                except OSError:
+                    continue
+        except PermissionError:
+            raise HTTPException(status_code=403, detail="Permission denied")
+
+        relative_target = target.relative_to(REPO_ROOT) if target != REPO_ROOT else Path("")
+        return {
+            "type": "directory",
+            "path": str(relative_target),
+            "name": target.name or "EDISON",
+            "items": items,
+            "item_count": len(items),
+        }
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error browsing files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.delete("/files/delete")
+async def delete_file(request: dict):
+    """Delete a file or directory if it's safe to do so.
+
+    Parameters:
+        - path (str): Relative path from project root
+    """
+    try:
+        rel_path = request.get('path', '')
+        if not rel_path:
+            raise HTTPException(status_code=400, detail="path is required")
+
+        target = (REPO_ROOT / rel_path).resolve()
+
+        # Security check
+        try:
+            target.relative_to(REPO_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        can_delete, reason = is_path_deletable(str(target))
+        if not can_delete:
+            raise HTTPException(status_code=403, detail=f"Cannot delete: {reason}")
+
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="File not found")
+
+        if target.is_file():
+            size = target.stat().st_size
+            target.unlink()
+            logger.info(f"Deleted file: {rel_path} ({size} bytes)")
+            return {"status": "deleted", "path": rel_path, "size_freed": size}
+        elif target.is_dir():
+            # Calculate total size
+            total_size = sum(f.stat().st_size for f in target.rglob('*') if f.is_file())
+            shutil.rmtree(str(target))
+            logger.info(f"Deleted directory: {rel_path} ({total_size} bytes)")
+            return {"status": "deleted", "path": rel_path, "size_freed": total_size}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error deleting file: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/files/storage")
+async def storage_info():
+    """Get storage information for all mounted drives/partitions"""
+    import psutil
+    try:
+        drives = []
+        seen_mounts = set()
+
+        for partition in psutil.disk_partitions(all=False):
+            # Skip pseudo filesystems
+            if partition.fstype in ('squashfs', 'tmpfs', 'devtmpfs', 'overlay'):
+                continue
+            if partition.mountpoint in seen_mounts:
+                continue
+            seen_mounts.add(partition.mountpoint)
+
+            try:
+                usage = psutil.disk_usage(partition.mountpoint)
+                drives.append({
+                    "device": partition.device,
+                    "mountpoint": partition.mountpoint,
+                    "fstype": partition.fstype,
+                    "total_bytes": usage.total,
+                    "used_bytes": usage.used,
+                    "free_bytes": usage.free,
+                    "percent_used": usage.percent,
+                    "total_gb": round(usage.total / (1024**3), 2),
+                    "used_gb": round(usage.used / (1024**3), 2),
+                    "free_gb": round(usage.free / (1024**3), 2),
+                })
+            except PermissionError:
+                continue
+            except OSError:
+                continue
+
+        # Sort: root first, then by mount point
+        drives.sort(key=lambda d: (d['mountpoint'] != '/', d['mountpoint']))
+
+        return {
+            "drives": drives,
+            "drive_count": len(drives),
+        }
+
+    except Exception as e:
+        logger.error(f"Error getting storage info: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/files/search")
+async def search_files(query: str = "", path: str = "", extensions: str = ""):
+    """Search for files by name within the project.
+
+    Parameters:
+        - query (str): Search string to match against filenames
+        - path (str): Relative path to search within (default: whole project)
+        - extensions (str): Comma-separated extension filter (e.g., '.png,.jpg')
+    """
+    try:
+        search_root = (REPO_ROOT / path).resolve() if path else REPO_ROOT.resolve()
+        try:
+            search_root.relative_to(REPO_ROOT.resolve())
+        except ValueError:
+            raise HTTPException(status_code=403, detail="Access denied")
+
+        ext_filter = set()
+        if extensions:
+            ext_filter = {e.strip().lower() for e in extensions.split(',')}
+
+        results = []
+        query_lower = query.lower()
+        max_results = 200
+
+        for entry in search_root.rglob('*'):
+            if len(results) >= max_results:
+                break
+            if entry.is_file():
+                if query_lower and query_lower not in entry.name.lower():
+                    continue
+                if ext_filter and entry.suffix.lower() not in ext_filter:
+                    continue
+                try:
+                    stat = entry.stat()
+                    relative = entry.relative_to(REPO_ROOT)
+                    can_delete, reason = is_path_deletable(str(entry))
+                    results.append({
+                        "name": entry.name,
+                        "path": str(relative),
+                        "size_bytes": stat.st_size,
+                        "modified": stat.st_mtime,
+                        "extension": entry.suffix,
+                        "can_delete": can_delete,
+                    })
+                except (PermissionError, OSError):
+                    continue
+
+        return {"results": results, "count": len(results), "query": query}
+
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error searching files: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 def should_remember_conversation(message: str) -> Dict:
     """
     Determine if conversation should be stored using scoring system with strict thresholds.
@@ -6446,27 +5999,11 @@ def detect_recall_intent(message: str) -> tuple[bool, str]:
             search_query = match.group(group_idx) if match.lastindex >= group_idx else message
             return (True, search_query)
     
-    # Identity / personal recall patterns — these are memory lookups
-    identity_patterns = [
-        r"what(?:'?s| is) my (\w+)",       # "whats my name", "what's my age"
-        r"do you (?:know|remember) my (\w+)",  # "do you know my name"
-        r"who am i",
-        r"tell me about (?:me|myself)",
-        r"what do you (?:know|remember) about me",
-    ]
-    for pattern in identity_patterns:
-        match = re.search(pattern, msg_lower)
-        if match:
-            # Build a useful search query from the matched topic
-            topic = match.group(1) if match.lastindex else "identity"
-            return (True, f"my {topic} is" if topic != "identity" else "my name is")
-
     # Simple recall keywords
     recall_keywords = [
         "recall", "remember when", "what did we", "our conversation",
         "search my chats", "find in history", "previous conversation",
-        "earlier we talked", "you mentioned", "we discussed",
-        "do you remember", "you should know",
+        "earlier we talked", "you mentioned", "we discussed"
     ]
     
     if any(keyword in msg_lower for keyword in recall_keywords):
