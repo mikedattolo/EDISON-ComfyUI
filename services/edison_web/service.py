@@ -77,6 +77,19 @@ async def theme_device():
     file_path = WEB_DIR / "theme-device.js"
     return FileResponse(file_path, media_type="application/javascript")
 
+@app.get("/app_new_features.js")
+async def app_new_features():
+    """Serve new features JS file (3D generation, Minecraft tools, file manager)"""
+    file_path = WEB_DIR / "app_new_features.js"
+    logger.info(f"Serving app_new_features.js from {file_path}, exists: {file_path.exists()}")
+    if not file_path.exists():
+        logger.error(f"app_new_features.js not found at {file_path}")
+    return FileResponse(
+        file_path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
+
 @app.get("/gallery.js")
 async def gallery():
     """Serve gallery JS file"""
