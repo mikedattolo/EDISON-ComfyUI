@@ -1318,6 +1318,13 @@ def generate_docx(content: str, title: str = "Document") -> bytes:
 
 FILE_GENERATION_PROMPT = """When the user asks you to create a downloadable file, you MUST output a FILES block. Follow these rules carefully:
 
+## IMPORTANT: What NOT to create as files
+- **NEVER create audio files** (.mp3, .wav, .ogg, .flac, .aac, .m4a) — use the generate_music tool instead
+- **NEVER create video files** (.mp4, .avi, .mov, .webm, .mkv) — use the generate_video tool instead
+- **NEVER create image files** (.png, .jpg, .jpeg, .gif, .webp) — use the generate_image tool instead
+- If the user asks for music, songs, beats, audio, or sound, call generate_music — do NOT create a file
+- If the user asks for video, animation, or clips, call generate_video — do NOT create a file
+
 ## File Types You Can Create
 - **PDF documents**: Reports, essays, papers, guides, manuals, resumes, letters
 - **Word documents (.docx)**: Essays, research papers, reports, formal documents

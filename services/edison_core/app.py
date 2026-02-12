@@ -298,14 +298,21 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             video_patterns = ["make a video", "create a video", "generate a video",
                              "make video", "create video", "generate video",
                              "music video", "animate", "animation",
-                             "video of", "video about", "video from"]
+                             "video of", "video about", "video from",
+                             "make me a video", "short video", "video clip",
+                             "text to video", "text-to-video"]
 
             # Music generation patterns
             music_patterns = ["make music", "create music", "generate music",
                              "make a song", "create a song", "generate a song",
                              "compose", "make a beat", "produce music",
                              "music like", "song about", "write a song",
-                             "make me a song", "generate a beat", "music from"]
+                             "make me a song", "generate a beat", "music from",
+                             "make me music", "create a beat", "lo-fi", "lofi",
+                             "hip hop beat", "hip-hop beat", "edm", "make a track",
+                             "generate song", "generate beat", "play me",
+                             "sing me", "beat for", "instrumental",
+                             "background music", "soundtrack"]
 
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
@@ -874,18 +881,52 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             return result
 
         if tool_name == "generate_video":
-            return {
-                "ok": True,
-                "message": "Video generation requested. Use /generate-video endpoint to render.",
-                "data": args
-            }
+            if not video_service:
+                return {"ok": False, "error": "Video generation service not available"}
+            try:
+                result = video_service.submit_video_generation(
+                    prompt=args.get("prompt", ""),
+                    negative_prompt=args.get("negative_prompt", ""),
+                    width=args.get("width"),
+                    height=args.get("height"),
+                    frames=args.get("frames"),
+                    fps=args.get("fps"),
+                    steps=args.get("steps"),
+                    guidance_scale=args.get("guidance_scale", 7.5),
+                )
+                if result.get("ok"):
+                    return {
+                        "ok": True,
+                        "trigger": "generate_video",
+                        "message": f"Video generation started (backend: {result['data'].get('backend', 'auto')}). The video will appear in chat when ready.",
+                        "data": {"prompt_id": result["data"]["prompt_id"], "backend": result["data"].get("backend"), "prompt": args.get("prompt", "")}
+                    }
+                return result
+            except Exception as e:
+                return {"ok": False, "error": f"Video generation failed: {str(e)}"}
 
         if tool_name == "generate_music":
-            return {
-                "ok": True,
-                "message": "Music generation requested. Use /generate-music endpoint to render.",
-                "data": args
-            }
+            if not music_service:
+                return {"ok": False, "error": "Music generation service not available"}
+            try:
+                result = await asyncio.to_thread(
+                    music_service.generate_music,
+                    prompt=args.get("prompt", ""),
+                    genre=args.get("genre", ""),
+                    mood=args.get("mood", ""),
+                    duration=args.get("duration", 15),
+                )
+                if result.get("ok"):
+                    d = result["data"]
+                    return {
+                        "ok": True,
+                        "trigger": "generate_music",
+                        "message": f"Music generated successfully ({d.get('duration_seconds', 0)}s, model: {d.get('model', 'MusicGen')}). The audio will appear in chat.",
+                        "data": d
+                    }
+                return result
+            except Exception as e:
+                return {"ok": False, "error": f"Music generation failed: {str(e)}"}
 
         if tool_name == "system_stats":
             stats = {}
@@ -2255,6 +2296,35 @@ async def chat(request: ChatRequest):
     
     # Keep original_mode for special handling (like work mode with steps)
     original_mode = mode
+
+    # Check for video/music intent (Coral or heuristic fallback)
+    if request.mode != "swarm":
+        reasons_str = " ".join(routing.get("reasons", []))
+        msg_lower_clean = request.message.lower()
+
+        is_video = coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"] or \
+                   "video generation" in reasons_str.lower()
+        is_music = coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] or \
+                   "music generation" in reasons_str.lower()
+
+        if is_video:
+            for prefix in ["generate", "create", "make", "a video of", "video of",
+                           "a video about", "video about", "a ", "an "]:
+                msg_lower_clean = msg_lower_clean.replace(prefix, "").strip()
+            return {
+                "response": f"🎬 Generating video: \"{msg_lower_clean}\"...",
+                "mode_used": "video",
+                "video_generation": {"prompt": msg_lower_clean, "trigger": "intent"}
+            }
+        elif is_music:
+            for prefix in ["generate", "create", "make", "compose", "a song about",
+                           "song about", "music about", "some ", "a ", "an ", "me "]:
+                msg_lower_clean = msg_lower_clean.replace(prefix, "").strip()
+            return {
+                "response": f"🎵 Generating music: \"{msg_lower_clean}\"...",
+                "mode_used": "music",
+                "music_generation": {"prompt": msg_lower_clean, "trigger": "intent"}
+            }
     
     # Check if user selected a specific model (overrides routing)
     use_selected_model = bool(request.selected_model)
@@ -2911,6 +2981,40 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
     original_mode = mode
+
+    # Heuristic fallback: if Coral didn't trigger video/music intents,
+    # check routing reasons for heuristic-detected music/video patterns
+    if video_intent_payload is None and music_intent_payload is None and request.mode != "swarm":
+        reasons_str = " ".join(routing.get("reasons", []))
+        msg_lower = request.message.lower()
+
+        if "video generation" in reasons_str.lower() or "video" in reasons_str.lower():
+            # Clean prompt
+            clean_prompt = msg_lower
+            for prefix in ["generate", "create", "make", "a video of", "video of",
+                           "a video about", "video about", "a short video of",
+                           "short video of", "a ", "an "]:
+                clean_prompt = clean_prompt.replace(prefix, "").strip()
+            video_intent_payload = {
+                "ok": True,
+                "response": f"🎬 Generating video: \"{clean_prompt}\"...",
+                "mode_used": "video",
+                "video_generation": {"prompt": clean_prompt, "trigger": "heuristic"}
+            }
+            logger.info(f"Heuristic video intent detected: {clean_prompt}")
+
+        elif "music generation" in reasons_str.lower() or "music" in reasons_str.lower():
+            clean_prompt = msg_lower
+            for prefix in ["generate", "create", "make", "compose", "a song about",
+                           "song about", "music about", "some ", "a ", "an ", "me "]:
+                clean_prompt = clean_prompt.replace(prefix, "").strip()
+            music_intent_payload = {
+                "ok": True,
+                "response": f"🎵 Generating music: \"{clean_prompt}\"...",
+                "mode_used": "music",
+                "music_generation": {"prompt": clean_prompt, "trigger": "heuristic"}
+            }
+            logger.info(f"Heuristic music intent detected: {clean_prompt}")
 
     # Check if user selected a specific model (overrides routing)
     use_selected_model = bool(request.selected_model)
