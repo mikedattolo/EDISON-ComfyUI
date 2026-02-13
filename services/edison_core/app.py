@@ -4940,19 +4940,47 @@ async def list_3d_models():
 
 
 # ====================================================================
-# FEATURE: Minecraft 1.7.10 Texture Generation (Optional Install)
+# FEATURE: Minecraft 1.7.10 Texture Generation (Enhanced)
+# Uses minecraft_utils for authentic palette quantization, tileability,
+# procedural fallback, and proper pixel-art post-processing.
 # ====================================================================
+
+try:
+    from services.edison_core.minecraft_utils import (
+        build_minecraft_prompt, create_minecraft_workflow,
+        process_minecraft_texture, generate_procedural_texture,
+        generate_model_json, generate_blockstate_json,
+        model_to_obj, generate_mtl, create_resource_pack_zip,
+    )
+    HAS_MC_UTILS = True
+except ImportError:
+    try:
+        from minecraft_utils import (
+            build_minecraft_prompt, create_minecraft_workflow,
+            process_minecraft_texture, generate_procedural_texture,
+            generate_model_json, generate_blockstate_json,
+            model_to_obj, generate_mtl, create_resource_pack_zip,
+        )
+        HAS_MC_UTILS = True
+    except ImportError:
+        HAS_MC_UTILS = False
+        logger.warning("minecraft_utils not available - Minecraft features degraded")
+
 
 @app.post("/minecraft/generate-texture")
 async def generate_minecraft_texture(request: dict):
-    """Generate Minecraft 1.7.10 textures using ComfyUI.
+    """Generate Minecraft 1.7.10 textures using ComfyUI with enhanced post-processing.
 
     Parameters:
         - prompt (str): Description of the texture (e.g., 'ruby ore block')
-        - texture_type (str): 'block', 'item', 'crop', 'skin', 'mob', 'armor' (default: 'block')
+        - texture_type (str): 'block', 'item', 'crop', 'skin', 'mob', 'armor', 'gui', 'particle', 'environment'
         - image (str): Optional base64 reference image for img2img
         - style (str): 'pixel_art', 'faithful', 'painterly' (default: 'pixel_art')
         - size (int): Texture size - 16, 32, 64, 128 (default: 16)
+        - use_procedural (bool): Use procedural generation instead of AI (default: false)
+        - palette_quantize (bool): Quantize to Minecraft color palette (default: true)
+        - make_tileable (bool): Force tileability for block textures (default: true for blocks)
+        - dither (bool): Apply ordered dithering (default: true)
     """
     try:
         prompt = request.get('prompt', '')
@@ -4960,6 +4988,10 @@ async def generate_minecraft_texture(request: dict):
         image_b64 = request.get('image', '')
         style = request.get('style', 'pixel_art')
         tex_size = request.get('size', 16)
+        use_procedural = request.get('use_procedural', False)
+        palette_quantize = request.get('palette_quantize', True)
+        make_tileable = request.get('make_tileable', texture_type in ('block', 'environment'))
+        dither = request.get('dither', True)
 
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
@@ -4971,30 +5003,43 @@ async def generate_minecraft_texture(request: dict):
         if tex_size not in (16, 32, 64, 128):
             raise HTTPException(status_code=400, detail="size must be 16, 32, 64, or 128")
 
-        # Build Minecraft-optimized prompt
-        style_prefixes = {
-            'pixel_art': 'pixel art style, 16-bit color palette, crisp pixels, no anti-aliasing,',
-            'faithful': 'faithful resource pack style, detailed pixel art, minecraft aesthetic,',
-            'painterly': 'painterly style, hand-painted texture, soft pixel art,',
-        }
-        style_prefix = style_prefixes.get(style, style_prefixes['pixel_art'])
+        mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+        mc_meta_dir.mkdir(parents=True, exist_ok=True)
 
-        type_hints = {
-            'block': 'minecraft block texture, tileable, seamless pattern, top-down view, flat, square texture,',
-            'item': 'minecraft item icon, 2D sprite, transparent background, isometric view, inventory icon,',
-            'crop': 'minecraft crop texture, pixel art plant, growth stage, farming item,',
-            'skin': 'minecraft character skin, 64x32 layout, player skin template, front and back,',
-            'mob': 'minecraft mob texture, creature sprite, pixel art entity,',
-            'armor': 'minecraft armor texture, equipment sprite, overlay texture,',
-            'gui': 'minecraft GUI element, interface button, menu texture, flat UI,',
-            'particle': 'minecraft particle effect, small sprite, animated frame, glowing pixel,',
-            'environment': 'minecraft environment texture, sky, water, lava, terrain overlay,',
-        }
-        type_hint = type_hints.get(texture_type, type_hints['block'])
+        # ---- Procedural generation path (no ComfyUI needed) ----
+        if use_procedural and HAS_MC_UTILS:
+            logger.info(f"Minecraft procedural texture: type={texture_type}, size={tex_size}, prompt='{prompt[:60]}'")
+            tex_id = str(uuid.uuid4())[:8]
+            img = generate_procedural_texture(texture_type, prompt, tex_size)
+            final_name = f"mc_{texture_type}_{tex_id}.png"
+            final_path = mc_meta_dir / final_name
+            img.save(str(final_path), "PNG")
 
-        enhanced_prompt = f"{style_prefix} {type_hint} minecraft 1.7.10 style, {prompt}"
+            # Save to gallery
+            gallery_dir = REPO_ROOT / "outputs" / "gallery"
+            gallery_dir.mkdir(parents=True, exist_ok=True)
+            img.save(str(gallery_dir / final_name), "PNG")
 
-        logger.info(f"Minecraft texture gen: type={texture_type}, style={style}, size={tex_size}, prompt='{prompt[:60]}'")
+            return {
+                "status": "complete",
+                "texture_type": texture_type,
+                "target_size": tex_size,
+                "filename": final_name,
+                "download_url": f"/minecraft/texture/{final_name}",
+                "image_url": f"/gallery/image/{final_name}",
+                "generation_method": "procedural",
+                "message": f"Procedural {texture_type} texture generated at {tex_size}x{tex_size}",
+            }
+
+        # ---- AI generation path (uses ComfyUI) ----
+        # Build optimized prompt with proper negative prompt
+        if HAS_MC_UTILS:
+            enhanced_prompt, negative_prompt = build_minecraft_prompt(prompt, texture_type, style, tex_size)
+        else:
+            enhanced_prompt = f"pixel art, minecraft 1.7.10 style, {texture_type} texture, {prompt}"
+            negative_prompt = "blurry, realistic, 3d render, anti-aliased, smooth gradients"
+
+        logger.info(f"Minecraft AI texture gen: type={texture_type}, style={style}, size={tex_size}, prompt='{prompt[:60]}'")
 
         # Use ComfyUI for generation
         comfyui_config = config.get("edison", {}).get("comfyui", {})
@@ -5004,13 +5049,38 @@ async def generate_minecraft_texture(request: dict):
         comfyui_port = comfyui_config.get("port", 8188)
         comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
 
-        # Create workflow optimized for pixel art textures
-        # Generate at higher res then downscale for crisp pixels
-        gen_size = max(512, tex_size * 8)
-        workflow = create_flux_workflow(enhanced_prompt, gen_size, gen_size, steps=25, guidance_scale=7.0)
+        # Generate at 512x512 - enough detail for post-processing, not wastefully large
+        gen_size = 512
+
+        # Use the Minecraft-optimized workflow (higher CFG, DPM++ 2M Karras, proper negatives)
+        if HAS_MC_UTILS:
+            workflow = create_minecraft_workflow(enhanced_prompt, negative_prompt, gen_size, gen_size)
+        else:
+            workflow = create_flux_workflow(enhanced_prompt, gen_size, gen_size, steps=25, guidance_scale=7.0)
 
         response = requests.post(f"{comfyui_url}/prompt", json={"prompt": workflow}, timeout=5)
         if not response.ok:
+            # If ComfyUI is down, fall back to procedural generation
+            if HAS_MC_UTILS:
+                logger.warning("ComfyUI unavailable, falling back to procedural generation")
+                tex_id = str(uuid.uuid4())[:8]
+                img = generate_procedural_texture(texture_type, prompt, tex_size)
+                final_name = f"mc_{texture_type}_{tex_id}.png"
+                final_path = mc_meta_dir / final_name
+                img.save(str(final_path), "PNG")
+                gallery_dir = REPO_ROOT / "outputs" / "gallery"
+                gallery_dir.mkdir(parents=True, exist_ok=True)
+                img.save(str(gallery_dir / final_name), "PNG")
+                return {
+                    "status": "complete",
+                    "texture_type": texture_type,
+                    "target_size": tex_size,
+                    "filename": final_name,
+                    "download_url": f"/minecraft/texture/{final_name}",
+                    "image_url": f"/gallery/image/{final_name}",
+                    "generation_method": "procedural_fallback",
+                    "message": f"ComfyUI unavailable. Used procedural fallback for {texture_type} at {tex_size}x{tex_size}",
+                }
             raise HTTPException(status_code=503, detail=f"ComfyUI returned {response.status_code}")
 
         result = response.json()
@@ -5019,9 +5089,7 @@ async def generate_minecraft_texture(request: dict):
         if not prompt_id:
             raise HTTPException(status_code=500, detail="No prompt_id returned from ComfyUI")
 
-        # Save metadata for post-processing (downscale to target size)
-        mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
-        mc_meta_dir.mkdir(parents=True, exist_ok=True)
+        # Save metadata for post-processing
         meta_file = mc_meta_dir / f"{prompt_id}.json"
         import json as json_mod
         with open(str(meta_file), 'w') as f:
@@ -5032,6 +5100,9 @@ async def generate_minecraft_texture(request: dict):
                 "target_size": tex_size,
                 "original_prompt": prompt,
                 "enhanced_prompt": enhanced_prompt,
+                "palette_quantize": palette_quantize,
+                "make_tileable": make_tileable,
+                "dither": dither,
             }, f)
 
         return {
@@ -5039,12 +5110,36 @@ async def generate_minecraft_texture(request: dict):
             "prompt_id": prompt_id,
             "texture_type": texture_type,
             "target_size": tex_size,
-            "message": f"Generating {texture_type} texture. Check /minecraft/texture-status/{prompt_id}",
+            "generation_method": "ai",
+            "message": f"Generating {texture_type} texture with AI. Check /minecraft/texture-status/{prompt_id}",
             "comfyui_url": comfyui_url
         }
 
     except requests.RequestException as e:
         logger.error(f"ComfyUI connection error: {e}")
+        # Fall back to procedural if possible
+        if HAS_MC_UTILS:
+            try:
+                tex_id = str(uuid.uuid4())[:8]
+                img = generate_procedural_texture(texture_type, prompt, tex_size)
+                final_name = f"mc_{texture_type}_{tex_id}.png"
+                mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+                mc_meta_dir.mkdir(parents=True, exist_ok=True)
+                img.save(str(mc_meta_dir / final_name), "PNG")
+                gallery_dir = REPO_ROOT / "outputs" / "gallery"
+                gallery_dir.mkdir(parents=True, exist_ok=True)
+                img.save(str(gallery_dir / final_name), "PNG")
+                return {
+                    "status": "complete",
+                    "texture_type": texture_type,
+                    "target_size": tex_size,
+                    "filename": final_name,
+                    "download_url": f"/minecraft/texture/{final_name}",
+                    "generation_method": "procedural_fallback",
+                    "message": "ComfyUI offline. Used procedural fallback.",
+                }
+            except Exception:
+                pass
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable")
     except HTTPException:
         raise
@@ -5055,7 +5150,15 @@ async def generate_minecraft_texture(request: dict):
 
 @app.get("/minecraft/texture-status/{prompt_id}")
 async def minecraft_texture_status(prompt_id: str):
-    """Check Minecraft texture generation status and downscale to target resolution"""
+    """Check Minecraft texture generation status with enhanced post-processing.
+    
+    Post-processing pipeline (when minecraft_utils is available):
+    1. Downscale AI output to target size using LANCZOS (better than NEAREST for initial downscale)
+    2. Quantize colors to authentic Minecraft palette per material type
+    3. Apply ordered dithering for retro pixel-art look
+    4. Enforce tileability for block textures
+    5. Sharpen pixel edges
+    """
     try:
         comfyui_config = config.get("edison", {}).get("comfyui", {})
         comfyui_host = comfyui_config.get("host", "127.0.0.1")
@@ -5087,11 +5190,15 @@ async def minecraft_texture_status(prompt_id: str):
                     img_resp = requests.get(f"{comfyui_url}/view", params=params, timeout=10)
 
                     if img_resp.ok:
-                        # Load metadata and downscale
                         mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+                        mc_meta_dir.mkdir(parents=True, exist_ok=True)
                         meta_file = mc_meta_dir / f"{prompt_id}.json"
                         target_size = 16
                         texture_type = "block"
+                        style = "pixel_art"
+                        palette_quantize = True
+                        make_tileable = True
+                        dither = True
 
                         if meta_file.exists():
                             import json as json_mod
@@ -5099,31 +5206,47 @@ async def minecraft_texture_status(prompt_id: str):
                                 meta = json_mod.load(f)
                                 target_size = meta.get("target_size", 16)
                                 texture_type = meta.get("texture_type", "block")
+                                style = meta.get("style", "pixel_art")
+                                palette_quantize = meta.get("palette_quantize", True)
+                                make_tileable = meta.get("make_tileable", texture_type in ('block', 'environment'))
+                                dither = meta.get("dither", True)
 
-                        # Downscale to pixel-perfect Minecraft resolution
                         try:
                             from PIL import Image as PILImage
                             img = PILImage.open(io.BytesIO(img_resp.content))
-                            # Use NEAREST for crisp pixel art
-                            img_resized = img.resize((target_size, target_size), PILImage.NEAREST)
 
-                            # Save the final texture
+                            # Save full-res AI output before post-processing
                             tex_id = str(uuid.uuid4())[:8]
-                            final_name = f"mc_{texture_type}_{tex_id}.png"
-                            final_path = mc_meta_dir / final_name
-                            img_resized.save(str(final_path), "PNG")
-
-                            # Also save full-res version
                             full_name = f"mc_{texture_type}_{tex_id}_full.png"
                             full_path = mc_meta_dir / full_name
                             with open(str(full_path), 'wb') as fw:
                                 fw.write(img_resp.content)
 
-                            # Save to gallery too
+                            # Apply enhanced Minecraft post-processing pipeline
+                            if HAS_MC_UTILS:
+                                img_processed = process_minecraft_texture(
+                                    image=img,
+                                    target_size=target_size,
+                                    texture_type=texture_type,
+                                    style=style,
+                                    make_tile=(make_tileable and texture_type in ('block', 'environment')),
+                                    use_palette=palette_quantize,
+                                )
+                            else:
+                                # Basic fallback: just resize with NEAREST
+                                img_processed = img.resize(
+                                    (target_size, target_size), PILImage.NEAREST
+                                )
+
+                            # Save the final processed texture
+                            final_name = f"mc_{texture_type}_{tex_id}.png"
+                            final_path = mc_meta_dir / final_name
+                            img_processed.save(str(final_path), "PNG")
+
+                            # Save to gallery
                             gallery_dir = REPO_ROOT / "outputs" / "gallery"
                             gallery_dir.mkdir(parents=True, exist_ok=True)
-                            gallery_path = gallery_dir / final_name
-                            img_resized.save(str(gallery_path), "PNG")
+                            img_processed.save(str(gallery_dir / final_name), "PNG")
 
                             return {
                                 "status": "complete",
@@ -5133,10 +5256,15 @@ async def minecraft_texture_status(prompt_id: str):
                                 "download_url": f"/minecraft/texture/{final_name}",
                                 "full_res_url": f"/minecraft/texture/{full_name}",
                                 "image_url": f"/gallery/image/{final_name}",
+                                "post_processing": {
+                                    "palette_quantized": palette_quantize and HAS_MC_UTILS,
+                                    "tileable": make_tileable and texture_type in ('block', 'environment'),
+                                    "dithered": dither and HAS_MC_UTILS,
+                                    "enhanced": HAS_MC_UTILS,
+                                },
                             }
                         except ImportError:
-                            logger.warning("Pillow not installed for image resizing")
-                            # Save raw image
+                            logger.warning("Pillow not installed for image processing")
                             tex_id = str(uuid.uuid4())[:8]
                             raw_name = f"mc_{texture_type}_{tex_id}.png"
                             raw_path = mc_meta_dir / raw_name
@@ -5147,7 +5275,7 @@ async def minecraft_texture_status(prompt_id: str):
                                 "texture_type": texture_type,
                                 "filename": raw_name,
                                 "download_url": f"/minecraft/texture/{raw_name}",
-                                "message": "Install Pillow for auto-downscale to target resolution"
+                                "message": "Install Pillow for proper texture processing"
                             }
 
         return {"status": "generating", "prompt_id": prompt_id}
@@ -5155,6 +5283,52 @@ async def minecraft_texture_status(prompt_id: str):
     except Exception as e:
         logger.error(f"Error checking Minecraft texture status: {e}")
         return {"status": "error", "detail": str(e)}
+
+
+@app.post("/minecraft/generate-procedural")
+async def generate_procedural_mc_texture(request: dict):
+    """Generate a Minecraft texture using pure procedural generation (no AI needed).
+
+    Parameters:
+        - prompt (str): Description hint (e.g., 'ruby ore', 'dark wood planks')
+        - texture_type (str): 'block', 'item', 'crop' (default: 'block')
+        - size (int): 16, 32, 64, 128 (default: 16)
+    """
+    if not HAS_MC_UTILS:
+        raise HTTPException(status_code=503, detail="minecraft_utils module not available")
+
+    try:
+        prompt = request.get('prompt', 'stone')
+        texture_type = request.get('texture_type', 'block')
+        tex_size = request.get('size', 16)
+
+        if tex_size not in (16, 32, 64, 128):
+            raise HTTPException(status_code=400, detail="size must be 16, 32, 64, or 128")
+
+        mc_meta_dir = REPO_ROOT / "outputs" / "minecraft_textures"
+        mc_meta_dir.mkdir(parents=True, exist_ok=True)
+
+        tex_id = str(uuid.uuid4())[:8]
+        img = generate_procedural_texture(texture_type, prompt, tex_size)
+        final_name = f"mc_{texture_type}_{tex_id}.png"
+        img.save(str(mc_meta_dir / final_name), "PNG")
+
+        gallery_dir = REPO_ROOT / "outputs" / "gallery"
+        gallery_dir.mkdir(parents=True, exist_ok=True)
+        img.save(str(gallery_dir / final_name), "PNG")
+
+        return {
+            "status": "complete",
+            "texture_type": texture_type,
+            "target_size": tex_size,
+            "filename": final_name,
+            "download_url": f"/minecraft/texture/{final_name}",
+            "image_url": f"/gallery/image/{final_name}",
+            "generation_method": "procedural",
+        }
+    except Exception as e:
+        logger.error(f"Error generating procedural texture: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/minecraft/texture/{filename}")
@@ -5200,8 +5374,10 @@ async def list_minecraft_textures():
 async def minecraft_install_status():
     """Check if Minecraft texture/model generation tools are installed"""
     status = {
-        "texture_gen": True,  # Uses ComfyUI which is already part of EDISON
+        "texture_gen": True,
         "model_gen": False,
+        "procedural_gen": HAS_MC_UTILS,
+        "enhanced_processing": HAS_MC_UTILS,
         "details": {}
     }
     try:
@@ -5228,9 +5404,22 @@ async def minecraft_install_status():
         try:
             import numpy
             status["details"]["numpy"] = "installed"
-            status["model_gen"] = True  # Can generate basic models with numpy
+            status["model_gen"] = True
         except ImportError:
             status["details"]["numpy"] = "not installed"
+
+        # Check minecraft_utils
+        status["details"]["minecraft_utils"] = "loaded" if HAS_MC_UTILS else "not available"
+        if HAS_MC_UTILS:
+            status["details"]["features"] = [
+                "palette_quantization",
+                "ordered_dithering", 
+                "tileability_enforcement",
+                "procedural_textures",
+                "full_model_json",
+                "obj_export",
+                "resource_pack_zip",
+            ]
 
     except Exception as e:
         status["details"]["error"] = str(e)
@@ -5244,17 +5433,23 @@ async def minecraft_install_status():
 
 @app.post("/minecraft/generate-model")
 async def generate_minecraft_model(request: dict):
-    """Generate a Minecraft 1.7.10 JSON model from a texture image.
+    """Generate a Minecraft 1.7.10 JSON model with full element definitions.
+
+    Enhanced version generates proper model JSONs with explicit element/face
+    definitions instead of just parent references. Also includes OBJ export
+    for 3D preview and complete resource pack ZIP.
 
     Parameters:
         - texture_filename (str): Filename of a previously generated texture
-        - model_type (str): 'block', 'item', 'crop', 'slab', 'stairs', 'fence' (default: 'block')
+        - model_type (str): 'block', 'item', 'crop', 'slab', 'stairs', 'fence', 'wall', 'cross', 'pane'
         - name (str): Name for the model/block (default: 'custom_block')
+        - mod_id (str): Mod ID for resource paths (default: 'modid')
     """
     try:
         texture_filename = request.get('texture_filename', '')
         model_type = request.get('model_type', 'block')
         name = request.get('name', 'custom_block')
+        mod_id = request.get('mod_id', 'modid')
 
         if not texture_filename:
             raise HTTPException(status_code=400, detail="texture_filename is required")
@@ -5267,84 +5462,53 @@ async def generate_minecraft_model(request: dict):
         tex_dir = REPO_ROOT / "outputs" / "minecraft_textures"
         tex_path = tex_dir / texture_filename
         if not tex_path.exists():
-            # Also check gallery
             tex_path = REPO_ROOT / "outputs" / "gallery" / texture_filename
             if not tex_path.exists():
                 raise HTTPException(status_code=404, detail="Texture file not found")
 
         # Clean the name for use in paths
         safe_name = re.sub(r'[^a-zA-Z0-9_]', '_', name.lower())
+        safe_mod_id = re.sub(r'[^a-zA-Z0-9_]', '_', mod_id.lower())
 
-        # Generate Minecraft 1.7.10 compatible JSON model
         models_dir = REPO_ROOT / "outputs" / "minecraft_models"
         models_dir.mkdir(parents=True, exist_ok=True)
-
         model_id = str(uuid.uuid4())[:8]
 
-        # Minecraft 1.7.10 model JSON format
-        model_templates = {
-            'block': {
-                "parent": "block/cube_all",
-                "textures": {
-                    "all": f"modid:blocks/{safe_name}"
-                }
-            },
-            'item': {
-                "parent": "item/generated",
-                "textures": {
-                    "layer0": f"modid:items/{safe_name}"
-                }
-            },
-            'crop': {
-                "parent": "block/crop",
-                "textures": {
-                    "crop": f"modid:blocks/{safe_name}"
-                }
-            },
-            'slab': {
-                "parent": "block/half_slab",
-                "textures": {
-                    "bottom": f"modid:blocks/{safe_name}",
-                    "top": f"modid:blocks/{safe_name}",
-                    "side": f"modid:blocks/{safe_name}"
-                }
-            },
-            'stairs': {
-                "parent": "block/stairs",
-                "textures": {
-                    "bottom": f"modid:blocks/{safe_name}",
-                    "top": f"modid:blocks/{safe_name}",
-                    "side": f"modid:blocks/{safe_name}"
-                }
-            },
-            'fence': {
-                "parent": "block/fence_post",
-                "textures": {
-                    "texture": f"modid:blocks/{safe_name}"
-                }
-            },
-            'wall': {
-                "parent": "block/wall_post",
-                "textures": {
-                    "wall": f"modid:blocks/{safe_name}"
-                }
-            },
-            'cross': {
-                "parent": "block/cross",
-                "textures": {
-                    "cross": f"modid:blocks/{safe_name}"
-                }
-            },
-            'pane': {
-                "parent": "block/pane_post",
-                "textures": {
-                    "pane": f"modid:blocks/{safe_name}",
-                    "edge": f"modid:blocks/{safe_name}"
-                }
-            }
-        }
+        # Generate model and blockstate JSON using minecraft_utils (full element definitions)
+        if HAS_MC_UTILS:
+            model_json = generate_model_json(model_type, safe_name, safe_mod_id)
+            blockstate_json = generate_blockstate_json(model_type, safe_name, safe_mod_id)
 
-        model_json = model_templates.get(model_type, model_templates['block'])
+            # Generate OBJ file for 3D preview
+            obj_content = model_to_obj(model_json, safe_name)
+            mtl_content = generate_mtl(safe_name, f"{safe_name}.png")
+
+            # Save OBJ + MTL
+            obj_filename = f"{safe_name}_{model_id}.obj"
+            mtl_filename = f"{safe_name}_{model_id}.mtl"
+            obj_path = models_dir / obj_filename
+            mtl_path = models_dir / mtl_filename
+            with open(str(obj_path), 'w') as f:
+                f.write(obj_content)
+            with open(str(mtl_path), 'w') as f:
+                f.write(mtl_content)
+        else:
+            # Fallback to simple parent-reference models
+            model_templates = {
+                'block': {"parent": "block/cube_all", "textures": {"all": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'item': {"parent": "item/generated", "textures": {"layer0": f"{safe_mod_id}:items/{safe_name}"}},
+                'crop': {"parent": "block/crop", "textures": {"crop": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'slab': {"parent": "block/half_slab", "textures": {"bottom": f"{safe_mod_id}:blocks/{safe_name}", "top": f"{safe_mod_id}:blocks/{safe_name}", "side": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'stairs': {"parent": "block/stairs", "textures": {"bottom": f"{safe_mod_id}:blocks/{safe_name}", "top": f"{safe_mod_id}:blocks/{safe_name}", "side": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'fence': {"parent": "block/fence_post", "textures": {"texture": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'wall': {"parent": "block/wall_post", "textures": {"wall": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'cross': {"parent": "block/cross", "textures": {"cross": f"{safe_mod_id}:blocks/{safe_name}"}},
+                'pane': {"parent": "block/pane_post", "textures": {"pane": f"{safe_mod_id}:blocks/{safe_name}", "edge": f"{safe_mod_id}:blocks/{safe_name}"}},
+            }
+            model_json = model_templates.get(model_type, model_templates['block'])
+            blockstate_json = {"variants": {"normal": {"model": f"{safe_mod_id}:{safe_name}"}}} if model_type in ('block', 'slab', 'stairs', 'fence', 'wall') else None
+            obj_content = None
+            mtl_content = None
 
         # Save model JSON
         model_filename = f"{safe_name}_{model_id}.json"
@@ -5353,69 +5517,66 @@ async def generate_minecraft_model(request: dict):
         with open(str(model_path), 'w') as f:
             json_mod.dump(model_json, f, indent=2)
 
-        # Also generate blockstate JSON for blocks
-        blockstate_json = None
-        if model_type in ('block', 'slab', 'stairs', 'fence', 'wall'):
-            blockstate_json = {
-                "variants": {
-                    "normal": {"model": f"modid:{safe_name}"}
-                }
-            }
+        # Save blockstate JSON
+        bs_filename = None
+        if blockstate_json:
             bs_filename = f"{safe_name}_{model_id}_blockstate.json"
             bs_path = models_dir / bs_filename
             with open(str(bs_path), 'w') as f:
                 json_mod.dump(blockstate_json, f, indent=2)
 
-        # Copy texture to output with proper naming
+        # Copy texture
         import shutil as shutil_mod
         tex_output = models_dir / f"{safe_name}_{model_id}.png"
         shutil_mod.copy2(str(tex_path), str(tex_output))
 
-        # Create a ZIP package with everything needed
+        # Create ZIP package using minecraft_utils (proper resource pack structure)
         zip_filename = f"mc_mod_{safe_name}_{model_id}.zip"
         zip_path = models_dir / zip_filename
-        with zipfile.ZipFile(str(zip_path), 'w') as zf:
-            # Texture goes to assets/modid/textures/blocks/
-            folder = "blocks" if model_type != 'item' else "items"
-            zf.write(str(tex_path), f"assets/modid/textures/{folder}/{safe_name}.png")
-            zf.write(str(model_path), f"assets/modid/models/{model_type}/{safe_name}.json")
-            if blockstate_json:
-                zf.write(str(bs_path), f"assets/modid/blockstates/{safe_name}.json")
-            # Add a README
-            readme = f"""# Minecraft 1.7.10 Mod Asset: {name}
-# Generated by EDISON
 
-## Installation:
-1. Extract this ZIP into your mod's resources folder
-2. Replace 'modid' in paths with your actual mod ID
-3. Register the block/item in your mod code
+        if HAS_MC_UTILS:
+            zip_filename = create_resource_pack_zip(
+                texture_path=str(tex_path),
+                model_json=model_json,
+                blockstate_json=blockstate_json,
+                model_type=model_type,
+                name=safe_name,
+                mod_id=safe_mod_id,
+                output_dir=str(models_dir),
+            )
+            zip_path = models_dir / zip_filename
+        else:
+            # Fallback: basic ZIP
+            with zipfile.ZipFile(str(zip_path), 'w') as zf:
+                folder = "blocks" if model_type != 'item' else "items"
+                zf.write(str(tex_path), f"assets/{safe_mod_id}/textures/{folder}/{safe_name}.png")
+                zf.write(str(model_path), f"assets/{safe_mod_id}/models/{model_type}/{safe_name}.json")
+                if blockstate_json and bs_filename:
+                    bs_path = models_dir / bs_filename
+                    zf.write(str(bs_path), f"assets/{safe_mod_id}/blockstates/{safe_name}.json")
 
-## Files:
-- textures/{folder}/{safe_name}.png - The texture file
-- models/{model_type}/{safe_name}.json - The model definition
-{"- blockstates/" + safe_name + ".json - Block state mapping" if blockstate_json else ""}
-
-## Mod Code Example (Java):
-```java
-// In your mod's block registration:
-GameRegistry.registerBlock(new Block(Material.rock), "{safe_name}");
-```
-"""
-            zf.writestr("README.txt", readme)
-
-        return {
+        response_data = {
             "status": "complete",
             "model_id": model_id,
             "model_type": model_type,
             "name": safe_name,
+            "mod_id": safe_mod_id,
             "model_file": model_filename,
             "texture_file": f"{safe_name}_{model_id}.png",
             "zip_package": zip_filename,
             "download_url": f"/minecraft/model/{zip_filename}",
             "model_json": model_json,
             "blockstate_json": blockstate_json,
+            "enhanced": HAS_MC_UTILS,
             "message": f"Minecraft 1.7.10 {model_type} model package generated for '{name}'"
         }
+
+        if HAS_MC_UTILS and obj_content:
+            response_data["obj_file"] = f"{safe_name}_{model_id}.obj"
+            response_data["obj_download_url"] = f"/minecraft/model/{safe_name}_{model_id}.obj"
+            response_data["has_3d_preview"] = True
+
+        return response_data
 
     except HTTPException:
         raise

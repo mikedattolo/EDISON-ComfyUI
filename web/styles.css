@@ -3426,6 +3426,97 @@ button, input, textarea, select {
     border-top: 1px solid var(--border);
 }
 
+/* Enhanced Minecraft texture options */
+.mc-options-grid {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 10px 12px;
+}
+
+.mc-toggle-row {
+    display: flex;
+    gap: 12px;
+    margin-top: 6px;
+}
+
+.mc-toggle {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    cursor: pointer;
+    font-size: 12px;
+    flex: 1;
+}
+
+.mc-toggle input[type="checkbox"] {
+    accent-color: #2ecc71;
+    width: 16px;
+    height: 16px;
+    cursor: pointer;
+}
+
+.mc-toggle-label {
+    color: var(--text-secondary);
+    white-space: nowrap;
+}
+
+.mc-gen-method {
+    font-size: 11px;
+    color: var(--text-tertiary);
+    margin-top: 4px;
+    padding: 2px 8px;
+    background: var(--background);
+    border-radius: 4px;
+    display: inline-block;
+}
+
+.mc-pp-info {
+    font-size: 11px;
+    color: #2ecc71;
+    margin-top: 6px;
+    padding: 4px 8px;
+    background: rgba(46, 204, 113, 0.1);
+    border-radius: 4px;
+}
+
+.mc-enhanced-badge {
+    font-size: 11px;
+    color: #f1c40f;
+    padding: 4px 8px;
+    background: rgba(241, 196, 15, 0.1);
+    border-radius: 4px;
+    margin-bottom: 8px;
+}
+
+.mc-model-details {
+    margin: 6px 0;
+}
+
+.mc-model-details summary {
+    cursor: pointer;
+    font-size: 12px;
+    color: var(--text-secondary);
+    padding: 4px 0;
+}
+
+.mc-model-details summary:hover {
+    color: var(--primary);
+}
+
+.mc-model-downloads {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 8px;
+}
+
+.mc-texture-img {
+    image-rendering: pixelated !important;
+    image-rendering: -moz-crisp-edges !important;
+    image-rendering: crisp-edges !important;
+}
+
 
 /* ===========================================
    File Manager / Data Management Console

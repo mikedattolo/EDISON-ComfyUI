@@ -650,6 +650,18 @@
  your texture</label>
                     <textarea id="mcPrompt" class="feature-textarea" placeholder="e.g., Ruby ore block with red crystals in stone..." rows="3"></textarea>
                 </div>
+                <!-- Enhanced Processing Options -->
+                <div class="feature-section mc-options-grid">
+                    <label class="feature-label">Processing Options</label>
+                    <div class="mc-toggle-row">
+                        <label class="mc-toggle"><input type="checkbox" id="mcPaletteQuantize" checked><span class="mc-toggle-label">🎨 Palette Quantize</span></label>
+                        <label class="mc-toggle"><input type="checkbox" id="mcDither" checked><span class="mc-toggle-label">🔳 Dithering</span></label>
+                    </div>
+                    <div class="mc-toggle-row">
+                        <label class="mc-toggle"><input type="checkbox" id="mcTileable" checked><span class="mc-toggle-label">🔁 Tileable</span></label>
+                        <label class="mc-toggle"><input type="checkbox" id="mcProcedural"><span class="mc-toggle-label">⚡ Procedural (No AI)</span></label>
+                    </div>
+                </div>
                 <div class="feature-section">
                     <label class="feature-label">Reference Image (optional)</label>
                     <div class="feature-dropzone small" id="mcDropzone">
@@ -689,6 +701,10 @@
                 <div class="feature-section">
                     <label class="feature-label">Block/Item Name</label>
                     <input type="text" id="mcModelName" class="feature-input" placeholder="e.g., ruby_ore">
+                </div>
+                <div class="feature-section">
+                    <label class="feature-label">Mod ID</label>
+                    <input type="text" id="mcModId" class="feature-input" placeholder="e.g., mymod (default: modid)" value="modid">
                 </div>
                 <button class="feature-generate-btn mc-btn" id="mcModelGenBtn" onclick="window.generateMinecraftModel && window.generateMinecraftModel();">
                     🧱 Generate Model Package

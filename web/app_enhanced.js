@@ -23,12 +23,7 @@ class EdisonApp {
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
-        // Resolve user ID from server if needed, then finish init
-        this.resolveUserId().then(() => {
-            this.chats = this.loadChats();
-            this.loadCurrentChat();
-            this.loadChatHeaderUsers();
-        });
+        this.loadCurrentChat();
         this.setMode(this.settings.defaultMode);
         this.loadAvailableModels();
         this.handleViewportChange();
@@ -39,47 +34,11 @@ class EdisonApp {
         // Use a persistent user ID stored in localStorage for cross-network access
         let userId = localStorage.getItem('edison_user_id');
         if (!userId) {
-            // Don't generate a random ID yet – resolveUserId() will check the
-            // server for existing users first.  Use a temporary placeholder so
-            // the constructor can proceed synchronously.
-            userId = '__pending__';
+            // Generate a simple ID based on timestamp and random string
+            userId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
+            localStorage.setItem('edison_user_id', userId);
         }
         return userId;
-    }
-
-    async resolveUserId() {
-        // If localStorage already had a real user ID, nothing to do.
-        if (this.userId && this.userId !== '__pending__') return;
-
-        try {
-            const resp = await fetch(`${this.settings.apiEndpoint}/users`);
-            if (resp.ok) {
-                const data = await resp.json();
-                const users = data.users || [];
-                if (users.length > 0) {
-                    // Pick the most recently created existing user
-                    users.sort((a, b) => (b.created_at || 0) - (a.created_at || 0));
-                    const existing = users[0];
-                    this.setActiveUser(existing.id, false);
-                    console.log(`Resolved to existing user: ${existing.name} (${existing.id})`);
-                    return;
-                }
-            }
-        } catch (e) {
-            console.warn('Could not fetch users for resolution:', e.message);
-        }
-
-        // No existing users found – generate a new ID and register it
-        const newId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
-        this.setActiveUser(newId, false);
-        // Register on server so it shows up for next time
-        try {
-            await fetch(`${this.settings.apiEndpoint}/users`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: `User-${newId.slice(0, 8)}`, id: newId })
-            });
-        } catch (_) { /* best-effort */ }
     }
 
     getChatsStorageKey(userId = null) {
@@ -153,12 +112,6 @@ class EdisonApp {
         this.renameUserInput = document.getElementById('renameUserInput');
         this.renameUserBtn = document.getElementById('renameUserBtn');
         this.deleteUserBtn = document.getElementById('deleteUserBtn');
-
-        // Chat header user switcher
-        this.chatUserSelect = document.getElementById('chatUserSelect');
-        this.chatAddUserBtn = document.getElementById('chatAddUserBtn');
-        this.chatDeleteUserBtn = document.getElementById('chatDeleteUserBtn');
-        this.chatCleanUsersBtn = document.getElementById('chatCleanUsersBtn');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -240,20 +193,6 @@ class EdisonApp {
         if (this.deleteUserBtn) {
             this.deleteUserBtn.addEventListener('click', () => this.deleteUser());
         }
-
-        // Chat header user switcher
-        if (this.chatUserSelect) {
-            this.chatUserSelect.addEventListener('change', () => this.switchChatHeaderUser());
-        }
-        if (this.chatAddUserBtn) {
-            this.chatAddUserBtn.addEventListener('click', () => this.addChatUser());
-        }
-        if (this.chatDeleteUserBtn) {
-            this.chatDeleteUserBtn.addEventListener('click', () => this.deleteChatUser());
-        }
-        if (this.chatCleanUsersBtn) {
-            this.chatCleanUsersBtn.addEventListener('click', () => this.cleanupAutoUsers());
-        }
         
         // Theme controls (in settings modal)
         this.themeButtons.forEach(btn => {
@@ -300,10 +239,6 @@ class EdisonApp {
         this.sidebarCollapsed = !this.sidebarCollapsed;
         this.sidebar.classList.toggle('collapsed');
         document.querySelector('.main-content').classList.toggle('sidebar-collapsed');
-        // Show/hide the floating toggle button
-        if (this.sidebarToggle) {
-            this.sidebarToggle.classList.toggle('visible', this.sidebarCollapsed);
-        }
     }
 
     isMobileView() {
@@ -493,12 +428,6 @@ class EdisonApp {
                 if (response.image_generation && response.image_generation.prompt) {
                     console.log('🎨 Backend triggered image generation via Coral');
                     await this.handleImageGeneration(response.image_generation.prompt, assistantMessageEl);
-                } else if (response.video_generation && response.video_generation.prompt) {
-                    console.log('🎬 Backend triggered video generation');
-                    await this.handleVideoGeneration(response.video_generation.prompt, assistantMessageEl);
-                } else if (response.music_generation && response.music_generation.prompt) {
-                    console.log('🎵 Backend triggered music generation');
-                    await this.handleMusicGeneration(response.music_generation.prompt, assistantMessageEl);
                 } else {
                     // Update assistant message
                     this.updateMessage(assistantMessageEl, response.response, response.mode_used);
@@ -782,14 +711,6 @@ class EdisonApp {
                                 // Init event with request_id
                                 this.currentRequestId = data.request_id;
                                 console.log(`📡 Streaming request started: ${this.currentRequestId}`);
-                            } else if (currentEventType === 'work_plan' && data.steps) {
-                                // Work mode: received full task plan
-                                console.log(`🖥️ Work plan received: ${data.total_steps} steps`);
-                                this.handleWorkPlan(assistantMessageEl, data);
-                            } else if (currentEventType === 'work_step' && data.step_id) {
-                                // Work mode: individual step result
-                                console.log(`🖥️ Work step ${data.step_id}: ${data.status}`);
-                                this.handleWorkStep(assistantMessageEl, data);
                             } else if (currentEventType === 'swarm' && data.swarm_agents) {
                                 if (!swarmInserted && data.swarm_agents.length > 0) {
                                     this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
@@ -800,53 +721,13 @@ class EdisonApp {
                             } else if (data.t) {
                                 // Token event
                                 accumulatedResponse += data.t;
-                                // Detect ```files block and hide raw file JSON from user
-                                const filesBlockStart = accumulatedResponse.indexOf('```files');
-                                if (filesBlockStart !== -1) {
-                                    const filesBlockEnd = accumulatedResponse.indexOf('```', filesBlockStart + 8);
-                                    const textBefore = accumulatedResponse.substring(0, filesBlockStart).trim();
-                                    if (filesBlockEnd !== -1) {
-                                        // Block complete - show text before it + generating indicator
-                                        const textAfter = accumulatedResponse.substring(filesBlockEnd + 3).trim();
-                                        const displayText = (textBefore || 'Here are your files:') + (textAfter ? '\n' + textAfter : '');
-                                        this.updateMessage(assistantMessageEl, displayText + '\n\n📄 *Generating file...*', mode);
-                                    } else {
-                                        // Block still streaming - show text before + indicator
-                                        this.updateMessage(assistantMessageEl, (textBefore || 'Generating your file...') + '\n\n📄 *Generating file...*', mode);
-                                    }
-                                } else {
-                                    this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
-                                }
+                                this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
                             } else if (data.ok !== undefined) {
                                 // Done event
                                 this.currentRequestId = null;  // Clear request ID
                                 if (data.ok) {
-                                    // Check if backend triggered image generation (e.g. via Coral intent)
-                                    if (data.image_generation && data.image_generation.prompt) {
-                                        console.log('🎨 Backend triggered image generation via streaming done event');
-                                        await this.handleImageGeneration(data.image_generation.prompt, assistantMessageEl);
-                                        return; // Exit stream processing after image gen
-                                    }
-                                    if (data.video_generation && data.video_generation.prompt) {
-                                        console.log('🎬 Backend triggered video generation via streaming done event');
-                                        await this.handleVideoGeneration(data.video_generation.prompt, assistantMessageEl);
-                                        return;
-                                    }
-                                    if (data.music_generation && data.music_generation.prompt) {
-                                        console.log('🎵 Backend triggered music generation via streaming done event');
-                                        await this.handleMusicGeneration(data.music_generation.prompt, assistantMessageEl);
-                                        return;
-                                    }
-                                    // Strip ```files blocks from displayed response
-                                    let displayResponse = accumulatedResponse.replace(/```files[\s\S]*?```/g, '').trim();
-                                    // Clean up leftover generating indicator
-                                    displayResponse = displayResponse.replace(/📄\s*\*Generating file\.\.\.\*/g, '').trim();
-                                    // If no text remains, provide a brief summary
-                                    if (!displayResponse && data.files && data.files.length > 0) {
-                                        displayResponse = 'Here are your files:';
-                                    }
                                     // Success
-                                    this.updateMessage(assistantMessageEl, displayResponse, data.mode_used || mode);
+                                    this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
                                     
                                     // Display swarm agent conversation if not already inserted
                                     if (!swarmInserted && data.swarm_agents && data.swarm_agents.length > 0) {
@@ -854,39 +735,19 @@ class EdisonApp {
                                         swarmInserted = true;
                                     }
 
-                                    // Display work mode step results in done event (fallback)
-                                    if (data.work_step_results && data.work_step_results.length > 0) {
-                                        this.displayWorkStepResults(assistantMessageEl, data.work_step_results);
-                                        // Update work desktop if visible
-                                        if (window.workModeActive && window.updateWorkDesktop) {
-                                            const searchRes = data.work_step_results
-                                                .filter(s => s.search_results && s.search_results.length)
-                                                .flatMap(s => s.search_results);
-                                            const artifacts = data.work_step_results
-                                                .filter(s => s.artifacts && s.artifacts.length)
-                                                .flatMap(s => s.artifacts.map(a => ({name: a})));
-                                            window.updateWorkDesktop(
-                                                message,
-                                                searchRes,
-                                                artifacts,
-                                                `Completed ${data.work_step_results.filter(s => s.status === 'completed').length}/${data.work_step_results.length} steps`
-                                            );
-                                        }
-                                    }
-
                                     // Display generated files if available
                                     if (data.files && data.files.length > 0) {
                                         this.displayGeneratedFiles(assistantMessageEl, data.files);
                                     }
-                                    if (data.artifact && (data.artifact.code || data.artifact.content)) {
+                                    if (data.artifact && data.artifact.content) {
                                         this.showArtifactPanel(data.artifact);
                                     }
                                     this.clearStatus(assistantMessageEl);
                                     
                                     assistantMessageEl.classList.remove('streaming');
                                     
-                                    // Save to chat history (use clean version without files blocks)
-                                    this.saveMessageToChat(message, displayResponse, data.mode_used || mode);
+                                    // Save to chat history
+                                    this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode);
                                     
                                     // Generate smart title if first message
                                     const chat = this.chats.find(c => c.id === this.currentChatId);
@@ -984,11 +845,7 @@ class EdisonApp {
             const speakBtn = messageEl.querySelector('.speak-btn');
             const regenerateBtn = messageEl.querySelector('.regenerate-btn');
             
-            copyBtn.addEventListener('click', () => {
-                // Read current content from DOM to avoid stale closure
-                const currentContent = messageEl.querySelector('.message-content')?.textContent || content;
-                this.copyToClipboard(currentContent);
-            });
+            copyBtn.addEventListener('click', () => this.copyToClipboard(content));
             if (speakBtn) {
                 speakBtn.addEventListener('click', () => this.playTtsForMessage(messageEl));
             }
@@ -1088,259 +945,6 @@ class EdisonApp {
         this.scrollToBottom();
     }
 
-    handleWorkPlan(assistantMessageEl, planData) {
-        /**Handle work_plan SSE event — show the side panel with steps as pending*/
-        const steps = planData.steps || [];
-        if (!steps.length) return;
-
-        // Show the work side panel with slide-in
-        const workDesktop = document.getElementById('workDesktop');
-        if (workDesktop) {
-            workDesktop.style.display = 'block';
-            // Trigger reflow for transition
-            workDesktop.offsetHeight;
-            workDesktop.classList.add('visible');
-            window.workModeActive = true;
-        }
-
-        // Track step state for progress
-        this._workTotalSteps = steps.length;
-        this._workCompletedSteps = 0;
-
-        // Update the current task
-        const currentTask = document.getElementById('currentTask');
-        if (currentTask) {
-            currentTask.innerHTML = `<strong>${this.escapeHtml(planData.task || '')}</strong>`;
-        }
-
-        // Reset progress bar
-        const progressFill = document.getElementById('stepProgressFill');
-        if (progressFill) progressFill.style.width = '0%';
-
-        // Update status badge
-        const badge = document.getElementById('workStatusBadge');
-        if (badge) {
-            badge.textContent = `0/${steps.length}`;
-            badge.classList.remove('done');
-        }
-
-        // Populate step list with pending items
-        const stepList = document.getElementById('workStepList');
-        if (stepList) {
-            stepList.innerHTML = steps.map(step => {
-                const kindIcon = this._getStepKindIcon(step.kind || 'llm');
-                return `<div class="step-list-item step-pending" data-step-id="${step.id}">
-                    <span class="step-icon">⏳</span>
-                    <span class="step-text">${kindIcon} ${this.escapeHtml(step.title)}</span>
-                    <span class="step-elapsed"></span>
-                </div>`;
-            }).join('');
-        }
-
-        // Clear panels
-        const thinkingLog = document.getElementById('thinkingLog');
-        if (thinkingLog) thinkingLog.innerHTML = '';
-        const searchResults = document.getElementById('searchResults');
-        if (searchResults) searchResults.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">No results yet</span>';
-        const workDocs = document.getElementById('workDocuments');
-        if (workDocs) workDocs.innerHTML = '<span style="color:var(--text-secondary);font-size:12px;">No artifacts yet</span>';
-
-        // Add initial log entry
-        if (window.addThinkingLogEntry) {
-            window.addThinkingLogEntry(`📋 Task planned: ${steps.length} steps`);
-        }
-
-        // Insert step panel into chat (with pending items)
-        this.displayWorkStepResults(assistantMessageEl, steps);
-    }
-
-    handleWorkStep(assistantMessageEl, stepData) {
-        /**Handle work_step SSE event — update a single step's live status*/
-        const stepId = stepData.step_id;
-        const status = stepData.status;
-
-        // Update side panel step list
-        const stepItem = document.querySelector(`.step-list-item[data-step-id="${stepId}"]`);
-        if (stepItem) {
-            stepItem.className = `step-list-item step-${status}`;
-            const iconEl = stepItem.querySelector('.step-icon');
-            if (iconEl) iconEl.textContent = this._getStepStatusIcon(status);
-            if (stepData.elapsed_ms && status !== 'running') {
-                const elapsedEl = stepItem.querySelector('.step-elapsed');
-                if (elapsedEl) elapsedEl.textContent = `${(stepData.elapsed_ms / 1000).toFixed(1)}s`;
-            }
-        }
-
-        // Update in-chat step panel
-        const chatStepItem = assistantMessageEl.parentElement?.querySelector(`.work-step-item[data-step-id="${stepId}"]`);
-        if (chatStepItem) {
-            chatStepItem.className = `work-step-item step-${status}`;
-            const statusBadge = chatStepItem.querySelector('.step-status');
-            if (statusBadge) {
-                statusBadge.innerHTML = this._getStepStatusIcon(status);
-                statusBadge.className = `step-status step-${status}`;
-            }
-            if (stepData.elapsed_ms && status !== 'running') {
-                const timeEl = chatStepItem.querySelector('.step-time');
-                if (timeEl) timeEl.textContent = `${(stepData.elapsed_ms / 1000).toFixed(1)}s`;
-            }
-            // Show result preview if completed
-            if (status === 'completed' && stepData.result) {
-                let preview = chatStepItem.querySelector('.step-result-preview');
-                if (!preview) {
-                    preview = document.createElement('div');
-                    preview.className = 'step-result-preview';
-                    chatStepItem.appendChild(preview);
-                }
-                preview.textContent = stepData.result.substring(0, 200) + (stepData.result.length > 200 ? '...' : '');
-            }
-        }
-
-        // Update progress bar and badge
-        if (status === 'completed' || status === 'failed') {
-            this._workCompletedSteps = (this._workCompletedSteps || 0) + 1;
-            const total = this._workTotalSteps || 1;
-            const pct = Math.round((this._workCompletedSteps / total) * 100);
-
-            const progressFill = document.getElementById('stepProgressFill');
-            if (progressFill) progressFill.style.width = `${pct}%`;
-
-            const badge = document.getElementById('workStatusBadge');
-            if (badge) {
-                badge.textContent = `${this._workCompletedSteps}/${total}`;
-                if (this._workCompletedSteps >= total) {
-                    badge.textContent = 'Done';
-                    badge.classList.add('done');
-                }
-            }
-
-            // Update chat panel summary
-            const summaryEl = assistantMessageEl.parentElement?.querySelector('.work-steps-summary');
-            if (summaryEl) {
-                summaryEl.textContent = `${this._workCompletedSteps}/${total} steps`;
-            }
-        }
-
-        // Update thinking log
-        if (window.addThinkingLogEntry) {
-            const icon = this._getStepStatusIcon(status);
-            const timeStr = stepData.elapsed_ms && status !== 'running' ? ` (${(stepData.elapsed_ms / 1000).toFixed(1)}s)` : '';
-            window.addThinkingLogEntry(`${icon} Step ${stepId}: ${stepData.title} — ${status}${timeStr}`);
-        }
-
-        // Update search results panel
-        if (stepData.search_results && stepData.search_results.length > 0 && window.workModeActive) {
-            const searchResultsDiv = document.getElementById('searchResults');
-            if (searchResultsDiv) {
-                // Clear placeholder
-                if (searchResultsDiv.querySelector('span')) searchResultsDiv.innerHTML = '';
-                const newResults = stepData.search_results.map(r => `
-                    <div class="result-item">
-                        <div class="result-title">${this.escapeHtml(r.title || '')}</div>
-                        <div class="result-snippet">${this.escapeHtml((r.body || r.snippet || '').substring(0, 200))}</div>
-                        ${r.url ? `<a href="${r.url}" target="_blank" rel="noopener" class="result-url">${r.url}</a>` : ''}
-                    </div>
-                `).join('');
-                searchResultsDiv.innerHTML += newResults;
-            }
-        }
-
-        // Update artifacts panel
-        if (stepData.artifacts && stepData.artifacts.length > 0 && window.workModeActive) {
-            const docsDiv = document.getElementById('workDocuments');
-            if (docsDiv) {
-                if (docsDiv.querySelector('span')) docsDiv.innerHTML = '';
-                const newDocs = stepData.artifacts.map(a => `
-                    <div class="doc-item">
-                        <span class="doc-icon">📄</span>
-                        <span class="doc-name">${this.escapeHtml(a)}</span>
-                    </div>
-                `).join('');
-                docsDiv.innerHTML += newDocs;
-            }
-        }
-    }
-
-    displayWorkStepResults(assistantMessageEl, steps) {
-        /**Display work mode step results as a visual progress panel before the main response*/
-        if (!steps || steps.length === 0) return;
-
-        // Check if already inserted
-        if (assistantMessageEl.parentElement?.querySelector('.work-steps-panel')) return;
-
-        const panel = document.createElement('div');
-        panel.className = 'work-steps-panel';
-
-        const completedCount = steps.filter(s => s.status === 'completed').length;
-        const failedCount = steps.filter(s => s.status === 'failed').length;
-        const totalTime = steps.reduce((sum, s) => sum + (s.elapsed_ms || 0), 0);
-
-        panel.innerHTML = `
-            <div class="work-steps-header-bar">
-                <span class="work-steps-title">🖥️ Work Mode — Task Execution</span>
-                <span class="work-steps-summary">${completedCount}/${steps.length} steps completed${failedCount ? ` · ${failedCount} failed` : ''}${totalTime ? ` · ${(totalTime / 1000).toFixed(1)}s` : ''}</span>
-            </div>
-            <div class="work-steps-list">
-                ${steps.map(step => {
-                    const kindIcon = this._getStepKindIcon(step.kind || 'llm');
-                    const statusIcon = this._getStepStatusIcon(step.status);
-                    const timeStr = step.elapsed_ms ? `${(step.elapsed_ms / 1000).toFixed(1)}s` : '';
-                    const hasResult = step.result && step.result.length > 0;
-                    return `
-                        <div class="work-step-item step-${step.status}" data-step-id="${step.id}">
-                            <div class="step-header">
-                                <span class="step-kind">${kindIcon}</span>
-                                <span class="step-number">${step.id}</span>
-                                <span class="step-title">${this.escapeHtml(step.title)}</span>
-                                <span class="step-status step-${step.status}">${statusIcon}</span>
-                                <span class="step-time">${timeStr}</span>
-                            </div>
-                            ${hasResult ? `
-                                <div class="step-result-preview">
-                                    ${this.escapeHtml(step.result.substring(0, 200))}${step.result.length > 200 ? '...' : ''}
-                                </div>
-                            ` : ''}
-                            ${step.search_results && step.search_results.length ? `
-                                <div class="step-search-badge">🔍 ${step.search_results.length} result${step.search_results.length > 1 ? 's' : ''}</div>
-                            ` : ''}
-                            ${step.artifacts && step.artifacts.length ? `
-                                <div class="step-artifact-badge">📄 ${step.artifacts.join(', ')}</div>
-                            ` : ''}
-                        </div>
-                    `;
-                }).join('')}
-            </div>
-        `;
-
-        // Insert before the assistant message
-        this.messagesContainer.insertBefore(panel, assistantMessageEl);
-        this.scrollToBottom();
-    }
-
-    _getStepKindIcon(kind) {
-        const icons = {
-            'llm': '🧠',
-            'search': '🔍',
-            'code': '💻',
-            'artifact': '📄',
-            'vision': '👁️',
-            'tool': '🔧',
-            'comfyui': '🎨'
-        };
-        return icons[kind] || '⚙️';
-    }
-
-    _getStepStatusIcon(status) {
-        const icons = {
-            'pending': '⏳',
-            'running': '🔄',
-            'completed': '✅',
-            'failed': '❌',
-            'skipped': '⏭️'
-        };
-        return icons[status] || '⏳';
-    }
-
     updateStatus(assistantMessageEl, data) {
         const header = assistantMessageEl.querySelector('.message-header');
         let statusEl = assistantMessageEl.querySelector('.message-status');
@@ -1382,26 +986,17 @@ class EdisonApp {
 
     displayGeneratedFiles(assistantMessageEl, files) {
         const contentEl = assistantMessageEl.querySelector('.message-content');
-        const fileIcons = {
-            pdf: '📄', html: '🌐', csv: '📊', json: '📋', txt: '📝',
-            md: '📝', zip: '📦', py: '🐍', js: '⚡', jsx: '⚛️',
-            svg: '🎨', css: '🎨', pptx: '📽️', docx: '📄', xlsx: '📊'
-        };
         const fileSection = document.createElement('div');
         fileSection.className = 'generated-files';
         fileSection.innerHTML = `
             <div class="generated-files-header">📁 Generated Files</div>
             <ul class="generated-files-list">
-                ${files.map(file => {
-                    const ext = (file.type || file.name?.split('.').pop() || 'file').toLowerCase();
-                    const icon = fileIcons[ext] || '📎';
-                    return `
+                ${files.map(file => `
                     <li>
-                        <span class="file-icon">${icon}</span>
                         <a href="${this.settings.apiEndpoint}${file.url}" target="_blank" rel="noopener" download>${file.name}</a>
-                        <span class="file-meta">${ext.toUpperCase()} · ${this.formatFileSize(file.size || 0)}</span>
-                    </li>`;
-                }).join('')}
+                        <span class="file-meta">${file.type?.toUpperCase() || 'FILE'} · ${this.formatFileSize(file.size || 0)}</span>
+                    </li>
+                `).join('')}
             </ul>
         `;
         contentEl.appendChild(fileSection);
@@ -1509,9 +1104,6 @@ class EdisonApp {
     formatMessage(content) {
         if (!content) return '';
 
-        // Strip ```files blocks from display
-        content = content.replace(/```files[\s\S]*?```/g, '').trim();
-
         let reasoningHtml = '';
         const thinkingMatch = content.match(/<thinking>([\s\S]*?)<\/thinking>/i);
         if (thinkingMatch) {
@@ -1532,16 +1124,13 @@ class EdisonApp {
                 return `<pre><code class="language-${lang || 'text'}">${this.escapeHtml(code.trim())}</code></pre>`;
             })
             // Inline code
-            .replace(/`([^`]+)`/g, (match, code) => `<code>${this.escapeHtml(code)}</code>`)
+            .replace(/`([^`]+)`/g, '<code>$1</code>')
             // Bold
-            .replace(/\*\*([^*]+)\*\*/g, (match, text) => `<strong>${this.escapeHtml(text)}</strong>`)
+            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
             // Italic
-            .replace(/\*([^*]+)\*/g, (match, text) => `<em>${this.escapeHtml(text)}</em>`)
-            // Links (sanitize href - block javascript: URIs)
-            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, (match, text, href) => {
-                const safeHref = href.replace(/^\s*javascript\s*:/i, '#blocked:');
-                return `<a href="${this.escapeHtml(safeHref)}" target="_blank">${this.escapeHtml(text)}</a>`;
-            })
+            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
+            // Links
+            .replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank">$1</a>')
             // Line breaks
             .replace(/\n/g, '<br>');
         
@@ -1990,136 +1579,6 @@ class EdisonApp {
         return prompt;
     }
 
-    async handleVideoGeneration(prompt, assistantMessageEl) {
-        try {
-            this.updateMessage(assistantMessageEl, '🎬 Starting AI video generation...', 'video');
-
-            // Parse duration from prompt (e.g. "make a 20 second video of...")
-            let duration = 6; // default single segment
-            const durMatch = prompt.match(/(\d+)\s*(?:second|sec|s)\b/i);
-            if (durMatch) {
-                duration = Math.min(Math.max(parseInt(durMatch[1]), 6), 30);
-            }
-            // Also check for "long video" / "longer video" keywords
-            if (/\b(long|longer|extended)\s*(video|clip)\b/i.test(prompt)) {
-                duration = Math.max(duration, 18); // 3 segments
-            }
-
-            // CogVideoX: 720×480, multi-GPU, multi-segment for longer videos
-            const response = await fetch(`${this.settings.apiEndpoint}/generate-video`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, duration })
-            });
-
-            if (!response.ok) throw new Error(`Video generation failed: ${response.statusText}`);
-            const result = await response.json();
-            const promptId = result.prompt_id;
-            const segments = result.segments || 1;
-            const estDuration = result.duration || 6;
-
-            const loadingHtml = `
-                <div style="text-align: center; padding: 20px;">
-                    <div style="display: inline-block; width: 360px; height: 240px; background: linear-gradient(135deg, rgba(255, 107, 107, 0.1) 0%, rgba(255, 142, 83, 0.1) 100%); border-radius: 12px; position: relative; overflow: hidden;">
-                        <div style="position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%); text-align: center;">
-                            <div style="width: 60px; height: 60px; border: 4px solid rgba(255, 107, 107, 0.3); border-top-color: #ff6b6b; border-radius: 50%; animation: spin 1s linear infinite; margin: 0 auto 16px;"></div>
-                            <div style="font-size: 16px; color: #ff6b6b; font-weight: 500;">Generating AI Video...</div>
-                            <div id="video-progress-text" style="font-size: 13px; color: #888; margin-top: 8px;">${result.backend || 'CogVideoX'} — ~${Math.round(estDuration)}s video${segments > 1 ? ' (' + segments + ' segments)' : ''}</div>
-                            <div id="video-progress-stage" style="font-size: 12px; color: #aaa; margin-top: 4px;">Preparing model...</div>
-                        </div>
-                    </div>
-                    <p style="margin-top: 16px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
-                </div>`;
-            this.updateMessage(assistantMessageEl, loadingHtml, 'video');
-
-            let attempts = 0;
-            const maxAttempts = 900; // 30 min timeout (multi-segment can take longer)
-            while (attempts < maxAttempts) {
-                await new Promise(r => setTimeout(r, 2000));
-                const statusResp = await fetch(`${this.settings.apiEndpoint}/video-status/${promptId}`);
-                const status = await statusResp.json();
-                const s = status.data || status;
-
-                if (s.status === 'complete' && s.videos && s.videos.length > 0) {
-                    const vid = s.videos[0];
-                    const videoUrl = `${this.settings.apiEndpoint}/video/${vid.filename}`;
-                    const videoHtml = `
-                        <p>✅ AI video generated successfully!</p>
-                        <video controls autoplay muted style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                            <source src="${videoUrl}" type="video/mp4">
-                            Your browser does not support video playback.
-                        </video>
-                        <p style="margin-top: 8px; color: #888;"><strong>Prompt:</strong> ${prompt}</p>
-                        <div style="margin-top: 10px;">
-                            <a href="${videoUrl}" download style="padding: 8px 16px; background: linear-gradient(135deg, #ff6b6b 0%, #ff8e53 100%); color: white; border-radius: 8px; text-decoration: none; font-size: 14px;">📥 Download Video</a>
-                        </div>`;
-                    this.updateMessage(assistantMessageEl, videoHtml, 'video');
-                    this.saveMessageToChat(prompt, videoHtml, 'video');
-                    break;
-                } else if (s.status === 'error' || !status.ok) {
-                    throw new Error(status.error || s.message || 'Video generation failed');
-                }
-
-                // Update progress text with elapsed time and stage info
-                const elapsed = attempts * 2;
-                const minutes = Math.floor(elapsed / 60);
-                const seconds = elapsed % 60;
-                const timeStr = minutes > 0 ? `${minutes}m ${seconds}s` : `${seconds}s`;
-                const progEl = document.getElementById('video-progress-text');
-                if (progEl) progEl.textContent = `Generating... ${timeStr}`;
-                const stageEl = document.getElementById('video-progress-stage');
-                if (stageEl && s.message) stageEl.textContent = s.message;
-                attempts++;
-            }
-            if (attempts >= maxAttempts) throw new Error('Video generation timed out (30 minutes)');
-        } catch (error) {
-            console.error('Video generation error:', error);
-            this.updateMessage(assistantMessageEl, `⚠️ Error generating video: ${error.message}`, 'error');
-        }
-    }
-
-    async handleMusicGeneration(prompt, assistantMessageEl) {
-        try {
-            this.updateMessage(assistantMessageEl, '🎵 Generating music, please wait...', 'music');
-
-            const response = await fetch(`${this.settings.apiEndpoint}/generate-music`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, duration: 15 })
-            });
-
-            if (!response.ok) throw new Error(`Music generation failed: ${response.statusText}`);
-            const result = await response.json();
-
-            if (result.ok && result.data) {
-                const d = result.data;
-                const audioUrl = d.mp3_path
-                    ? `${this.settings.apiEndpoint}/music/${d.mp3_path.split('/').pop()}`
-                    : `${this.settings.apiEndpoint}/music/${d.filename}`;
-                const musicHtml = `
-                    <p>✅ Music generated successfully!</p>
-                    <audio controls style="width: 100%; margin-top: 10px;">
-                        <source src="${audioUrl}" type="${d.mp3_path ? 'audio/mpeg' : 'audio/wav'}">
-                        Your browser does not support audio playback.
-                    </audio>
-                    <div style="margin-top: 8px; color: #888;">
-                        <strong>Duration:</strong> ${d.duration_seconds}s | <strong>Model:</strong> ${d.model || 'MusicGen'}
-                    </div>
-                    <p style="color: #888;"><strong>Prompt:</strong> ${prompt}</p>
-                    <div style="margin-top: 10px;">
-                        <a href="${audioUrl}" download style="padding: 8px 16px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border-radius: 8px; text-decoration: none; font-size: 14px;">📥 Download</a>
-                    </div>`;
-                this.updateMessage(assistantMessageEl, musicHtml, 'music');
-                this.saveMessageToChat(prompt, musicHtml, 'music');
-            } else {
-                throw new Error(result.error || 'Music generation failed');
-            }
-        } catch (error) {
-            console.error('Music generation error:', error);
-            this.updateMessage(assistantMessageEl, `⚠️ Error generating music: ${error.message}`, 'error');
-        }
-    }
-
     createNewChat() {
         this.closeMobileSidebar();
         const chatId = Date.now().toString();
@@ -2346,17 +1805,16 @@ class EdisonApp {
     }
 
     async loadUsers() {
+        if (!this.userSelect) return;
         try {
             const response = await fetch(`${this.settings.apiEndpoint}/users`);
             if (!response.ok) throw new Error('Failed to load users');
             const data = await response.json();
             const users = data.users || [];
-            const optionsHtml = users.map(u => {
+            this.userSelect.innerHTML = users.map(u => {
                 const selected = u.id === this.userId ? 'selected' : '';
                 return `<option value="${u.id}" ${selected}>${u.name}</option>`;
             }).join('');
-            if (this.userSelect) this.userSelect.innerHTML = optionsHtml;
-            if (this.chatUserSelect) this.chatUserSelect.innerHTML = optionsHtml;
         } catch (error) {
             console.warn('Could not load users:', error.message);
         }
@@ -2436,107 +1894,11 @@ class EdisonApp {
         this.userId = userId;
         localStorage.setItem('edison_user_id', userId);
         if (this.userIdInput) this.userIdInput.value = userId;
-        // Keep chat header dropdown in sync
-        if (this.chatUserSelect) this.chatUserSelect.value = userId;
         if (resetChats) {
             this.currentChatId = null;
             this.chats = this.loadChats({ sync: false });
             this.renderChatHistory();
             this.clearMessages();
-        }
-    }
-
-    // ---- Chat Header User Switcher ----
-
-    async loadChatHeaderUsers() {
-        if (!this.chatUserSelect) return;
-        try {
-            const response = await fetch(`${this.settings.apiEndpoint}/users`);
-            if (!response.ok) throw new Error('Failed to load users');
-            const data = await response.json();
-            const users = data.users || [];
-            this.chatUserSelect.innerHTML = users.map(u => {
-                const selected = u.id === this.userId ? 'selected' : '';
-                return `<option value="${u.id}" ${selected}>${u.name}</option>`;
-            }).join('');
-        } catch (error) {
-            console.warn('Could not load users for header:', error.message);
-        }
-    }
-
-    async switchChatHeaderUser() {
-        const userId = this.chatUserSelect?.value;
-        if (!userId || userId === this.userId) return;
-        this.setActiveUser(userId, true);
-        await this.syncChatsFromServer();
-        this.loadCurrentChat();
-        // Sync the settings-panel dropdown too
-        if (this.userSelect) this.userSelect.value = userId;
-    }
-
-    async addChatUser() {
-        const name = prompt('Enter new user name:');
-        if (!name || !name.trim()) return;
-        try {
-            const response = await fetch(`${this.settings.apiEndpoint}/users`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ name: name.trim() })
-            });
-            if (!response.ok) throw new Error('Failed to create user');
-            const data = await response.json();
-            const newUser = data.user;
-            // Switch to the new user
-            this.setActiveUser(newUser.id, true);
-            await this.syncChatsFromServer();
-            this.loadCurrentChat();
-            await this.loadChatHeaderUsers();
-            await this.loadUsers();
-        } catch (error) {
-            alert('Error creating user: ' + error.message);
-        }
-    }
-
-    async deleteChatUser() {
-        const userId = this.chatUserSelect?.value;
-        if (!userId) return;
-        const selectedOption = this.chatUserSelect?.selectedOptions?.[0];
-        const userName = selectedOption ? selectedOption.textContent : userId;
-        if (!confirm(`Do you want to delete user "${userName}" and all their chats?\n\nThis cannot be undone.`)) return;
-        try {
-            const response = await fetch(`${this.settings.apiEndpoint}/users/${userId}`, {
-                method: 'DELETE'
-            });
-            if (!response.ok) throw new Error('Failed to delete user');
-            if (userId === this.userId) {
-                // Reset to a new local ID
-                this.setActiveUser(this.getOrCreateUserId(), true);
-                await this.syncChatsFromServer();
-                this.loadCurrentChat();
-            }
-            await this.loadChatHeaderUsers();
-            await this.loadUsers();
-            this.showNotification(`User "${userName}" deleted`);
-        } catch (error) {
-            alert('Error deleting user: ' + error.message);
-        }
-    }
-
-    async cleanupAutoUsers() {
-        if (!confirm('Remove all auto-generated users (User-XXXX)?\nYour named users will be kept.')) return;
-        try {
-            const response = await fetch(`${this.settings.apiEndpoint}/users/cleanup`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ keep_ids: [this.userId] })
-            });
-            if (!response.ok) throw new Error('Cleanup failed');
-            const data = await response.json();
-            await this.loadChatHeaderUsers();
-            await this.loadUsers();
-            alert(`Removed ${data.removed} auto-generated users. ${data.remaining} users remaining.`);
-        } catch (error) {
-            alert('Error: ' + error.message);
         }
     }
 

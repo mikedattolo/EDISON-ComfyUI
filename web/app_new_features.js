@@ -967,6 +967,10 @@ console.log('🧊 app_new_features.js v1 loading...');
         const textureType = document.getElementById('mcTextureType')?.value || 'block';
         const style = document.getElementById('mcStyle')?.value || 'pixel_art';
         const resolution = parseInt(document.getElementById('mcResolution')?.value || '16');
+        const paletteQuantize = document.getElementById('mcPaletteQuantize')?.checked ?? true;
+        const dither = document.getElementById('mcDither')?.checked ?? true;
+        const tileable = document.getElementById('mcTileable')?.checked ?? true;
+        const useProcedural = document.getElementById('mcProcedural')?.checked ?? false;
         const statusEl = document.getElementById('mcTextureStatus');
         const btn = document.getElementById('mcGenerateBtn');
 
@@ -975,7 +979,8 @@ console.log('🧊 app_new_features.js v1 loading...');
             return;
         }
 
-        showStatus(statusEl, '🔄 Submitting texture generation request...', 'loading');
+        const genMethod = useProcedural ? 'procedural' : 'AI';
+        showStatus(statusEl, `🔄 Generating ${textureType} texture via ${genMethod}...`, 'loading');
         if (btn) btn.disabled = true;
 
         try {
@@ -984,6 +989,10 @@ console.log('🧊 app_new_features.js v1 loading...');
                 texture_type: textureType,
                 style: style,
                 size: resolution,
+                use_procedural: useProcedural,
+                palette_quantize: paletteQuantize,
+                make_tileable: tileable,
+                dither: dither,
             };
             if (mcImageData) body.image = mcImageData;
 
@@ -999,8 +1008,25 @@ console.log('🧊 app_new_features.js v1 loading...');
             }
 
             const data = await resp.json();
-            if (data.status === 'generating' && data.prompt_id) {
-                showStatus(statusEl, '⏳ Generating texture with ComfyUI... Polling for result.', 'loading');
+
+            if (data.status === 'complete') {
+                // Procedural or fallback - instant result
+                let html = `✅ ${data.message || 'Texture generated!'}`;
+                if (data.download_url) {
+                    html += `<div class="mc-texture-result">
+                        <img src="${API}${data.download_url}" alt="Generated texture" class="mc-texture-img" style="image-rendering:pixelated;">
+                        <div class="mc-texture-actions">
+                            <a href="${API}${data.download_url}" download class="mc-action-btn">⬇ Download ${data.target_size}×${data.target_size}</a>
+                        </div>
+                        <div class="mc-gen-method">${data.generation_method === 'procedural' ? '⚡ Procedural' : data.generation_method === 'procedural_fallback' ? '⚡ Procedural (ComfyUI offline)' : '🤖 AI'}</div>
+                    </div>`;
+                }
+                showStatus(statusEl, html, 'success');
+                mcGeneratedTextures.push(data);
+                loadMCTextureSelect();
+                if (btn) btn.disabled = false;
+            } else if (data.status === 'generating' && data.prompt_id) {
+                showStatus(statusEl, '⏳ AI generating texture with ComfyUI... Polling for result.', 'loading');
                 pollMCTexture(data.prompt_id, statusEl, btn);
             } else {
                 showStatus(statusEl, `✅ ${data.message || 'Texture generated!'}`, 'success');
@@ -1023,14 +1049,25 @@ console.log('🧊 app_new_features.js v1 loading...');
             const resp = await fetch(`${API}/minecraft/texture-status/${promptId}`);
             const data = await resp.json();
             if (data.status === 'complete') {
+                let ppInfo = '';
+                if (data.post_processing) {
+                    const pp = data.post_processing;
+                    const features = [];
+                    if (pp.palette_quantized) features.push('🎨 Palette');
+                    if (pp.dithered) features.push('🔳 Dithered');
+                    if (pp.tileable) features.push('🔁 Tileable');
+                    if (pp.enhanced) features.push('✨ Enhanced');
+                    ppInfo = features.length ? `<div class="mc-pp-info">${features.join(' · ')}</div>` : '';
+                }
                 showStatus(statusEl, `✅ Texture generated! Type: ${data.texture_type}, Size: ${data.target_size}×${data.target_size}`, 'success');
                 if (data.download_url) {
                     const imgHtml = `<div class="mc-texture-result">
-                        <img src="${API}${data.download_url}" alt="Generated texture" class="mc-texture-img">
+                        <img src="${API}${data.download_url}" alt="Generated texture" class="mc-texture-img" style="image-rendering:pixelated;">
                         <div class="mc-texture-actions">
                             <a href="${API}${data.download_url}" download class="mc-action-btn">⬇ Download ${data.target_size}×${data.target_size}</a>
                             ${data.full_res_url ? `<a href="${API}${data.full_res_url}" download class="mc-action-btn">⬇ Full Res</a>` : ''}
                         </div>
+                        ${ppInfo}
                     </div>`;
                     statusEl.innerHTML += imgHtml;
                 }
@@ -1103,6 +1140,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         const textureFile = document.getElementById('mcModelTexture')?.value || '';
         const modelType = document.getElementById('mcModelType')?.value || 'block';
         const modelName = document.getElementById('mcModelName')?.value?.trim() || 'custom_block';
+        const modId = document.getElementById('mcModId')?.value?.trim() || 'modid';
         const statusEl = document.getElementById('mcModelStatus');
         const btn = document.getElementById('mcModelGenBtn');
 
@@ -1122,6 +1160,7 @@ console.log('🧊 app_new_features.js v1 loading...');
                     texture_filename: textureFile,
                     model_type: modelType,
                     name: modelName,
+                    mod_id: modId,
                 })
             });
 
@@ -1133,11 +1172,19 @@ console.log('🧊 app_new_features.js v1 loading...');
             const data = await resp.json();
             let html = `✅ ${data.message}<br>`;
             html += `<div class="mc-model-result">`;
-            html += `<pre class="mc-model-json">${JSON.stringify(data.model_json, null, 2)}</pre>`;
-            if (data.blockstate_json) {
-                html += `<pre class="mc-model-json">${JSON.stringify(data.blockstate_json, null, 2)}</pre>`;
+            if (data.enhanced) {
+                html += `<div class="mc-enhanced-badge">✨ Full element model (not just parent ref)</div>`;
             }
+            html += `<details class="mc-model-details"><summary>📋 Model JSON</summary><pre class="mc-model-json">${JSON.stringify(data.model_json, null, 2)}</pre></details>`;
+            if (data.blockstate_json) {
+                html += `<details class="mc-model-details"><summary>📋 Blockstate JSON</summary><pre class="mc-model-json">${JSON.stringify(data.blockstate_json, null, 2)}</pre></details>`;
+            }
+            html += `<div class="mc-model-downloads">`;
             html += `<a href="${API}${data.download_url}" download class="mc-action-btn">📦 Download ZIP Package</a>`;
+            if (data.obj_download_url) {
+                html += `<a href="${API}${data.obj_download_url}" download class="mc-action-btn">🧊 Download OBJ</a>`;
+            }
+            html += `</div>`;
             html += `</div>`;
             showStatus(statusEl, html, 'success');
             if (HAS_THREE && textureFile) {
