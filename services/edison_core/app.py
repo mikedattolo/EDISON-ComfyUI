@@ -4731,7 +4731,28 @@ async def generate_3d_model(request: dict):
             from shap_e.models.download import load_model, load_config
             from shap_e.util.notebooks import decode_latent_mesh
 
-            device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+            # Find GPU with most free memory, fall back to CPU
+            device = torch.device('cpu')
+            if torch.cuda.is_available():
+                best_gpu = 0
+                best_free = 0
+                for i in range(torch.cuda.device_count()):
+                    try:
+                        free, total = torch.cuda.mem_get_info(i)
+                        logger.info(f"GPU {i}: {free / 1e9:.1f} GB free / {total / 1e9:.1f} GB total")
+                        if free > best_free:
+                            best_free = free
+                            best_gpu = i
+                    except Exception:
+                        pass
+                # Need at least 2GB free for Shap-E models
+                if best_free > 2e9:
+                    device = torch.device(f'cuda:{best_gpu}')
+                    logger.info(f"3D generation using GPU {best_gpu} ({best_free / 1e9:.1f} GB free)")
+                else:
+                    logger.warning(f"All GPUs low on memory (best: {best_free / 1e9:.1f} GB free), using CPU for 3D generation")
+            else:
+                logger.info("No CUDA available, using CPU for 3D generation")
 
             if image_b64:
                 # Image-to-3D
