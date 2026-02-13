@@ -1356,7 +1356,7 @@ console.log('🧊 app_new_features.js v1 loading...');
             data.drives.forEach(d => {
                 const pct = d.percent_used;
                 const barColor = pct > 90 ? '#e74c3c' : pct > 70 ? '#f39c12' : '#2ecc71';
-                html += `<div class="fm-drive">
+                html += `<div class="fm-drive" onclick="window.fmNavigate('${d.mountpoint}')" style="cursor: pointer;" title="Browse ${d.mountpoint}">
                     <div class="fm-drive-header">
                         <span class="fm-drive-icon">💾</span>
                         <span class="fm-drive-name">${d.mountpoint}</span>

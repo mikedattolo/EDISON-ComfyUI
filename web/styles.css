@@ -3469,6 +3469,13 @@ button, input, textarea, select {
     border: 1px solid var(--border);
     border-radius: 10px;
     padding: 12px 16px;
+    cursor: pointer;
+    transition: border-color 0.2s, background 0.2s;
+}
+
+.fm-drive:hover {
+    border-color: var(--primary);
+    background: var(--surface);
 }
 
 .fm-drive-header {

@@ -4797,11 +4797,17 @@ async def generate_3d_model(request: dict):
 
             logger.info(f"3D model generated via Shap-E: {output_file}")
 
-        except ImportError:
-            logger.error("Shap-E not installed. Cannot generate 3D models without it.")
+        except ImportError as e:
+            logger.error(f"Shap-E import failed: {e}")
             raise HTTPException(
                 status_code=503,
-                detail="Shap-E is not installed. Install it with: pip install git+https://github.com/openai/shap-e.git"
+                detail=f"Shap-E import error: {str(e)}. Try: pip install git+https://github.com/openai/shap-e.git"
+            )
+        except Exception as e:
+            logger.error(f"3D generation error: {e}", exc_info=True)
+            raise HTTPException(
+                status_code=500,
+                detail=f"3D generation failed: {str(e)}"
             )
 
         return {
@@ -4934,7 +4940,7 @@ async def generate_minecraft_texture(request: dict):
         # Create workflow optimized for pixel art textures
         # Generate at higher res then downscale for crisp pixels
         gen_size = max(512, tex_size * 8)
-        workflow = create_flux_workflow(enhanced_prompt, gen_size, gen_size, steps=25, cfg=7.0)
+        workflow = create_flux_workflow(enhanced_prompt, gen_size, gen_size, steps=25, guidance_scale=7.0)
 
         response = requests.post(f"{comfyui_url}/prompt", json={"prompt": workflow}, timeout=5)
         if not response.ok:
