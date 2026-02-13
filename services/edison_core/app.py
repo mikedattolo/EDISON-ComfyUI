@@ -4726,6 +4726,7 @@ async def generate_3d_model(request: dict):
         # Try Shap-E first (OpenAI's 3D generation model)
         try:
             import torch
+            import concurrent.futures
             from shap_e.diffusion.sample import sample_latents
             from shap_e.diffusion.gaussian_diffusion import diffusion_from_config
             from shap_e.models.download import load_model, load_config
@@ -4733,6 +4734,7 @@ async def generate_3d_model(request: dict):
 
             # Find GPU with most free memory, fall back to CPU
             device = torch.device('cpu')
+            using_cpu = True
             if torch.cuda.is_available():
                 best_gpu = 0
                 best_free = 0
@@ -4748,11 +4750,17 @@ async def generate_3d_model(request: dict):
                 # Need at least 2GB free for Shap-E models
                 if best_free > 2e9:
                     device = torch.device(f'cuda:{best_gpu}')
+                    using_cpu = False
                     logger.info(f"3D generation using GPU {best_gpu} ({best_free / 1e9:.1f} GB free)")
                 else:
                     logger.warning(f"All GPUs low on memory (best: {best_free / 1e9:.1f} GB free), using CPU for 3D generation")
             else:
                 logger.info("No CUDA available, using CPU for 3D generation")
+
+            # Cap steps on CPU to avoid very long generation times
+            if using_cpu and num_steps > 32:
+                logger.info(f"CPU mode: reducing steps from {num_steps} to 32 for reasonable generation time")
+                num_steps = 32
 
             def _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file):
                 """Run Shap-E generation on given device. Returns mesh or raises."""
@@ -4804,7 +4812,9 @@ async def generate_3d_model(request: dict):
                         s_churn=0,
                     )
 
+                logger.info(f"Latent sampling complete on {device}, decoding mesh...")
                 mesh = decode_latent_mesh(xm, latents[0]).tri_mesh()
+                logger.info(f"Mesh decoded successfully ({len(mesh.verts)} vertices)")
 
                 if output_format == 'obj':
                     with open(str(output_file), 'w') as f:
@@ -4816,20 +4826,41 @@ async def generate_3d_model(request: dict):
                     with open(str(output_file), 'wb') as f:
                         mesh.write_glb(f)
 
-            # Try GPU first, fall back to CPU on CUDA errors (kernel mismatch, OOM, etc.)
-            if device.type == 'cuda':
-                try:
-                    _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
-                except RuntimeError as cuda_err:
-                    if 'CUDA' in str(cuda_err) or 'cuda' in str(cuda_err) or 'out of memory' in str(cuda_err).lower():
-                        logger.warning(f"CUDA failed ({cuda_err}), falling back to CPU for 3D generation")
-                        torch.cuda.empty_cache()
-                        device = torch.device('cpu')
+            # Run generation with timeout (5 min GPU, 10 min CPU)
+            gen_timeout = 600 if using_cpu else 300
+
+            def _run_with_fallback():
+                """Try GPU first, fall back to CPU on CUDA errors."""
+                nonlocal device, using_cpu, num_steps
+                if device.type == 'cuda':
+                    try:
                         _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
-                    else:
-                        raise
-            else:
-                _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
+                    except RuntimeError as cuda_err:
+                        err_str = str(cuda_err)
+                        if 'CUDA' in err_str or 'cuda' in err_str or 'out of memory' in err_str.lower():
+                            logger.warning(f"CUDA failed ({cuda_err}), falling back to CPU for 3D generation")
+                            torch.cuda.empty_cache()
+                            device = torch.device('cpu')
+                            using_cpu = True
+                            if num_steps > 32:
+                                logger.info(f"CPU fallback: reducing steps from {num_steps} to 32")
+                                num_steps = 32
+                            _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
+                        else:
+                            raise
+                else:
+                    _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
+
+            with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                future = executor.submit(_run_with_fallback)
+                try:
+                    future.result(timeout=gen_timeout)
+                except concurrent.futures.TimeoutError:
+                    logger.error(f"3D generation timed out after {gen_timeout}s on {device}")
+                    raise HTTPException(
+                        status_code=504,
+                        detail=f"3D generation timed out after {gen_timeout // 60} minutes. Try fewer steps or a simpler prompt."
+                    )
 
             logger.info(f"3D model generated via Shap-E on {device}: {output_file}")
 

@@ -277,15 +277,23 @@ console.log('🧊 app_new_features.js v1 loading...');
         }
         threeDViewer.progressTimer = setInterval(() => {
             if (!threeDViewer.isGenerating) return;
-            if (threeDViewer.progressValue < 92) {
-                const step = threeDViewer.progressValue < 35 ? 4 : (threeDViewer.progressValue < 70 ? 2 : 1);
-                threeDViewer.progressValue = Math.min(92, threeDViewer.progressValue + step);
-                const text = threeDViewer.progressValue < 30
-                    ? 'Building volumetric draft...'
-                    : (threeDViewer.progressValue < 65 ? 'Refining geometry and topology...' : 'Optimizing mesh surface...');
+            if (threeDViewer.progressValue < 95) {
+                // Slow down progress as it gets higher to avoid appearing stuck
+                let step;
+                if (threeDViewer.progressValue < 30) step = 3;
+                else if (threeDViewer.progressValue < 60) step = 1.5;
+                else if (threeDViewer.progressValue < 80) step = 0.5;
+                else step = 0.2;
+                threeDViewer.progressValue = Math.min(95, threeDViewer.progressValue + step);
+                let text;
+                if (threeDViewer.progressValue < 25) text = 'Loading models & initializing...';
+                else if (threeDViewer.progressValue < 50) text = 'Sampling latent space (may use CPU)...';
+                else if (threeDViewer.progressValue < 75) text = 'Refining geometry and topology...';
+                else if (threeDViewer.progressValue < 90) text = 'Decoding mesh (CPU mode takes a few minutes)...';
+                else text = 'Finalizing mesh — almost done...';
                 set3DProgress(threeDViewer.progressValue, text);
             }
-        }, 450);
+        }, 800);
     }
 
     function completeLive3DProgress() {
@@ -733,7 +741,7 @@ console.log('🧊 app_new_features.js v1 loading...');
             return;
         }
 
-        showStatus(statusEl, '🔄 Generating 3D model... This may take a minute.', 'loading');
+        showStatus(statusEl, '🔄 Generating 3D model... This may take a few minutes.', 'loading');
         if (HAS_THREE) startLive3DProgress(prompt || 'Image reference');
         if (btn) btn.disabled = true;
 
@@ -748,11 +756,17 @@ console.log('🧊 app_new_features.js v1 loading...');
                 body.image = threeDImageData;
             }
 
+            // 10 minute timeout for CPU fallback scenarios
+            const controller = new AbortController();
+            const fetchTimeout = setTimeout(() => controller.abort(), 600000);
+
             const resp = await fetch(`${API}/generate-3d`, {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify(body)
+                body: JSON.stringify(body),
+                signal: controller.signal
             });
+            clearTimeout(fetchTimeout);
 
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({detail: 'Server error'}));
@@ -768,7 +782,10 @@ console.log('🧊 app_new_features.js v1 loading...');
             }
             load3DModelsList();
         } catch (err) {
-            if (HAS_THREE) failLive3DProgress(`Generation failed: ${err.message}`);
+            const msg = err.name === 'AbortError'
+                ? 'Generation timed out after 10 minutes. Try fewer steps or a simpler prompt.'
+                : err.message;
+            if (HAS_THREE) failLive3DProgress(`Generation failed: ${msg}`);
             showStatus(statusEl, `❌ Error: ${err.message}`, 'error');
         } finally {
             if (btn) btn.disabled = false;
