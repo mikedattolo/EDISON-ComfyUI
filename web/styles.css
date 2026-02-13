@@ -267,6 +267,113 @@ button, input, textarea, select {
     overflow: hidden;
 }
 
+/* Chat Header Bar - User Switcher */
+.chat-header-bar {
+    display: flex;
+    align-items: center;
+    padding: 6px 16px;
+    border-bottom: 1px solid var(--border);
+    background: var(--surface);
+    flex-shrink: 0;
+    min-height: 38px;
+}
+
+.chat-user-switcher {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.chat-user-label {
+    font-size: 16px;
+    line-height: 1;
+    cursor: default;
+}
+
+.chat-user-select {
+    background: var(--surface);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 4px 24px 4px 8px;
+    font-size: 13px;
+    font-family: inherit;
+    cursor: pointer;
+    min-width: 140px;
+    max-width: 220px;
+    appearance: none;
+    -webkit-appearance: none;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M0 0l5 6 5-6z' fill='%23a1a1aa'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 8px center;
+}
+
+.chat-user-select option {
+    background: var(--surface);
+    color: var(--text-primary);
+    padding: 4px 8px;
+}
+
+.chat-user-select:hover {
+    border-color: var(--primary);
+}
+
+.chat-user-select:focus {
+    outline: none;
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.25);
+}
+
+.chat-user-add-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    font-size: 16px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+}
+
+.chat-user-add-btn:hover {
+    background: var(--primary);
+    color: #ffffff;
+    border-color: var(--primary);
+}
+
+.chat-user-delete-btn {
+    background: transparent;
+    color: var(--text-secondary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    width: 28px;
+    height: 28px;
+    font-size: 14px;
+    line-height: 1;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    transition: all 0.15s ease;
+    padding: 0;
+}
+
+.chat-user-delete-btn:hover {
+    background: var(--error);
+    color: #ffffff;
+    border-color: var(--error);
+}
+
+.chat-user-delete-btn svg {
+    width: 16px;
+    height: 16px;
+}
+
 .chat-container {
     flex: 1;
     display: flex;
