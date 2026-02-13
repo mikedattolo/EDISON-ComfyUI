@@ -4754,69 +4754,84 @@ async def generate_3d_model(request: dict):
             else:
                 logger.info("No CUDA available, using CPU for 3D generation")
 
-            if image_b64:
-                # Image-to-3D
-                xm = load_model('transmitter', device=device)
-                model = load_model('image300M', device=device)
-                diffusion = diffusion_from_config(load_config('diffusion'))
+            def _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file):
+                """Run Shap-E generation on given device. Returns mesh or raises."""
+                if image_b64:
+                    # Image-to-3D
+                    xm = load_model('transmitter', device=device)
+                    model_3d = load_model('image300M', device=device)
+                    diffusion = diffusion_from_config(load_config('diffusion'))
 
-                # Decode image
-                img_data = image_b64.split(',')[1] if ',' in image_b64 else image_b64
-                img_bytes = base64.b64decode(img_data)
-                from PIL import Image
-                image = Image.open(io.BytesIO(img_bytes)).convert('RGB').resize((256, 256))
+                    img_data = image_b64.split(',')[1] if ',' in image_b64 else image_b64
+                    img_bytes = base64.b64decode(img_data)
+                    from PIL import Image
+                    image = Image.open(io.BytesIO(img_bytes)).convert('RGB').resize((256, 256))
 
-                latents = sample_latents(
-                    batch_size=1,
-                    model=model,
-                    diffusion=diffusion,
-                    guidance_scale=guidance_scale,
-                    model_kwargs=dict(images=[image]),
-                    progress=True,
-                    clip_denoised=True,
-                    use_fp16=True,
-                    use_karras=True,
-                    karras_steps=num_steps,
-                    sigma_min=1e-3,
-                    sigma_max=160,
-                    s_churn=0,
-                )
+                    latents = sample_latents(
+                        batch_size=1,
+                        model=model_3d,
+                        diffusion=diffusion,
+                        guidance_scale=guidance_scale,
+                        model_kwargs=dict(images=[image]),
+                        progress=True,
+                        clip_denoised=True,
+                        use_fp16=(device.type == 'cuda'),
+                        use_karras=True,
+                        karras_steps=num_steps,
+                        sigma_min=1e-3,
+                        sigma_max=160,
+                        s_churn=0,
+                    )
+                else:
+                    # Text-to-3D
+                    xm = load_model('transmitter', device=device)
+                    model_3d = load_model('text300M', device=device)
+                    diffusion = diffusion_from_config(load_config('diffusion'))
+
+                    latents = sample_latents(
+                        batch_size=1,
+                        model=model_3d,
+                        diffusion=diffusion,
+                        guidance_scale=guidance_scale,
+                        model_kwargs=dict(texts=[prompt]),
+                        progress=True,
+                        clip_denoised=True,
+                        use_fp16=(device.type == 'cuda'),
+                        use_karras=True,
+                        karras_steps=num_steps,
+                        sigma_min=1e-3,
+                        sigma_max=160,
+                        s_churn=0,
+                    )
+
+                mesh = decode_latent_mesh(xm, latents[0]).tri_mesh()
+
+                if output_format == 'obj':
+                    with open(str(output_file), 'w') as f:
+                        mesh.write_obj(f)
+                elif output_format == 'ply':
+                    with open(str(output_file), 'wb') as f:
+                        mesh.write_ply(f)
+                else:  # glb
+                    with open(str(output_file), 'wb') as f:
+                        mesh.write_glb(f)
+
+            # Try GPU first, fall back to CPU on CUDA errors (kernel mismatch, OOM, etc.)
+            if device.type == 'cuda':
+                try:
+                    _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
+                except RuntimeError as cuda_err:
+                    if 'CUDA' in str(cuda_err) or 'cuda' in str(cuda_err) or 'out of memory' in str(cuda_err).lower():
+                        logger.warning(f"CUDA failed ({cuda_err}), falling back to CPU for 3D generation")
+                        torch.cuda.empty_cache()
+                        device = torch.device('cpu')
+                        _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
+                    else:
+                        raise
             else:
-                # Text-to-3D
-                xm = load_model('transmitter', device=device)
-                model = load_model('text300M', device=device)
-                diffusion = diffusion_from_config(load_config('diffusion'))
+                _run_shap_e(device, prompt, image_b64, guidance_scale, num_steps, output_format, output_file)
 
-                latents = sample_latents(
-                    batch_size=1,
-                    model=model,
-                    diffusion=diffusion,
-                    guidance_scale=guidance_scale,
-                    model_kwargs=dict(texts=[prompt]),
-                    progress=True,
-                    clip_denoised=True,
-                    use_fp16=True,
-                    use_karras=True,
-                    karras_steps=num_steps,
-                    sigma_min=1e-3,
-                    sigma_max=160,
-                    s_churn=0,
-                )
-
-            # Decode latent to mesh
-            mesh = decode_latent_mesh(xm, latents[0]).tri_mesh()
-
-            if output_format == 'obj':
-                with open(str(output_file), 'w') as f:
-                    mesh.write_obj(f)
-            elif output_format == 'ply':
-                with open(str(output_file), 'wb') as f:
-                    mesh.write_ply(f)
-            else:  # glb
-                with open(str(output_file), 'wb') as f:
-                    mesh.write_glb(f)
-
-            logger.info(f"3D model generated via Shap-E: {output_file}")
+            logger.info(f"3D model generated via Shap-E on {device}: {output_file}")
 
         except ImportError as e:
             logger.error(f"Shap-E import failed: {e}")
