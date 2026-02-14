@@ -26,6 +26,7 @@ class EdisonApp {
         this.loadCurrentChat();
         this.setMode(this.settings.defaultMode);
         this.loadAvailableModels();
+        this.loadUsers();  // Populate user dropdowns on startup
         this.handleViewportChange();
         window.addEventListener('resize', () => this.handleViewportChange());
     }
@@ -112,6 +113,12 @@ class EdisonApp {
         this.renameUserInput = document.getElementById('renameUserInput');
         this.renameUserBtn = document.getElementById('renameUserBtn');
         this.deleteUserBtn = document.getElementById('deleteUserBtn');
+
+        // Chat header user switcher
+        this.chatUserSelect = document.getElementById('chatUserSelect');
+        this.chatAddUserBtn = document.getElementById('chatAddUserBtn');
+        this.chatDeleteUserBtn = document.getElementById('chatDeleteUserBtn');
+        this.chatCleanUsersBtn = document.getElementById('chatCleanUsersBtn');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -192,6 +199,20 @@ class EdisonApp {
         }
         if (this.deleteUserBtn) {
             this.deleteUserBtn.addEventListener('click', () => this.deleteUser());
+        }
+
+        // Chat header user switcher
+        if (this.chatUserSelect) {
+            this.chatUserSelect.addEventListener('change', () => this.switchUserFromChatHeader());
+        }
+        if (this.chatAddUserBtn) {
+            this.chatAddUserBtn.addEventListener('click', () => this.addUserFromChatHeader());
+        }
+        if (this.chatDeleteUserBtn) {
+            this.chatDeleteUserBtn.addEventListener('click', () => this.deleteUserFromChatHeader());
+        }
+        if (this.chatCleanUsersBtn) {
+            this.chatCleanUsersBtn.addEventListener('click', () => this.cleanupUsers());
         }
         
         // Theme controls (in settings modal)
@@ -1805,16 +1826,18 @@ class EdisonApp {
     }
 
     async loadUsers() {
-        if (!this.userSelect) return;
         try {
             const response = await fetch(`${this.settings.apiEndpoint}/users`);
             if (!response.ok) throw new Error('Failed to load users');
             const data = await response.json();
             const users = data.users || [];
-            this.userSelect.innerHTML = users.map(u => {
+            const optionsHtml = users.map(u => {
                 const selected = u.id === this.userId ? 'selected' : '';
                 return `<option value="${u.id}" ${selected}>${u.name}</option>`;
             }).join('');
+            // Populate both the settings modal and header dropdowns
+            if (this.userSelect) this.userSelect.innerHTML = optionsHtml;
+            if (this.chatUserSelect) this.chatUserSelect.innerHTML = optionsHtml;
         } catch (error) {
             console.warn('Could not load users:', error.message);
         }
@@ -1888,6 +1911,67 @@ class EdisonApp {
         this.setActiveUser(userId, true);
         await this.syncChatsFromServer();
         this.loadCurrentChat();
+        // Keep header dropdown in sync
+        if (this.chatUserSelect) this.chatUserSelect.value = userId;
+    }
+
+    async switchUserFromChatHeader() {
+        const userId = this.chatUserSelect?.value;
+        if (!userId || userId === this.userId) return;
+        this.setActiveUser(userId, true);
+        await this.syncChatsFromServer();
+        this.loadCurrentChat();
+        // Keep settings dropdown in sync
+        if (this.userSelect) this.userSelect.value = userId;
+    }
+
+    async addUserFromChatHeader() {
+        const name = prompt('Enter new user name:');
+        if (!name || !name.trim()) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name: name.trim() })
+            });
+            if (!response.ok) throw new Error('Failed to create user');
+            await this.loadUsers();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async deleteUserFromChatHeader() {
+        const userId = this.chatUserSelect?.value;
+        if (!userId) return;
+        if (!confirm('Delete this user and all chats? This cannot be undone.')) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users/${userId}`, {
+                method: 'DELETE'
+            });
+            if (!response.ok) throw new Error('Failed to delete user');
+            if (userId === this.userId) {
+                this.setActiveUser(this.getOrCreateUserId(), true);
+                await this.syncChatsFromServer();
+                this.loadCurrentChat();
+            }
+            await this.loadUsers();
+        } catch (error) {
+            alert(error.message);
+        }
+    }
+
+    async cleanupUsers() {
+        if (!confirm('Remove all auto-generated users? This cannot be undone.')) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users/cleanup`, {
+                method: 'POST'
+            });
+            if (!response.ok) throw new Error('Failed to cleanup users');
+            await this.loadUsers();
+        } catch (error) {
+            alert(error.message);
+        }
     }
 
     setActiveUser(userId, resetChats) {
