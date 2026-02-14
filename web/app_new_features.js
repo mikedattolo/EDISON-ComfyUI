@@ -1205,6 +1205,76 @@ console.log('🧊 app_new_features.js v1 loading...');
     let fmCurrentPath = '';
     let fmDeleteTarget = null;
     let fmAllItems = [];
+    let fmAuthToken = sessionStorage.getItem('fm_auth_token') || '';
+
+    function fmIsAuthed() {
+        return !!fmAuthToken;
+    }
+
+    function fmShowAuthedUI() {
+        const gate = document.getElementById('fmLoginGate');
+        const content = document.getElementById('fmAuthedContent');
+        const badge = document.getElementById('fmAuthStatus');
+        const logoutBtn = document.getElementById('fmLogoutBtn');
+        if (gate) gate.style.display = 'none';
+        if (content) content.style.display = '';
+        if (badge) badge.style.display = '';
+        if (logoutBtn) logoutBtn.style.display = '';
+    }
+
+    function fmShowLoginUI() {
+        const gate = document.getElementById('fmLoginGate');
+        const content = document.getElementById('fmAuthedContent');
+        const badge = document.getElementById('fmAuthStatus');
+        const logoutBtn = document.getElementById('fmLogoutBtn');
+        if (gate) gate.style.display = '';
+        if (content) content.style.display = 'none';
+        if (badge) badge.style.display = 'none';
+        if (logoutBtn) logoutBtn.style.display = 'none';
+    }
+
+    window.fmDoLogin = async function() {
+        const user = document.getElementById('fmLoginUser')?.value?.trim();
+        const pass = document.getElementById('fmLoginPass')?.value;
+        const errEl = document.getElementById('fmLoginError');
+        if (!user || !pass) {
+            if (errEl) { errEl.textContent = 'Enter username and password'; errEl.style.display = ''; }
+            return;
+        }
+        try {
+            const resp = await fetch(`${API}/files/login`, {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ username: user, password: pass })
+            });
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({detail: 'Invalid credentials'}));
+                throw new Error(err.detail || 'Login failed');
+            }
+            const data = await resp.json();
+            fmAuthToken = data.token;
+            sessionStorage.setItem('fm_auth_token', fmAuthToken);
+            if (errEl) errEl.style.display = 'none';
+            fmShowAuthedUI();
+            loadStorageInfo();
+            fmNavigate('');
+        } catch (e) {
+            if (errEl) { errEl.textContent = e.message; errEl.style.display = ''; }
+        }
+    };
+
+    window.fmLogout = function() {
+        fmAuthToken = '';
+        sessionStorage.removeItem('fm_auth_token');
+        fmShowLoginUI();
+        // Clear password field
+        const passEl = document.getElementById('fmLoginPass');
+        if (passEl) passEl.value = '';
+    };
+
+    function fmHeaders() {
+        return { 'X-FM-Token': fmAuthToken };
+    }
 
     window.toggleFileManager = function() {
         const panel = document.getElementById('fileManagerPanel');
@@ -1213,8 +1283,13 @@ console.log('🧊 app_new_features.js v1 loading...');
         if (fmPanelOpen) {
             panel.style.visibility = 'visible';
             panel.style.transform = 'translateX(0)';
-            loadStorageInfo();
-            fmNavigate('');
+            if (fmIsAuthed()) {
+                fmShowAuthedUI();
+                loadStorageInfo();
+                fmNavigate('');
+            } else {
+                fmShowLoginUI();
+            }
         } else {
             panel.style.transform = 'translateX(100%)';
             setTimeout(() => { panel.style.visibility = 'hidden'; }, 300);
@@ -1229,7 +1304,15 @@ console.log('🧊 app_new_features.js v1 loading...');
         updateBreadcrumb(path);
 
         try {
-            const resp = await fetch(`${API}/files/browse?path=${encodeURIComponent(path)}`);
+            const resp = await fetch(`${API}/files/browse?path=${encodeURIComponent(path)}`, {
+                headers: fmHeaders()
+            });
+            if (resp.status === 401) {
+                fmAuthToken = '';
+                sessionStorage.removeItem('fm_auth_token');
+                fmShowLoginUI();
+                return;
+            }
             if (!resp.ok) {
                 const err = await resp.json().catch(() => ({detail: 'Error'}));
                 throw new Error(err.detail || `HTTP ${resp.status}`);
@@ -1368,7 +1451,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         try {
             const resp = await fetch(`${API}/files/delete`, {
                 method: 'DELETE',
-                headers: {'Content-Type': 'application/json'},
+                headers: {'Content-Type': 'application/json', ...fmHeaders()},
                 body: JSON.stringify({ path: fmDeleteTarget.path })
             });
 
@@ -1407,7 +1490,15 @@ console.log('🧊 app_new_features.js v1 loading...');
         const container = document.getElementById('fmDrives');
         if (!container) return;
         try {
-            const resp = await fetch(`${API}/files/storage`);
+            const resp = await fetch(`${API}/files/storage`, {
+                headers: fmHeaders()
+            });
+            if (resp.status === 401) {
+                fmAuthToken = '';
+                sessionStorage.removeItem('fm_auth_token');
+                fmShowLoginUI();
+                return;
+            }
             if (!resp.ok) throw new Error('Failed to load storage');
             const data = await resp.json();
 

@@ -3527,10 +3527,101 @@ button, input, textarea, select {
 
 .fm-header {
     background: linear-gradient(135deg, #2980b9, #2c3e50) !important;
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
 }
 
 .fm-header h2 {
     color: #fff !important;
+}
+
+.fm-auth-badge {
+    font-size: 12px;
+    color: #2ecc71;
+    background: rgba(46,204,113,0.15);
+    padding: 3px 10px;
+    border-radius: 12px;
+    white-space: nowrap;
+}
+
+.fm-btn-small {
+    font-size: 11px;
+    padding: 3px 10px;
+    border-radius: 6px;
+    background: rgba(255,255,255,0.15);
+    color: #fff;
+    border: 1px solid rgba(255,255,255,0.25);
+    cursor: pointer;
+}
+.fm-btn-small:hover {
+    background: rgba(255,255,255,0.25);
+}
+
+/* Login gate */
+.fm-login-gate {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-height: 350px;
+    padding: 40px 20px;
+}
+
+.fm-login-card {
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 16px;
+    padding: 36px 32px;
+    max-width: 340px;
+    width: 100%;
+    text-align: center;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.15);
+}
+
+.fm-login-card h3 {
+    font-size: 20px;
+    margin: 0 0 8px 0;
+    color: var(--text-primary);
+}
+
+.fm-login-card p {
+    font-size: 13px;
+    color: var(--text-secondary);
+    margin: 0 0 20px 0;
+}
+
+.fm-login-card input {
+    width: 100%;
+    box-sizing: border-box;
+    margin-bottom: 12px;
+    padding: 10px 14px;
+    border-radius: 8px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-primary);
+    font-size: 14px;
+}
+
+.fm-btn-login {
+    width: 100%;
+    padding: 10px;
+    background: linear-gradient(135deg, #2980b9, #3498db);
+    color: #fff;
+    border: none;
+    border-radius: 8px;
+    font-size: 15px;
+    font-weight: 600;
+    cursor: pointer;
+    margin-top: 4px;
+}
+.fm-btn-login:hover {
+    background: linear-gradient(135deg, #2471a3, #2980b9);
+}
+
+.fm-login-error {
+    color: #e74c3c;
+    font-size: 13px;
+    margin-top: 12px;
 }
 
 .fm-body {

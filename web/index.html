@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=14">
+    <link rel="stylesheet" href="styles.css?v=15">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -745,43 +745,62 @@
     <div class="feature-panel file-manager-panel" id="fileManagerPanel" style="transform: translateX(100%); visibility: hidden;">
         <div class="feature-panel-header fm-header">
             <h2>📁 Data Management Console</h2>
-            <button class="feature-panel-close" onclick="window.toggleFileManager && window.toggleFileManager();">×</button>
+            <div style="display:flex;gap:8px;align-items:center;">
+                <span id="fmAuthStatus" class="fm-auth-badge" style="display:none;">🔓 Logged in</span>
+                <button id="fmLogoutBtn" class="fm-btn fm-btn-small" style="display:none;" onclick="window.fmLogout && window.fmLogout();">Logout</button>
+                <button class="feature-panel-close" onclick="window.toggleFileManager && window.toggleFileManager();">×</button>
+            </div>
         </div>
         <div class="feature-panel-body fm-body">
-            <!-- Storage Overview -->
-            <div class="fm-storage-section" id="fmStorageSection">
-                <h3 class="fm-section-title">💾 Storage Drives</h3>
-                <div class="fm-drives" id="fmDrives">
-                    <div class="fm-loading">Loading drives...</div>
+            <!-- Login Gate -->
+            <div class="fm-login-gate" id="fmLoginGate">
+                <div class="fm-login-card">
+                    <h3>🔐 Storage Login Required</h3>
+                    <p>Full drive access requires authentication.</p>
+                    <input type="text" id="fmLoginUser" class="feature-input" placeholder="Username" autocomplete="username">
+                    <input type="password" id="fmLoginPass" class="feature-input" placeholder="Password" autocomplete="current-password"
+                        onkeydown="if(event.key==='Enter') window.fmDoLogin && window.fmDoLogin();">
+                    <button class="fm-btn fm-btn-login" onclick="window.fmDoLogin && window.fmDoLogin();">Login</button>
+                    <p class="fm-login-error" id="fmLoginError" style="display:none;"></p>
                 </div>
             </div>
 
-            <!-- File Browser -->
-            <div class="fm-browser-section">
-                <!-- Breadcrumb -->
-                <div class="fm-breadcrumb" id="fmBreadcrumb">
-                    <span class="fm-crumb" onclick="window.fmNavigate && window.fmNavigate('')">🏠 EDISON</span>
+            <!-- Storage Overview (hidden until auth) -->
+            <div class="fm-authed-content" id="fmAuthedContent" style="display:none;">
+                <div class="fm-storage-section" id="fmStorageSection">
+                    <h3 class="fm-section-title">💾 Storage Drives</h3>
+                    <div class="fm-drives" id="fmDrives">
+                        <div class="fm-loading">Loading drives...</div>
+                    </div>
                 </div>
 
-                <!-- Search -->
-                <div class="fm-search">
-                    <input type="text" id="fmSearch" class="feature-input" placeholder="🔍 Search files..." onkeyup="window.fmSearchFiles && window.fmSearchFiles(this.value)">
+                <!-- File Browser -->
+                <div class="fm-browser-section">
+                    <!-- Breadcrumb -->
+                    <div class="fm-breadcrumb" id="fmBreadcrumb">
+                        <span class="fm-crumb" onclick="window.fmNavigate && window.fmNavigate('')">🏠 EDISON</span>
+                    </div>
+
+                    <!-- Search -->
+                    <div class="fm-search">
+                        <input type="text" id="fmSearch" class="feature-input" placeholder="🔍 Search files..." onkeyup="window.fmSearchFiles && window.fmSearchFiles(this.value)">
+                    </div>
+
+                    <!-- File List -->
+                    <div class="fm-file-list" id="fmFileList">
+                        <div class="fm-loading">Loading files...</div>
+                    </div>
                 </div>
 
-                <!-- File List -->
-                <div class="fm-file-list" id="fmFileList">
-                    <div class="fm-loading">Loading files...</div>
-                </div>
-            </div>
-
-            <!-- Delete Confirmation -->
-            <div class="fm-delete-confirm" id="fmDeleteConfirm" style="display:none;">
-                <div class="fm-delete-dialog">
-                    <h3>⚠️ Confirm Delete</h3>
-                    <p id="fmDeleteMsg">Are you sure?</p>
-                    <div class="fm-delete-actions">
-                        <button class="fm-btn fm-btn-cancel" onclick="window.fmCancelDelete && window.fmCancelDelete();">Cancel</button>
-                        <button class="fm-btn fm-btn-delete" onclick="window.fmConfirmDelete && window.fmConfirmDelete();">Delete</button>
+                <!-- Delete Confirmation -->
+                <div class="fm-delete-confirm" id="fmDeleteConfirm" style="display:none;">
+                    <div class="fm-delete-dialog">
+                        <h3>⚠️ Confirm Delete</h3>
+                        <p id="fmDeleteMsg">Are you sure?</p>
+                        <div class="fm-delete-actions">
+                            <button class="fm-btn fm-btn-cancel" onclick="window.fmCancelDelete && window.fmCancelDelete();">Cancel</button>
+                            <button class="fm-btn fm-btn-delete" onclick="window.fmConfirmDelete && window.fmConfirmDelete();">Delete</button>
+                        </div>
                     </div>
                 </div>
             </div>
@@ -872,6 +891,6 @@
     <script src="gallery.js?v=13"></script>
     <script src="app_enhanced.js?v=16"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_new_features.js?v=1"></script>
+    <script src="app_new_features.js?v=2"></script>
 </body>
 </html>
