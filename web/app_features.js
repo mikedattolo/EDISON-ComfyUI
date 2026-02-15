@@ -201,36 +201,127 @@ async function updateHardwareStats() {
     try {
         const response = await fetch(`${API_ENDPOINT}/system/stats`);
         if (!response.ok) {
-            // Fallback to mock data if endpoint doesn't exist yet
-            updateHardwareUI({
-                cpu_percent: Math.random() * 100,
-                gpu_percent: Math.random() * 100,
-                ram_used_gb: 12 + Math.random() * 10,
-                ram_total_gb: 64,
-                temp_c: 45 + Math.random() * 20
-            });
+            console.log('System stats endpoint returned', response.status);
             return;
         }
         
         const data = await response.json();
         updateHardwareUI(data);
     } catch (error) {
-        console.log('Hardware monitoring not available yet');
+        console.log('Hardware monitoring not available - is EDISON server running?');
     }
 }
 
+function getBarColor(percent) {
+    if (percent >= 90) return '#ef4444';
+    if (percent >= 70) return '#f59e0b';
+    return '';
+}
+
+function getTempColor(tempC) {
+    if (tempC >= 85) return '#ef4444';
+    if (tempC >= 70) return '#f59e0b';
+    return '';
+}
+
 function updateHardwareUI(stats) {
-    document.getElementById('cpuBar').style.width = `${stats.cpu_percent}%`;
-    document.getElementById('cpuValue').textContent = `${stats.cpu_percent.toFixed(1)}%`;
+    // Hostname
+    const hostnameEl = document.getElementById('hwHostname');
+    if (hostnameEl && stats.hostname) {
+        hostnameEl.textContent = stats.hostname + (stats.os ? ` • ${stats.os}` : '');
+    }
+
+    // CPU
+    const cpuPercent = stats.cpu?.percent ?? stats.cpu_percent ?? 0;
+    const cpuBar = document.getElementById('cpuBar');
+    cpuBar.style.width = `${cpuPercent}%`;
+    const cpuColor = getBarColor(cpuPercent);
+    if (cpuColor) cpuBar.style.background = cpuColor;
+    else cpuBar.style.background = '';
+    document.getElementById('cpuValue').textContent = `${cpuPercent.toFixed(1)}%`;
     
-    document.getElementById('gpuBar').style.width = `${stats.gpu_percent}%`;
-    document.getElementById('gpuValue').textContent = `${stats.gpu_percent.toFixed(1)}%`;
+    const cpuNameEl = document.getElementById('cpuName');
+    if (cpuNameEl && stats.cpu) {
+        const cores = stats.cpu.cores_physical ? `${stats.cpu.cores_physical}C/${stats.cpu.cores_logical}T` : '';
+        const freq = stats.cpu.frequency_ghz ? `${stats.cpu.frequency_ghz} GHz` : '';
+        const parts = [stats.cpu.name, cores, freq].filter(Boolean);
+        cpuNameEl.textContent = parts.join(' • ');
+    }
     
-    const ramPercent = (stats.ram_used_gb / stats.ram_total_gb) * 100;
-    document.getElementById('ramBar').style.width = `${ramPercent}%`;
-    document.getElementById('ramValue').textContent = `${stats.ram_used_gb.toFixed(1)}GB`;
+    // CPU Temperature
+    const cpuTempC = stats.cpu_temp_c || 0;
+    const cpuTempBar = document.getElementById('cpuTempBar');
+    const cpuTempValue = document.getElementById('cpuTempValue');
+    if (cpuTempC > 0) {
+        const tempPercent = Math.min(cpuTempC / 100, 1) * 100;
+        cpuTempBar.style.width = `${tempPercent}%`;
+        const tempColor = getTempColor(cpuTempC);
+        if (tempColor) cpuTempBar.style.background = tempColor;
+        else cpuTempBar.style.background = '';
+        cpuTempValue.textContent = `${cpuTempC.toFixed(0)}°C`;
+    } else {
+        cpuTempBar.style.width = '0%';
+        cpuTempValue.textContent = 'N/A';
+    }
     
-    document.getElementById('tempValue').textContent = `${stats.temp_c.toFixed(0)}°C`;
+    // GPUs (dynamic)
+    const gpuContainer = document.getElementById('gpuStatsContainer');
+    if (gpuContainer && stats.gpus && stats.gpus.length > 0) {
+        gpuContainer.innerHTML = stats.gpus.map((gpu, i) => {
+            const memPercent = gpu.memory_total_gb > 0 ? (gpu.memory_used_gb / gpu.memory_total_gb) * 100 : 0;
+            const utilColor = getBarColor(gpu.utilization_percent);
+            const memColor = getBarColor(memPercent);
+            const tempColor = getTempColor(gpu.temperature_c);
+            const tempPercent = Math.min(gpu.temperature_c / 100, 1) * 100;
+            const powerStr = gpu.power_watts > 0 ? ` • ${gpu.power_watts}W` : '';
+            return `
+                <div class="hw-section-label">GPU ${gpu.index}</div>
+                <div class="hw-detail">${gpu.name}${powerStr}</div>
+                <div class="hw-stat">
+                    <span class="hw-label">Usage</span>
+                    <div class="hw-bar"><div class="hw-fill" style="width:${gpu.utilization_percent}%;${utilColor ? 'background:' + utilColor : ''}"></div></div>
+                    <span class="hw-value">${gpu.utilization_percent.toFixed(0)}%</span>
+                </div>
+                <div class="hw-stat">
+                    <span class="hw-label">VRAM</span>
+                    <div class="hw-bar"><div class="hw-fill" style="width:${memPercent}%;${memColor ? 'background:' + memColor : ''}"></div></div>
+                    <span class="hw-value">${gpu.memory_used_gb.toFixed(1)} / ${gpu.memory_total_gb.toFixed(0)} GB</span>
+                </div>
+                <div class="hw-stat">
+                    <span class="hw-label">Temp</span>
+                    <div class="hw-bar hw-bar-temp"><div class="hw-fill hw-fill-temp" style="width:${tempPercent}%;${tempColor ? 'background:' + tempColor : ''}"></div></div>
+                    <span class="hw-value">${gpu.temperature_c > 0 ? gpu.temperature_c.toFixed(0) + '°C' : 'N/A'}</span>
+                </div>
+            `;
+        }).join('');
+    } else if (gpuContainer) {
+        gpuContainer.innerHTML = `
+            <div class="hw-section-label">GPU</div>
+            <div class="hw-detail" style="color: var(--text-secondary)">No NVIDIA GPU detected</div>
+        `;
+    }
+    
+    // RAM
+    const ramUsed = stats.ram?.used_gb ?? stats.ram_used_gb ?? 0;
+    const ramTotal = stats.ram?.total_gb ?? stats.ram_total_gb ?? 1;
+    const ramPercent = stats.ram?.percent ?? ((ramUsed / ramTotal) * 100);
+    const ramBar = document.getElementById('ramBar');
+    ramBar.style.width = `${ramPercent}%`;
+    const ramColor = getBarColor(ramPercent);
+    if (ramColor) ramBar.style.background = ramColor;
+    else ramBar.style.background = '';
+    document.getElementById('ramValue').textContent = `${ramUsed.toFixed(1)} / ${ramTotal.toFixed(0)} GB`;
+    
+    // Disk
+    const diskBar = document.getElementById('diskBar');
+    const diskValue = document.getElementById('diskValue');
+    if (diskBar && diskValue && stats.disk) {
+        diskBar.style.width = `${stats.disk.percent}%`;
+        const diskColor = getBarColor(stats.disk.percent);
+        if (diskColor) diskBar.style.background = diskColor;
+        else diskBar.style.background = '';
+        diskValue.textContent = `${stats.disk.used_gb.toFixed(0)} / ${stats.disk.total_gb.toFixed(0)} GB`;
+    }
 }
 
 // Work Mode Desktop

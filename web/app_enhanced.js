@@ -1674,26 +1674,76 @@ class EdisonApp {
             <h2>Welcome to EDISON</h2>
             <p>Your offline AI assistant for conversations, code, and creative tasks</p>
             
+            <h3 class="welcome-section-title">💡 Modes</h3>
             <div class="capabilities">
                 <div class="capability-card">
+                    <div class="capability-icon">🔮</div>
+                    <h3>Auto</h3>
+                    <p>Automatically detects your intent and picks the best mode</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">⚡</div>
+                    <h3>Instant</h3>
+                    <p>Ultra-fast responses for quick questions and simple tasks</p>
+                </div>
+                <div class="capability-card">
                     <div class="capability-icon">💬</div>
-                    <h3>Natural Conversations</h3>
-                    <p>Chat naturally with fast responses using the 14B model</p>
+                    <h3>Chat</h3>
+                    <p>Natural conversations with fast responses using the 14B model</p>
                 </div>
                 <div class="capability-card">
                     <div class="capability-icon">🧠</div>
-                    <h3>Deep Thinking</h3>
-                    <p>Get detailed analysis with the powerful 72B model</p>
+                    <h3>Reasoning</h3>
+                    <p>Deep analysis and step-by-step reasoning with the QwQ-32B model</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">🧩</div>
+                    <h3>Thinking</h3>
+                    <p>Extended reasoning with the powerful 72B model for complex problems</p>
                 </div>
                 <div class="capability-card">
                     <div class="capability-icon">💻</div>
-                    <h3>Code Assistant</h3>
+                    <h3>Code</h3>
                     <p>Write, debug, and explain code in multiple languages</p>
                 </div>
                 <div class="capability-card">
                     <div class="capability-icon">🤖</div>
-                    <h3>Agent Mode</h3>
-                    <p>Execute complex tasks with tool-using capabilities</p>
+                    <h3>Agent</h3>
+                    <p>Execute complex multi-step tasks with tool-using capabilities</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">🕸️</div>
+                    <h3>Swarm</h3>
+                    <p>Parallel specialized agents collaborate on complex tasks</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">🖥️</div>
+                    <h3>Work</h3>
+                    <p>Task visualization and structured project workflows</p>
+                </div>
+            </div>
+
+            <h3 class="welcome-section-title">🚀 Features</h3>
+            <div class="capabilities">
+                <div class="capability-card">
+                    <div class="capability-icon">🎨</div>
+                    <h3>Image Generation</h3>
+                    <p>Create images from text prompts using FLUX models</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">📐</div>
+                    <h3>3D Models</h3>
+                    <p>Generate 3D models from text descriptions</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">🖼️</div>
+                    <h3>Gallery</h3>
+                    <p>Browse and manage all your generated images</p>
+                </div>
+                <div class="capability-card">
+                    <div class="capability-icon">📁</div>
+                    <h3>File Manager</h3>
+                    <p>Upload, browse, and manage files on the server</p>
                 </div>
             </div>
         `;

@@ -28,28 +28,41 @@
         <!-- Hardware Monitor Widget -->
         <div class="hardware-monitor" id="hardwareMonitor" style="display: none;">
             <div class="hw-header">
-                <span class="hw-title">System Monitor</span>
+                <span class="hw-title">🖥️ EDISON Server</span>
                 <button class="hw-close" id="hwCloseBtn">×</button>
             </div>
+            <div class="hw-hostname" id="hwHostname"></div>
             <div class="hw-stats">
+                <!-- CPU Section -->
+                <div class="hw-section-label">CPU</div>
+                <div class="hw-detail" id="cpuName"></div>
                 <div class="hw-stat">
-                    <span class="hw-label">CPU</span>
+                    <span class="hw-label">Usage</span>
                     <div class="hw-bar"><div class="hw-fill" id="cpuBar"></div></div>
                     <span class="hw-value" id="cpuValue">0%</span>
                 </div>
                 <div class="hw-stat">
-                    <span class="hw-label">GPU</span>
-                    <div class="hw-bar"><div class="hw-fill" id="gpuBar"></div></div>
-                    <span class="hw-value" id="gpuValue">0%</span>
+                    <span class="hw-label">Temp</span>
+                    <div class="hw-bar hw-bar-temp"><div class="hw-fill hw-fill-temp" id="cpuTempBar"></div></div>
+                    <span class="hw-value" id="cpuTempValue">--°C</span>
                 </div>
+
+                <!-- GPU Section (dynamically populated) -->
+                <div id="gpuStatsContainer"></div>
+
+                <!-- RAM Section -->
+                <div class="hw-section-label">Memory</div>
                 <div class="hw-stat">
                     <span class="hw-label">RAM</span>
                     <div class="hw-bar"><div class="hw-fill" id="ramBar"></div></div>
-                    <span class="hw-value" id="ramValue">0GB</span>
+                    <span class="hw-value" id="ramValue">0 / 0 GB</span>
                 </div>
+
+                <!-- Disk Section -->
                 <div class="hw-stat">
-                    <span class="hw-label">Temp</span>
-                    <span class="hw-temp" id="tempValue">--°C</span>
+                    <span class="hw-label">Disk</span>
+                    <div class="hw-bar"><div class="hw-fill" id="diskBar"></div></div>
+                    <span class="hw-value" id="diskValue">0 / 0 GB</span>
                 </div>
             </div>
         </div>
@@ -91,16 +104,6 @@
         <aside class="sidebar" id="sidebar">
             <div class="sidebar-header">
                 <div class="logo">
-                    <svg width="32" height="32" viewBox="0 0 32 32" fill="none">
-                        <rect width="32" height="32" rx="8" fill="url(#gradient)"/>
-                        <path d="M10 12h12M10 16h12M10 20h8" stroke="white" stroke-width="2" stroke-linecap="round"/>
-                        <defs>
-                            <linearGradient id="gradient" x1="0" y1="0" x2="32" y2="32">
-                                <stop offset="0%" stop-color="#667eea"/>
-                                <stop offset="100%" stop-color="#764ba2"/>
-                            </linearGradient>
-                        </defs>
-                    </svg>
                     <h1>EDISON</h1>
                 </div>
                 <button class="new-chat-btn" id="newChatBtn">
@@ -203,26 +206,76 @@
                         <h2>Welcome to EDISON</h2>
                         <p>Your offline AI assistant for conversations, code, and creative tasks</p>
                         
+                        <h3 class="welcome-section-title">💡 Modes</h3>
                         <div class="capabilities">
                             <div class="capability-card">
+                                <div class="capability-icon">🔮</div>
+                                <h3>Auto</h3>
+                                <p>Automatically detects your intent and picks the best mode</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">⚡</div>
+                                <h3>Instant</h3>
+                                <p>Ultra-fast responses for quick questions and simple tasks</p>
+                            </div>
+                            <div class="capability-card">
                                 <div class="capability-icon">💬</div>
-                                <h3>Natural Conversations</h3>
-                                <p>Chat naturally with fast responses using the 14B model</p>
+                                <h3>Chat</h3>
+                                <p>Natural conversations with fast responses using the 14B model</p>
                             </div>
                             <div class="capability-card">
                                 <div class="capability-icon">🧠</div>
-                                <h3>Deep Thinking</h3>
-                                <p>Get detailed analysis with the powerful 72B model</p>
+                                <h3>Reasoning</h3>
+                                <p>Deep analysis and step-by-step reasoning with the QwQ-32B model</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">🧩</div>
+                                <h3>Thinking</h3>
+                                <p>Extended reasoning with the powerful 72B model for complex problems</p>
                             </div>
                             <div class="capability-card">
                                 <div class="capability-icon">💻</div>
-                                <h3>Code Assistant</h3>
+                                <h3>Code</h3>
                                 <p>Write, debug, and explain code in multiple languages</p>
                             </div>
                             <div class="capability-card">
                                 <div class="capability-icon">🤖</div>
-                                <h3>Agent Mode</h3>
-                                <p>Execute complex tasks with tool-using capabilities</p>
+                                <h3>Agent</h3>
+                                <p>Execute complex multi-step tasks with tool-using capabilities</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">🕸️</div>
+                                <h3>Swarm</h3>
+                                <p>Parallel specialized agents collaborate on complex tasks</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">🖥️</div>
+                                <h3>Work</h3>
+                                <p>Task visualization and structured project workflows</p>
+                            </div>
+                        </div>
+
+                        <h3 class="welcome-section-title">🚀 Features</h3>
+                        <div class="capabilities">
+                            <div class="capability-card">
+                                <div class="capability-icon">🎨</div>
+                                <h3>Image Generation</h3>
+                                <p>Create images from text prompts using FLUX models</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">📐</div>
+                                <h3>3D Models</h3>
+                                <p>Generate 3D models from text descriptions</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">🖼️</div>
+                                <h3>Gallery</h3>
+                                <p>Browse and manage all your generated images</p>
+                            </div>
+                            <div class="capability-card">
+                                <div class="capability-icon">📁</div>
+                                <h3>File Manager</h3>
+                                <p>Upload, browse, and manage files on the server</p>
                             </div>
                         </div>
                     </div>

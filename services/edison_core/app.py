@@ -6440,47 +6440,138 @@ Title:"""
 
 @app.get("/system/stats")
 async def system_stats():
-    """Get system hardware statistics"""
+    """Get system hardware statistics for the EDISON server"""
     import psutil
+    import platform
     try:
+        # Host info
+        hostname = platform.node()
+        os_info = f"{platform.system()} {platform.release()}"
+        
         # CPU stats
         cpu_percent = psutil.cpu_percent(interval=0.1)
+        cpu_count_physical = psutil.cpu_count(logical=False) or 0
+        cpu_count_logical = psutil.cpu_count(logical=True) or 0
+        try:
+            cpu_freq = psutil.cpu_freq()
+            cpu_freq_ghz = round(cpu_freq.current / 1000, 2) if cpu_freq else 0
+        except:
+            cpu_freq_ghz = 0
+        
+        # Try to get CPU model name
+        cpu_name = "Unknown CPU"
+        try:
+            with open("/proc/cpuinfo", "r") as f:
+                for line in f:
+                    if "model name" in line:
+                        cpu_name = line.split(":")[1].strip()
+                        break
+        except:
+            cpu_name = platform.processor() or "Unknown CPU"
         
         # Memory stats
         mem = psutil.virtual_memory()
         ram_used_gb = mem.used / (1024 ** 3)
         ram_total_gb = mem.total / (1024 ** 3)
         
-        # Temperature (try to get CPU temp)
-        temp_c = 0
+        # Disk stats
+        try:
+            disk = psutil.disk_usage('/')
+            disk_used_gb = disk.used / (1024 ** 3)
+            disk_total_gb = disk.total / (1024 ** 3)
+            disk_percent = disk.percent
+        except:
+            disk_used_gb = 0
+            disk_total_gb = 0
+            disk_percent = 0
+        
+        # CPU Temperature
+        cpu_temp_c = 0
         try:
             temps = psutil.sensors_temperatures()
             if temps:
-                # Try common sensor names
-                for name in ['coretemp', 'cpu_thermal', 'k10temp']:
+                for name in ['coretemp', 'cpu_thermal', 'k10temp', 'zenpower', 'acpitz', 'thermal_zone0']:
                     if name in temps:
-                        temp_c = temps[name][0].current
+                        cpu_temp_c = temps[name][0].current
                         break
+                if cpu_temp_c == 0:
+                    # Try any available sensor
+                    for name, entries in temps.items():
+                        if entries and entries[0].current > 0:
+                            cpu_temp_c = entries[0].current
+                            break
         except:
-            temp_c = 0
+            cpu_temp_c = 0
         
-        # GPU stats (basic - could be enhanced with pynvml)
-        gpu_percent = 0
+        # GPU stats - enumerate ALL GPUs with detailed info
+        gpus = []
         try:
             import subprocess
-            result = subprocess.run(['nvidia-smi', '--query-gpu=utilization.gpu', '--format=csv,noheader,nounits'], 
-                                    capture_output=True, text=True, timeout=1)
+            # Get GPU count, names, utilization, memory used/total, temperature
+            result = subprocess.run(
+                ['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit',
+                 '--format=csv,noheader,nounits'],
+                capture_output=True, text=True, timeout=3
+            )
             if result.returncode == 0:
-                gpu_percent = float(result.stdout.strip().split('\n')[0])
-        except:
-            gpu_percent = 0
+                for line in result.stdout.strip().split('\n'):
+                    parts = [p.strip() for p in line.split(',')]
+                    if len(parts) >= 6:
+                        gpu_index = int(parts[0])
+                        gpu_name = parts[1]
+                        gpu_util = float(parts[2]) if parts[2] not in ['[N/A]', 'N/A', ''] else 0
+                        gpu_mem_used = float(parts[3]) / 1024 if parts[3] not in ['[N/A]', 'N/A', ''] else 0  # Convert MiB to GiB
+                        gpu_mem_total = float(parts[4]) / 1024 if parts[4] not in ['[N/A]', 'N/A', ''] else 0
+                        gpu_temp = float(parts[5]) if parts[5] not in ['[N/A]', 'N/A', ''] else 0
+                        gpu_power = float(parts[6]) if len(parts) > 6 and parts[6] not in ['[N/A]', 'N/A', ''] else 0
+                        gpu_power_limit = float(parts[7]) if len(parts) > 7 and parts[7] not in ['[N/A]', 'N/A', ''] else 0
+                        gpus.append({
+                            "index": gpu_index,
+                            "name": gpu_name,
+                            "utilization_percent": gpu_util,
+                            "memory_used_gb": round(gpu_mem_used, 2),
+                            "memory_total_gb": round(gpu_mem_total, 2),
+                            "temperature_c": gpu_temp,
+                            "power_watts": round(gpu_power, 1),
+                            "power_limit_watts": round(gpu_power_limit, 1),
+                        })
+        except Exception as e:
+            logger.debug(f"nvidia-smi not available: {e}")
+        
+        # Legacy single-GPU fields for backward compat
+        gpu_percent = gpus[0]["utilization_percent"] if gpus else 0
+        temp_c = gpus[0]["temperature_c"] if gpus else (cpu_temp_c if cpu_temp_c > 0 else 0)
         
         return {
+            # Legacy fields (backward compat)
             "cpu_percent": cpu_percent,
             "gpu_percent": gpu_percent,
             "ram_used_gb": ram_used_gb,
             "ram_total_gb": ram_total_gb,
-            "temp_c": temp_c if temp_c > 0 else 50  # Default temp if unavailable
+            "temp_c": temp_c if temp_c > 0 else 50,
+            # New detailed fields
+            "hostname": hostname,
+            "os": os_info,
+            "cpu": {
+                "name": cpu_name,
+                "cores_physical": cpu_count_physical,
+                "cores_logical": cpu_count_logical,
+                "frequency_ghz": cpu_freq_ghz,
+                "percent": cpu_percent,
+            },
+            "ram": {
+                "used_gb": round(ram_used_gb, 2),
+                "total_gb": round(ram_total_gb, 2),
+                "percent": mem.percent,
+            },
+            "disk": {
+                "used_gb": round(disk_used_gb, 1),
+                "total_gb": round(disk_total_gb, 1),
+                "percent": disk_percent,
+            },
+            "cpu_temp_c": cpu_temp_c,
+            "gpus": gpus,
+            "gpu_count": len(gpus),
         }
         
     except Exception as e:

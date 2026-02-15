@@ -133,8 +133,10 @@ button, input, textarea, select {
 .logo {
     display: flex;
     align-items: center;
+    justify-content: center;
     gap: 12px;
     margin-bottom: 16px;
+    padding-left: 12px;
 }
 
 .logo h1 {
@@ -536,14 +538,23 @@ button, input, textarea, select {
 .welcome-screen > p {
     font-size: 16px;
     color: var(--text-secondary);
-    margin-bottom: 48px;
+    margin-bottom: 32px;
+}
+
+.welcome-section-title {
+    font-size: 18px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    margin-top: 32px;
+    margin-bottom: 0;
+    text-align: left;
 }
 
 .capabilities {
     display: grid;
     grid-template-columns: repeat(auto-fit, minmax(200px, 1fr));
     gap: 16px;
-    margin-top: 32px;
+    margin-top: 16px;
 }
 
 .capability-card {
@@ -1602,7 +1613,9 @@ button, input, textarea, select {
     position: fixed;
     top: 20px;
     right: 20px;
-    width: 280px;
+    width: 360px;
+    max-height: calc(100vh - 40px);
+    overflow-y: auto;
     background: rgba(26, 26, 26, 0.95);
     backdrop-filter: blur(10px);
     border: 1px solid var(--border);
@@ -1617,12 +1630,27 @@ button, input, textarea, select {
     align-items: center;
     padding: 12px 16px;
     border-bottom: 1px solid var(--border);
+    position: sticky;
+    top: 0;
+    background: rgba(26, 26, 26, 0.98);
+    z-index: 1;
+    border-radius: 12px 12px 0 0;
 }
 
 .hw-title {
     font-weight: 600;
     font-size: 14px;
     color: var(--text-primary);
+}
+
+.hw-hostname {
+    padding: 6px 16px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    border-bottom: 1px solid var(--border);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .hw-close {
@@ -1642,21 +1670,44 @@ button, input, textarea, select {
 }
 
 .hw-stats {
-    padding: 16px;
+    padding: 12px 16px 16px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
+    gap: 6px;
+}
+
+.hw-section-label {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+    color: var(--primary);
+    margin-top: 8px;
+    margin-bottom: 2px;
+}
+
+.hw-section-label:first-child {
+    margin-top: 0;
+}
+
+.hw-detail {
+    font-size: 11px;
+    color: var(--text-secondary);
+    margin-bottom: 4px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
 }
 
 .hw-stat {
     display: grid;
-    grid-template-columns: 40px 1fr auto;
+    grid-template-columns: 42px 1fr auto;
     align-items: center;
-    gap: 12px;
+    gap: 10px;
 }
 
 .hw-label {
-    font-size: 12px;
+    font-size: 11px;
     color: var(--text-secondary);
     font-weight: 500;
 }
@@ -1668,19 +1719,28 @@ button, input, textarea, select {
     overflow: hidden;
 }
 
+.hw-bar-temp {
+    background: rgba(100, 100, 100, 0.3);
+}
+
 .hw-fill {
     height: 100%;
     background: linear-gradient(90deg, var(--primary), var(--secondary));
     border-radius: 3px;
-    transition: width 0.3s ease;
+    transition: width 0.5s ease;
+}
+
+.hw-fill-temp {
+    background: linear-gradient(90deg, #22c55e, #f59e0b, #ef4444);
 }
 
 .hw-value, .hw-temp {
-    font-size: 12px;
+    font-size: 11px;
     font-weight: 600;
     color: var(--text-primary);
-    min-width: 50px;
+    min-width: 70px;
     text-align: right;
+    white-space: nowrap;
 }
 
 .monitor-btn {
@@ -2168,9 +2228,11 @@ button, input, textarea, select {
         bottom: 0;
         left: 0;
         right: 0;
+        top: auto;
         width: 100%;
         border-radius: 12px 12px 0 0;
-        max-height: 300px;
+        max-height: 60vh;
+        overflow-y: auto;
         z-index: 500;
     }
 
