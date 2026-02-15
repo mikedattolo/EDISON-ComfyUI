@@ -803,6 +803,33 @@
                         </div>
                     </div>
                 </div>
+
+                <!-- File Editor Overlay -->
+                <div class="fm-editor-overlay" id="fmEditorOverlay" style="display:none;">
+                    <div class="fm-editor-container">
+                        <div class="fm-editor-header">
+                            <div class="fm-editor-title">
+                                <span class="fm-editor-icon" id="fmEditorIcon">📄</span>
+                                <span class="fm-editor-filename" id="fmEditorFilename">file.txt</span>
+                                <span class="fm-editor-modified" id="fmEditorModified" style="display:none;">● Modified</span>
+                            </div>
+                            <div class="fm-editor-actions">
+                                <span class="fm-editor-info" id="fmEditorInfo"></span>
+                                <button class="fm-btn fm-btn-save" id="fmEditorSaveBtn" onclick="window.fmSaveFile && window.fmSaveFile();" disabled>💾 Save</button>
+                                <button class="fm-btn fm-btn-cancel" onclick="window.fmCloseEditor && window.fmCloseEditor();">✕ Close</button>
+                            </div>
+                        </div>
+                        <div class="fm-editor-body">
+                            <div class="fm-editor-gutter" id="fmEditorGutter"></div>
+                            <textarea class="fm-editor-textarea" id="fmEditorTextarea" spellcheck="false" autocomplete="off" autocorrect="off" autocapitalize="off"></textarea>
+                        </div>
+                        <div class="fm-editor-footer">
+                            <span id="fmEditorCursor">Ln 1, Col 1</span>
+                            <span id="fmEditorEncoding">UTF-8</span>
+                            <span id="fmEditorSize"></span>
+                        </div>
+                    </div>
+                </div>
             </div>
         </div>
     </div>

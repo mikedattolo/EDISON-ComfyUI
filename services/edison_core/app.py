@@ -5566,6 +5566,111 @@ async def fm_delete(request: Request, body: dict = None):
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# Editable text file extensions
+_TEXT_EXTENSIONS = {
+    '.txt', '.md', '.json', '.yaml', '.yml', '.py', '.js', '.ts', '.jsx', '.tsx',
+    '.html', '.htm', '.css', '.scss', '.less', '.xml', '.csv', '.tsv',
+    '.sh', '.bash', '.zsh', '.fish', '.bat', '.cmd', '.ps1',
+    '.toml', '.ini', '.cfg', '.conf', '.env', '.properties',
+    '.gitignore', '.dockerignore', '.editorconfig',
+    '.sql', '.graphql', '.gql',
+    '.r', '.R', '.rb', '.pl', '.lua', '.go', '.rs', '.java', '.kt', '.scala',
+    '.c', '.cpp', '.h', '.hpp', '.cs', '.swift', '.m',
+    '.log', '.tex', '.rst', '.org', '.adoc',
+    '.vue', '.svelte', '.astro',
+    '.makefile', '.cmake',
+    '.tf', '.hcl',
+    '.service', '.socket', '.timer',
+}
+_MAX_EDIT_SIZE = 10 * 1024 * 1024  # 10 MB max for editor
+
+def _is_text_file(path: Path) -> bool:
+    """Check if a file is likely a text file that can be edited."""
+    if path.suffix.lower() in _TEXT_EXTENSIONS:
+        return True
+    # Check files with no extension (Makefile, Dockerfile, etc.)
+    if path.name.lower() in ('makefile', 'dockerfile', 'vagrantfile', 'gemfile',
+                              'rakefile', 'procfile', 'brewfile', 'license', 'readme',
+                              'changelog', 'authors', 'contributors', 'copying'):
+        return True
+    return False
+
+
+@app.get("/files/read")
+async def fm_read_file(request: Request, path: str = ""):
+    """Read the contents of a text file for editing."""
+    if not _fm_verify_token(request):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+    if not path:
+        raise HTTPException(status_code=400, detail="No path specified")
+
+    target = Path(path).resolve()
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="File not found")
+    if not target.is_file():
+        raise HTTPException(status_code=400, detail="Path is not a file")
+    if target.stat().st_size > _MAX_EDIT_SIZE:
+        raise HTTPException(status_code=413, detail=f"File too large to edit (max {_MAX_EDIT_SIZE // (1024*1024)} MB)")
+    if not _is_text_file(target):
+        raise HTTPException(status_code=415, detail="Binary or unsupported file type — only text files can be edited")
+
+    try:
+        content = target.read_text(encoding='utf-8', errors='replace')
+        stat = target.stat()
+        return {
+            "path": str(target),
+            "name": target.name,
+            "content": content,
+            "size_bytes": stat.st_size,
+            "modified": stat.st_mtime,
+            "extension": target.suffix,
+            "encoding": "utf-8",
+        }
+    except Exception as e:
+        logger.error(f"Error reading file {path}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.put("/files/write")
+async def fm_write_file(request: Request, body: dict = None):
+    """Write/save content to a text file."""
+    if body is None:
+        body = await request.json()
+    if not _fm_verify_token(request):
+        raise HTTPException(status_code=401, detail="Authentication required.")
+
+    file_path = body.get("path", "")
+    content = body.get("content")
+    if not file_path:
+        raise HTTPException(status_code=400, detail="No path specified")
+    if content is None:
+        raise HTTPException(status_code=400, detail="No content provided")
+
+    target = Path(file_path).resolve()
+
+    # Safety: don't allow writing to non-text files
+    if target.exists() and not _is_text_file(target):
+        raise HTTPException(status_code=415, detail="Cannot write to binary files")
+
+    try:
+        # Create parent dirs if needed (for new files)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(content, encoding='utf-8')
+        stat = target.stat()
+        logger.info(f"File saved: {target} ({stat.st_size} bytes)")
+        return {
+            "success": True,
+            "path": str(target),
+            "size_bytes": stat.st_size,
+            "modified": stat.st_mtime,
+        }
+    except PermissionError:
+        raise HTTPException(status_code=403, detail="Permission denied")
+    except Exception as e:
+        logger.error(f"Error writing file {file_path}: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/users")
 async def list_users():
     """List all users with chat identities."""

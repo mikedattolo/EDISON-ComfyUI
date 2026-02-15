@@ -1357,11 +1357,14 @@ console.log('🧊 app_new_features.js v1 loading...');
             const icon = isDir ? '📁' : getFileIcon(item.extension || '');
             const size = isDir ? `${item.child_count || 0} items` : formatBytes(item.size_bytes);
             const deletable = item.can_delete;
+            const editable = fmIsEditable(item);
 
-            html += `<div class="fm-item ${isDir ? 'fm-item-dir' : 'fm-item-file'}" 
-                ${isDir ? `onclick="window.fmNavigate('${item.path}')"` : ''}>
+            html += `<div class="fm-item ${isDir ? 'fm-item-dir' : 'fm-item-file'}${editable ? ' fm-item-editable' : ''}" 
+                ${isDir ? `onclick="window.fmNavigate('${item.path}')"` : ''}
+                ${editable ? `ondblclick="event.stopPropagation(); window.fmOpenEditor('${item.path.replace(/'/g, "\\'")}', '${item.name.replace(/'/g, "\\'")}')"` : ''}
+                title="${editable ? 'Double-click to edit' : item.path}">
                 <span class="fm-item-icon">${icon}</span>
-                <span class="fm-item-name" title="${item.path}">${item.name}</span>
+                <span class="fm-item-name">${item.name}${editable ? ' <span class="fm-edit-hint">✏️</span>' : ''}</span>
                 <span class="fm-item-meta">${size}</span>
                 <span class="fm-item-date">${formatDate(item.modified)}</span>
                 ${deletable ? 
@@ -1375,6 +1378,7 @@ console.log('🧊 app_new_features.js v1 loading...');
     }
 
     function renderFileDetail(file) {
+        const editable = fmIsEditable(file);
         return `<div class="fm-file-detail">
             <div class="fm-detail-icon">${getFileIcon(file.extension)}</div>
             <h3>${file.name}</h3>
@@ -1383,6 +1387,7 @@ console.log('🧊 app_new_features.js v1 loading...');
             <p>Type: ${file.extension || 'Unknown'}</p>
             <p>Status: ${file.can_delete ? '🗑️ Deletable' : '🔒 Protected'}</p>
             <button class="fm-btn fm-btn-back" onclick="window.fmNavigate('${fmCurrentPath}')">← Back</button>
+            ${editable ? `<button class="fm-btn fm-btn-edit" onclick="window.fmOpenEditor('${file.path.replace(/'/g, "\\'")}', '${file.name.replace(/'/g, "\\'")}')">✏️ Edit</button>` : ''}
             ${file.can_delete ? `<button class="fm-btn fm-btn-delete" onclick="window.fmRequestDelete('${file.path}', '${file.name}', false)">🗑️ Delete</button>` : ''}
         </div>`;
     }
@@ -1485,6 +1490,221 @@ console.log('🧊 app_new_features.js v1 loading...');
         }, 3000);
     }
 
+    // ========================================
+    // File Editor
+    // ========================================
+    let fmEditorOriginalContent = '';
+    let fmEditorCurrentPath = '';
+    let fmEditorDirty = false;
+
+    // Text-editable extensions (mirrors server-side list)
+    const FM_TEXT_EXTENSIONS = new Set([
+        '.txt', '.md', '.json', '.yaml', '.yml', '.py', '.js', '.ts', '.jsx', '.tsx',
+        '.html', '.htm', '.css', '.scss', '.less', '.xml', '.csv', '.tsv',
+        '.sh', '.bash', '.zsh', '.fish', '.bat', '.cmd', '.ps1',
+        '.toml', '.ini', '.cfg', '.conf', '.env', '.properties',
+        '.gitignore', '.dockerignore', '.editorconfig',
+        '.sql', '.graphql', '.gql',
+        '.r', '.rb', '.pl', '.lua', '.go', '.rs', '.java', '.kt', '.scala',
+        '.c', '.cpp', '.h', '.hpp', '.cs', '.swift', '.m',
+        '.log', '.tex', '.rst', '.org', '.adoc',
+        '.vue', '.svelte', '.astro',
+        '.makefile', '.cmake',
+        '.tf', '.hcl',
+        '.service', '.socket', '.timer',
+    ]);
+
+    function fmIsEditable(item) {
+        if (item.type === 'directory') return false;
+        if (item.size_bytes > 10 * 1024 * 1024) return false;  // 10MB limit
+        const ext = (item.extension || '').toLowerCase();
+        if (FM_TEXT_EXTENSIONS.has(ext)) return true;
+        // Known text filenames without extensions
+        const basename = (item.name || '').toLowerCase();
+        if (['makefile', 'dockerfile', 'vagrantfile', 'gemfile', 'license', 'readme',
+             'changelog', 'authors', 'procfile'].includes(basename)) return true;
+        return false;
+    }
+
+    window.fmOpenEditor = async function(filePath, fileName) {
+        const overlay = document.getElementById('fmEditorOverlay');
+        const textarea = document.getElementById('fmEditorTextarea');
+        const filenameEl = document.getElementById('fmEditorFilename');
+        const iconEl = document.getElementById('fmEditorIcon');
+        const infoEl = document.getElementById('fmEditorInfo');
+        const sizeEl = document.getElementById('fmEditorSize');
+        const modifiedEl = document.getElementById('fmEditorModified');
+        const saveBtn = document.getElementById('fmEditorSaveBtn');
+        const cursorEl = document.getElementById('fmEditorCursor');
+        if (!overlay || !textarea) return;
+
+        // Show overlay with loading state
+        overlay.style.display = 'flex';
+        textarea.value = 'Loading...';
+        textarea.disabled = true;
+        filenameEl.textContent = fileName || filePath.split('/').pop();
+        const ext = '.' + fileName.split('.').pop();
+        iconEl.textContent = getFileIcon(ext);
+        infoEl.textContent = 'Loading...';
+        if (saveBtn) saveBtn.disabled = true;
+        if (modifiedEl) modifiedEl.style.display = 'none';
+
+        try {
+            const resp = await fetch(`${API}/files/read?path=${encodeURIComponent(filePath)}`, {
+                headers: fmHeaders()
+            });
+            if (resp.status === 401) {
+                fmAuthToken = '';
+                sessionStorage.removeItem('fm_auth_token');
+                fmShowLoginUI();
+                overlay.style.display = 'none';
+                return;
+            }
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: 'Cannot open file' }));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+
+            fmEditorCurrentPath = data.path;
+            fmEditorOriginalContent = data.content;
+            fmEditorDirty = false;
+
+            textarea.value = data.content;
+            textarea.disabled = false;
+            textarea.focus();
+            infoEl.textContent = `${data.extension || 'text'} \u2022 ${data.encoding}`;
+            if (sizeEl) sizeEl.textContent = formatBytes(data.size_bytes);
+            if (cursorEl) cursorEl.textContent = 'Ln 1, Col 1';
+
+            // Update line numbers
+            fmUpdateGutter();
+        } catch (err) {
+            textarea.value = `Error: ${err.message}`;
+            textarea.disabled = true;
+            infoEl.textContent = 'Error';
+            showFMToast(`Cannot open file: ${err.message}`);
+        }
+    };
+
+    window.fmCloseEditor = function() {
+        if (fmEditorDirty) {
+            if (!confirm('You have unsaved changes. Discard them?')) return;
+        }
+        const overlay = document.getElementById('fmEditorOverlay');
+        if (overlay) overlay.style.display = 'none';
+        fmEditorCurrentPath = '';
+        fmEditorOriginalContent = '';
+        fmEditorDirty = false;
+    };
+
+    window.fmSaveFile = async function() {
+        const textarea = document.getElementById('fmEditorTextarea');
+        const saveBtn = document.getElementById('fmEditorSaveBtn');
+        const modifiedEl = document.getElementById('fmEditorModified');
+        const sizeEl = document.getElementById('fmEditorSize');
+        if (!textarea || !fmEditorCurrentPath) return;
+
+        const content = textarea.value;
+        if (saveBtn) { saveBtn.disabled = true; saveBtn.textContent = '\u23f3 Saving...'; }
+
+        try {
+            const resp = await fetch(`${API}/files/write`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json', ...fmHeaders() },
+                body: JSON.stringify({ path: fmEditorCurrentPath, content })
+            });
+            if (resp.status === 401) {
+                fmAuthToken = '';
+                sessionStorage.removeItem('fm_auth_token');
+                fmShowLoginUI();
+                return;
+            }
+            if (!resp.ok) {
+                const err = await resp.json().catch(() => ({ detail: 'Save failed' }));
+                throw new Error(err.detail || `HTTP ${resp.status}`);
+            }
+            const data = await resp.json();
+            fmEditorOriginalContent = content;
+            fmEditorDirty = false;
+            if (modifiedEl) modifiedEl.style.display = 'none';
+            if (sizeEl) sizeEl.textContent = formatBytes(data.size_bytes);
+            showFMToast(`Saved \u2714 ${fmEditorCurrentPath.split('/').pop()}`);
+        } catch (err) {
+            showFMToast(`Save failed: ${err.message}`);
+        } finally {
+            if (saveBtn) { saveBtn.disabled = fmEditorDirty ? false : true; saveBtn.textContent = '\ud83d\udcbe Save'; }
+        }
+    };
+
+    function fmUpdateGutter() {
+        const textarea = document.getElementById('fmEditorTextarea');
+        const gutter = document.getElementById('fmEditorGutter');
+        if (!textarea || !gutter) return;
+        const lines = textarea.value.split('\n').length;
+        let html = '';
+        for (let i = 1; i <= lines; i++) {
+            html += i + '\n';
+        }
+        gutter.textContent = html;
+    }
+
+    function fmUpdateCursorPos() {
+        const textarea = document.getElementById('fmEditorTextarea');
+        const cursorEl = document.getElementById('fmEditorCursor');
+        if (!textarea || !cursorEl) return;
+        const val = textarea.value.substring(0, textarea.selectionStart);
+        const lines = val.split('\n');
+        const ln = lines.length;
+        const col = lines[lines.length - 1].length + 1;
+        cursorEl.textContent = `Ln ${ln}, Col ${col}`;
+    }
+
+    // Attach editor event listeners after DOM ready
+    function initFileEditor() {
+        const textarea = document.getElementById('fmEditorTextarea');
+        if (!textarea) return;
+
+        // Track dirty state
+        textarea.addEventListener('input', () => {
+            const modifiedEl = document.getElementById('fmEditorModified');
+            const saveBtn = document.getElementById('fmEditorSaveBtn');
+            fmEditorDirty = textarea.value !== fmEditorOriginalContent;
+            if (modifiedEl) modifiedEl.style.display = fmEditorDirty ? '' : 'none';
+            if (saveBtn) saveBtn.disabled = !fmEditorDirty;
+            fmUpdateGutter();
+        });
+
+        // Cursor position tracking
+        textarea.addEventListener('click', fmUpdateCursorPos);
+        textarea.addEventListener('keyup', fmUpdateCursorPos);
+        textarea.addEventListener('select', fmUpdateCursorPos);
+
+        // Sync scroll between gutter and textarea
+        textarea.addEventListener('scroll', () => {
+            const gutter = document.getElementById('fmEditorGutter');
+            if (gutter) gutter.scrollTop = textarea.scrollTop;
+        });
+
+        // Keyboard shortcuts: Ctrl+S to save, Escape to close
+        textarea.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.key === 's') {
+                e.preventDefault();
+                if (fmEditorDirty) window.fmSaveFile();
+            }
+            // Tab key inserts spaces instead of moving focus
+            if (e.key === 'Tab') {
+                e.preventDefault();
+                const start = textarea.selectionStart;
+                const end = textarea.selectionEnd;
+                const spaces = '    ';
+                textarea.value = textarea.value.substring(0, start) + spaces + textarea.value.substring(end);
+                textarea.selectionStart = textarea.selectionEnd = start + spaces.length;
+                textarea.dispatchEvent(new Event('input'));
+            }
+        });
+    }
+
     // Storage info
     async function loadStorageInfo() {
         const container = document.getElementById('fmDrives');
@@ -1540,6 +1760,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         console.log('🧊 Initializing new features...');
         init3DDropzone();
         initMCDropzone();
+        initFileEditor();
         if (HAS_THREE) {
             initThreeDViewer();
             initMCViewer();
@@ -1552,6 +1773,12 @@ console.log('🧊 app_new_features.js v1 loading...');
         // Close panels on Escape
         document.addEventListener('keydown', (e) => {
             if (e.key === 'Escape') {
+                // Close editor first if open
+                const editorOverlay = document.getElementById('fmEditorOverlay');
+                if (editorOverlay && editorOverlay.style.display !== 'none') {
+                    window.fmCloseEditor();
+                    return;
+                }
                 if (threeDPanelOpen) window.toggle3DPanel();
                 if (mcPanelOpen) window.toggleMinecraftPanel();
                 if (fmPanelOpen) window.toggleFileManager();
