@@ -8,6 +8,7 @@ Long video: generates multiple segments with crossfade blending
 import gc
 import logging
 import json
+import random
 import shutil
 import subprocess
 import threading
@@ -17,6 +18,21 @@ from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
+
+# Lazy import to avoid circular deps at module level
+_job_store = None
+
+
+def _get_job_store():
+    """Get the singleton JobStore (lazy import)."""
+    global _job_store
+    if _job_store is None:
+        try:
+            from services.edison_core.job_store import JobStore
+            _job_store = JobStore.get_instance()
+        except Exception as e:
+            logger.warning(f"JobStore unavailable, falling back to in-memory tracking: {e}")
+    return _job_store
 
 
 def _find_ffmpeg() -> str:
@@ -74,7 +90,15 @@ class VideoGenerationService:
         port = comfyui_cfg.get("port", 8188)
         self.comfyui_url = f"http://{host}:{port}"
 
-        # Internal job tracking (replaces ComfyUI polling for diffusers jobs)
+        # Low-VRAM mode: reduce inference steps and resolution for GPUs < 8GB
+        self.low_vram: bool = video_cfg.get("low_vram", False)
+        if self.low_vram:
+            self.num_inference_steps = min(self.num_inference_steps, 20)
+            self.width = min(self.width, 480)
+            self.height = min(self.height, 320)
+            logger.info("Low-VRAM mode enabled: reduced resolution and steps")
+
+        # Fallback in-memory job tracking (used when JobStore is unavailable)
         self._jobs: Dict[str, Dict[str, Any]] = {}
         self._jobs_lock = threading.Lock()
 
@@ -212,8 +236,9 @@ class VideoGenerationService:
 
         gpu_info.sort(key=lambda g: g["free_gb"], reverse=True)
         best = gpu_info[0]
+        survey = [(g["id"], g["name"], f"{g['free_gb']:.1f}GB free") for g in gpu_info]
         logger.info(
-            f"GPU survey: {[(g['id'], g['name'], f'{g['free_gb']:.1f}GB free') for g in gpu_info]} "
+            f"GPU survey: {survey} "
             f"→ using GPU {best['id']} ({best['name']}, {best['free_gb']:.1f}GB free)"
         )
         return best["id"]
@@ -238,13 +263,27 @@ class VideoGenerationService:
 
     # ── Core generation (runs in background thread) ──────────────────────
 
+    def _is_cancelled(self, job_id: str) -> bool:
+        """Check if a job has been cancelled (via JobStore or in-memory)."""
+        store = _get_job_store()
+        if store:
+            job = store.get_job(job_id)
+            return job is not None and job.get("status") == "cancelled"
+        with self._jobs_lock:
+            job = self._jobs.get(job_id)
+            return job is not None and job.get("status") == "cancelled"
+
     def _generate_worker(self, job_id: str, prompt: str,
                          negative_prompt: str, audio_path: Optional[str],
                          duration: float = 6.0, gen_params: Optional[Dict[str, Any]] = None):
         """Background thread: load model → generate (multi-segment if needed) → export."""
         try:
-            self._update_job(job_id, status="loading_model",
+            self._update_job(job_id, status="loading",
                              message="Loading CogVideoX model...")
+
+            if self._is_cancelled(job_id):
+                logger.info(f"Job {job_id} cancelled before model load")
+                return
 
             self._load_pipeline()
 
@@ -270,8 +309,13 @@ class VideoGenerationService:
             num_segments = min(num_segments, 5)  # Cap at 5 segments (~30s)
 
             all_frames: List = []
+            all_seeds: List[int] = []
 
             for seg in range(num_segments):
+                if self._is_cancelled(job_id):
+                    logger.info(f"Job {job_id} cancelled at segment {seg}")
+                    self._update_job(job_id, status="cancelled", message="Cancelled by user")
+                    return
                 seg_label = (
                     f"segment {seg + 1}/{num_segments} "
                     if num_segments > 1 else ""
@@ -293,8 +337,8 @@ class VideoGenerationService:
                         f"seamless motion"
                     )
 
-                import random
                 seed = random.randint(0, 2**32 - 1) + seg
+                all_seeds.append(seed)
                 with torch.inference_mode():
                     output = self._pipe(
                         prompt=seg_prompt,
@@ -354,6 +398,15 @@ class VideoGenerationService:
                 if muxed.exists():
                     output_file = muxed
 
+            # Record provenance (seeds, model, params)
+            provenance = {
+                "model": self.model_id,
+                "seeds": all_seeds,
+                "backend": "cogvideox-diffusers",
+                "num_segments": num_segments,
+                "total_frames": len(all_frames),
+            }
+
             self._update_job(
                 job_id,
                 status="complete",
@@ -363,7 +416,22 @@ class VideoGenerationService:
                 ),
                 filename=output_file.name,
                 video_path=str(output_file),
+                provenance=provenance,
             )
+
+            # Write metadata sidecar & update job store outputs
+            store = _get_job_store()
+            if store:
+                try:
+                    store.update_status(
+                        job_id, "complete",
+                        outputs=[str(output_file)],
+                        provenance=provenance,
+                    )
+                    store.write_metadata_sidecar(job_id, output_file)
+                except Exception as e:
+                    logger.warning(f"Failed to update job store for {job_id}: {e}")
+
             logger.info(
                 f"✓ Video generation complete: {output_file.name} "
                 f"({len(all_frames)} frames, {total_secs:.1f}s)"
@@ -373,6 +441,12 @@ class VideoGenerationService:
             logger.error(f"❌ Video generation failed for job {job_id}: {e}",
                          exc_info=True)
             self._update_job(job_id, status="error", message=str(e))
+            store = _get_job_store()
+            if store:
+                try:
+                    store.update_status(job_id, "error", error_log=str(e))
+                except Exception:
+                    pass
             # Clean up partial output files
             for partial in VIDEO_OUTPUT_DIR.glob(f"*{job_id}*"):
                 try:
@@ -455,9 +529,30 @@ class VideoGenerationService:
     # ── Job tracking helpers ─────────────────────────────────────────────
 
     def _update_job(self, job_id: str, **kwargs):
+        """Update both in-memory job dict and unified job store."""
         with self._jobs_lock:
             if job_id in self._jobs:
                 self._jobs[job_id].update(kwargs)
+        # Also update job store status if available
+        status = kwargs.get("status")
+        if status:
+            store = _get_job_store()
+            if store:
+                status_map = {
+                    "loading_model": "loading",
+                    "loading": "loading",
+                    "generating": "generating",
+                    "encoding": "encoding",
+                    "complete": "complete",
+                    "error": "error",
+                    "cancelled": "cancelled",
+                }
+                mapped = status_map.get(status)
+                if mapped:
+                    try:
+                        store.update_status(job_id, mapped)
+                    except Exception:
+                        pass
 
     # ── Public API ───────────────────────────────────────────────────────
 
@@ -478,7 +573,8 @@ class VideoGenerationService:
         Submit a video generation job.
         Uses CogVideoX diffusers pipeline with multi-GPU and multi-segment support.
         """
-        job_id = uuid.uuid4().hex[:12]
+        # Create job in unified store first (gives us a proper UUID)
+        store = _get_job_store()
 
         # Snapshot per-request params (never mutate self)
         local_width = width or self.width
@@ -513,7 +609,23 @@ class VideoGenerationService:
             "segment_overlap": self.segment_overlap,
         }
 
-        # Register the job
+        # Register job in unified store (falls back to in-memory)
+        if store:
+            try:
+                job_id = store.create_job(
+                    job_type="video",
+                    prompt=prompt,
+                    negative_prompt=negative_prompt,
+                    params=gen_params,
+                    provenance={"model": self.model_id, "backend": "cogvideox-diffusers"},
+                )
+            except Exception as e:
+                logger.warning(f"JobStore create failed, using in-memory: {e}")
+                job_id = uuid.uuid4().hex[:12]
+        else:
+            job_id = uuid.uuid4().hex[:12]
+
+        # Also keep in-memory tracking for fast status checks
         with self._jobs_lock:
             self._jobs[job_id] = {
                 "status": "queued",

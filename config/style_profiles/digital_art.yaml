@@ -1,0 +1,19 @@
+# Digital Art Style Profile
+name: "digital_art"
+description: "High-quality digital art and concept art"
+
+defaults:
+  steps: 30
+  cfg_scale: 7.0
+  sampler: "dpmpp_2m_sde"
+  scheduler: "karras"
+  width: 1024
+  height: 1024
+
+prompt_suffix: >
+  digital art, concept art, highly detailed, professional,
+  artstation trending, vivid colors, dynamic composition
+
+negative_prompt: >
+  photo, photograph, low quality, blurry, amateur,
+  watermark, text, signature

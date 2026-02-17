@@ -1,0 +1,19 @@
+# Default Photorealistic Style Profile
+name: "photorealistic"
+description: "High-quality photorealistic imagery with natural lighting"
+
+defaults:
+  steps: 30
+  cfg_scale: 7.5
+  sampler: "dpmpp_2m_sde"
+  scheduler: "karras"
+  width: 1024
+  height: 1024
+
+prompt_suffix: >
+  photorealistic, 8k uhd, high detail, natural lighting,
+  professional photography, sharp focus, depth of field
+
+negative_prompt: >
+  cartoon, anime, illustration, painting, drawing, sketch,
+  low quality, blurry, distorted, deformed, watermark, text

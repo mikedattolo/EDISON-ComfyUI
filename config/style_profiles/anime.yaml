@@ -1,0 +1,19 @@
+# Anime/Illustration Style Profile
+name: "anime"
+description: "Anime and manga-style illustrations"
+
+defaults:
+  steps: 28
+  cfg_scale: 7.0
+  sampler: "euler_ancestral"
+  scheduler: "normal"
+  width: 832
+  height: 1216
+
+prompt_suffix: >
+  anime style, masterpiece, best quality, highly detailed,
+  vibrant colors, clean lineart, cel shading
+
+negative_prompt: >
+  photorealistic, 3d render, low quality, worst quality,
+  blurry, watermark, text, signature, extra limbs

@@ -314,6 +314,12 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "sing me", "beat for", "instrumental",
                              "background music", "soundtrack"]
 
+            # 3D/mesh generation patterns
+            mesh_patterns = ["3d model", "3d print", "generate mesh", "create mesh",
+                            "make a 3d", "generate 3d", "create 3d", "stl file",
+                            "glb file", "3d object", "3d asset", "sculpt",
+                            "make me a 3d", "design a 3d"]
+
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
@@ -323,6 +329,7 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
             has_video = any(pattern in msg_lower for pattern in video_patterns)
             has_music = any(pattern in msg_lower for pattern in music_patterns)
+            has_mesh = any(pattern in msg_lower for pattern in mesh_patterns)
 
             # Real-time queries get tools enabled for instant data retrieval
             if has_realtime:
@@ -337,6 +344,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Music generation request detected → agent mode with tools")
+            elif has_mesh:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("3D mesh generation request detected → agent mode with tools")
             elif any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
@@ -415,7 +426,14 @@ search_tool = None
 realtime_service = None
 video_service = None
 music_service = None
+mesh_service = None
 config = None
+
+# New subsystem globals
+job_store_instance = None
+memory_store_instance = None
+freshness_cache_instance = None
+workflow_memory_instance = None
 
 def _is_file_request(text: str) -> bool:
     """Check if user is explicitly requesting file/document creation.
@@ -1832,6 +1850,7 @@ async def lifespan(app: FastAPI):
     init_realtime_service()
     init_video_service()
     init_music_service()
+    _init_new_subsystems()
 
     # Optional model manager for hot-swap
     global model_manager
@@ -4407,9 +4426,6 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
                         )
                         # Clean up None values
                         response_dict = stream_response.dict(exclude_none=True)
-                        if "choices" in response_dict and len(response_dict["choices"]) > 0:
-                            if response_dict["choices"][0].get("delta") and "role" not in response_dict["choices"][0]["delta"]:
-                                pass
                         yield f"data: {json.dumps(response_dict)}\n\n"
         
         except Exception as e:
@@ -7019,6 +7035,419 @@ def test_extract_facts():
     
     print(f"\n✅ All {7} fact extraction tests passed!")
 
+
+# ═════════════════════════════════════════════════════════════════════════
+# NEW SUBSYSTEMS — Initialization + API Endpoints
+# ═════════════════════════════════════════════════════════════════════════
+
+def _init_new_subsystems():
+    """Initialize all new subsystems (job store, memory, freshness, mesh, workflows, observability)."""
+    global job_store_instance, memory_store_instance, freshness_cache_instance
+    global workflow_memory_instance, mesh_service
+
+    # Unified job store
+    try:
+        from .job_store import JobStore
+        job_store_instance = JobStore.get_instance()
+        logger.info("✓ Unified job store initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Job store init failed: {e}")
+        job_store_instance = None
+
+    # Three-tier memory store
+    try:
+        from .memory.store import MemoryStore
+        memory_store_instance = MemoryStore()
+        logger.info("✓ Memory store initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Memory store init failed: {e}")
+        memory_store_instance = None
+
+    # Freshness cache
+    try:
+        from .freshness import FreshnessCache
+        freshness_cache_instance = FreshnessCache()
+        logger.info("✓ Freshness cache initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Freshness cache init failed: {e}")
+        freshness_cache_instance = None
+
+    # Workflow memory
+    try:
+        from .workflow_memory import WorkflowMemory
+        workflow_memory_instance = WorkflowMemory()
+        logger.info("✓ Workflow memory initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Workflow memory init failed: {e}")
+        workflow_memory_instance = None
+
+    # 3D mesh service
+    try:
+        from .mesh import MeshGenerationService
+        if config:
+            mesh_service = MeshGenerationService(config)
+            logger.info("✓ 3D mesh generation service initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Mesh service init failed: {e}")
+        mesh_service = None
+
+    # Observability tracer
+    try:
+        from .observability import get_tracer
+        get_tracer()
+        logger.info("✓ Observability tracer initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Observability init failed: {e}")
+
+    # Tool registry
+    try:
+        from .tool_framework import get_tool_registry
+        get_tool_registry()
+        logger.info("✓ Tool registry initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Tool registry init failed: {e}")
+
+
+# ── Unified Generations API ──────────────────────────────────────────────
+
+@app.get("/generations")
+async def list_generations(
+    job_type: Optional[str] = None,
+    status: Optional[str] = None,
+    limit: int = 50,
+    offset: int = 0,
+):
+    """List generation jobs with optional filtering."""
+    if not job_store_instance:
+        raise HTTPException(status_code=503, detail="Job store not available")
+    return {"jobs": job_store_instance.list_jobs(job_type=job_type, status=status, limit=limit, offset=offset)}
+
+
+@app.get("/generations/{job_id}")
+async def get_generation(job_id: str):
+    """Get a specific generation job."""
+    if not job_store_instance:
+        raise HTTPException(status_code=503, detail="Job store not available")
+    job = job_store_instance.get_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    return job
+
+
+@app.post("/generations/{job_id}/cancel")
+async def cancel_generation(job_id: str):
+    """Cancel a generation job."""
+    if not job_store_instance:
+        raise HTTPException(status_code=503, detail="Job store not available")
+    cancelled = job_store_instance.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(status_code=400, detail="Job cannot be cancelled (not found or already finished)")
+    return {"job_id": job_id, "status": "cancelled"}
+
+
+# ── 3D Mesh Generation API ──────────────────────────────────────────────
+
+@app.post("/3d/generate")
+async def generate_3d(request: dict):
+    """Generate a 3D mesh from a text prompt."""
+    if not mesh_service:
+        raise HTTPException(status_code=503, detail="3D generation service not available")
+    prompt = request.get("prompt", "")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt required")
+    output_format = request.get("format", "glb")
+    params = request.get("params", {})
+    result = mesh_service.generate(prompt=prompt, output_format=output_format, params=params)
+    return result
+
+
+@app.get("/3d/status/{job_id}")
+async def mesh_status(job_id: str):
+    """Get status of a 3D generation job."""
+    if not mesh_service:
+        raise HTTPException(status_code=503, detail="3D generation service not available")
+    return mesh_service.get_status(job_id)
+
+
+@app.get("/3d/result/{job_id}")
+async def mesh_result(job_id: str):
+    """Get result of a completed 3D generation job."""
+    if not mesh_service:
+        raise HTTPException(status_code=503, detail="3D generation service not available")
+    result = mesh_service.get_result(job_id)
+    if not result:
+        raise HTTPException(status_code=404, detail="Result not found or job not complete")
+    return result
+
+
+# ── Memory API ───────────────────────────────────────────────────────────
+
+@app.get("/memory/entries")
+async def list_memories(
+    memory_type: Optional[str] = None,
+    key: Optional[str] = None,
+    tag: Optional[str] = None,
+    pinned_only: bool = False,
+    limit: int = 50,
+):
+    """List memory entries with optional filtering."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    from .memory.models import MemoryType
+    mt = MemoryType(memory_type) if memory_type else None
+    entries = memory_store_instance.search(memory_type=mt, key=key, tag=tag, pinned_only=pinned_only, limit=limit)
+    return {"entries": [e.to_dict() for e in entries]}
+
+
+@app.get("/memory/entries/{memory_id}")
+async def get_memory(memory_id: str):
+    """Get a specific memory entry."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    entry = memory_store_instance.get(memory_id)
+    if not entry:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return entry.to_dict()
+
+
+@app.post("/memory/entries")
+async def create_memory(request: dict):
+    """Create a new memory entry."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    from .memory.models import MemoryEntry, MemoryType
+    entry = MemoryEntry(
+        memory_type=MemoryType(request.get("memory_type", "episodic")),
+        key=request.get("key"),
+        content=request.get("content", ""),
+        confidence=request.get("confidence", 0.8),
+        tags=request.get("tags", []),
+        source_conversation_id=request.get("source_conversation_id"),
+        pinned=request.get("pinned", False),
+    )
+    mid = memory_store_instance.save(entry)
+    return {"id": mid, "status": "saved"}
+
+
+@app.put("/memory/entries/{memory_id}")
+async def update_memory(memory_id: str, request: dict):
+    """Update a memory entry."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    updated = memory_store_instance.update(memory_id, **request)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Memory not found or no valid fields")
+    return {"id": memory_id, "status": "updated"}
+
+
+@app.delete("/memory/entries/{memory_id}")
+async def delete_memory(memory_id: str):
+    """Delete a memory entry."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    deleted = memory_store_instance.delete(memory_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Memory not found")
+    return {"id": memory_id, "status": "deleted"}
+
+
+@app.post("/memory/hygiene")
+async def run_memory_hygiene():
+    """Run memory hygiene (dedupe, merge, prune)."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    stats = memory_store_instance.run_hygiene()
+    return {"status": "completed", "stats": stats}
+
+
+@app.get("/memory/stats")
+async def memory_stats():
+    """Get memory store statistics."""
+    if not memory_store_instance:
+        raise HTTPException(status_code=503, detail="Memory store not available")
+    return memory_store_instance.get_stats()
+
+
+# ── Knowledge Packs API ─────────────────────────────────────────────────
+
+@app.get("/knowledge-packs")
+async def list_knowledge_packs():
+    """List available and installed knowledge packs."""
+    try:
+        from services.knowledge_packs.manager import KnowledgePackManager
+        mgr = KnowledgePackManager()
+        return mgr.status()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Knowledge pack system unavailable: {e}")
+
+
+@app.post("/knowledge-packs/{pack_id}/install")
+async def install_knowledge_pack(pack_id: str):
+    """Install a knowledge pack."""
+    try:
+        from services.knowledge_packs.manager import KnowledgePackManager
+        mgr = KnowledgePackManager()
+        result = mgr.install(pack_id)
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge-packs/{pack_id}/uninstall")
+async def uninstall_knowledge_pack(pack_id: str):
+    """Uninstall a knowledge pack."""
+    try:
+        from services.knowledge_packs.manager import KnowledgePackManager
+        mgr = KnowledgePackManager()
+        return mgr.uninstall(pack_id)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Dev KB API ───────────────────────────────────────────────────────────
+
+@app.get("/dev-kb/status")
+async def dev_kb_status():
+    """Get developer knowledge base status."""
+    try:
+        from .dev_kb.manager import DevKBManager
+        mgr = DevKBManager()
+        return mgr.status()
+    except Exception as e:
+        raise HTTPException(status_code=503, detail=f"Dev KB unavailable: {e}")
+
+
+@app.post("/dev-kb/add-repo")
+async def dev_kb_add_repo(request: dict):
+    """Add and index a repository."""
+    try:
+        from .dev_kb.manager import DevKBManager
+        mgr = DevKBManager()
+        name = request.get("name", "")
+        path = request.get("path", "")
+        collection = request.get("collection", "code_examples")
+        if not name or not path:
+            raise HTTPException(status_code=400, detail="name and path required")
+        return mgr.add_repo(name, path, collection)
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# ── Workflow Intelligence API ────────────────────────────────────────────
+
+@app.get("/workflows/recommendations")
+async def workflow_recommendations(job_type: str = "image", limit: int = 5):
+    """Get recommended workflows for a job type."""
+    if not workflow_memory_instance:
+        raise HTTPException(status_code=503, detail="Workflow memory not available")
+    recs = workflow_memory_instance.get_recommendations(job_type, limit=limit)
+    return {"recommendations": recs}
+
+
+@app.post("/workflows/record")
+async def record_workflow_result(request: dict):
+    """Record a generation result for workflow learning."""
+    if not workflow_memory_instance:
+        raise HTTPException(status_code=503, detail="Workflow memory not available")
+    record_id = workflow_memory_instance.record_result(
+        job_type=request.get("job_type", "image"),
+        prompt=request.get("prompt", ""),
+        params=request.get("params", {}),
+        success=request.get("success", True),
+        rating=request.get("rating", 0.0),
+        style_profile=request.get("style_profile"),
+        model_used=request.get("model_used"),
+        job_id=request.get("job_id"),
+        tags=request.get("tags"),
+    )
+    return {"id": record_id, "status": "recorded"}
+
+
+@app.get("/workflows/stats")
+async def workflow_stats():
+    """Get workflow intelligence statistics."""
+    if not workflow_memory_instance:
+        raise HTTPException(status_code=503, detail="Workflow memory not available")
+    return workflow_memory_instance.get_stats()
+
+
+# ── Freshness Cache API ─────────────────────────────────────────────────
+
+@app.get("/freshness/check")
+async def freshness_check(query: str = ""):
+    """Check if a query needs fresh web data."""
+    if not freshness_cache_instance:
+        raise HTTPException(status_code=503, detail="Freshness cache not available")
+    return {
+        "query": query,
+        "needs_refresh": freshness_cache_instance.needs_refresh(query),
+        "is_time_sensitive": freshness_cache_instance.is_time_sensitive(query),
+        "cached": freshness_cache_instance.get(query),
+    }
+
+
+# ── Observability API ───────────────────────────────────────────────────
+
+@app.get("/observability/events")
+async def observability_events(
+    event_type: Optional[str] = None,
+    correlation_id: Optional[str] = None,
+    limit: int = 100,
+):
+    """Get recent observability events."""
+    try:
+        from .observability import get_tracer
+        tracer = get_tracer()
+        return {"events": tracer.get_events(event_type=event_type, correlation_id=correlation_id, limit=limit)}
+    except Exception as e:
+        return {"events": [], "error": str(e)}
+
+
+@app.get("/observability/stats")
+async def observability_stats():
+    """Get observability statistics."""
+    try:
+        from .observability import get_tracer
+        return get_tracer().get_stats()
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Tool Registry API ───────────────────────────────────────────────────
+
+@app.get("/tools/list")
+async def list_tools():
+    """List available tools."""
+    try:
+        from .tool_framework import get_tool_registry
+        return {"tools": get_tool_registry().list_tools()}
+    except Exception as e:
+        return {"tools": [], "error": str(e)}
+
+
+@app.get("/tools/call-log")
+async def tool_call_log(limit: int = 50):
+    """Get recent tool call log."""
+    try:
+        from .tool_framework import get_tool_registry
+        return {"calls": get_tool_registry().get_call_log(limit=limit)}
+    except Exception as e:
+        return {"calls": [], "error": str(e)}
+
+
+# ── Style Profiles API ──────────────────────────────────────────────────
+
+@app.get("/style-profiles")
+async def list_style_profiles():
+    """List available image generation style profiles."""
+    try:
+        from .prompt_expansion import get_style_profiles
+        profiles = get_style_profiles()
+        return {"profiles": {k: {"name": v.get("name", k), "description": v.get("description", "")} for k, v in profiles.items()}}
+    except Exception as e:
+        return {"profiles": {}, "error": str(e)}
 
 
 if __name__ == "__main__":

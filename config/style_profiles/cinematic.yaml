@@ -1,0 +1,20 @@
+# Cinematic Style Profile
+name: "cinematic"
+description: "Cinematic film-like visuals with dramatic lighting"
+
+defaults:
+  steps: 35
+  cfg_scale: 8.0
+  sampler: "dpmpp_2m_sde"
+  scheduler: "karras"
+  width: 1344
+  height: 768
+
+prompt_suffix: >
+  cinematic, dramatic lighting, film grain, anamorphic,
+  color grading, depth of field, volumetric lighting,
+  professional cinematography
+
+negative_prompt: >
+  cartoon, anime, low quality, blurry, overexposed,
+  underexposed, flat lighting, amateur

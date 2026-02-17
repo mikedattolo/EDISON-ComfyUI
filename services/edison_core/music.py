@@ -12,10 +12,26 @@ import shutil
 import asyncio
 import threading
 import gc
+import random
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 
 logger = logging.getLogger(__name__)
+
+# Lazy import to avoid circular deps at module level
+_job_store = None
+
+
+def _get_job_store():
+    """Get the singleton JobStore (lazy import)."""
+    global _job_store
+    if _job_store is None:
+        try:
+            from services.edison_core.job_store import JobStore
+            _job_store = JobStore.get_instance()
+        except Exception as e:
+            logger.warning(f"JobStore unavailable for music service: {e}")
+    return _job_store
 
 def _find_ffmpeg() -> str:
     """Find ffmpeg binary, checking common paths if not on PATH."""
@@ -189,6 +205,8 @@ class MusicGenerationService:
         lyrics: str = "",
         reference_artist: str = "",
         duration: int = 15,
+        seed: Optional[int] = None,
+        variation_of: Optional[str] = None,
     ) -> Dict[str, Any]:
         """
         Generate music from a text prompt or structured parameters.
@@ -204,6 +222,8 @@ class MusicGenerationService:
             lyrics:            Song lyrics (used for theme extraction)
             reference_artist:  e.g. "inspired by Daft Punk"
             duration:          Length in seconds (max 60)
+            seed:              Deterministic seed for reproducibility
+            variation_of:      Job ID to create a variation of (uses similar seed)
         """
         duration = min(duration, self.max_duration)
 
@@ -220,10 +240,77 @@ class MusicGenerationService:
                 reference_artist=reference_artist,
             )
 
-        logger.info(f"Generating music: '{prompt}' ({duration}s)")
+        # Handle variation: look up parent job's seed and use nearby seed
+        if variation_of and seed is None:
+            store = _get_job_store()
+            if store:
+                parent = store.get_job(variation_of)
+                if parent and parent.get("provenance", {}).get("seed"):
+                    seed = parent["provenance"]["seed"] + random.randint(1, 100)
+                    logger.info(f"Variation of {variation_of}: using seed {seed}")
+
+        # Deterministic seed
+        if seed is None:
+            seed = random.randint(0, 2**32 - 1)
+
+        # Create job in unified store
+        store = _get_job_store()
+        job_id = None
+        gen_params = {
+            "duration": duration,
+            "model_size": self.model_size,
+            "seed": seed,
+            "genre": genre,
+            "mood": mood,
+            "instruments": instruments,
+            "tempo": tempo,
+            "style": style,
+        }
+        if store:
+            try:
+                job_id = store.create_job(
+                    job_type="music",
+                    prompt=prompt,
+                    params=gen_params,
+                    provenance={
+                        "model": f"musicgen-{self.model_size}",
+                        "seed": seed,
+                        "variation_of": variation_of,
+                    },
+                )
+            except Exception as e:
+                logger.warning(f"JobStore create failed for music: {e}")
+
+        logger.info(f"Generating music: '{prompt}' ({duration}s, seed={seed})")
 
         # Generate via transformers MusicGen
-        result = self._generate_with_transformers(prompt, duration)
+        result = self._generate_with_transformers(prompt, duration, seed)
+
+        # Update job store with result
+        if store and job_id:
+            try:
+                if result.get("ok"):
+                    output_path = Path(result["data"]["wav_path"])
+                    outputs = [result["data"]["wav_path"]]
+                    if result["data"].get("mp3_path"):
+                        outputs.append(result["data"]["mp3_path"])
+                    store.update_status(
+                        job_id, "complete",
+                        outputs=outputs,
+                        provenance={
+                            "model": f"musicgen-{self.model_size}",
+                            "seed": seed,
+                            "variation_of": variation_of,
+                            "sample_rate": result["data"].get("sample_rate"),
+                        },
+                    )
+                    store.write_metadata_sidecar(job_id, output_path)
+                    result["data"]["job_id"] = job_id
+                else:
+                    store.update_status(job_id, "error", error_log=result.get("error", "unknown"))
+            except Exception as e:
+                logger.warning(f"Failed to update job store for music {job_id}: {e}")
+
         if result.get("ok"):
             return result
 
@@ -241,7 +328,7 @@ class MusicGenerationService:
         }
 
     def _generate_with_transformers(
-        self, prompt: str, duration: int
+        self, prompt: str, duration: int, seed: int = 42
     ) -> Dict[str, Any]:
         """Generate music using MusicGen via Hugging Face transformers."""
         try:
@@ -252,6 +339,11 @@ class MusicGenerationService:
             import scipy.io.wavfile
 
             output_id = uuid.uuid4().hex[:12]
+
+            # Set deterministic seed for reproducibility
+            torch.manual_seed(seed)
+            if torch.cuda.is_available():
+                torch.cuda.manual_seed(seed)
 
             # Calculate max_new_tokens from duration
             # MusicGen generates at ~50 tokens/sec for the audio codec
@@ -316,6 +408,7 @@ class MusicGenerationService:
                     "file_size_bytes": file_size,
                     "prompt_used": prompt,
                     "model": f"musicgen-{self.model_size}",
+                    "seed": seed,
                 },
             }
 
