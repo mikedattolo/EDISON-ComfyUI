@@ -113,6 +113,40 @@ except ImportError:
         logger.warning("⚠ File generators not available")
         logger.warning("⚠ Orchestration modules not available")
 
+# Import Minecraft texture utilities
+try:
+    from .minecraft_utils import (
+        build_minecraft_prompt,
+        create_minecraft_workflow,
+        process_minecraft_texture,
+        generate_procedural_texture,
+        generate_model_json,
+        generate_blockstate_json,
+        model_to_obj,
+        generate_mtl,
+        create_resource_pack_zip,
+    )
+    _mc_utils_available = True
+    logger.info("✓ Minecraft utils loaded")
+except ImportError:
+    try:
+        from minecraft_utils import (
+            build_minecraft_prompt,
+            create_minecraft_workflow,
+            process_minecraft_texture,
+            generate_procedural_texture,
+            generate_model_json,
+            generate_blockstate_json,
+            model_to_obj,
+            generate_mtl,
+            create_resource_pack_zip,
+        )
+        _mc_utils_available = True
+        logger.info("✓ Minecraft utils loaded (direct import)")
+    except ImportError:
+        _mc_utils_available = False
+        logger.warning("⚠ Minecraft utils not available")
+
 # Force GPU usage - verify CUDA is available
 def verify_cuda():
     """Verify CUDA is available before loading models"""
@@ -8215,6 +8249,342 @@ async def provenance_recent(limit: int = 50):
     if not provenance_tracker_instance:
         return {"records": []}
     return {"records": provenance_tracker_instance.list_recent(limit=limit)}
+
+
+# ── Minecraft Texture & Model API ────────────────────────────────────────────
+
+# Directory for generated Minecraft assets
+MC_TEXTURES_DIR = REPO_ROOT / "outputs" / "minecraft"
+MC_TEXTURES_DIR.mkdir(parents=True, exist_ok=True)
+MC_DOWNLOADS_DIR = REPO_ROOT / "outputs" / "minecraft" / "downloads"
+MC_DOWNLOADS_DIR.mkdir(parents=True, exist_ok=True)
+
+# Track in-flight MC texture generations (prompt_id → metadata)
+_mc_pending: Dict[str, dict] = {}
+
+
+@app.get("/minecraft/install-status")
+async def mc_install_status():
+    """Return availability status for Minecraft texture generation."""
+    # Check ComfyUI
+    comfyui_status = "unknown"
+    try:
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        resp = requests.get(f"http://{comfyui_host}:{comfyui_port}/system_stats", timeout=3)
+        comfyui_status = "running" if resp.ok else "error"
+    except Exception:
+        comfyui_status = "offline"
+
+    # Check Pillow
+    try:
+        from PIL import Image as _img  # noqa: F401
+        pillow_status = "installed"
+    except ImportError:
+        pillow_status = "missing"
+
+    return {
+        "details": {
+            "comfyui": comfyui_status,
+            "pillow": pillow_status,
+            "minecraft_utils": "loaded" if _mc_utils_available else "missing",
+        },
+        "model_gen": _mc_utils_available,
+    }
+
+
+@app.post("/minecraft/generate-texture")
+async def mc_generate_texture(request: Request):
+    """Generate a Minecraft texture (procedural or AI-powered via ComfyUI)."""
+    if not _mc_utils_available:
+        raise HTTPException(status_code=501, detail="Minecraft utilities not installed.")
+
+    body = await request.json()
+    prompt = body.get("prompt", "stone block")
+    texture_type = body.get("texture_type", "block")
+    style = body.get("style", "pixel_art")
+    size = int(body.get("size", 16))
+    use_procedural = body.get("use_procedural", False)
+    palette_quantize = body.get("palette_quantize", True)
+    make_tile = body.get("make_tileable", True)
+    dither = body.get("dither", True)
+    ref_image_b64 = body.get("image")  # optional reference image
+
+    # ── Procedural path (instant) ─────────────────────────────
+    if use_procedural:
+        try:
+            img = generate_procedural_texture(
+                texture_type=texture_type,
+                name=prompt,
+                size=size,
+                style=style,
+            )
+            fname = f"mc_{texture_type}_{uuid.uuid4().hex[:8]}.png"
+            out_path = MC_TEXTURES_DIR / fname
+            img.save(str(out_path))
+            logger.info(f"Minecraft procedural texture saved: {fname}")
+            return {
+                "status": "complete",
+                "message": f"Procedural {texture_type} texture generated.",
+                "download_url": f"/minecraft/texture/{fname}",
+                "target_size": size,
+                "generation_method": "procedural",
+            }
+        except Exception as e:
+            logger.error(f"Procedural MC texture error: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+
+    # ── AI path (via ComfyUI) ─────────────────────────────────
+    try:
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+
+        pos_prompt, neg_prompt = build_minecraft_prompt(prompt, texture_type, style, size)
+        # Use 512×512 for AI gen regardless of target — will be post-processed down
+        workflow = create_minecraft_workflow(pos_prompt, neg_prompt, 512, 512)
+        resp = requests.post(f"{comfyui_url}/prompt", json={"prompt": workflow}, timeout=5)
+        if not resp.ok:
+            raise RuntimeError(f"ComfyUI returned {resp.status_code}")
+        prompt_id = resp.json().get("prompt_id")
+        if not prompt_id:
+            raise RuntimeError("No prompt_id from ComfyUI")
+
+        # Stash metadata for the status poller
+        _mc_pending[prompt_id] = {
+            "texture_type": texture_type,
+            "style": style,
+            "target_size": size,
+            "palette_quantize": palette_quantize,
+            "make_tileable": make_tile,
+            "dither": dither,
+            "prompt": prompt,
+        }
+        logger.info(f"Minecraft AI texture queued: prompt_id={prompt_id}")
+        return {"status": "generating", "prompt_id": prompt_id}
+
+    except requests.RequestException:
+        # ComfyUI offline — fall back to procedural
+        logger.warning("ComfyUI unreachable, falling back to procedural texture")
+        try:
+            img = generate_procedural_texture(
+                texture_type=texture_type, name=prompt, size=size, style=style,
+            )
+            fname = f"mc_{texture_type}_{uuid.uuid4().hex[:8]}.png"
+            out_path = MC_TEXTURES_DIR / fname
+            img.save(str(out_path))
+            return {
+                "status": "complete",
+                "message": "ComfyUI unavailable — procedural fallback used.",
+                "download_url": f"/minecraft/texture/{fname}",
+                "target_size": size,
+                "generation_method": "procedural_fallback",
+            }
+        except Exception as e2:
+            raise HTTPException(status_code=500, detail=str(e2))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/texture-status/{prompt_id}")
+async def mc_texture_status(prompt_id: str):
+    """Poll status of an AI-generated Minecraft texture."""
+    meta = _mc_pending.get(prompt_id)
+    if meta is None:
+        return {"status": "not_found", "detail": "Unknown prompt_id"}
+
+    try:
+        comfyui_config = config.get("edison", {}).get("comfyui", {})
+        comfyui_host = comfyui_config.get("host", "127.0.0.1")
+        if comfyui_host == "0.0.0.0":
+            comfyui_host = "127.0.0.1"
+        comfyui_port = comfyui_config.get("port", 8188)
+        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+
+        history_resp = requests.get(f"{comfyui_url}/history/{prompt_id}", timeout=5)
+        if not history_resp.ok:
+            return {"status": "generating"}
+
+        history = history_resp.json()
+        if prompt_id not in history:
+            # Still in queue?
+            try:
+                q = requests.get(f"{comfyui_url}/queue", timeout=3).json()
+                in_queue = any(
+                    item[1] == prompt_id
+                    for item in q.get("queue_running", []) + q.get("queue_pending", [])
+                )
+                if in_queue:
+                    return {"status": "generating"}
+            except Exception:
+                pass
+            return {"status": "generating"}
+
+        # Finished — find image
+        outputs = history[prompt_id].get("outputs", {})
+        for _node_id, node_output in outputs.items():
+            if "images" not in node_output:
+                continue
+            images = node_output["images"]
+            if not images:
+                continue
+            img_info = images[0]
+            filename = img_info["filename"]
+            subfolder = img_info.get("subfolder", "")
+            filetype = img_info.get("type", "output")
+
+            # Fetch raw image from ComfyUI
+            fetch_url = f"{comfyui_url}/view?filename={filename}&subfolder={subfolder}&type={filetype}"
+            img_resp = requests.get(fetch_url, timeout=10)
+            if not img_resp.ok:
+                return {"status": "error", "detail": "Failed to fetch image from ComfyUI"}
+
+            from PIL import Image as PILImage
+            raw_img = PILImage.open(io.BytesIO(img_resp.content)).convert("RGBA")
+
+            # Save full-res copy
+            full_fname = f"mc_{meta['texture_type']}_{uuid.uuid4().hex[:8]}_full.png"
+            full_path = MC_TEXTURES_DIR / full_fname
+            raw_img.save(str(full_path))
+
+            # Post-process to Minecraft style
+            processed = process_minecraft_texture(
+                raw_img,
+                target_size=meta["target_size"],
+                texture_type=meta["texture_type"],
+                style=meta["style"],
+                prompt=meta.get("prompt", ""),
+                make_tile=meta["make_tileable"],
+                use_palette=meta["palette_quantize"],
+            )
+            proc_fname = f"mc_{meta['texture_type']}_{uuid.uuid4().hex[:8]}.png"
+            proc_path = MC_TEXTURES_DIR / proc_fname
+            processed.save(str(proc_path))
+
+            # Clean up pending entry
+            _mc_pending.pop(prompt_id, None)
+
+            logger.info(f"Minecraft AI texture post-processed: {proc_fname}")
+            return {
+                "status": "complete",
+                "texture_type": meta["texture_type"],
+                "target_size": meta["target_size"],
+                "download_url": f"/minecraft/texture/{proc_fname}",
+                "full_res_url": f"/minecraft/texture/{full_fname}",
+                "post_processing": {
+                    "palette_quantized": meta["palette_quantize"],
+                    "dithered": meta.get("dither", False),
+                    "tileable": meta["make_tileable"],
+                    "enhanced": True,
+                },
+            }
+
+        # No images found in outputs — likely an error
+        return {"status": "error", "detail": "ComfyUI produced no images"}
+
+    except Exception as e:
+        logger.error(f"MC texture status error: {e}")
+        return {"status": "error", "detail": str(e)}
+
+
+@app.get("/minecraft/textures/list")
+async def mc_textures_list():
+    """List all generated Minecraft textures."""
+    textures = []
+    if MC_TEXTURES_DIR.exists():
+        for f in sorted(MC_TEXTURES_DIR.glob("*.png"), key=lambda p: p.stat().st_mtime, reverse=True):
+            # Skip full-res copies in the listing (they contain '_full')
+            tex_type = "block"
+            name = f.stem
+            if name.startswith("mc_"):
+                parts = name.split("_", 2)
+                if len(parts) >= 2:
+                    tex_type = parts[1]
+            textures.append({
+                "filename": f.name,
+                "texture_type": tex_type,
+                "download_url": f"/minecraft/texture/{f.name}",
+            })
+    return {"textures": textures}
+
+
+@app.post("/minecraft/generate-model")
+async def mc_generate_model(request: Request):
+    """Generate a Minecraft 1.7.10 model JSON + resource pack ZIP."""
+    if not _mc_utils_available:
+        raise HTTPException(status_code=501, detail="Minecraft utilities not installed.")
+
+    body = await request.json()
+    texture_filename = body.get("texture_filename")
+    model_type = body.get("model_type", "block")
+    name = body.get("name", "custom_block")
+    mod_id = body.get("mod_id", "modid")
+
+    if not texture_filename:
+        raise HTTPException(status_code=400, detail="texture_filename is required")
+
+    texture_path = MC_TEXTURES_DIR / texture_filename
+    if not texture_path.exists():
+        raise HTTPException(status_code=404, detail=f"Texture not found: {texture_filename}")
+
+    try:
+        model_json = generate_model_json(model_type, name, mod_id)
+        blockstate_json = generate_blockstate_json(model_type, name, mod_id)
+
+        zip_filename = create_resource_pack_zip(
+            texture_path=str(texture_path),
+            model_json=model_json,
+            blockstate_json=blockstate_json,
+            model_type=model_type,
+            name=name,
+            mod_id=mod_id,
+            output_dir=str(MC_DOWNLOADS_DIR),
+        )
+
+        # OBJ for 3D preview
+        obj_content = model_to_obj(model_json, name)
+        obj_fname = f"{name}.obj"
+        (MC_DOWNLOADS_DIR / obj_fname).write_text(obj_content)
+
+        result: Dict[str, Any] = {
+            "message": f"Model '{name}' ({model_type}) generated with resource pack.",
+            "enhanced": True,
+            "model_json": model_json,
+            "blockstate_json": blockstate_json,
+            "download_url": f"/minecraft/download/{zip_filename}",
+        }
+        if obj_fname:
+            result["obj_download_url"] = f"/minecraft/download/{obj_fname}"
+        return result
+
+    except Exception as e:
+        logger.error(f"MC model generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/minecraft/texture/{filename}")
+async def mc_serve_texture(filename: str):
+    """Serve a generated Minecraft texture PNG."""
+    fpath = MC_TEXTURES_DIR / filename
+    if not fpath.exists() or not fpath.is_file():
+        raise HTTPException(status_code=404, detail="Texture not found")
+    return FileResponse(str(fpath), media_type="image/png")
+
+
+@app.get("/minecraft/download/{filename}")
+async def mc_serve_download(filename: str):
+    """Serve a generated Minecraft resource pack ZIP or OBJ file."""
+    fpath = MC_DOWNLOADS_DIR / filename
+    if not fpath.exists() or not fpath.is_file():
+        raise HTTPException(status_code=404, detail="Download not found")
+    media = "application/zip" if filename.endswith(".zip") else "application/octet-stream"
+    return FileResponse(str(fpath), media_type=media, filename=filename)
 
 
 if __name__ == "__main__":
