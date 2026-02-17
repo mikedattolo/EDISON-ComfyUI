@@ -200,7 +200,7 @@ except Exception as e:
                     # Timeout or other error
                     try:
                         container.kill()
-                    except:
+                    except Exception:
                         pass
                     
                     execution_time = time.time() - start_time

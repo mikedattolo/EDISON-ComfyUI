@@ -67,3 +67,21 @@ else
   echo "❌ Some checks failed — see above"
   exit 1
 fi
+
+# 5. Unit tests (if available)
+echo ""
+echo "▸ Running unit tests..."
+TEST_FAIL=0
+for tf in tests/test_awareness.py tests/test_memory_and_files.py; do
+  if [ -f "$tf" ]; then
+    if python "$tf" 2>&1 | tail -1 | grep -q "ALL TESTS PASSED"; then
+      echo "  ✓ $tf"
+    else
+      echo "  ✗ $tf"
+      TEST_FAIL=1
+    fi
+  fi
+done
+if [ "$TEST_FAIL" -ne 0 ]; then
+  echo "  ⚠ Some tests failed"
+fi

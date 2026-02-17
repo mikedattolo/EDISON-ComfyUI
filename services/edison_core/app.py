@@ -443,6 +443,14 @@ planner_instance = None
 self_evaluator = None
 coral_plugin_registry = None
 
+# File, editing, provenance, and memory gate globals
+file_store_instance = None
+image_editor_instance = None
+file_editor_instance = None
+provenance_tracker_instance = None
+memory_gate_instance = None
+model_manager_v2_instance = None
+
 def _is_file_request(text: str) -> bool:
     """Check if user is explicitly requesting file/document creation.
     
@@ -3758,6 +3766,30 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             agents = [agent_catalog[name] for name in selected_agents if name in agent_catalog]
             logger.info(f"🐝 Swarm agents selected: {', '.join([a['name'] for a in agents])}")
 
+            # ── Swarm memory safety check ────────────────────────────
+            try:
+                from services.edison_core.swarm_safety import (
+                    get_swarm_memory_policy, apply_degraded_mode,
+                    group_agents_by_model, should_load_vision,
+                )
+                policy = get_swarm_memory_policy()
+                loaded_map = {
+                    "fast": llm_fast is not None,
+                    "medium": llm_medium is not None,
+                    "deep": llm_deep is not None,
+                }
+                swarm_mode_decision = policy.assess(agents, loaded_map)
+                logger.info(f"🐝 Swarm memory mode: {swarm_mode_decision}")
+
+                if swarm_mode_decision == "degraded":
+                    # Use fastest available model for everything
+                    fb_model = llm_fast or llm_medium or llm_deep
+                    fb_name = "Fast" if llm_fast else ("Medium" if llm_medium else "Deep")
+                    apply_degraded_mode(agents, fb_model, fb_name)
+                # time_slice is handled by existing sequential execution
+            except Exception as e:
+                logger.debug(f"Swarm safety check skipped: {e}")
+
             # Truncate long user input for swarm prompts to avoid context overflow
             swarm_user_message = truncate_text(request.message or "", max_chars=2500, label="User message")
 
@@ -4711,6 +4743,13 @@ async def generate_image(request: dict):
             if not _models_unloaded_for_image_gen:
                 unload_all_llm_models()
                 _models_unloaded_for_image_gen = True
+                # Memory gate secondary check — ensures v2-managed models are also freed
+                if memory_gate_instance:
+                    try:
+                        gate_result = memory_gate_instance.pre_heavy_task(required_vram_mb=4000)
+                        logger.info(f"Memory gate: ok={gate_result['ok']}, freed={gate_result['freed_mb']:.0f}MB")
+                    except Exception as e:
+                        logger.warning(f"Memory gate check failed (non-fatal): {e}")
         
         # Use provided ComfyUI URL or fall back to config
         if comfyui_url_override:
@@ -4888,6 +4927,24 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                     # Reload LLM models in background now that image gen is done
                     if _models_unloaded_for_image_gen:
                         reload_llm_models_background()
+                        # Post-heavy-task cleanup via memory gate
+                        if memory_gate_instance:
+                            try:
+                                memory_gate_instance.post_heavy_task()
+                            except Exception:
+                                pass
+                    
+                    # Record provenance
+                    if provenance_tracker_instance:
+                        try:
+                            provenance_tracker_instance.record(
+                                action="image_generation",
+                                model_used="SDXL/FLUX",
+                                parameters={"prompt_id": prompt_id},
+                                output_artifacts=[filename],
+                            )
+                        except Exception:
+                            pass
                     
                     return result
         
@@ -4988,6 +5045,11 @@ async def generate_video(request: dict):
         if not _models_unloaded_for_image_gen:
             unload_all_llm_models()
             _models_unloaded_for_image_gen = True
+            if memory_gate_instance:
+                try:
+                    memory_gate_instance.pre_heavy_task(required_vram_mb=6000)
+                except Exception:
+                    pass
 
     try:
         result = video_service.submit_video_generation(
@@ -5152,6 +5214,11 @@ async def generate_music_endpoint(request: dict):
         if not _models_unloaded_for_image_gen:
             unload_all_llm_models()
             _models_unloaded_for_image_gen = True
+            if memory_gate_instance:
+                try:
+                    memory_gate_instance.pre_heavy_task(required_vram_mb=4000)
+                except Exception:
+                    pass
 
     try:
         result = await asyncio.to_thread(
@@ -5171,9 +5238,27 @@ async def generate_music_endpoint(request: dict):
         # Reload LLMs after generation
         if _models_unloaded_for_image_gen:
             reload_llm_models_background()
+            if memory_gate_instance:
+                try:
+                    memory_gate_instance.post_heavy_task()
+                except Exception:
+                    pass
 
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "Music generation failed"))
+
+        # Record provenance
+        if provenance_tracker_instance and result.get("ok"):
+            try:
+                d = result.get("data", {})
+                provenance_tracker_instance.record(
+                    action="music_generation",
+                    model_used="musicgen",
+                    parameters={"prompt": request.get("prompt", ""), "duration": request.get("duration", 15)},
+                    output_artifacts=[d.get("filename", "")],
+                )
+            except Exception:
+                pass
 
         # Auto-save music to gallery
         try:
@@ -5283,7 +5368,7 @@ def load_gallery_db():
     ensure_gallery_dir()
     try:
         return json.loads(GALLERY_DB.read_text())
-    except:
+    except Exception:
         return {"images": []}
 
 def save_gallery_db(data):
@@ -5382,7 +5467,7 @@ def load_user_chats(user_id: str) -> list:
     if chats_file.exists():
         try:
             return json.loads(chats_file.read_text())
-        except:
+        except Exception:
             return []
     return []
 
@@ -6630,7 +6715,7 @@ async def system_stats():
         try:
             cpu_freq = psutil.cpu_freq()
             cpu_freq_ghz = round(cpu_freq.current / 1000, 2) if cpu_freq else 0
-        except:
+        except Exception:
             cpu_freq_ghz = 0
         
         # Try to get CPU model name
@@ -6641,7 +6726,7 @@ async def system_stats():
                     if "model name" in line:
                         cpu_name = line.split(":")[1].strip()
                         break
-        except:
+        except Exception:
             cpu_name = platform.processor() or "Unknown CPU"
         
         # Memory stats
@@ -6655,7 +6740,7 @@ async def system_stats():
             disk_used_gb = disk.used / (1024 ** 3)
             disk_total_gb = disk.total / (1024 ** 3)
             disk_percent = disk.percent
-        except:
+        except Exception:
             disk_used_gb = 0
             disk_total_gb = 0
             disk_percent = 0
@@ -6675,7 +6760,7 @@ async def system_stats():
                         if entries and entries[0].current > 0:
                             cpu_temp_c = entries[0].current
                             break
-        except:
+        except Exception:
             cpu_temp_c = 0
         
         # GPU stats - enumerate ALL GPUs with detailed info
@@ -7205,6 +7290,8 @@ def _init_new_subsystems():
     global workflow_memory_instance, mesh_service
     global conversation_state_mgr, project_state_mgr, suggestion_engine
     global planner_instance, self_evaluator, coral_plugin_registry
+    global file_store_instance, image_editor_instance, file_editor_instance
+    global provenance_tracker_instance, memory_gate_instance, model_manager_v2_instance
 
     # Unified job store
     try:
@@ -7316,6 +7403,49 @@ def _init_new_subsystems():
     except Exception as e:
         logger.warning(f"⚠ Coral plugin registry init failed: {e}")
         coral_plugin_registry = None
+
+    # ── File, editing, provenance, and memory subsystems ──────────────
+    try:
+        from services.files.file_store import get_file_store
+        file_store_instance = get_file_store()
+        logger.info("✓ File store initialized")
+    except Exception as e:
+        logger.warning(f"⚠ File store init failed: {e}")
+        file_store_instance = None
+
+    try:
+        from services.image_editing.editor import get_image_editor
+        image_editor_instance = get_image_editor()
+        logger.info("✓ Image editor initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Image editor init failed: {e}")
+        image_editor_instance = None
+
+    try:
+        from services.file_editing.editor import get_file_editor
+        file_editor_instance = get_file_editor()
+        logger.info("✓ File editor initialized")
+    except Exception as e:
+        logger.warning(f"⚠ File editor init failed: {e}")
+        file_editor_instance = None
+
+    try:
+        from services.provenance import get_provenance_tracker
+        provenance_tracker_instance = get_provenance_tracker()
+        logger.info("✓ Provenance tracker initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Provenance tracker init failed: {e}")
+        provenance_tracker_instance = None
+
+    try:
+        from services.edison_core.model_manager_v2 import get_model_manager, get_memory_gate
+        model_manager_v2_instance = get_model_manager()
+        memory_gate_instance = get_memory_gate()
+        logger.info("✓ ModelManager v2 + MemoryGate initialized")
+    except Exception as e:
+        logger.warning(f"⚠ ModelManager v2 init failed: {e}")
+        model_manager_v2_instance = None
+        memory_gate_instance = None
 
 
 # ── Unified Generations API ──────────────────────────────────────────────
@@ -7749,6 +7879,261 @@ async def get_coral_plugins():
         return {"plugins": []}
     plugins = coral_plugin_registry.list_plugins()
     return {"plugins": [{"name": p.name, "available": p.available} for p in plugins]}
+
+
+# ── File Upload & Management API ─────────────────────────────────────────
+
+@app.post("/files/upload")
+async def upload_file(file: UploadFile, session_id: Optional[str] = None):
+    """Upload a file (image or text)."""
+    if not file_store_instance:
+        raise HTTPException(status_code=503, detail="File store not available")
+    try:
+        data = await file.read()
+        meta = file_store_instance.upload(
+            filename=file.filename or "unnamed",
+            data=data,
+            session_id=session_id,
+        )
+        return {"ok": True, "file": meta.to_dict()}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/files/list")
+async def list_files(session_id: Optional[str] = None,
+                     file_type: Optional[str] = None,
+                     limit: int = 100, offset: int = 0):
+    """List uploaded files."""
+    if not file_store_instance:
+        return {"files": []}
+    files = file_store_instance.list_files(
+        session_id=session_id, file_type=file_type,
+        limit=limit, offset=offset,
+    )
+    return {"files": [f.to_dict() for f in files]}
+
+
+@app.get("/files/{file_id}")
+async def get_file_info(file_id: str):
+    """Get metadata for an uploaded file."""
+    if not file_store_instance:
+        raise HTTPException(status_code=503, detail="File store not available")
+    meta = file_store_instance.get(file_id)
+    if not meta:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"file": meta.to_dict()}
+
+
+@app.delete("/files/{file_id}")
+async def delete_file(file_id: str):
+    """Delete an uploaded file."""
+    if not file_store_instance:
+        raise HTTPException(status_code=503, detail="File store not available")
+    ok = file_store_instance.delete(file_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="File not found")
+    return {"ok": True}
+
+
+@app.get("/files/{file_id}/content")
+async def get_file_content(file_id: str):
+    """Get text content of an uploaded file (text files only)."""
+    if not file_store_instance:
+        raise HTTPException(status_code=503, detail="File store not available")
+    text = file_store_instance.read_text(file_id)
+    if text is None:
+        raise HTTPException(status_code=404, detail="File not found or not a text file")
+    return {"content": text, "file_id": file_id}
+
+
+# ── Image Editing API ────────────────────────────────────────────────────
+
+@app.post("/images/edit")
+async def edit_image(request: Request):
+    """Apply an edit to an image."""
+    if not image_editor_instance:
+        raise HTTPException(status_code=503, detail="Image editor not available")
+    try:
+        body = await request.json()
+        source = body.get("source_path") or body.get("file_id")
+        edit_type = body.get("edit_type", "")
+        params = body.get("parameters", {})
+
+        # Resolve file_id to path
+        source_id = None
+        source_path = source
+        if file_store_instance and not os.path.exists(str(source)):
+            source_id = source
+            path = file_store_instance.get_path(source)
+            if path:
+                source_path = str(path)
+            else:
+                raise HTTPException(status_code=404, detail="Source image not found")
+
+        # Dispatch to editor method
+        if edit_type == "crop":
+            box = params.get("box")
+            if not box or len(box) != 4:
+                raise HTTPException(status_code=400, detail="crop requires box=[left,top,right,bottom]")
+            rec = image_editor_instance.crop(source_path, tuple(box), source_id)
+        elif edit_type == "resize":
+            rec = image_editor_instance.resize(source_path, params.get("width", 512), params.get("height", 512), source_id)
+        elif edit_type == "rotate":
+            rec = image_editor_instance.rotate(source_path, params.get("angle", 90), source_id)
+        elif edit_type == "flip":
+            rec = image_editor_instance.flip(source_path, params.get("direction", "horizontal"), source_id)
+        elif edit_type == "brightness":
+            rec = image_editor_instance.adjust_brightness(source_path, params.get("factor", 1.5), source_id)
+        elif edit_type == "contrast":
+            rec = image_editor_instance.adjust_contrast(source_path, params.get("factor", 1.5), source_id)
+        elif edit_type == "saturation":
+            rec = image_editor_instance.adjust_saturation(source_path, params.get("factor", 1.5), source_id)
+        elif edit_type == "blur":
+            rec = image_editor_instance.blur(source_path, params.get("radius", 2.0), source_id)
+        elif edit_type == "sharpen":
+            rec = image_editor_instance.sharpen(source_path, params.get("factor", 2.0), source_id)
+        elif edit_type == "img2img":
+            prompt = body.get("prompt", "")
+            rec = image_editor_instance.img2img(source_path, prompt,
+                                                denoise=params.get("denoise", 0.65),
+                                                steps=params.get("steps", 20),
+                                                source_id=source_id)
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown edit_type: {edit_type}")
+
+        return {"ok": True, "edit": rec.to_dict()}
+    except HTTPException:
+        raise
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/images/edit/history")
+async def image_edit_history(limit: int = 50):
+    """Get image edit history."""
+    if not image_editor_instance:
+        return {"history": []}
+    return {"history": image_editor_instance.get_history(limit=limit)}
+
+
+# ── File Editing API ─────────────────────────────────────────────────────
+
+@app.post("/files/edit")
+async def edit_file(request: Request):
+    """Apply an edit to a text file."""
+    if not file_editor_instance:
+        raise HTTPException(status_code=503, detail="File editor not available")
+    try:
+        body = await request.json()
+        file_id = body.get("file_id", "")
+        edit_type = body.get("edit_type", "replace_content")
+
+        # Get current content
+        content = None
+        filename = "file.txt"
+        if file_store_instance:
+            text = file_store_instance.read_text(file_id)
+            if text is not None:
+                content = text
+                meta = file_store_instance.get(file_id)
+                filename = meta.original_filename if meta else filename
+
+        if content is None:
+            # Try loading from path
+            path = body.get("path", "")
+            if path:
+                content = file_editor_instance.load_file(path)
+                filename = Path(path).name
+            else:
+                raise HTTPException(status_code=404, detail="File not found")
+
+        if edit_type == "replace_content":
+            new_content = body.get("new_content", "")
+            result = file_editor_instance.apply_edit(
+                file_id, content, new_content, filename,
+                description=body.get("description", "Content replaced"),
+                source=body.get("source", "user_edit"),
+            )
+        elif edit_type == "search_replace":
+            result = file_editor_instance.apply_search_replace(
+                file_id, content,
+                body.get("search", ""), body.get("replace", ""),
+                filename,
+            )
+        elif edit_type == "line_edit":
+            result = file_editor_instance.apply_line_edit(
+                file_id, content,
+                body.get("line_number", 1), body.get("new_line", ""),
+                filename,
+            )
+        else:
+            raise HTTPException(status_code=400, detail=f"Unknown edit_type: {edit_type}")
+
+        return {"ok": result.success, **result.to_dict()}
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/files/versions/{file_id}")
+async def file_versions(file_id: str):
+    """Get version history for a file."""
+    if not file_editor_instance:
+        return {"versions": []}
+    return {"versions": file_editor_instance.get_versions(file_id)}
+
+
+@app.get("/files/versions/{file_id}/{version_id}")
+async def file_version_content(file_id: str, version_id: str):
+    """Get content of a specific file version."""
+    if not file_editor_instance:
+        raise HTTPException(status_code=503, detail="File editor not available")
+    content = file_editor_instance.get_version_content(file_id, version_id)
+    if content is None:
+        raise HTTPException(status_code=404, detail="Version not found")
+    return {"content": content, "file_id": file_id, "version_id": version_id}
+
+
+# ── System Memory API ────────────────────────────────────────────────────
+
+@app.get("/system/memory")
+async def system_memory():
+    """Get system memory snapshot (RAM + VRAM + loaded models)."""
+    try:
+        from services.edison_core.model_manager_v2 import get_memory_snapshot
+        snap = get_memory_snapshot()
+        result = snap.to_dict()
+        # Add loaded model info
+        if model_manager_v2_instance:
+            result["loaded_models"] = model_manager_v2_instance.loaded_models()
+            result["heavy_slot"] = model_manager_v2_instance.heavy_slot_occupant()
+        else:
+            result["loaded_models"] = {
+                "fast": llm_fast is not None,
+                "medium": llm_medium is not None,
+                "deep": llm_deep is not None,
+                "reasoning": llm_reasoning is not None,
+                "vision": llm_vision is not None,
+            }
+        return result
+    except Exception as e:
+        return {"error": str(e)}
+
+
+# ── Provenance API ───────────────────────────────────────────────────────
+
+@app.get("/provenance/recent")
+async def provenance_recent(limit: int = 50):
+    """Get recent provenance records."""
+    if not provenance_tracker_instance:
+        return {"records": []}
+    return {"records": provenance_tracker_instance.list_recent(limit=limit)}
 
 
 if __name__ == "__main__":
