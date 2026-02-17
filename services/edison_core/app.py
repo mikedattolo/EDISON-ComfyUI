@@ -435,6 +435,14 @@ memory_store_instance = None
 freshness_cache_instance = None
 workflow_memory_instance = None
 
+# Awareness subsystem globals
+conversation_state_mgr = None
+project_state_mgr = None
+suggestion_engine = None
+planner_instance = None
+self_evaluator = None
+coral_plugin_registry = None
+
 def _is_file_request(text: str) -> bool:
     """Check if user is explicitly requesting file/document creation.
     
@@ -2463,7 +2471,22 @@ async def chat(request: ChatRequest):
     
     # Try to get intent from coral service first
     intent = get_intent_from_coral(request.message)
-    
+
+    # ── Awareness: classify intent (lightweight hook for non-streaming) ──
+    _chat_session_id = getattr(request, 'chat_id', None) or "non_stream"
+    try:
+        if conversation_state_mgr is not None:
+            from services.state.intent_detection import classify_intent_with_goal
+            _conv = conversation_state_mgr.get_state(_chat_session_id)
+            classify_intent_with_goal(
+                message=request.message, coral_intent=intent,
+                last_intent=_conv.last_intent, last_goal=_conv.last_goal,
+                last_domain=_conv.active_domain, turn_count=_conv.turn_count,
+            )
+            conversation_state_mgr.increment_turn(_chat_session_id)
+    except Exception:
+        pass
+
     # Check for image generation intent and redirect
     if intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
         logger.info(f"Image generation intent detected via Coral, returning JSON response for frontend handling")
@@ -3178,6 +3201,60 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     is_recall, recall_query = detect_recall_intent(request.message)
     intent = get_intent_from_coral(request.message)
 
+    # ── Awareness: classify intent with goal + continuation ──────────
+    awareness_intent_result = None
+    session_id = getattr(request, 'chat_id', None) or request_id
+    try:
+        if conversation_state_mgr is not None:
+            from services.state.intent_detection import classify_intent_with_goal
+            from services.awareness.structured_logging import log_intent_decision, log_state_update
+
+            conv_state = conversation_state_mgr.get_state(session_id)
+            awareness_intent_result = classify_intent_with_goal(
+                message=request.message,
+                coral_intent=intent,
+                last_intent=conv_state.last_intent,
+                last_goal=conv_state.last_goal,
+                last_domain=conv_state.active_domain,
+                turn_count=conv_state.turn_count,
+            )
+
+            # Update conversation state
+            conversation_state_mgr.update_state(session_id, {
+                "last_intent": awareness_intent_result.intent,
+                "last_goal": awareness_intent_result.goal.value if awareness_intent_result.goal else None,
+                "last_confidence": awareness_intent_result.confidence,
+            })
+            conversation_state_mgr.increment_turn(session_id)
+
+            # Detect domain from message
+            from services.state.conversation_state import detect_domain
+            domain = detect_domain(request.message)
+            if domain:
+                conversation_state_mgr.update_state(session_id, {"active_domain": domain})
+
+            log_intent_decision(
+                intent=awareness_intent_result.intent,
+                goal=awareness_intent_result.goal.value if awareness_intent_result.goal else "unknown",
+                continuation=awareness_intent_result.continuation.value if awareness_intent_result.continuation else "unknown",
+                confidence=awareness_intent_result.confidence,
+                session_id=session_id,
+            )
+            log_state_update(session_id=session_id, updates={
+                "turn": conv_state.turn_count + 1,
+                "domain": domain or conv_state.active_domain,
+                "goal": awareness_intent_result.goal.value if awareness_intent_result.goal else None,
+            })
+    except Exception as e:
+        logger.debug(f"Awareness intent classification skipped: {e}")
+
+    # Detect project context from message
+    try:
+        if project_state_mgr is not None:
+            project_state_mgr.detect_project_from_message(session_id, request.message)
+    except Exception as e:
+        logger.debug(f"Project detection skipped: {e}")
+
     # Precompute image intent response so the outer handler stays non-generator
     image_intent_payload = None
     video_intent_payload = None
@@ -3224,6 +3301,41 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
     original_mode = mode
+
+    # ── Awareness: planner + routing log ─────────────────────────────
+    plan = None
+    try:
+        if planner_instance is not None and awareness_intent_result is not None:
+            from services.awareness.structured_logging import log_planner_decision, log_routing_decision
+            plan = planner_instance.create_plan(
+                intent=awareness_intent_result.intent,
+                goal=awareness_intent_result.goal.value if awareness_intent_result.goal else "unknown",
+                message=request.message,
+                has_image=has_images,
+                conversation_state=conversation_state_mgr.get_state(session_id).__dict__ if conversation_state_mgr else {},
+            )
+            log_planner_decision(
+                plan_id=plan.plan_id,
+                complexity=plan.complexity.value,
+                steps=[s.action for s in plan.steps],
+                session_id=session_id,
+            )
+            # Record plan artifacts in conversation state
+            if conversation_state_mgr:
+                conversation_state_mgr.update_state(session_id, {
+                    "current_task": awareness_intent_result.goal.value if awareness_intent_result.goal else None,
+                    "task_stage": "in_progress",
+                })
+
+            log_routing_decision(
+                mode=mode,
+                model_target=model_target,
+                tools_allowed=tools_allowed,
+                reasons=routing.get("reasons", []),
+                session_id=session_id,
+            )
+    except Exception as e:
+        logger.debug(f"Awareness planner/routing log skipped: {e}")
 
     # Heuristic fallback: if Coral didn't trigger video/music intents,
     # check the actual message text for video/music patterns directly
@@ -4175,6 +4287,19 @@ Do not include multiple summaries or "Final Summary" variants.
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
         except Exception as e:
             logger.error(f"Streaming generation failed: {e}")
+            # ── Awareness: record error ──────────────────────────────
+            try:
+                if conversation_state_mgr is not None:
+                    conversation_state_mgr.record_error(session_id)
+                if self_evaluator is not None:
+                    self_evaluator.record(
+                        session_id=session_id,
+                        intent=awareness_intent_result.intent if awareness_intent_result else (intent or "unknown"),
+                        outcome="error",
+                        details={"error": str(e), "mode": original_mode},
+                    )
+            except Exception:
+                pass
             # Cleanup
             with active_requests_lock:
                 if request_id in active_requests:
@@ -4199,6 +4324,40 @@ Do not include multiple summaries or "Final Summary" variants.
         cleaned_response = _dedupe_repeated_lines(cleaned_response)
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
+
+        # ── Awareness: post-response state update + self-eval ────────
+        try:
+            if conversation_state_mgr is not None:
+                conversation_state_mgr.update_state(session_id, {
+                    "task_stage": "completed",
+                    "last_generated_artifact": original_mode if original_mode in ("image", "video", "music", "mesh") else None,
+                    "last_tool_used": original_mode,
+                })
+            if self_evaluator is not None:
+                from services.awareness.structured_logging import log_eval_outcome
+                self_evaluator.record(
+                    session_id=session_id,
+                    intent=awareness_intent_result.intent if awareness_intent_result else (intent or "unknown"),
+                    outcome="success",
+                    details={"mode": original_mode, "model": model_name},
+                )
+                log_eval_outcome(
+                    session_id=session_id,
+                    intent=awareness_intent_result.intent if awareness_intent_result else (intent or "unknown"),
+                    outcome="success",
+                )
+            # Evaluate proactive suggestions 
+            if suggestion_engine is not None and conversation_state_mgr is not None:
+                conv_state = conversation_state_mgr.get_state(session_id)
+                suggestion_engine.evaluate(
+                    error_count=conv_state.error_count,
+                    last_error_message=None,
+                    task_duration_seconds=time.time() - active_requests.get(request_id, {}).get("timestamp", time.time()),
+                    last_intent=conv_state.last_intent,
+                    idle_seconds=0,
+                )
+        except Exception as e:
+            logger.debug(f"Awareness post-response update skipped: {e}")
         
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
         artifact = detect_artifact(cleaned_response)
@@ -7041,9 +7200,11 @@ def test_extract_facts():
 # ═════════════════════════════════════════════════════════════════════════
 
 def _init_new_subsystems():
-    """Initialize all new subsystems (job store, memory, freshness, mesh, workflows, observability)."""
+    """Initialize all new subsystems (job store, memory, freshness, mesh, workflows, observability, awareness)."""
     global job_store_instance, memory_store_instance, freshness_cache_instance
     global workflow_memory_instance, mesh_service
+    global conversation_state_mgr, project_state_mgr, suggestion_engine
+    global planner_instance, self_evaluator, coral_plugin_registry
 
     # Unified job store
     try:
@@ -7106,6 +7267,55 @@ def _init_new_subsystems():
         logger.info("✓ Tool registry initialized")
     except Exception as e:
         logger.warning(f"⚠ Tool registry init failed: {e}")
+
+    # ── Awareness subsystems ─────────────────────────────────────────────
+    try:
+        from services.state.conversation_state import get_conversation_state_manager
+        conversation_state_mgr = get_conversation_state_manager()
+        logger.info("✓ Conversation state manager initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Conversation state manager init failed: {e}")
+        conversation_state_mgr = None
+
+    try:
+        from services.state.project_state import get_project_state_manager
+        project_state_mgr = get_project_state_manager()
+        logger.info("✓ Project state manager initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Project state manager init failed: {e}")
+        project_state_mgr = None
+
+    try:
+        from services.awareness.suggestions import get_suggestion_engine
+        suggestion_engine = get_suggestion_engine()
+        logger.info("✓ Suggestion engine initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Suggestion engine init failed: {e}")
+        suggestion_engine = None
+
+    try:
+        from services.planner.planner import get_planner
+        planner_instance = get_planner()
+        logger.info("✓ Planner initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Planner init failed: {e}")
+        planner_instance = None
+
+    try:
+        from services.awareness.self_eval import get_self_evaluator
+        self_evaluator = get_self_evaluator()
+        logger.info("✓ Self-evaluator initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Self-evaluator init failed: {e}")
+        self_evaluator = None
+
+    try:
+        from services.coral_plugins.plugins import get_coral_plugin_registry
+        coral_plugin_registry = get_coral_plugin_registry()
+        logger.info("✓ Coral plugin registry initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Coral plugin registry init failed: {e}")
+        coral_plugin_registry = None
 
 
 # ── Unified Generations API ──────────────────────────────────────────────
@@ -7448,6 +7658,97 @@ async def list_style_profiles():
         return {"profiles": {k: {"name": v.get("name", k), "description": v.get("description", "")} for k, v in profiles.items()}}
     except Exception as e:
         return {"profiles": {}, "error": str(e)}
+
+
+# ── Awareness API ────────────────────────────────────────────────────────
+
+@app.get("/awareness/state/{session_id}")
+async def get_awareness_state(session_id: str):
+    """Get conversation state for a session."""
+    if not conversation_state_mgr:
+        return {"error": "Conversation state manager not initialized"}
+    state = conversation_state_mgr.get_state(session_id)
+    return {"session_id": session_id, "state": state.__dict__}
+
+
+@app.get("/awareness/project/{session_id}")
+async def get_project_context(session_id: str):
+    """Get project context for a session."""
+    if not project_state_mgr:
+        return {"error": "Project state manager not initialized"}
+    ctx = project_state_mgr.get_context(session_id)
+    return {"session_id": session_id, "project": ctx.to_dict()}
+
+
+@app.get("/awareness/suggestions")
+async def get_suggestions():
+    """Get pending proactive suggestions."""
+    if not suggestion_engine:
+        return {"suggestions": []}
+    pending = suggestion_engine.get_pending()
+    return {"suggestions": [{"id": s.suggestion_id, "category": s.category, "message": s.message, "priority": s.priority} for s in pending]}
+
+
+@app.post("/awareness/suggestions/{suggestion_id}/dismiss")
+async def dismiss_suggestion(suggestion_id: str):
+    """Dismiss a proactive suggestion."""
+    if not suggestion_engine:
+        return {"error": "Suggestion engine not initialized"}
+    suggestion_engine.dismiss(suggestion_id)
+    return {"ok": True}
+
+
+@app.get("/awareness/system")
+async def get_system_awareness():
+    """Get current system state snapshot."""
+    try:
+        from services.state.system_state import get_system_state
+        snapshot = get_system_state()
+        return {
+            "gpu": [g.__dict__ for g in snapshot.gpus] if snapshot.gpus else [],
+            "disk": [d.__dict__ for d in snapshot.disks] if snapshot.disks else [],
+            "comfyui_running": snapshot.comfyui_running,
+            "loaded_models": snapshot.loaded_models,
+            "active_jobs": snapshot.active_jobs,
+            "completed_jobs": snapshot.completed_jobs,
+            "timestamp": snapshot.timestamp,
+        }
+    except Exception as e:
+        return {"error": str(e)}
+
+
+@app.get("/awareness/eval/stats")
+async def get_eval_stats():
+    """Get self-evaluation statistics."""
+    if not self_evaluator:
+        return {"error": "Self-evaluator not initialized"}
+    return self_evaluator.get_stats()
+
+
+@app.get("/awareness/eval/recent")
+async def get_eval_recent(limit: int = 20):
+    """Get recent self-evaluation records."""
+    if not self_evaluator:
+        return {"records": []}
+    records = self_evaluator.get_recent(limit=limit)
+    return {"records": records}
+
+
+@app.get("/awareness/plan")
+async def get_plan_info():
+    """Get planner info."""
+    if not planner_instance:
+        return {"error": "Planner not initialized"}
+    return {"status": "ready", "planner": "rule-based"}
+
+
+@app.get("/awareness/coral-plugins")
+async def get_coral_plugins():
+    """List registered Coral plugins."""
+    if not coral_plugin_registry:
+        return {"plugins": []}
+    plugins = coral_plugin_registry.list_plugins()
+    return {"plugins": [{"name": p.name, "available": p.available} for p in plugins]}
 
 
 if __name__ == "__main__":
