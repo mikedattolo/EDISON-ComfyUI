@@ -569,6 +569,76 @@ def unload_all_llm_models():
     logger.info(f"✓ Unloaded LLM models: {', '.join(unloaded) if unloaded else 'none were loaded'}")
     return unloaded
 
+
+def _try_load_vision_on_demand() -> bool:
+    """
+    On-demand vision model loader.
+
+    When a vision request arrives but llm_vision is None (VRAM was too tight at
+    startup), this helper:
+      1. Unloads the medium model to free VRAM.
+      2. Attempts to load the vision model.
+      3. Returns True if vision is now available, False otherwise.
+
+    The medium model is reloaded later by reload_llm_models_background().
+    """
+    global llm_vision, llm_medium
+
+    # Already loaded?
+    if llm_vision is not None:
+        return True
+
+    core_config = config.get("edison", {}).get("core", {})
+    models_path = Path(core_config.get("models_path", "models/llm"))
+    vision_model_name = core_config.get("vision_model")
+    vision_clip_name = core_config.get("vision_clip")
+
+    if not vision_model_name or not vision_clip_name:
+        logger.warning("Vision model not configured in edison.yaml")
+        return False
+
+    vision_model_path = models_path / vision_model_name
+    vision_clip_path = models_path / vision_clip_name
+
+    if not vision_model_path.exists() or not vision_clip_path.exists():
+        logger.warning(f"Vision model files not found: {vision_model_path}")
+        return False
+
+    # Free VRAM by unloading the medium model
+    if llm_medium is not None:
+        logger.info("⏳ Unloading medium model to make room for vision model...")
+        llm_medium = None
+        _flush_gpu_memory()
+        time.sleep(0.5)
+
+    vision_n_ctx = core_config.get("vision_n_ctx", 4096)
+    default_n_gpu_layers = int(core_config.get("n_gpu_layers", -1))
+    vision_n_gpu_layers = int(core_config.get("vision_n_gpu_layers", default_n_gpu_layers))
+    tensor_split = core_config.get("tensor_split", [0.5, 0.25, 0.25])
+
+    common_kwargs = {"tensor_split": tensor_split, "verbose": False}
+    use_flash_attn = bool(core_config.get("use_flash_attn", False))
+    if use_flash_attn:
+        common_kwargs["use_flash_attn"] = True
+        common_kwargs["flash_attn_recompute"] = bool(core_config.get("flash_attn_recompute", False))
+
+    try:
+        logger.info(f"⏳ Loading vision model on-demand: {vision_model_name}")
+        llm_vision = Llama(
+            model_path=str(vision_model_path),
+            clip_model_path=str(vision_clip_path),
+            n_ctx=vision_n_ctx,
+            n_gpu_layers=vision_n_gpu_layers,
+            **common_kwargs,
+        )
+        logger.info("✓ Vision model loaded on-demand")
+        return True
+    except Exception as e:
+        llm_vision = None
+        logger.error(f"❌ Failed to load vision model on-demand: {e}")
+        return False
+
+
 def reload_llm_models_background():
     """Reload LLM models in a background thread after image/video generation.
     
@@ -2611,7 +2681,10 @@ async def chat(request: ChatRequest):
         if "qwen2-vl" in model_name.lower() or "vision" in model_name.lower():
             llm = llm_vision
             if not llm:
-                raise HTTPException(status_code=503, detail=f"Vision model not loaded. Selected: {model_name}")
+                if _try_load_vision_on_demand():
+                    llm = llm_vision
+                else:
+                    raise HTTPException(status_code=503, detail=f"Vision model not loaded. Selected: {model_name}")
         elif "72b" in model_name.lower() or "deep" in model_name.lower():
             llm = llm_deep
             if not llm:
@@ -2631,10 +2704,11 @@ async def chat(request: ChatRequest):
         # Select model based on target
         if model_target == "vision":
             if not llm_vision:
-                raise HTTPException(
-                    status_code=503,
-                    detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
-                )
+                if not _try_load_vision_on_demand():
+                    raise HTTPException(
+                        status_code=503,
+                        detail="Vision model not loaded. Please download LLaVA model to enable image understanding."
+                    )
             llm = llm_vision
             model_name = "vision"
             logger.info("Using vision model for image understanding")
@@ -3414,7 +3488,10 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         if "qwen2-vl" in model_name.lower() or "vision" in model_name.lower():
             llm = llm_vision
             if not llm:
-                raise HTTPException(status_code=503, detail=f"Vision model not loaded. Selected: {model_name}")
+                if _try_load_vision_on_demand():
+                    llm = llm_vision
+                else:
+                    raise HTTPException(status_code=503, detail=f"Vision model not loaded. Selected: {model_name}")
         elif "72b" in model_name.lower() or "deep" in model_name.lower():
             llm = llm_deep
             if not llm:
@@ -3436,7 +3513,8 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     else:
         if model_target == "vision":
             if not llm_vision:
-                raise HTTPException(status_code=503, detail="Vision model not loaded. Please download LLaVA model to enable image understanding.")
+                if not _try_load_vision_on_demand():
+                    raise HTTPException(status_code=503, detail="Vision model not loaded. Please download LLaVA model to enable image understanding.")
             llm = llm_vision
             model_name = "vision"
         elif model_target == "reasoning":
@@ -4427,7 +4505,10 @@ async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
     """Generate code from a UI mockup image using a vision model plus a code-capable model."""
     vision_model = llm_vision_code or llm_vision
     if not vision_model:
-        raise HTTPException(status_code=503, detail="Vision model not loaded.")
+        if _try_load_vision_on_demand():
+            vision_model = llm_vision
+        else:
+            raise HTTPException(status_code=503, detail="Vision model not loaded.")
 
     code_model = llm_deep or llm_reasoning or llm_medium or llm_fast
     if not code_model:
