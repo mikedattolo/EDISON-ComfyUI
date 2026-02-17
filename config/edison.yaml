@@ -83,6 +83,11 @@ edison:
   memory:
     global_scope: "global"
     project_scopes: true
+
+  rag:
+    storage_path: "/opt/data/rag"         # Qdrant vector DB storage (dedicated data drive)
+    knowledge_path: "/opt/data/knowledge"  # Knowledge base documents
+    wikipedia_path: "/opt/data/wikipedia"   # Wikipedia index
   
   coral:
     enabled: true

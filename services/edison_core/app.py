@@ -1869,8 +1869,9 @@ def init_rag_system():
     
     try:
         from services.edison_core.rag import RAGSystem
-        # Use absolute path for qdrant storage
-        qdrant_path = REPO_ROOT / "models" / "qdrant"
+        # Read storage path from config, fall back to REPO_ROOT/models/qdrant
+        rag_cfg = config.get("edison", {}).get("rag", {})
+        qdrant_path = rag_cfg.get("storage_path", str(REPO_ROOT / "models" / "qdrant"))
         rag_system = RAGSystem(storage_path=str(qdrant_path))
         logger.info(f"✓ RAG system initialized (storage: {qdrant_path})")
     except Exception as e:
