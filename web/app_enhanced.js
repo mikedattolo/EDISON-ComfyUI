@@ -449,6 +449,14 @@ class EdisonApp {
                 if (response.image_generation && response.image_generation.prompt) {
                     console.log('🎨 Backend triggered image generation via Coral');
                     await this.handleImageGeneration(response.image_generation.prompt, assistantMessageEl);
+                } else if (response.video_generation && response.video_generation.prompt) {
+                    console.log('🎬 Backend triggered video generation via Coral');
+                    this.updateMessage(assistantMessageEl, response.response || '🎬 Generating video...', 'video');
+                    await this.handleVideoGeneration(response.video_generation.prompt, assistantMessageEl);
+                } else if (response.music_generation && response.music_generation.prompt) {
+                    console.log('🎵 Backend triggered music generation via Coral');
+                    this.updateMessage(assistantMessageEl, response.response || '🎵 Generating music...', 'music');
+                    await this.handleMusicGeneration(response.music_generation.prompt, assistantMessageEl);
                 } else {
                     // Update assistant message
                     this.updateMessage(assistantMessageEl, response.response, response.mode_used);
@@ -747,7 +755,29 @@ class EdisonApp {
                                 // Done event
                                 this.currentRequestId = null;  // Clear request ID
                                 if (data.ok) {
-                                    // Success
+                                    // Handle video generation trigger from backend
+                                    if (data.video_generation && data.video_generation.prompt) {
+                                        console.log('🎬 Backend triggered video generation');
+                                        this.updateMessage(assistantMessageEl, data.response || '🎬 Generating video...', data.mode_used || 'video');
+                                        this.saveMessageToChat(message, data.response || '🎬 Generating video...', 'video');
+                                        await this.handleVideoGeneration(data.video_generation.prompt, assistantMessageEl);
+                                        return;
+                                    }
+                                    // Handle music generation trigger from backend
+                                    if (data.music_generation && data.music_generation.prompt) {
+                                        console.log('🎵 Backend triggered music generation');
+                                        this.updateMessage(assistantMessageEl, data.response || '🎵 Generating music...', data.mode_used || 'music');
+                                        this.saveMessageToChat(message, data.response || '🎵 Generating music...', 'music');
+                                        await this.handleMusicGeneration(data.music_generation.prompt, assistantMessageEl);
+                                        return;
+                                    }
+                                    // Handle image generation trigger from backend
+                                    if (data.image_generation && data.image_generation.prompt) {
+                                        console.log('🎨 Backend triggered image generation via SSE');
+                                        await this.handleImageGeneration(data.image_generation.prompt, assistantMessageEl);
+                                        return;
+                                    }
+                                    // Success — normal text response
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
                                     
                                     // Display swarm agent conversation if not already inserted
@@ -1598,6 +1628,139 @@ class EdisonApp {
         }
         
         return prompt;
+    }
+
+    async handleVideoGeneration(prompt, assistantMessageEl) {
+        try {
+            this.updateMessage(assistantMessageEl, '🎬 Generating video, please wait... This may take a few minutes.', 'video');
+
+            const response = await fetch(`${this.settings.apiEndpoint}/generate-video`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt, width: 720, height: 480, duration: 6 })
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Video generation failed: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            const promptId = result.prompt_id;
+
+            if (!promptId) {
+                throw new Error('No prompt_id returned from video generation');
+            }
+
+            // Poll for completion
+            let attempts = 0;
+            const maxAttempts = 300; // 5 minutes
+            while (attempts < maxAttempts) {
+                await new Promise(r => setTimeout(r, 2000));
+                const statusResp = await fetch(`${this.settings.apiEndpoint}/video-status/${promptId}`);
+                const status = await statusResp.json();
+                const st = (status.data && status.data.status) || status.status || 'generating';
+
+                if (st === 'complete' || st === 'complete_frames') {
+                    const videos = (status.data && status.data.videos) || [];
+                    if (videos.length > 0) {
+                        const videoUrl = `${this.settings.apiEndpoint}${videos[0].url || '/video/' + videos[0].filename}`;
+                        const html = `
+                            <p>✅ Video generated successfully!</p>
+                            <video controls autoplay muted style="max-width:100%; border-radius:8px; margin-top:10px;">
+                                <source src="${videoUrl}" type="video/mp4">
+                            </video>
+                            <p style="color:#888; margin-top:8px;"><strong>Prompt:</strong> ${prompt}</p>`;
+                        this.updateMessage(assistantMessageEl, html, 'video');
+                        this.saveMessageToChat(prompt, html, 'video');
+                    } else {
+                        this.updateMessage(assistantMessageEl, '✅ Video generation complete but no video file returned.', 'video');
+                    }
+                    return;
+                } else if (st === 'error') {
+                    throw new Error(status.data?.error || status.detail || 'Video generation failed');
+                }
+
+                // Update progress
+                const progressText = attempts < 10 ? 'Loading video model...' :
+                    attempts < 60 ? `Generating frames... (${attempts * 2}s)` :
+                    `Still generating... (${attempts * 2}s)`;
+                this.updateMessage(assistantMessageEl, `🎬 ${progressText}`, 'video');
+                attempts++;
+            }
+            throw new Error('Video generation timed out');
+        } catch (error) {
+            console.error('Video generation error:', error);
+            this.updateMessage(assistantMessageEl, `⚠️ Error generating video: ${error.message}`, 'error');
+        }
+    }
+
+    async handleMusicGeneration(prompt, assistantMessageEl) {
+        try {
+            this.updateMessage(assistantMessageEl, '🎵 Generating music, please wait...', 'music');
+
+            const response = await fetch(`${this.settings.apiEndpoint}/generate-music`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ prompt, duration: 15 })
+            });
+
+            if (!response.ok) {
+                const err = await response.json().catch(() => ({}));
+                throw new Error(err.detail || `Music generation failed: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+
+            // If instant result (e.g. generated synchronously)
+            if (result.audio_url || result.url) {
+                const audioUrl = `${this.settings.apiEndpoint}${result.audio_url || result.url}`;
+                const html = `
+                    <p>✅ Music generated!</p>
+                    <audio controls style="width:100%; margin-top:10px;">
+                        <source src="${audioUrl}" type="audio/wav">
+                    </audio>
+                    <p style="color:#888; margin-top:8px;"><strong>Prompt:</strong> ${prompt}</p>`;
+                this.updateMessage(assistantMessageEl, html, 'music');
+                this.saveMessageToChat(prompt, html, 'music');
+                return;
+            }
+
+            // Poll if async
+            const promptId = result.prompt_id || result.job_id;
+            if (promptId) {
+                let attempts = 0;
+                const maxAttempts = 180;
+                while (attempts < maxAttempts) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    const statusResp = await fetch(`${this.settings.apiEndpoint}/music-status/${promptId}`).catch(() => null);
+                    if (!statusResp || !statusResp.ok) { attempts++; continue; }
+                    const status = await statusResp.json();
+                    if (status.status === 'complete' && status.audio_url) {
+                        const audioUrl = `${this.settings.apiEndpoint}${status.audio_url}`;
+                        const html = `
+                            <p>✅ Music generated!</p>
+                            <audio controls style="width:100%; margin-top:10px;">
+                                <source src="${audioUrl}" type="audio/wav">
+                            </audio>
+                            <p style="color:#888; margin-top:8px;"><strong>Prompt:</strong> ${prompt}</p>`;
+                        this.updateMessage(assistantMessageEl, html, 'music');
+                        this.saveMessageToChat(prompt, html, 'music');
+                        return;
+                    } else if (status.status === 'error') {
+                        throw new Error(status.detail || 'Music generation failed');
+                    }
+                    attempts++;
+                }
+                throw new Error('Music generation timed out');
+            }
+
+            // If no prompt_id and no audio_url, show whatever we got
+            this.updateMessage(assistantMessageEl, result.message || '🎵 Music generation request submitted.', 'music');
+        } catch (error) {
+            console.error('Music generation error:', error);
+            this.updateMessage(assistantMessageEl, `⚠️ Error generating music: ${error.message}`, 'error');
+        }
     }
 
     createNewChat() {

@@ -6291,24 +6291,42 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     
     # Extract key facts from context if available
     if context_chunks:
-        facts = []
+        # Separate fact-type chunks (high priority) from conversation chunks
+        fact_items = []
+        conv_items = []
         for item in context_chunks:
             if isinstance(item, tuple):
                 text, metadata = item
-                # Extract key information from conversation text
-                if "my name is" in text.lower():
-                    # Try to extract the name
-                    import re
-                    match = re.search(r'my name is (\w+)', text.lower())
-                    if match:
-                        extracted_fact = f"The user's name is {match.group(1).title()}"
-                        facts.append(extracted_fact)
-                        logger.info(f"Extracted fact: {extracted_fact}")
-                facts.append(text)
-        
-        if facts:
+                if metadata.get("type") == "fact":
+                    fact_items.append(text)
+                else:
+                    conv_items.append(text)
+            else:
+                conv_items.append(item)
+
+        # Extract inline facts from conversation chunks (e.g. "my name is")
+        extracted = []
+        for text in conv_items:
+            if "my name is" in text.lower():
+                match = re.search(r'my name is (\w+)', text.lower())
+                if match:
+                    extracted.append(f"The user's name is {match.group(1).title()}")
+                    logger.info(f"Extracted fact: {extracted[-1]}")
+
+        # Compose ordered list: extracted inline facts → stored facts → conversation
+        ordered = extracted + fact_items + conv_items
+        # Remove duplicates while preserving order
+        seen_norm = set()
+        unique = []
+        for t in ordered:
+            norm = ' '.join(t.strip().split()).lower()
+            if norm not in seen_norm:
+                seen_norm.add(norm)
+                unique.append(t)
+
+        if unique:
             parts.append("FACTS FROM PREVIOUS CONVERSATIONS:")
-            for fact in facts[:2]:  # Limit to 2 facts
+            for fact in unique[:5]:  # Up to 5 items, facts first
                 parts.append(f"- {fact}")
             parts.append("")
     
@@ -7633,6 +7651,66 @@ async def mesh_result(job_id: str):
     if not result:
         raise HTTPException(status_code=404, detail="Result not found or job not complete")
     return result
+
+
+# ── 3D Alias Endpoints (frontend uses /generate-3d, /3d-models/list) ────
+
+MESH_OUTPUT_DIR = REPO_ROOT / "outputs" / "meshes"
+MESH_OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+@app.post("/generate-3d")
+async def generate_3d_alias(request: Request):
+    """Alias for /3d/generate — the web UI calls this path."""
+    body = await request.json()
+    if not mesh_service:
+        raise HTTPException(status_code=503, detail="3D generation service not available")
+    prompt = body.get("prompt", "")
+    if not prompt:
+        raise HTTPException(status_code=400, detail="Prompt required")
+    output_format = body.get("format", "glb")
+    params = {
+        "num_steps": body.get("num_steps", 64),
+        "guidance_scale": body.get("guidance_scale", 15),
+    }
+    if body.get("image"):
+        params["image"] = body["image"]
+    result = mesh_service.generate(prompt=prompt, output_format=output_format, params=params)
+    # Adapt result to match frontend expectations
+    job_id = result.get("job_id", result.get("id", ""))
+    return {
+        "message": result.get("message", "3D model generation started"),
+        "model_id": job_id,
+        "format": output_format,
+        "download_url": f"/3d/download/{job_id}.{output_format}",
+    }
+
+
+@app.get("/3d-models/list")
+async def list_3d_models():
+    """List generated 3D model files."""
+    models = []
+    if MESH_OUTPUT_DIR.exists():
+        for f in sorted(MESH_OUTPUT_DIR.glob("*.*"), key=lambda p: p.stat().st_mtime, reverse=True):
+            if f.suffix.lower() in (".glb", ".stl", ".obj", ".gltf"):
+                models.append({
+                    "filename": f.name,
+                    "format": f.suffix.lstrip("."),
+                    "size_bytes": f.stat().st_size,
+                    "download_url": f"/3d/download/{f.name}",
+                })
+    return {"models": models}
+
+
+@app.get("/3d/download/{filename}")
+async def download_3d_model(filename: str):
+    """Serve a generated 3D model file."""
+    fpath = MESH_OUTPUT_DIR / filename
+    if not fpath.exists() or not fpath.is_file():
+        raise HTTPException(status_code=404, detail="3D model not found")
+    media_types = {".glb": "model/gltf-binary", ".stl": "model/stl", ".obj": "text/plain", ".gltf": "model/gltf+json"}
+    media = media_types.get(fpath.suffix.lower(), "application/octet-stream")
+    return FileResponse(str(fpath), media_type=media, filename=filename)
 
 
 # ── Memory API ───────────────────────────────────────────────────────────
