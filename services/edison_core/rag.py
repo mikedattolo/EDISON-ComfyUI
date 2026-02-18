@@ -288,6 +288,58 @@ class RAGSystem:
         except Exception as e:
             logger.error(f"Error clearing collection: {e}")
     
+    def search_wikipedia(self, query: str, n_results: int = 3, min_score: float = 0.35) -> List[tuple]:
+        """
+        Search the Wikipedia collection for knowledge context.
+        Returns list of (text, metadata) tuples, same format as get_context().
+        Only returns results if a 'wikipedia' collection exists.
+        """
+        if not self.is_ready():
+            return []
+
+        wiki_collection = "wikipedia"
+        try:
+            collections = [c.name for c in self.client.get_collections().collections]
+            if wiki_collection not in collections:
+                return []
+
+            with self._lock:
+                query_vector = self.encoder.encode([query], show_progress_bar=False)[0]
+
+            search_results = self.client.query_points(
+                collection_name=wiki_collection,
+                query=query_vector.tolist(),
+                limit=n_results * 2,
+                with_payload=True,
+            )
+
+            points = search_results.points if hasattr(search_results, 'points') else search_results
+            results = []
+            for result in points:
+                if result.score < min_score:
+                    continue
+                text = result.payload.get("text", "")
+                title = result.payload.get("title", "")
+                if text:
+                    metadata = {
+                        "type": "wikipedia",
+                        "source": "wikipedia",
+                        "title": title,
+                        "score": round(result.score, 4),
+                        "final_score": round(result.score, 4),
+                    }
+                    results.append((text, metadata))
+
+            results = results[:n_results]
+            if results:
+                logger.info(f"Wikipedia: {len(results)} results for '{query[:60]}' "
+                            f"(scores: {[m['score'] for _, m in results]})")
+            return results
+
+        except Exception as e:
+            logger.debug(f"Wikipedia search skipped: {e}")
+            return []
+
     def get_stats(self) -> Dict:
         """Get statistics about the RAG system"""
         if not self.client:
@@ -295,12 +347,19 @@ class RAGSystem:
         
         try:
             collection_info = self.client.get_collection(self.collection_name)
-            return {
+            stats = {
                 "status": "ready",
                 "points_count": collection_info.points_count,
                 "collection_name": self.collection_name,
                 "encoder_loaded": self.encoder is not None
             }
+            # Include Wikipedia collection stats if available
+            try:
+                wiki_info = self.client.get_collection("wikipedia")
+                stats["wikipedia_points"] = wiki_info.points_count
+            except Exception:
+                stats["wikipedia_points"] = 0
+            return stats
         except Exception as e:
             logger.error(f"Error getting stats: {e}")
             return {"status": "error", "error": str(e)}

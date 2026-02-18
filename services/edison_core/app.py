@@ -2072,6 +2072,12 @@ async def rag_stats():
                 for p in msgs
             ]
             result["messages_count"] = len(msgs)
+            # Wikipedia collection stats
+            try:
+                wiki_info = rag_system.client.get_collection("wikipedia")
+                result["wikipedia_points"] = wiki_info.points_count
+            except Exception:
+                result["wikipedia_points"] = 0
         except Exception as inner_e:
             result["sample_error"] = str(inner_e)
         return result
@@ -2954,6 +2960,25 @@ async def chat(request: ChatRequest):
         except Exception as e:
             logger.warning(f"RAG retrieval failed: {e}")
     
+    # ── Wikipedia knowledge search ──────────────────────────────────────
+    wiki_chunks = []
+    if rag_system and rag_system.is_ready():
+        try:
+            msg_lower = request.message.lower()
+            # Skip Wikipedia for personal recall ("what's my name") or trivial greetings
+            is_personal = any(p in msg_lower for p in [
+                "my name", "who am i", "my favorite", "my age", "remember me",
+                "what did i", "what i said", "my ", "about me"
+            ])
+            is_greeting = msg_lower.strip() in ["hi", "hello", "hey", "thanks", "thank you", "ok", "bye"]
+            if not is_personal and not is_greeting and len(request.message.split()) >= 2:
+                wiki_results = rag_system.search_wikipedia(request.message, n_results=2)
+                if wiki_results:
+                    wiki_chunks = wiki_results
+                    logger.info(f"Wikipedia: {len(wiki_chunks)} knowledge chunks added")
+        except Exception as e:
+            logger.debug(f"Wikipedia search skipped: {e}")
+
     # Agent mode: Check if web search is requested
     search_results = []
     
@@ -3136,7 +3161,7 @@ async def chat(request: ChatRequest):
             context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
             full_prompt = f"Context: {context_text}\n\n{full_prompt}"
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
@@ -3676,6 +3701,24 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         except Exception as e:
             logger.warning(f"RAG retrieval failed: {e}")
 
+    # ── Wikipedia knowledge search (streaming) ──────────────────────────
+    wiki_chunks = []
+    if rag_system and rag_system.is_ready():
+        try:
+            msg_lower = request.message.lower()
+            is_personal = any(p in msg_lower for p in [
+                "my name", "who am i", "my favorite", "my age", "remember me",
+                "what did i", "what i said", "my ", "about me"
+            ])
+            is_greeting = msg_lower.strip() in ["hi", "hello", "hey", "thanks", "thank you", "ok", "bye"]
+            if not is_personal and not is_greeting and len(request.message.split()) >= 2:
+                wiki_results = rag_system.search_wikipedia(request.message, n_results=2)
+                if wiki_results:
+                    wiki_chunks = wiki_results
+                    logger.info(f"Wikipedia (stream): {len(wiki_chunks)} knowledge chunks added")
+        except Exception as e:
+            logger.debug(f"Wikipedia search skipped: {e}")
+
     search_results = []
     if mode in ["agent", "work"] and search_tool:
         msg_lower = request.message.lower()
@@ -3727,7 +3770,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
             full_prompt = f"Context: {context_text}\n\n{full_prompt}"
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
 
     logger.info(f"Prompt length: {len(full_prompt)} chars")
 
@@ -4292,7 +4335,7 @@ Do not include multiple summaries or "Final Summary" variants.
                 steps_context.append(step_info)
             steps_text = "\n\n".join(steps_context)
             system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
-            full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history)
+            full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
         
         assistant_response = ""
         client_disconnected = False
@@ -6267,8 +6310,8 @@ def truncate_text(text: str, max_chars: int = 3000, label: str = "text") -> str:
     return f"{truncated}\n\n[TRUNCATED {label}: {len(text)} chars total]"
 
 
-def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None) -> str:
-    """Build the complete prompt with context, search results, and conversation history"""
+def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None, wiki_chunks: list = None) -> str:
+    """Build the complete prompt with context, search results, Wikipedia knowledge, and conversation history"""
     parts = [system_prompt, ""]
     
     # Add recent conversation history for context
@@ -6331,6 +6374,23 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 parts.append(f"- {fact}")
             parts.append("")
     
+    # Add Wikipedia knowledge if available
+    if wiki_chunks:
+        parts.append("RELEVANT KNOWLEDGE (from Wikipedia):")
+        for item in wiki_chunks[:2]:
+            if isinstance(item, tuple):
+                text, meta = item
+                title = meta.get("title", "")
+                # Truncate long wiki chunks
+                text_clean = truncate_text(text, max_chars=600, label="wiki")
+                if title:
+                    parts.append(f"- [{title}] {text_clean}")
+                else:
+                    parts.append(f"- {text_clean}")
+            else:
+                parts.append(f"- {truncate_text(item, max_chars=600, label='wiki')}")
+        parts.append("")
+
     user_message = truncate_text(user_message or "", max_chars=2500, label="user message")
     parts.append(f"User: {user_message}")
     parts.append("Assistant:")
