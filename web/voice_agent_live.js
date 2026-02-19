@@ -799,14 +799,17 @@ class EdisonAgentLiveView {
 
 // Wait for EdisonApp to be ready, then attach
 document.addEventListener('DOMContentLoaded', () => {
-    // Retry until app is ready
+    // Retry until app is ready (app may be at window.app or window.edisonApp)
     const waitForApp = setInterval(() => {
-        if (window.app) {
+        const appRef = window.edisonApp || window.app;
+        if (appRef) {
             clearInterval(waitForApp);
+            // Ensure window.app is set for backward compatibility
+            if (!window.app) window.app = appRef;
             // Voice Assistant
-            window.edisonVoice = new EdisonVoiceAssistant(window.app);
+            window.edisonVoice = new EdisonVoiceAssistant(appRef);
             // Agent Live View
-            window.edisonAgentLive = new EdisonAgentLiveView(window.app);
+            window.edisonAgentLive = new EdisonAgentLiveView(appRef);
             console.log('✓ EDISON Voice + Agent Live View initialized');
         }
     }, 200);
