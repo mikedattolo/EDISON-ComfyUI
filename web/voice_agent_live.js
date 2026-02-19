@@ -187,8 +187,14 @@ class EdisonVoiceAssistant {
     // ── STT ───────────────────────────────────────────────────────────
 
     _startListening() {
-        // Track network error retries
-        if (!this._networkErrorCount) this._networkErrorCount = 0;
+        // Abort any previous recognition to prevent parallel instances
+        if (this.recognition) {
+            try { this.recognition.abort(); } catch {}
+            this.recognition = null;
+        }
+
+        // Initialize network error counter (persists across retries)
+        if (this._networkErrorCount === undefined) this._networkErrorCount = 0;
 
         // Try Web Speech API first
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
@@ -198,13 +204,19 @@ class EdisonVoiceAssistant {
             this.recognition.interimResults = true;
             this.recognition.lang = 'en-US';
 
+            // Flag: onerror sets this so onend won't double-retry
+            let errorHandled = false;
+
             this.recognition.onstart = () => {
                 this.isListening = true;
-                this._networkErrorCount = 0;  // Reset on successful start
+                // DON'T reset _networkErrorCount here — onstart fires even
+                // when Google servers are unreachable (the start is local)
                 this._setStatus('Listening…');
             };
 
             this.recognition.onresult = (event) => {
+                // Got actual speech results — NOW we know it works, reset counter
+                this._networkErrorCount = 0;
                 let interim = '';
                 let final_ = '';
                 for (let i = event.resultIndex; i < event.results.length; i++) {
@@ -220,6 +232,7 @@ class EdisonVoiceAssistant {
 
             this.recognition.onend = () => {
                 this.isListening = false;
+                if (errorHandled) return;  // onerror already handled retry/stop
                 if (this.currentTranscript.trim()) {
                     this._sendTranscript(this.currentTranscript.trim());
                 } else if (this.isActive) {
@@ -231,14 +244,19 @@ class EdisonVoiceAssistant {
             };
 
             this.recognition.onerror = (e) => {
+                errorHandled = true;
                 console.warn('Speech recognition error:', e.error);
                 if (e.error === 'not-allowed') {
                     this._setStatus('Microphone access denied');
-                } else if (e.error === 'network') {
+                    return;
+                }
+                // Count network AND aborted errors (aborted cascades from network failures)
+                if (e.error === 'network' || e.error === 'aborted') {
                     this._networkErrorCount++;
-                    console.warn(`[Voice] Network error #${this._networkErrorCount}`);
+                    console.warn(`[Voice] Recognition error #${this._networkErrorCount} (${e.error})`);
                     if (this._networkErrorCount >= 2) {
                         // Stop retrying, show clear message with type-to-speak option
+                        this._stopListening();
                         this._setStatus('Speech recognition unavailable');
                         document.getElementById('voiceTranscript').textContent =
                             'Browser speech recognition needs internet access to Google servers. ' +
@@ -251,6 +269,15 @@ class EdisonVoiceAssistant {
                         setTimeout(() => { if (this.isActive) this._startListening(); }, 1500);
                     }
                 } else if (this.isActive) {
+                    this._networkErrorCount++;
+                    if (this._networkErrorCount >= 3) {
+                        this._stopListening();
+                        this._setStatus('Speech recognition not working');
+                        document.getElementById('voiceTranscript').textContent =
+                            'Speech recognition failed repeatedly. Type your message below instead.';
+                        this._showVoiceTextInput();
+                        return;
+                    }
                     setTimeout(() => { if (this.isActive) this._startListening(); }, 1000);
                 }
             };
