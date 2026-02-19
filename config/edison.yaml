@@ -150,7 +150,7 @@ edison:
     server_tts: true        # edge-tts neural voices for text-to-speech
     stt_model: "base"       # Whisper model: tiny, base, small, medium, large-v3
     stt_device: "cpu"       # cpu recommended (avoids GPU conflicts with LLMs)
-    tts_voice: "en-US-GuyNeural"  # Default voice (see GET /voice/voices for options)
+    tts_voice: "en-AU-WilliamNeural"  # Default voice (see GET /voice/voices for options)
 
   agent_live_view:
     enabled: true          # Show live activity panel in UI during agent tasks
