@@ -4232,7 +4232,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                             repeat_penalty=1.3,
                             frequency_penalty=0.4,
                             presence_penalty=0.3,
-                            temperature=temp,
                             stream=False
                         )
                         return stream["choices"][0]["message"]["content"]
