@@ -9006,11 +9006,25 @@ async def mc_serve_download(filename: str):
 
 if __name__ == "__main__":
     import uvicorn
-    
-    host = config.get("edison", {}).get("core", {}).get("host", "127.0.0.1") if config else "127.0.0.1"
+    from pathlib import Path as _Path
+
+    host = config.get("edison", {}).get("core", {}).get("host", "0.0.0.0") if config else "0.0.0.0"
     port = config.get("edison", {}).get("core", {}).get("port", 8811) if config else 8811
-    
+
+    # HTTPS: auto-detect self-signed certs (same as edison-web)
+    _repo_root = _Path(__file__).parent.parent.parent.resolve()
+    _cert = _repo_root / "certs" / "cert.pem"
+    _key = _repo_root / "certs" / "key.pem"
+    ssl_kwargs = {}
+    if _cert.exists() and _key.exists():
+        ssl_kwargs["ssl_certfile"] = str(_cert)
+        ssl_kwargs["ssl_keyfile"] = str(_key)
+        logger.info(f"🔒 HTTPS enabled for Core API with certs from {_cert.parent}")
+    else:
+        logger.warning(
+            "⚠ No certs found — running HTTP only. "
+            "Run: bash scripts/generate_certs.sh"
+        )
+
     logger.info(f"Starting EDISON Core on {host}:{port}")
-    uvicorn.run(app, host=host, port=port, log_level="info")
-    
-    # Shutdown
+    uvicorn.run(app, host=host, port=port, log_level="info", **ssl_kwargs)

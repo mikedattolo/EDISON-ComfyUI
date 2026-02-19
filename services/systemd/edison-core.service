@@ -10,7 +10,8 @@ WorkingDirectory=/opt/edison
 Environment="PATH=/opt/edison/.venv/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="CUDA_VISIBLE_DEVICES=0,1,2"
-ExecStart=/opt/edison/.venv/bin/python -m uvicorn services.edison_core.app:app --host 127.0.0.1 --port 8811 --workers 1
+# Runs app.py directly so its __main__ block auto-detects certs for HTTPS
+ExecStart=/opt/edison/.venv/bin/python services/edison_core/app.py
 Restart=always
 RestartSec=2
 
