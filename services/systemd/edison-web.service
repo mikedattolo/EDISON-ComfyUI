@@ -8,8 +8,8 @@ User=edison
 Group=edison
 WorkingDirectory=/opt/edison
 Environment="PATH=/opt/edison/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
-# HTTPS enabled automatically if /opt/edison/certs/cert.pem exists
-ExecStart=/opt/edison/.venv/bin/python -m uvicorn services.edison_web.service:app --host 0.0.0.0 --port 8080 --ssl-keyfile /opt/edison/certs/key.pem --ssl-certfile /opt/edison/certs/cert.pem
+# Runs service.py directly so its __main__ block auto-detects certs for HTTPS
+ExecStart=/opt/edison/.venv/bin/python services/edison_web/service.py
 Restart=on-failure
 RestartSec=10s
 
