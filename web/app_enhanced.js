@@ -48,12 +48,15 @@ class EdisonApp {
     }
 
     getDefaultEndpoints() {
+        // All API calls go through the web server's reverse proxy (/api/*)
+        // so the browser only needs one HTTPS origin (port 8080).
+        const origin = window.location.origin;  // e.g. https://host:8080
         const protocol = window.location.protocol || 'http:';
         const host = window.location.hostname || 'localhost';
         return {
-            apiEndpoint: `${protocol}//${host}:8811`,
+            apiEndpoint: `${origin}/api`,
             comfyuiEndpoint: `${protocol}//${host}:8188`,
-            voiceEndpoint: `${protocol}//${host}:8809`
+            voiceEndpoint: `${origin}/api`
         };
     }
 
@@ -410,6 +413,11 @@ class EdisonApp {
         const assistantMessageEl = this.addMessage('assistant', '', true);
         
         // Show stop button, hide send button
+
+        // Connect agent live view to track backend activity
+        if (window.edisonAgentLive) {
+            window.edisonAgentLive.connect(this.sessionId || 'default');
+        }
         this.sendBtn.style.display = 'none';
         this.stopBtn.style.display = 'flex';
         
@@ -489,6 +497,10 @@ class EdisonApp {
             this.sendBtn.style.display = 'flex';
             this.stopBtn.style.display = 'none';
             this.sendBtn.disabled = false;
+            // Keep agent live view connected for a bit to catch final events
+            if (window.edisonAgentLive) {
+                setTimeout(() => window.edisonAgentLive.disconnect(), 5000);
+            }
         }
     }
 
@@ -1265,7 +1277,13 @@ class EdisonApp {
             };
             recognition.onerror = (e) => {
                 console.warn('Voice recognition error:', e.error);
-                alert('Voice input failed: ' + (e.error || 'unknown error'));
+                if (e.error === 'network') {
+                    alert('Voice input network error. Web Speech API requires internet access to reach speech recognition servers. Check your connection or try a different browser.');
+                } else if (e.error === 'not-allowed') {
+                    alert('Microphone access denied. Please allow microphone access in your browser settings.');
+                } else {
+                    alert('Voice input failed: ' + (e.error || 'unknown error'));
+                }
             };
             recognition.start();
         } catch (error) {
@@ -2349,6 +2367,12 @@ class EdisonApp {
         };
 
         const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+
+        // Migrate old direct-to-core endpoints to use the /api proxy
+        if (settings.apiEndpoint && settings.apiEndpoint.match(/:8811/)) {
+            console.log('↻ Migrating apiEndpoint from :8811 to /api proxy');
+            settings.apiEndpoint = defaults.apiEndpoint;
+        }
         const legacyHost = 'http://192.168.1.26';
         if (settings.apiEndpoint && settings.apiEndpoint.startsWith(legacyHost)) {
             settings.apiEndpoint = defaults.apiEndpoint;
@@ -2356,10 +2380,12 @@ class EdisonApp {
         if (settings.comfyuiEndpoint && settings.comfyuiEndpoint.startsWith(legacyHost)) {
             settings.comfyuiEndpoint = defaults.comfyuiEndpoint;
         }
-        if (settings.voiceEndpoint && settings.voiceEndpoint.startsWith(legacyHost)) {
+        if (settings.voiceEndpoint && (settings.voiceEndpoint.startsWith(legacyHost) || settings.voiceEndpoint.match(/:8809/))) {
             settings.voiceEndpoint = defaults.voiceEndpoint;
         }
 
+        // Persist migrated settings
+        localStorage.setItem('edison_settings', JSON.stringify(settings));
         return settings;
     }
 }

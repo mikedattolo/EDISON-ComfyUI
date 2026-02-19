@@ -16,12 +16,13 @@ console.log('🧊 app_new_features.js v1 loading...');
             const saved = localStorage.getItem('edison_settings');
             if (saved) {
                 const settings = JSON.parse(saved);
-                if (settings.apiEndpoint) return settings.apiEndpoint;
+                // Ignore old port-8811 endpoints (migrated to /api proxy)
+                if (settings.apiEndpoint && !settings.apiEndpoint.match(/:8811/)) {
+                    return settings.apiEndpoint;
+                }
             }
         } catch (e) { /* ignore */ }
-        const protocol = window.location.protocol || 'http:';
-        const host = window.location.hostname || 'localhost';
-        return `${protocol}//${host}:8811`;
+        return `${window.location.origin}/api`;
     }
 
     const API = getApiEndpoint();

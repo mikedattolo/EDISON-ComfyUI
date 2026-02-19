@@ -132,7 +132,7 @@ class EdisonVoiceAssistant {
 
     async _fetchServerConfig() {
         try {
-            const endpoint = this.app?.settings?.apiEndpoint || `${location.protocol}//${location.hostname}:8811`;
+            const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
             const resp = await fetch(`${endpoint}/voice/config`);
             if (resp.ok) this.serverConfig = await resp.json();
         } catch {
@@ -591,7 +591,7 @@ class EdisonAgentLiveView {
 
     async _fetchConfig() {
         try {
-            const endpoint = this.app?.settings?.apiEndpoint || `${location.protocol}//${location.hostname}:8811`;
+            const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
             const resp = await fetch(`${endpoint}/agent/live-config`);
             if (resp.ok) {
                 const cfg = await resp.json();
@@ -608,7 +608,16 @@ class EdisonAgentLiveView {
         if (!this.enabled) return;
         this.disconnect();
 
-        const endpoint = this.app?.settings?.apiEndpoint || `${location.protocol}//${location.hostname}:8811`;
+        // Show panel when connecting
+        if (this.panel) {
+            this.panel.style.display = 'block';
+            const stepsEl = document.getElementById('agentLiveSteps');
+            if (stepsEl && stepsEl.children.length === 0) {
+                stepsEl.innerHTML = '<div class="agent-step" style="opacity:0.6">Waiting for agent activity...</div>';
+            }
+        }
+
+        const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
         const url = `${endpoint}/agent/stream?session_id=${encodeURIComponent(sessionId)}`;
 
         try {
