@@ -288,7 +288,7 @@ class EdisonVoiceAssistant {
     async _sendAudioToServer(blob) {
         this._setStatus('Transcribing…');
         try {
-            const endpoint = this.app?.settings?.apiEndpoint || `${location.protocol}//${location.hostname}:8811`;
+            const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
             const formData = new FormData();
             formData.append('file', blob, 'recording.webm');
             const resp = await fetch(`${endpoint}/voice/stt`, { method: 'POST', body: formData });
@@ -315,52 +315,56 @@ class EdisonVoiceAssistant {
         this._setStatus('Thinking…');
         this.currentTranscript = '';
         document.getElementById('voiceTranscript').textContent = '';
+        console.log('[Voice] Sending transcript:', text);
 
-        // Inject into the message input and trigger send
-        if (this.app && this.app.messageInput) {
+        // Put text in the chat input and use the app's normal sendMessage flow
+        // This way it goes through the streaming endpoint with proper UI updates
+        if (this.app && this.app.messageInput && typeof this.app.sendMessage === 'function') {
             this.app.messageInput.value = text;
             this.app.handleInputChange();
-        }
 
-        try {
-            const endpoint = this.app?.settings?.apiEndpoint || `${location.protocol}//${location.hostname}:8811`;
-            const mode = this.app?.currentMode || 'auto';
-            const chatId = this.app?.currentChatId || null;
+            try {
+                // Let the app handle sending — this uses the streaming endpoint
+                await this.app.sendMessage();
+                console.log('[Voice] Message sent via app.sendMessage()');
 
-            const body = {
-                message: text,
-                mode: mode,
-                chat_id: chatId,
-            };
-
-            const resp = await fetch(`${endpoint}/chat`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify(body),
-            });
-
-            if (!resp.ok) throw new Error(`Chat failed: ${resp.status}`);
-            const data = await resp.json();
-            const responseText = data.response || '';
-
-            // Display in chat
-            if (this.app) {
-                this.app.messageInput.value = '';
-                this.app.handleInputChange();
-                this.app.addMessage('user', text);
-                this.app.addMessage('assistant', responseText, {
-                    mode: data.mode_used,
-                    model: data.model_used,
-                });
+                // Speak the last assistant message
+                const lastAssistant = document.querySelectorAll('.message.assistant .message-content');
+                if (lastAssistant.length > 0) {
+                    const responseText = lastAssistant[lastAssistant.length - 1].textContent || '';
+                    this._speak(responseText);
+                } else {
+                    this._afterSpeak();
+                }
+            } catch (e) {
+                console.error('[Voice] sendMessage error:', e);
+                this._setStatus('Error — tap to retry');
+                if (this.isActive) setTimeout(() => { if (this.isActive) this._startListening(); }, 2000);
             }
-
-            // Speak the response
-            this._speak(responseText);
-
-        } catch (e) {
-            console.error('Voice chat error:', e);
-            this._setStatus('Error — tap to retry');
-            if (this.isActive) setTimeout(() => { if (this.isActive) this._startListening(); }, 2000);
+        } else {
+            // Fallback: direct API call if app not available
+            console.warn('[Voice] App not available, using direct API call');
+            try {
+                const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
+                const mode = this.app?.currentMode || 'auto';
+                const resp = await fetch(`${endpoint}/chat`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ message: text, mode: mode }),
+                });
+                if (!resp.ok) throw new Error(`Chat failed: ${resp.status}`);
+                const data = await resp.json();
+                const responseText = data.response || '';
+                if (this.app) {
+                    this.app.addMessage('user', text);
+                    this.app.addMessage('assistant', responseText);
+                }
+                this._speak(responseText);
+            } catch (e) {
+                console.error('[Voice] Direct API error:', e);
+                this._setStatus('Error — tap to retry');
+                if (this.isActive) setTimeout(() => { if (this.isActive) this._startListening(); }, 2000);
+            }
         }
     }
 
