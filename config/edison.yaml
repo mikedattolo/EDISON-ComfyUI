@@ -149,7 +149,7 @@ edison:
     server_stt: true        # faster-whisper for speech-to-text
     server_tts: true        # edge-tts neural voices for text-to-speech
     stt_model: "base"       # Whisper model: tiny, base, small, medium, large-v3
-    stt_device: "auto"      # auto, cuda, cpu
+    stt_device: "cpu"       # cpu recommended (avoids GPU conflicts with LLMs)
     tts_voice: "en-US-GuyNeural"  # Default voice (see GET /voice/voices for options)
 
   agent_live_view:

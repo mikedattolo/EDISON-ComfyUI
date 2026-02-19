@@ -66,14 +66,19 @@ def _ensure_stt():
     model_size = cfg.get("stt_model", "base")
     device = cfg.get("stt_device", "auto")
 
+    # For small models (tiny/base/small) CPU with int8 is fast and avoids
+    # cuBLAS conflicts with LLM models already using the GPUs.
     if device == "auto":
-        try:
-            import torch
-            device = "cuda" if torch.cuda.is_available() else "cpu"
-        except ImportError:
+        if model_size in ("tiny", "base", "small"):
             device = "cpu"
+        else:
+            try:
+                import torch
+                device = "cuda" if torch.cuda.is_available() else "cpu"
+            except ImportError:
+                device = "cpu"
 
-    compute_type = "float16" if device == "cuda" else "int8"
+    compute_type = "int8" if device == "cpu" else "float16"
 
     try:
         logger.info(f"Loading faster-whisper '{model_size}' on {device} ({compute_type}) ...")
@@ -81,7 +86,16 @@ def _ensure_stt():
         logger.info(f"STT ready: faster-whisper {model_size} ({device})")
         return _stt_model
     except Exception as e:
-        logger.error(f"Failed to load STT model: {e}")
+        logger.warning(f"Failed to load STT on {device}: {e}")
+        # Fallback to CPU if CUDA failed
+        if device != "cpu":
+            try:
+                logger.info("Falling back to CPU for STT...")
+                _stt_model = WhisperModel(model_size, device="cpu", compute_type="int8")
+                logger.info(f"STT ready: faster-whisper {model_size} (cpu fallback)")
+                return _stt_model
+            except Exception as e2:
+                logger.error(f"CPU fallback also failed: {e2}")
         return None
 
 
