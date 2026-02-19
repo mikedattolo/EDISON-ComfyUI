@@ -4487,6 +4487,18 @@ Do not include multiple summaries or "Final Summary" variants.
         yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
 
         if status_steps:
+            # Also emit to the agent live view so the panel shows activity
+            try:
+                from services.edison_core.routes.agent_live import emit_agent_step
+            except ImportError:
+                try:
+                    from routes.agent_live import emit_agent_step
+                except ImportError:
+                    try:
+                        from .routes.agent_live import emit_agent_step
+                    except ImportError:
+                        def emit_agent_step(*a, **kw): pass
+
             total_steps = len(status_steps)
             for idx, step in enumerate(status_steps, start=1):
                 payload = {
@@ -4496,6 +4508,12 @@ Do not include multiple summaries or "Final Summary" variants.
                     "total": total_steps
                 }
                 yield f"event: status\ndata: {json.dumps(payload)}\n\n"
+                # Mirror to agent live view
+                emit_agent_step(
+                    title=f"{step.get('stage', 'Processing')}"
+                          + (f" — {step['detail']}" if step.get('detail') else ""),
+                    status="running" if idx < total_steps else "done",
+                )
         
         # Log GPU utilization at start of inference
         try:

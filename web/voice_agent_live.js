@@ -187,6 +187,9 @@ class EdisonVoiceAssistant {
     // ── STT ───────────────────────────────────────────────────────────
 
     _startListening() {
+        // Track network error retries
+        if (!this._networkErrorCount) this._networkErrorCount = 0;
+
         // Try Web Speech API first
         const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
         if (SpeechRecognition) {
@@ -197,6 +200,7 @@ class EdisonVoiceAssistant {
 
             this.recognition.onstart = () => {
                 this.isListening = true;
+                this._networkErrorCount = 0;  // Reset on successful start
                 this._setStatus('Listening…');
             };
 
@@ -230,6 +234,22 @@ class EdisonVoiceAssistant {
                 console.warn('Speech recognition error:', e.error);
                 if (e.error === 'not-allowed') {
                     this._setStatus('Microphone access denied');
+                } else if (e.error === 'network') {
+                    this._networkErrorCount++;
+                    console.warn(`[Voice] Network error #${this._networkErrorCount}`);
+                    if (this._networkErrorCount >= 2) {
+                        // Stop retrying, show clear message with type-to-speak option
+                        this._setStatus('Speech recognition unavailable');
+                        document.getElementById('voiceTranscript').textContent =
+                            'Browser speech recognition needs internet access to Google servers. ' +
+                            'Type your message below instead, or try Chrome/Edge with a stable connection.';
+                        // Show a text input inside the overlay as fallback
+                        this._showVoiceTextInput();
+                        return;  // Don't retry
+                    }
+                    if (this.isActive) {
+                        setTimeout(() => { if (this.isActive) this._startListening(); }, 1500);
+                    }
                 } else if (this.isActive) {
                     setTimeout(() => { if (this.isActive) this._startListening(); }, 1000);
                 }
@@ -522,6 +542,46 @@ class EdisonVoiceAssistant {
     }
 
     // ── Helpers ────────────────────────────────────────────────────────
+
+    _showVoiceTextInput() {
+        // Show a text input inside the voice overlay as fallback when speech recognition fails
+        const existing = document.getElementById('voiceTextInput');
+        if (existing) return;  // Already showing
+
+        const container = document.createElement('div');
+        container.id = 'voiceTextInput';
+        container.style.cssText = 'margin-top: 16px; display: flex; gap: 8px; width: 80%; max-width: 400px;';
+        container.innerHTML = `
+            <input type="text" id="voiceTypeInput" placeholder="Type your message here..."
+                   style="flex: 1; padding: 10px 14px; border-radius: 20px; border: 1px solid rgba(255,255,255,0.3);
+                          background: rgba(255,255,255,0.1); color: white; font-size: 14px; outline: none;">
+            <button id="voiceTypeSendBtn"
+                    style="padding: 10px 18px; border-radius: 20px; border: none; background: #4a9eff;
+                           color: white; cursor: pointer; font-size: 14px; font-weight: 600;">Send</button>
+        `;
+
+        const overlayContent = this.overlay.querySelector('.voice-overlay-content');
+        if (overlayContent) {
+            overlayContent.appendChild(container);
+        }
+
+        const input = document.getElementById('voiceTypeInput');
+        const sendBtn = document.getElementById('voiceTypeSendBtn');
+
+        const send = () => {
+            const text = input.value.trim();
+            if (text) {
+                input.value = '';
+                this._sendTranscript(text);
+            }
+        };
+
+        sendBtn.addEventListener('click', send);
+        input.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter') { e.preventDefault(); send(); }
+        });
+        input.focus();
+    }
 
     _setStatus(text) {
         const el = document.getElementById('voiceStatus');
