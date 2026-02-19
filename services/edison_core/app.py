@@ -1378,6 +1378,19 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
     correction_attempted = False
     final_answer = None
 
+    # Import agent live emitters (best-effort)
+    try:
+        from routes.agent_live import emit_agent_step, emit_log
+    except ImportError:
+        try:
+            from .routes.agent_live import emit_agent_step, emit_log
+        except ImportError:
+            def emit_agent_step(*a, **kw): pass
+            def emit_log(*a, **kw): pass
+
+    emit_agent_step(title=f"Starting tool loop for: {user_message[:80]}…", status="running")
+    emit_log(f"Tool loop initiated — model: {model_name}")
+
     def cancelled() -> bool:
         if not request_id:
             return False
@@ -1471,6 +1484,11 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
                 "result": tool_result,
                 "summary": summary
             })
+            # Emit step to agent live view
+            emit_agent_step(
+                title=f"Tool: {tool_name}({', '.join(f'{k}={v!r}' for k,v in (normalized_args or {}).items())[:80]})",
+                status="done",
+            )
             continue
 
         # If not JSON, treat as final answer
@@ -1491,6 +1509,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         sources = ", ".join([event["tool"] for event in tool_events])
         final_answer = f"{final_answer}\n\nSources: {sources}"
 
+    emit_agent_step(title="Tool loop complete", status="done")
     return final_answer.strip(), tool_events
 
 # OpenAI-Compatible Models for /v1/chat/completions endpoint
@@ -3975,6 +3994,18 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     if mode == "swarm" and not has_images:
         try:
             logger.info("🐝 Swarm mode activated - deploying specialized agents for collaborative discussion")
+
+            # Import agent live emitters (best-effort)
+            try:
+                from routes.agent_live import emit_agent_step, emit_log
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_agent_step, emit_log
+                except ImportError:
+                    def emit_agent_step(*a, **kw): pass
+                    def emit_log(*a, **kw): pass
+
+            emit_agent_step(title="Swarm mode activated — selecting agents", status="running")
             
             # Define specialized agents with different models and roles
             def _available_models():
@@ -4096,6 +4127,10 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
             agents = [agent_catalog[name] for name in selected_agents if name in agent_catalog]
             logger.info(f"🐝 Swarm agents selected: {', '.join([a['name'] for a in agents])}")
+            emit_agent_step(
+                title=f"Agents: {', '.join(a['icon'] + ' ' + a['name'] for a in agents)}",
+                status="done",
+            )
 
             # ── Swarm memory safety check ────────────────────────────
             try:
@@ -4259,6 +4294,10 @@ Your initial perspective:"""
                 _update_shared_notes(result["response"])
                 conversation.append(result)
                 logger.info(f"{result['icon']} {result['agent']} ({result['model']}): {result['response'][:80]}...")
+                emit_agent_step(
+                    title=f"{result['icon']} {result['agent']}: {result['response'][:100]}",
+                    status="done",
+                )
 
             # Decide if we need an extra round based on similarity
             round1_responses = [c["response"] for c in conversation]
@@ -4276,6 +4315,7 @@ Your initial perspective:"""
 
             for round_idx in range(2, rounds + 1):
                 logger.info(f"🐝 Round {round_idx}: Agent collaboration and refinement")
+                emit_agent_step(title=f"Swarm round {round_idx} — refining", status="running")
                 discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
                 scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
 
@@ -4319,6 +4359,10 @@ Your refined contribution:"""
                         "response": result["response"]
                     })
                     logger.info(f"{result['icon']} {result['agent']} Round {round_idx}: {result['response'][:80]}...")
+                    emit_agent_step(
+                        title=f"{result['icon']} {result['agent']} R{round_idx}: {result['response'][:100]}",
+                        status="done",
+                    )
 
                 # Stop early if responses converge too much
                 recent_responses = [c["response"] for c in conversation[-len(agents):]]
@@ -4375,6 +4419,7 @@ Your vote:"""
             sorted_votes = sorted(vote_counts.items(), key=lambda x: x[1], reverse=True)
             winners = ", ".join([f"{name} ({count})" for name, count in sorted_votes if count > 0])
             vote_summary = f"Vote results: {winners or 'No clear consensus'}"
+            emit_agent_step(title=f"🗳️ {vote_summary}", status="done")
 
             swarm_results = conversation + [
                 {

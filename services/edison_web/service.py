@@ -130,4 +130,20 @@ if __name__ == "__main__":
     logger.info(f"Starting EDISON Web UI from {WEB_DIR}")
     logger.info(f"Registered routes: {[route.path for route in app.routes]}")
     logger.info(f"Files in WEB_DIR: {list(WEB_DIR.glob('*'))}")
-    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info")
+
+    # HTTPS: auto-detect self-signed certs
+    cert_dir = REPO_ROOT / "certs"
+    cert_file = cert_dir / "cert.pem"
+    key_file = cert_dir / "key.pem"
+    ssl_kwargs = {}
+    if cert_file.exists() and key_file.exists():
+        ssl_kwargs["ssl_certfile"] = str(cert_file)
+        ssl_kwargs["ssl_keyfile"] = str(key_file)
+        logger.info(f"🔒 HTTPS enabled with certs from {cert_dir}")
+    else:
+        logger.warning(
+            "⚠ No certs found — running HTTP only. "
+            "Voice input requires HTTPS. Run: bash scripts/generate_certs.sh"
+        )
+
+    uvicorn.run(app, host="0.0.0.0", port=8080, log_level="info", **ssl_kwargs)
