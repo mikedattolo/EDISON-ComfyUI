@@ -2084,9 +2084,11 @@ app = FastAPI(
 )
 
 # Add CORS middleware for web UI
+# NOTE: allow_origins=["*"] + allow_credentials=True violates the CORS spec.
+# Use allow_origin_regex to reflect the actual Origin header, which is valid.
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],  # In production, restrict to specific origins
+    allow_origin_regex=r".*",  # Reflects actual Origin (not '*') so credentials work
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

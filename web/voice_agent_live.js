@@ -149,6 +149,21 @@ class EdisonVoiceAssistant {
     activate() {
         this.isActive = true;
         this.overlay.style.display = 'flex';
+
+        // Check secure context — Web Speech API + getUserMedia require HTTPS or localhost
+        const isSecure = window.isSecureContext ||
+                         location.protocol === 'https:' ||
+                         location.hostname === 'localhost' ||
+                         location.hostname === '127.0.0.1';
+        if (!isSecure) {
+            this._setStatus('⚠️ Voice requires HTTPS or localhost');
+            document.getElementById('voiceTranscript').textContent =
+                'You are on HTTP over LAN. Enable HTTPS on your EDISON server, ' +
+                'or access via https://localhost to use voice input.';
+            this._startOrb();
+            return;
+        }
+
         this._setStatus('Listening…');
         this._startOrb();
         this._startListening();

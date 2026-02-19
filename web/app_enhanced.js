@@ -1238,12 +1238,23 @@ class EdisonApp {
     }
 
     async startVoiceInput() {
-        if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) {
-            const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
-            if (!SpeechRecognition) {
-                alert('Voice input not supported in this browser.');
-                return;
-            }
+        // Delegate to the new EdisonVoiceAssistant overlay if available
+        if (window.edisonVoice) {
+            window.edisonVoice.toggle();
+            return;
+        }
+        // Fallback: check secure context (Web Speech API requires HTTPS or localhost)
+        const isSecure = location.protocol === 'https:' || location.hostname === 'localhost' || location.hostname === '127.0.0.1';
+        if (!isSecure) {
+            alert('Voice input requires HTTPS or localhost. You are on HTTP over LAN — use HTTPS or access via localhost.');
+            return;
+        }
+        const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
+        if (!SpeechRecognition) {
+            alert('Voice input not supported in this browser.');
+            return;
+        }
+        try {
             const recognition = new SpeechRecognition();
             recognition.lang = 'en-US';
             recognition.interimResults = false;
@@ -1252,31 +1263,11 @@ class EdisonApp {
                 this.messageInput.value = transcript.trim();
                 this.handleInputChange();
             };
-            recognition.onerror = () => alert('Voice input failed.');
-            recognition.start();
-            return;
-        }
-        try {
-            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-            const mediaRecorder = new MediaRecorder(stream);
-            const chunks = [];
-            mediaRecorder.ondataavailable = (e) => chunks.push(e.data);
-            mediaRecorder.onstop = async () => {
-                const blob = new Blob(chunks, { type: 'audio/wav' });
-                const formData = new FormData();
-                formData.append('audio', blob, 'voice.wav');
-                const endpoint = this.settings.voiceEndpoint || 'http://localhost:8809';
-                const response = await fetch(`${endpoint}/voice-to-text`, {
-                    method: 'POST',
-                    body: formData
-                });
-                if (!response.ok) throw new Error('Voice transcription failed');
-                const data = await response.json();
-                this.messageInput.value = (data.text || '').trim();
-                this.handleInputChange();
+            recognition.onerror = (e) => {
+                console.warn('Voice recognition error:', e.error);
+                alert('Voice input failed: ' + (e.error || 'unknown error'));
             };
-            mediaRecorder.start();
-            setTimeout(() => mediaRecorder.stop(), 5000);
+            recognition.start();
         } catch (error) {
             alert(error.message || 'Voice input failed');
         }
