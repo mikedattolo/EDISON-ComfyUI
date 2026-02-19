@@ -90,6 +90,16 @@ async def app_new_features():
         headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
     )
 
+@app.get("/voice_agent_live.js")
+async def voice_agent_live():
+    """Serve voice assistant & agent live view JS"""
+    file_path = WEB_DIR / "voice_agent_live.js"
+    return FileResponse(
+        file_path,
+        media_type="application/javascript",
+        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+    )
+
 @app.get("/gallery.js")
 async def gallery():
     """Serve gallery JS file"""

@@ -19,6 +19,60 @@
 
 ---
 
+## 🔥 What's New (v1.4.0)
+
+### 🔧 **Model Loading Unification (ModelManager v2)**
+- **Single source of truth**: All model acquisition goes through `ModelManager.resolve_model(target)` with automatic fallback chains (e.g., deep → medium → fast)
+- **Heavy-slot policy**: Only one large model loaded at a time; loading a new one evicts the previous
+- **Fallback ladder**: On OOM, automatically retries with fewer GPU layers → smaller context → smaller model
+- **Bridge function**: `_resolve_model_for_target()` transitions legacy `llm_*` globals to V2 seamlessly
+
+### 🛡️ **MemoryGate Enforcement**
+- **Pre-flight VRAM check** before every heavy GPU task (image gen, video, music, 3D generation)
+- **Structured error responses**: Frontend receives actionable `{ action: "unload_and_retry", action_label }` to render retry buttons
+- **Auto-unload**: MemoryGate unloads heavy-slot or all models to free VRAM before heavy tasks
+- **Post-task reload**: Automatically re-loads the fast model after heavy tasks complete
+- Endpoints protected: `/generate-image` (4 GB), `/generate-video` (6 GB), `/generate-music` (4 GB), `/3d/generate` (3 GB)
+
+### 🎮 **GPU Config Validation**
+- **Startup detection**: Detects GPUs via torch → pynvml → nvidia-smi fallback chain
+- **`tensor_split` auto-normalization**: Handles length mismatches — expands, shrinks, or redistributes proportionally
+- **Config validation**: Checks gpu_map.yaml vs hardware, model file existence, VRAM sufficiency, layer count sanity
+- New module: `services/edison_core/gpu_config.py`
+
+### 🤖 **Agent / Swarm Mode Strategy**
+- New `agent_mode_strategy` config: choose `shared_deep_model` (default) or `multi_worker` under `config/edison.yaml`
+- Prevents accidental multi-model memory exhaustion in agent swarm mode
+
+### 🎤 **Voice Assistant**
+- **Orb overlay UI**: Full-screen canvas orb with real-time audio amplitude animation
+- **Web Speech API**: Browser-native STT/TTS with automatic fallback to server-side endpoint
+- **Hue-reactive animation**: Orb shifts to blue when listening, green when speaking
+- **Backend**: `GET /voice/config`, `POST /voice/stt` (stub for future server Whisper)
+- Press ESC to dismiss, mute toggle, voice selection dropdown
+
+### 👁️ **Agent Live View**
+- **Real-time streaming**: SSE (`/agent/stream`) and WebSocket (`/ws/agent`) transports
+- **Event types**: agent_step, browser_open, browser_screenshot, file_diff, log
+- **Secret redaction**: Automatic regex-based scrubbing of API keys, tokens, Bearer headers
+- **Collapsible panel**: Shows in the chat UI with live pulse indicator and auto-scroll
+- **Event bus**: Fan-out architecture with per-session queues and 200-event history buffer
+
+### 🧪 **New Tests**
+- `tests/test_gpu_config.py` — 13 tests for tensor_split normalization + config validation
+- `tests/test_memory_gate.py` — 16 tests for MemoryGate pre-flight, structured errors, ModelManager resolve chains
+
+### Manual Smoke-Test Checklist
+1. Start server: `python services/edison_core/app.py` — verify GPU detection + tensor_split logs
+2. Open web UI — confirm voice orb button visible, agent live panel present
+3. Click voice orb — should open overlay, request mic permission, start listening
+4. Generate an image — verify MemoryGate log line ("MemoryGate OK for 'image generation'")
+5. Check `/voice/config` returns JSON with `voice_enabled` field
+6. Check `/agent/stream` returns SSE connection
+7. Run `python tests/test_gpu_config.py && python tests/test_memory_gate.py`
+
+---
+
 ## � What's New (v1.3.0)
 
 ### 🧠 **Intelligent Memory System**
@@ -93,6 +147,10 @@
 - **Enhanced Intent Detection** 🆕 - 40+ patterns for accurate mode selection and recall detection
 - **Fact Extraction** 🆕 - Automatically extracts and stores personal information, preferences, and important details
 - **Work Mode** 🆕 - Breaks down complex tasks into actionable steps with visual progress tracking
+- **Voice Assistant** 🆕 - Orb overlay with Web Speech API STT/TTS, hue-reactive animation
+- **Agent Live View** 🆕 - Real-time SSE/WebSocket streaming of agent steps, browser events, file diffs
+- **MemoryGate** 🆕 - Pre-flight VRAM checks with auto-unload before heavy GPU tasks
+- **GPU Config Validation** 🆕 - Startup detection, tensor_split normalization, config sanity checks
 - **Web Search** - Agent mode with DuckDuckGo integration
 - **File Processing** - Upload and analyze documents, images, and code
 - **Intent Classification** - Optional Google Coral TPU acceleration

@@ -1,11 +1,15 @@
 """
-Memory-aware model manager for Edison.
+Memory-aware model manager for Edison  (v2).
+
+Single source of truth for acquiring and releasing LLM models.
 
 Implements:
 - Resident set policy (one fast model always-resident, one heavy slot)
 - Memory probing (RAM + VRAM)
 - Fallback ladder (full → reduced GPU layers → reduced context → smaller model)
 - Thread-safe, lazy-loading, graceful degradation
+- ``resolve_model(target)`` — canonical way to get a Llama instance with fallback
+- ``pre_heavy_task`` budget gate for ComfyUI / video / vision / 3D tasks
 """
 
 import gc
@@ -18,6 +22,17 @@ from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
 
 logger = logging.getLogger(__name__)
+
+# Re-export helpers so callers can ``from model_manager_v2 import get_memory_snapshot``
+__all__ = [
+    "ModelManager",
+    "MemoryGate",
+    "MemorySnapshot",
+    "LoadedModel",
+    "get_model_manager",
+    "get_memory_gate",
+    "get_memory_snapshot",
+]
 
 
 # ── Data Classes ─────────────────────────────────────────────────────────
@@ -290,6 +305,36 @@ class ModelManager:
                 self._unload_model_unsafe(k)
             self._heavy_slot = None
 
+    # ── Unified resolve ──────────────────────────────────────────────
+
+    # Canonical fallback chains per target
+    _FALLBACK_CHAINS: Dict[str, List[str]] = {
+        "fast":      ["fast", "medium", "deep"],
+        "medium":    ["medium", "fast", "deep"],
+        "deep":      ["deep", "medium", "fast"],
+        "reasoning": ["reasoning", "deep", "medium", "fast"],
+        "vision":    ["vision"],
+        "vision_code": ["vision_code", "vision"],
+    }
+
+    def resolve_model(self, target: str) -> Tuple[Optional[Any], str]:
+        """
+        The **single entry-point** for acquiring a model.
+
+        Tries to ensure the target model, then walks a fallback chain.
+        Returns ``(llama_instance, actual_key)`` or ``(None, "")``.
+
+        This replaces all ``llm = llm_deep or llm_medium or llm_fast`` patterns.
+        """
+        chain = self._FALLBACK_CHAINS.get(target, [target, "fast"])
+        for key in chain:
+            model = self.ensure_model(key)
+            if model is not None:
+                if key != target:
+                    logger.warning(f"Resolved '{target}' → '{key}' (fallback)")
+                return model, key
+        return None, ""
+
     def loaded_models(self) -> Dict[str, dict]:
         """Return info about currently loaded models."""
         with self._lock:
@@ -392,58 +437,134 @@ class ModelManager:
 
 class MemoryGate:
     """
-    Pre-flight memory check before heavy tasks (image gen, video, music).
-    Optionally unloads LLMs to free VRAM.
+    Pre-flight memory check before heavy tasks (image gen, video, music, 3D, vision).
+    Optionally unloads LLMs to free VRAM, or fails fast with a structured error.
     """
 
     def __init__(self, model_manager: Optional[ModelManager] = None):
         self._mm = model_manager
 
-    def pre_heavy_task(self, required_vram_mb: float = 4000,
-                       unload_llms: bool = True) -> Dict[str, Any]:
+    # ── Public API ───────────────────────────────────────────────────
+
+    def pre_heavy_task(
+        self,
+        required_vram_mb: float = 4000,
+        required_ram_mb: float = 0,
+        reason: str = "heavy GPU task",
+        unload_llms: bool = True,
+        allow_cpu_fallback: bool = False,
+    ) -> Dict[str, Any]:
         """
         Prepare system for a heavy GPU task.
-        Returns: {"ok": bool, "freed_mb": float, "snapshot": MemorySnapshot}
+
+        Returns a dict:
+            ok: True  → proceed
+            ok: False → caller must return the ``error`` dict to the UI
+
+        The ``error`` dict is structured so the frontend can display it nicely
+        and offer an "Unload & retry" button.
         """
         snap = get_memory_snapshot()
         freed = 0.0
 
+        # Check RAM first
+        if required_ram_mb > 0 and snap.ram_available_mb < required_ram_mb:
+            return self._fail(
+                snap, freed, reason,
+                required_vram_mb, required_ram_mb,
+                f"Not enough RAM for {reason}: need {required_ram_mb:.0f} MB, "
+                f"have {snap.ram_available_mb:.0f} MB free.",
+            )
+
+        # VRAM check
         if snap.total_vram_free_mb() >= required_vram_mb:
+            logger.info(
+                f"MemoryGate OK for '{reason}': "
+                f"{snap.total_vram_free_mb():.0f} MB free ≥ {required_vram_mb:.0f} MB required"
+            )
             return {"ok": True, "freed_mb": 0, "snapshot": snap}
 
+        # Not enough VRAM — try unloading
         if unload_llms and self._mm:
             # Unload heavy-slot model first
             heavy = self._mm.heavy_slot_occupant()
             if heavy:
-                estimated = self._mm._models.get(heavy, LoadedModel(key="")).estimated_vram_mb
+                estimated = self._mm._models.get(heavy, LoadedModel(key="", path="")).estimated_vram_mb
                 self._mm.unload_heavy_slot()
                 freed += estimated
 
             snap2 = get_memory_snapshot()
             if snap2.total_vram_free_mb() >= required_vram_mb:
+                logger.info(
+                    f"MemoryGate OK for '{reason}' after unloading heavy slot "
+                    f"(freed ~{freed:.0f} MB)"
+                )
                 return {"ok": True, "freed_mb": freed, "snapshot": snap2}
 
             # Still not enough — unload everything
             self._mm.unload_all()
-            freed = sum(
+            freed += sum(
                 lm.estimated_vram_mb
                 for lm in self._mm._models.values()
                 if lm.model is not None
-            ) + freed
+            )
             _flush_gpu()
 
         final_snap = get_memory_snapshot()
-        return {
-            "ok": final_snap.total_vram_free_mb() >= required_vram_mb,
-            "freed_mb": freed,
-            "snapshot": final_snap,
-        }
+        if final_snap.total_vram_free_mb() >= required_vram_mb:
+            logger.info(
+                f"MemoryGate OK for '{reason}' after full unload (freed ~{freed:.0f} MB)"
+            )
+            return {"ok": True, "freed_mb": freed, "snapshot": final_snap}
+
+        # CPU fallback explicitly disallowed for heavy tasks
+        if not allow_cpu_fallback:
+            return self._fail(
+                final_snap, freed, reason,
+                required_vram_mb, required_ram_mb,
+                f"Not enough VRAM for {reason} even after unloading all models. "
+                f"Need {required_vram_mb:.0f} MB, have {final_snap.total_vram_free_mb():.0f} MB free. "
+                f"CPU fallback is not allowed for this task.",
+            )
+
+        # If we reach here, allow_cpu_fallback is True
+        logger.warning(f"MemoryGate: proceeding on CPU for '{reason}' (insufficient VRAM)")
+        return {"ok": True, "freed_mb": freed, "snapshot": final_snap, "cpu_fallback": True}
 
     def post_heavy_task(self):
         """Called after heavy task completes — reload fast model if needed."""
         if self._mm and not self._mm.is_loaded(FAST_KEY):
             self._mm.ensure_model(FAST_KEY)
         _flush_gpu()
+
+    # ── Private helpers ──────────────────────────────────────────────
+
+    @staticmethod
+    def _fail(
+        snap: "MemorySnapshot",
+        freed_mb: float,
+        reason: str,
+        required_vram_mb: float,
+        required_ram_mb: float,
+        message: str,
+    ) -> Dict[str, Any]:
+        """Build a structured error result for the UI."""
+        logger.error(f"MemoryGate FAIL: {message}")
+        return {
+            "ok": False,
+            "freed_mb": freed_mb,
+            "snapshot": snap,
+            "error": {
+                "message": message,
+                "reason": reason,
+                "required_vram_mb": required_vram_mb,
+                "required_ram_mb": required_ram_mb,
+                "current_free_vram_mb": round(snap.total_vram_free_mb(), 1),
+                "current_free_ram_mb": round(snap.ram_available_mb, 1),
+                "action": "unload_and_retry",
+                "action_label": "Unload models & retry",
+            },
+        }
 
 
 # ── Singleton ────────────────────────────────────────────────────────────

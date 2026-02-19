@@ -446,6 +446,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
 
 
 # Global state
+# NOTE: llm_* globals are DEPRECATED.  New code should call
+#   ``model_manager_v2_instance.resolve_model(target)``
+# The globals are kept alive as thin aliases so that legacy code paths
+# (and the streaming hot-path) continue to work during the migration.
 llm_fast = None
 llm_medium = None  # 32B model - fallback for deep mode
 llm_deep = None
@@ -462,6 +466,10 @@ video_service = None
 music_service = None
 mesh_service = None
 config = None
+
+# Detected GPUs (filled at startup by gpu_config.run_startup_validation)
+_detected_gpus: list = []
+_normalized_tensor_split: list = []
 
 # New subsystem globals
 job_store_instance = None
@@ -1959,12 +1967,25 @@ def get_intent_from_coral(message: str) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
+    global _detected_gpus, _normalized_tensor_split
+
     # Startup
     logger.info("=" * 50)
     logger.info("Starting EDISON Core Service...")
     logger.info(f"Repo root: {REPO_ROOT}")
     load_config()
     _init_vllm_config()
+
+    # ── GPU detection & config validation (new) ──────────────────────
+    try:
+        from .gpu_config import run_startup_validation
+    except ImportError:
+        from gpu_config import run_startup_validation
+    _detected_gpus, _normalized_tensor_split = run_startup_validation(REPO_ROOT, config or {})
+    # Patch config in-memory so load_llm_models uses the normalized split
+    if config and _normalized_tensor_split:
+        config.setdefault("edison", {}).setdefault("core", {})["tensor_split"] = _normalized_tensor_split
+
     load_llm_models()
     init_rag_system()
     init_search_tool()
@@ -1973,14 +1994,17 @@ async def lifespan(app: FastAPI):
     init_music_service()
     _init_new_subsystems()
 
-    # Optional model manager for hot-swap
+    # ── Register all models with ModelManager v2 (new) ───────────────
+    _register_models_with_v2()
+
+    # Optional model manager v1 for hot-swap (legacy)
     global model_manager
     try:
-        from services.edison_core.model_manager import ModelManager
-        model_manager = ModelManager()
+        from services.edison_core.model_manager import ModelManager as ModelManagerV1
+        model_manager = ModelManagerV1()
     except Exception as e:
         model_manager = None
-        logger.warning(f"Model manager unavailable: {e}")
+        logger.warning(f"Model manager v1 unavailable: {e}")
     
     logger.info("EDISON Core Service ready")
     logger.info("=" * 50)
@@ -1989,6 +2013,67 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down EDISON Core Service...")
+    if model_manager_v2_instance:
+        model_manager_v2_instance.unload_all()
+
+
+def _register_models_with_v2():
+    """Register all configured models with ModelManager v2 so resolve_model works."""
+    if not model_manager_v2_instance:
+        logger.warning("ModelManager v2 not available — skipping model registration")
+        return
+
+    core = _get_core_config()
+    models_path = str(REPO_ROOT / core.get("models_path", "models/llm"))
+    ts = core.get("tensor_split")
+    use_fa = bool(core.get("use_flash_attn", False))
+    default_gl = int(core.get("n_gpu_layers", -1))
+
+    _reg = model_manager_v2_instance.register_model
+
+    def _path(name):
+        return str(Path(models_path) / name) if name else ""
+
+    # Fast
+    if core.get("fast_model"):
+        _reg("fast", _path(core["fast_model"]),
+             n_ctx=int(core.get("fast_n_ctx", core.get("n_ctx", 4096))),
+             n_gpu_layers=int(core.get("fast_n_gpu_layers", default_gl)),
+             tensor_split=ts, use_flash_attn=use_fa)
+    # Medium
+    if core.get("medium_model"):
+        _reg("medium", _path(core["medium_model"]),
+             n_ctx=int(core.get("medium_n_ctx", core.get("n_ctx", 4096))),
+             n_gpu_layers=int(core.get("medium_n_gpu_layers", default_gl)),
+             tensor_split=ts, use_flash_attn=use_fa)
+    # Deep
+    if core.get("deep_model"):
+        _reg("deep", _path(core["deep_model"]),
+             n_ctx=int(core.get("deep_n_ctx", core.get("context_window", 8192))),
+             n_gpu_layers=int(core.get("deep_n_gpu_layers", default_gl)),
+             tensor_split=ts, use_flash_attn=use_fa)
+    # Reasoning
+    if core.get("reasoning_model"):
+        _reg("reasoning", _path(core["reasoning_model"]),
+             n_ctx=int(core.get("reasoning_n_ctx", core.get("n_ctx", 4096))),
+             n_gpu_layers=int(core.get("reasoning_n_gpu_layers", default_gl)),
+             tensor_split=ts, use_flash_attn=use_fa)
+    # Vision
+    if core.get("vision_model"):
+        _reg("vision", _path(core["vision_model"]),
+             n_ctx=int(core.get("vision_n_ctx", 2048)),
+             n_gpu_layers=int(core.get("vision_n_gpu_layers", default_gl)),
+             tensor_split=ts, use_flash_attn=use_fa,
+             clip_path=_path(core.get("vision_clip", "")))
+    # Vision-code
+    if core.get("vision_code_model"):
+        _reg("vision_code", _path(core["vision_code_model"]),
+             n_ctx=int(core.get("vision_code_n_ctx", 4096)),
+             n_gpu_layers=int(core.get("vision_code_n_gpu_layers", default_gl)),
+             tensor_split=ts, use_flash_attn=use_fa,
+             clip_path=_path(core.get("vision_code_clip", "")))
+
+    logger.info("✓ All configured models registered with ModelManager v2")
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -2006,6 +2091,31 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# ── Register route modules ──────────────────────────────────────────────
+try:
+    from .routes.voice import router as voice_router
+    app.include_router(voice_router)
+    logger.info("✓ Voice routes registered")
+except Exception as e:
+    try:
+        from routes.voice import router as voice_router
+        app.include_router(voice_router)
+        logger.info("✓ Voice routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Voice routes not available: {e}")
+
+try:
+    from .routes.agent_live import router as agent_live_router
+    app.include_router(agent_live_router)
+    logger.info("✓ Agent live view routes registered")
+except Exception as e:
+    try:
+        from routes.agent_live import router as agent_live_router
+        app.include_router(agent_live_router)
+        logger.info("✓ Agent live view routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Agent live view routes not available: {e}")
 
 @app.post("/rag/search")
 async def rag_search(request: dict):
@@ -2222,6 +2332,69 @@ def get_lock_for_model(model) -> threading.Lock:
         return lock_medium
     else:  # llm_fast or other
         return lock_fast
+
+
+# ── Unified model resolution (bridges old globals → ModelManager v2) ─────
+
+def _resolve_model_for_target(model_target: str, selected_model: str = None, has_images: bool = False):
+    """
+    Single source of truth to acquire an LLM instance.
+
+    Tries ModelManager v2 first (preferred), falls back to legacy globals.
+    Returns ``(llm_instance, model_name_str)``.
+    """
+    # If ModelManager v2 is available, use it
+    if model_manager_v2_instance is not None:
+        # Handle user-selected model override
+        if selected_model:
+            target = _selected_model_to_target(selected_model, has_images)
+            if target:
+                model, actual_key = model_manager_v2_instance.resolve_model(target)
+                if model:
+                    return model, actual_key
+        # Normal resolution
+        model, actual_key = model_manager_v2_instance.resolve_model(model_target)
+        if model:
+            return model, actual_key
+
+    # Legacy fallback (globals)
+    return _resolve_model_legacy(model_target, selected_model, has_images)
+
+
+def _selected_model_to_target(selected_model: str, has_images: bool) -> str:
+    """Map a user-selected model path/name to a target key."""
+    name = selected_model.lower()
+    if "qwen2-vl" in name or "vision" in name or "llava" in name:
+        return "vision"
+    if "72b" in name or "deep" in name:
+        return "deep"
+    if "32b" in name or "medium" in name or "coder" in name:
+        return "medium"
+    return "fast"
+
+
+def _resolve_model_legacy(model_target: str, selected_model: str = None, has_images: bool = False):
+    """Legacy resolution using global llm_* variables."""
+    if selected_model:
+        model_target = _selected_model_to_target(selected_model, has_images) or model_target
+
+    if model_target == "vision":
+        if llm_vision:
+            return llm_vision, "vision"
+        if _try_load_vision_on_demand():
+            return llm_vision, "vision"
+        return None, ""
+
+    chains = {
+        "fast":      [("fast", llm_fast), ("medium", llm_medium), ("deep", llm_deep)],
+        "medium":    [("medium", llm_medium), ("fast", llm_fast), ("deep", llm_deep)],
+        "deep":      [("deep", llm_deep), ("medium", llm_medium), ("fast", llm_fast)],
+        "reasoning": [("reasoning", llm_reasoning), ("deep", llm_deep), ("medium", llm_medium), ("fast", llm_fast)],
+    }
+    for name, ref in chains.get(model_target, chains["fast"]):
+        if ref is not None:
+            return ref, name
+    return None, ""
 
 def store_conversation_exchange(request: ChatRequest, assistant_response: str, mode: str, remember: bool):
     """Persist user/assistant messages and extracted facts when enabled."""
@@ -4896,19 +5069,30 @@ async def generate_image(request: dict):
         
         logger.info(f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale})")
         
-        # === FREE GPU VRAM: Unload LLM models so ComfyUI can use the GPU ===
+        # === MemoryGate: ensure enough VRAM for ComfyUI ===
         global _models_unloaded_for_image_gen
         with _image_gen_lock:
-            if not _models_unloaded_for_image_gen:
+            if memory_gate_instance:
+                gate_result = memory_gate_instance.pre_heavy_task(
+                    required_vram_mb=4000,
+                    required_ram_mb=0,
+                    reason="image generation (ComfyUI)",
+                    allow_cpu_fallback=False,
+                )
+                if not gate_result["ok"]:
+                    raise HTTPException(
+                        status_code=507,
+                        detail=gate_result.get("error", {
+                            "message": "Not enough VRAM for image generation",
+                            "action": "unload_and_retry",
+                        }),
+                    )
+                _models_unloaded_for_image_gen = True
+                logger.info(f"MemoryGate: ok, freed={gate_result['freed_mb']:.0f}MB")
+            elif not _models_unloaded_for_image_gen:
+                # Legacy fallback
                 unload_all_llm_models()
                 _models_unloaded_for_image_gen = True
-                # Memory gate secondary check — ensures v2-managed models are also freed
-                if memory_gate_instance:
-                    try:
-                        gate_result = memory_gate_instance.pre_heavy_task(required_vram_mb=4000)
-                        logger.info(f"Memory gate: ok={gate_result['ok']}, freed={gate_result['freed_mb']:.0f}MB")
-                    except Exception as e:
-                        logger.warning(f"Memory gate check failed (non-fatal): {e}")
         
         # Use provided ComfyUI URL or fall back to config
         if comfyui_url_override:
@@ -5198,17 +5382,28 @@ async def generate_video(request: dict):
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt is required")
 
-    # Unload LLMs to free VRAM for video generation
+    # MemoryGate: free VRAM for video generation
     global _models_unloaded_for_image_gen
     with _image_gen_lock:
-        if not _models_unloaded_for_image_gen:
+        if memory_gate_instance:
+            gate_result = memory_gate_instance.pre_heavy_task(
+                required_vram_mb=6000,
+                required_ram_mb=0,
+                reason="video generation (CogVideoX)",
+                allow_cpu_fallback=False,
+            )
+            if not gate_result["ok"]:
+                raise HTTPException(
+                    status_code=507,
+                    detail=gate_result.get("error", {
+                        "message": "Not enough VRAM for video generation",
+                        "action": "unload_and_retry",
+                    }),
+                )
+            _models_unloaded_for_image_gen = True
+        elif not _models_unloaded_for_image_gen:
             unload_all_llm_models()
             _models_unloaded_for_image_gen = True
-            if memory_gate_instance:
-                try:
-                    memory_gate_instance.pre_heavy_task(required_vram_mb=6000)
-                except Exception:
-                    pass
 
     try:
         result = video_service.submit_video_generation(
@@ -5367,17 +5562,28 @@ async def generate_music_endpoint(request: dict):
     if not music_service:
         raise HTTPException(status_code=503, detail="Music generation service not available. Install audiocraft: pip install audiocraft")
 
-    # Unload LLMs to free VRAM for music generation
+    # MemoryGate: free VRAM for music generation
     global _models_unloaded_for_image_gen
     with _image_gen_lock:
-        if not _models_unloaded_for_image_gen:
+        if memory_gate_instance:
+            gate_result = memory_gate_instance.pre_heavy_task(
+                required_vram_mb=4000,
+                required_ram_mb=0,
+                reason="music generation (AudioCraft)",
+                allow_cpu_fallback=False,
+            )
+            if not gate_result["ok"]:
+                raise HTTPException(
+                    status_code=507,
+                    detail=gate_result.get("error", {
+                        "message": "Not enough VRAM for music generation",
+                        "action": "unload_and_retry",
+                    }),
+                )
+            _models_unloaded_for_image_gen = True
+        elif not _models_unloaded_for_image_gen:
             unload_all_llm_models()
             _models_unloaded_for_image_gen = True
-            if memory_gate_instance:
-                try:
-                    memory_gate_instance.pre_heavy_task(required_vram_mb=4000)
-                except Exception:
-                    pass
 
     try:
         result = await asyncio.to_thread(
@@ -7689,9 +7895,34 @@ async def generate_3d(request: dict):
     prompt = request.get("prompt", "")
     if not prompt:
         raise HTTPException(status_code=400, detail="Prompt required")
+
+    # MemoryGate: 3D generation needs GPU
+    if memory_gate_instance:
+        gate_result = memory_gate_instance.pre_heavy_task(
+            required_vram_mb=3000,
+            reason="3D mesh generation",
+            allow_cpu_fallback=False,
+        )
+        if not gate_result["ok"]:
+            raise HTTPException(
+                status_code=507,
+                detail=gate_result.get("error", {
+                    "message": "Not enough VRAM for 3D generation",
+                    "action": "unload_and_retry",
+                }),
+            )
+
     output_format = request.get("format", "glb")
     params = request.get("params", {})
     result = mesh_service.generate(prompt=prompt, output_format=output_format, params=params)
+
+    # Reload fast model after heavy task
+    if memory_gate_instance:
+        try:
+            memory_gate_instance.post_heavy_task()
+        except Exception:
+            pass
+
     return result
 
 

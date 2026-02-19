@@ -38,6 +38,8 @@ edison:
     default_mode: "instant"
     swarm_max_agents: 4
     tool_access: true
+    # Agent mode strategy: shared_deep_model (default) or multi_worker
+    agent_mode_strategy: "shared_deep_model"
 
   agent_modes:
     instant:
@@ -51,6 +53,9 @@ edison:
     swarm:
       tools: true
       parallel: true
+      # shared_deep_model: agents share one deep model, role via system prompts (default)
+      # multi_worker: each agent in a separate process (advanced, requires extra RAM)
+      strategy: "shared_deep_model"
     work:
       max_tokens: 3072
       tools: true
@@ -141,3 +146,10 @@ edison:
     enabled: false
     host: "127.0.0.1"
     port: 8809
+    # server_stt: false   # Set true if a server-side STT model is available
+    # server_tts: false   # Set true if a server-side TTS model is available
+
+  agent_live_view:
+    enabled: true          # Show live activity panel in UI during agent tasks
+    redact_secrets: true   # Strip API keys / tokens from streamed logs
+    screenshot_interval_s: 5  # Seconds between browser screenshots (0=disable)
