@@ -2,10 +2,11 @@
  * EDISON Voice Assistant + Agent Live View
  * 
  * Voice Mode:
+ *   - Server-side STT via faster-whisper (preferred) with Web Speech API fallback
+ *   - Server-side TTS via edge-tts neural voices (preferred) with browser TTS fallback
  *   - Orb overlay that reacts to audio amplitude
- *   - Web Speech API for STT (default) with MediaRecorder fallback
- *   - Web Speech API for TTS (default)
- *   - Integrates with existing chat endpoint
+ *   - Automatic silence detection for hands-free recording
+ *   - Voice selector with 12+ natural Microsoft Neural voices
  * 
  * Agent Live View:
  *   - Collapsible panel in chat showing real-time agent steps
@@ -35,7 +36,11 @@ class EdisonVoiceAssistant {
         this.currentTranscript = '';
         this.serverConfig = null;
         this.selectedVoice = null;
+        this.selectedServerVoice = null;
         this.voices = [];
+        this.useServerSTT = false;
+        this.useServerTTS = false;
+        this._currentAudio = null;
 
         this._initUI();
         this._fetchServerConfig();
@@ -125,16 +130,63 @@ class EdisonVoiceAssistant {
         });
     }
 
+    async _populateServerVoiceSelect() {
+        const sel = document.getElementById('voiceSelect');
+        if (!sel) return;
+        try {
+            const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
+            const resp = await fetch(`${endpoint}/voice/voices`);
+            if (!resp.ok) return;
+            const data = await resp.json();
+
+            sel.innerHTML = '';
+            data.voices.forEach(v => {
+                const opt = document.createElement('option');
+                opt.value = v.id;
+                opt.textContent = `${v.name} — ${v.style} (${v.gender})`;
+                if (v.id === data.current) opt.selected = true;
+                sel.appendChild(opt);
+            });
+            // Remove old listeners by cloning
+            const newSel = sel.cloneNode(true);
+            sel.parentNode.replaceChild(newSel, sel);
+            newSel.addEventListener('change', () => {
+                this.selectedServerVoice = newSel.value;
+                console.log(`[Voice] Selected voice: ${newSel.value}`);
+            });
+        } catch (e) {
+            console.warn('[Voice] Failed to load server voices:', e);
+        }
+    }
+
     _toggleVoiceSelect() {
         const sel = document.getElementById('voiceSelect');
-        if (sel) sel.style.display = sel.style.display === 'none' ? 'block' : 'none';
+        if (sel) {
+            const isHidden = sel.style.display === 'none';
+            sel.style.display = isHidden ? 'block' : 'none';
+            // Show the voice mode indicator when opening
+            if (isHidden) {
+                const mode = this.useServerTTS ? '🎙️ Neural voices (server)' : '🔉 Browser voices';
+                this._setStatus(mode);
+            }
+        }
     }
 
     async _fetchServerConfig() {
         try {
             const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
             const resp = await fetch(`${endpoint}/voice/config`);
-            if (resp.ok) this.serverConfig = await resp.json();
+            if (resp.ok) {
+                this.serverConfig = await resp.json();
+                this.useServerSTT = !!this.serverConfig.server_stt;
+                this.useServerTTS = !!this.serverConfig.server_tts;
+                if (this.useServerSTT) console.log('[Voice] Server STT available (faster-whisper)');
+                if (this.useServerTTS) {
+                    console.log(`[Voice] Server TTS available (${this.serverConfig.tts_voice})`);
+                    this.selectedServerVoice = this.serverConfig.tts_voice;
+                    this._populateServerVoiceSelect();
+                }
+            }
         } catch {
             this.serverConfig = { recommended_mode: 'web_speech_api' };
         }
@@ -187,6 +239,12 @@ class EdisonVoiceAssistant {
     // ── STT ───────────────────────────────────────────────────────────
 
     _startListening() {
+        // Use server STT if available (faster-whisper) — skip Web Speech API entirely
+        if (this.useServerSTT) {
+            this._serverRecording();
+            return;
+        }
+
         // Abort any previous recognition to prevent parallel instances
         if (this.recognition) {
             try { this.recognition.abort(); } catch {}
@@ -301,7 +359,112 @@ class EdisonVoiceAssistant {
             this.recognition = null;
         }
         if (this.mediaRecorder && this.mediaRecorder.state !== 'inactive') {
-            this.mediaRecorder.stop();
+            try { this.mediaRecorder.stop(); } catch {}
+        }
+    }
+
+    // ── Server-side STT recording (faster-whisper) ────────────────────
+
+    async _serverRecording() {
+        this._setStatus('Listening…');
+        this.isListening = true;
+
+        try {
+            const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+            this._connectMicAnalyserFromStream(stream);
+
+            const chunks = [];
+            const mimeType = MediaRecorder.isTypeSupported('audio/webm;codecs=opus')
+                ? 'audio/webm;codecs=opus' : 'audio/webm';
+            const recorder = new MediaRecorder(stream, { mimeType });
+            this.mediaRecorder = recorder;
+
+            recorder.ondataavailable = (e) => {
+                if (e.data.size > 0) chunks.push(e.data);
+            };
+
+            recorder.onstop = async () => {
+                this.isListening = false;
+                stream.getTracks().forEach(t => t.stop());
+                if (!this.isActive) return;
+
+                if (!chunks.length) {
+                    // No data recorded — restart
+                    if (this.isActive) setTimeout(() => this._startListening(), 500);
+                    return;
+                }
+
+                const blob = new Blob(chunks, { type: mimeType });
+                if (blob.size < 500) {
+                    // Too small, probably no speech
+                    if (this.isActive) setTimeout(() => this._startListening(), 500);
+                    return;
+                }
+
+                await this._sendAudioToServer(blob);
+            };
+
+            recorder.start(250);  // Collect chunks every 250ms
+
+            // ── Silence detection using audio analyser ──
+            let speechDetected = false;
+            let silenceStart = null;
+            const SILENCE_THRESHOLD = 0.015;    // RMS threshold
+            const SILENCE_DURATION = 1800;      // 1.8s of silence after speech → stop
+            const MIN_SPEECH_TIME = 500;        // Minimum speech before silence counts
+            const MAX_DURATION = 30000;         // 30s max recording
+            let speechStart = null;
+
+            const checkSilence = () => {
+                if (!this.isActive || recorder.state !== 'recording') return;
+
+                if (this.analyser) {
+                    const data = new Uint8Array(this.analyser.frequencyBinCount);
+                    this.analyser.getByteTimeDomainData(data);
+                    let sum = 0;
+                    for (let i = 0; i < data.length; i++) {
+                        const v = (data[i] - 128) / 128;
+                        sum += v * v;
+                    }
+                    const rms = Math.sqrt(sum / data.length);
+
+                    if (rms > SILENCE_THRESHOLD) {
+                        if (!speechDetected) {
+                            speechDetected = true;
+                            speechStart = Date.now();
+                            this._setStatus('Listening… (hearing you)');
+                        }
+                        silenceStart = null;
+                    } else if (speechDetected && speechStart &&
+                               (Date.now() - speechStart > MIN_SPEECH_TIME)) {
+                        if (!silenceStart) silenceStart = Date.now();
+                        if (Date.now() - silenceStart > SILENCE_DURATION) {
+                            // Silence after speech — stop recording
+                            console.log('[Voice] Silence detected, stopping recording');
+                            recorder.stop();
+                            return;
+                        }
+                    }
+                }
+
+                requestAnimationFrame(checkSilence);
+            };
+
+            requestAnimationFrame(checkSilence);
+
+            // Max duration safety
+            setTimeout(() => {
+                if (recorder.state === 'recording') {
+                    console.log('[Voice] Max duration reached, stopping');
+                    recorder.stop();
+                }
+            }, MAX_DURATION);
+
+        } catch (e) {
+            this.isListening = false;
+            console.error('[Voice] Microphone error:', e);
+            this._setStatus('Microphone not available');
+            this._showVoiceTextInput();
         }
     }
 
@@ -341,19 +504,28 @@ class EdisonVoiceAssistant {
             const resp = await fetch(`${endpoint}/voice/stt`, { method: 'POST', body: formData });
             if (resp.ok) {
                 const data = await resp.json();
-                if (data.text) {
+                if (data.text && data.text.trim()) {
+                    console.log(`[Voice] Transcribed: "${data.text}" (${data.duration}s)`);
+                    document.getElementById('voiceTranscript').textContent = data.text;
                     this.currentTranscript = data.text;
                     this._sendTranscript(data.text);
                     return;
                 }
+                // Empty transcription — no speech detected, restart
+                this._setStatus('Listening…');
+                if (this.isActive) setTimeout(() => this._startListening(), 500);
+                return;
             }
-            this._setStatus('Server STT unavailable. Try a supported browser for Web Speech API.');
+            // Server error
+            const err = await resp.json().catch(() => ({}));
+            console.warn('[Voice] STT error:', err.detail || resp.status);
+            this._setStatus('Transcription failed — retrying…');
         } catch (e) {
-            this._setStatus('STT failed');
-            console.error('STT error:', e);
+            this._setStatus('STT error');
+            console.error('[Voice] STT error:', e);
         }
-        // Restart listening
-        if (this.isActive) setTimeout(() => { if (this.isActive) this._startListening(); }, 2000);
+        // Restart listening after error
+        if (this.isActive) setTimeout(() => this._startListening(), 2000);
     }
 
     // ── Send to Chat ──────────────────────────────────────────────────
@@ -422,22 +594,76 @@ class EdisonVoiceAssistant {
             this._afterSpeak();
             return;
         }
+
+        // Use server TTS if available (edge-tts neural voices)
+        if (this.useServerTTS) {
+            this._serverSpeak(text);
+            return;
+        }
+
+        // Fallback: browser speechSynthesis
+        this._browserSpeak(text);
+    }
+
+    async _serverSpeak(text) {
+        this.isSpeaking = true;
+        this._setStatus('Speaking…');
+
+        const endpoint = this.app?.settings?.apiEndpoint || `${location.origin}/api`;
+
+        try {
+            const resp = await fetch(`${endpoint}/voice/tts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    text: text,
+                    voice: this.selectedServerVoice || undefined,
+                }),
+            });
+
+            if (!resp.ok) throw new Error(`TTS failed: ${resp.status}`);
+
+            const blob = await resp.blob();
+            const url = URL.createObjectURL(blob);
+
+            const audio = new Audio(url);
+            this._currentAudio = audio;
+
+            audio.onended = () => {
+                URL.revokeObjectURL(url);
+                this._currentAudio = null;
+                this._afterSpeak();
+            };
+            audio.onerror = () => {
+                URL.revokeObjectURL(url);
+                this._currentAudio = null;
+                console.warn('[Voice] Audio playback error, falling back to browser TTS');
+                this._browserSpeak(text);
+            };
+
+            await audio.play();
+        } catch (e) {
+            console.error('[Voice] Server TTS error:', e);
+            // Fall back to browser TTS
+            this._browserSpeak(text);
+        }
+    }
+
+    _browserSpeak(text) {
         if (!('speechSynthesis' in window)) {
             this._afterSpeak();
             return;
         }
 
-        // Cancel any in-progress speech
         speechSynthesis.cancel();
 
-        // Clean text for speech (remove markdown, code blocks, etc.)
         const clean = text
             .replace(/```[\s\S]*?```/g, ' code block ')
             .replace(/`[^`]+`/g, '')
             .replace(/[#*_~]/g, '')
             .replace(/\[([^\]]+)\]\([^)]+\)/g, '$1')
             .replace(/\n+/g, '. ')
-            .slice(0, 2000);  // Limit length
+            .slice(0, 2000);
 
         const utterance = new SpeechSynthesisUtterance(clean);
         if (this.selectedVoice) utterance.voice = this.selectedVoice;
@@ -454,6 +680,10 @@ class EdisonVoiceAssistant {
     }
 
     _stopSpeaking() {
+        if (this._currentAudio) {
+            this._currentAudio.pause();
+            this._currentAudio = null;
+        }
         if ('speechSynthesis' in window) speechSynthesis.cancel();
         this.isSpeaking = false;
     }

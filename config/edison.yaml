@@ -143,11 +143,14 @@ edison:
     gpu_memory_utilization: 0.90
 
   voice:
-    enabled: false
+    enabled: true
     host: "127.0.0.1"
     port: 8809
-    # server_stt: false   # Set true if a server-side STT model is available
-    # server_tts: false   # Set true if a server-side TTS model is available
+    server_stt: true        # faster-whisper for speech-to-text
+    server_tts: true        # edge-tts neural voices for text-to-speech
+    stt_model: "base"       # Whisper model: tiny, base, small, medium, large-v3
+    stt_device: "auto"      # auto, cuda, cpu
+    tts_voice: "en-US-GuyNeural"  # Default voice (see GET /voice/voices for options)
 
   agent_live_view:
     enabled: true          # Show live activity panel in UI during agent tasks

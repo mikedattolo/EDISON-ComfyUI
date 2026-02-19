@@ -35,6 +35,10 @@ numpy>=1.24.0  # Audio processing
 soundfile>=0.12.1  # Audio file I/O (optional)
 webrtcvad>=2.0.10  # Alternative VAD (optional)
 
+# Voice assistant — server-side STT & TTS
+faster-whisper>=1.0.0  # GPU-accelerated Whisper (CTranslate2) for STT
+edge-tts>=6.1.0        # Microsoft Neural TTS voices (high quality, natural)
+
 # Office document generation
 python-pptx>=1.0.0  # PowerPoint .pptx generation
 python-docx>=1.0.0  # Word .docx generation
