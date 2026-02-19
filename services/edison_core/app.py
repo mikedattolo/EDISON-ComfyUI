@@ -3459,10 +3459,14 @@ async def chat(request: ChatRequest):
                         max_tokens=max_tokens,
                         temperature=0.7,
                         top_p=0.9,
-                        frequency_penalty=0.3,  # Reduce repetition
-                        presence_penalty=0.2,   # Encourage new topics
-                        repeat_penalty=1.1,     # Penalize repeated tokens
-                        stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                        frequency_penalty=0.5,
+                        presence_penalty=0.4,
+                        repeat_penalty=1.3,
+                        stop=["User:", "Human:", "\n\n\n",
+                              "Would you like", "Please specify",
+                              "Let me know if", "Do let me know",
+                              "Please provide direction", "Please confirm",
+                              "Your feedback will", "Your guidance will"],
                         echo=False
                     )
                 
@@ -4223,7 +4227,11 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                     with lock:
                         stream = agent_model.create_chat_completion(
                             messages=[{"role": "user", "content": prompt_text}],
-                            max_tokens=180,
+                            max_tokens=300,
+                            temperature=temp,
+                            repeat_penalty=1.3,
+                            frequency_penalty=0.4,
+                            presence_penalty=0.3,
                             temperature=temp,
                             stream=False
                         )
@@ -4663,10 +4671,14 @@ Do not include multiple summaries or "Final Summary" variants.
                             max_tokens=max_tokens,
                             temperature=0.7,
                             top_p=0.9,
-                            frequency_penalty=0.3,
-                            presence_penalty=0.2,
-                            repeat_penalty=1.15,
-                            stop=["User:", "Human:", "\n\n\n", "Would you like to specify", "Please specify"],
+                            frequency_penalty=0.5,
+                            presence_penalty=0.4,
+                            repeat_penalty=1.3,
+                            stop=["User:", "Human:", "\n\n\n",
+                                  "Would you like", "Please specify",
+                                  "Let me know if", "Do let me know",
+                                  "Please provide direction", "Please confirm",
+                                  "Your feedback will", "Your guidance will"],
                             echo=False,
                             stream=True
                         )
@@ -6763,18 +6775,50 @@ def _render_pdf_from_text(text: str) -> bytes:
 
 def _detect_repetition(text: str, window: int = 200) -> bool:
     """Detect if the generated text has fallen into a repetition loop.
-    Checks if the last `window` characters repeat a pattern seen earlier."""
-    if len(text) < window * 2:
+    Uses multiple strategies:
+    1. Exact tail-match: last `window` chars appear earlier
+    2. Short phrase repeat: last 100 chars appear 2+ times earlier
+    3. Sentence-level repetition: many recent sentences already seen
+    4. Phrase pattern detection: filler phrases repeating excessively
+    """
+    if len(text) < 300:
         return False
+
+    # Strategy 1: exact tail match
     tail = text[-window:]
-    # Check if this tail appears earlier in the text
     earlier = text[:-window]
-    if tail in earlier:
+    if len(text) >= window * 2 and tail in earlier:
         return True
-    # Also check for shorter repeated phrases (100 chars)
+
+    # Strategy 2: short phrase repeat
     short_tail = text[-100:]
     if len(text) > 300 and earlier.count(short_tail) >= 2:
         return True
+
+    # Strategy 3: sentence-level repetition
+    # Split into sentences and check if recent sentences appeared before
+    sentences = [s.strip() for s in re.split(r'[.!?\n]', text) if len(s.strip()) > 20]
+    if len(sentences) >= 8:
+        recent = sentences[-6:]
+        older = sentences[:-6]
+        older_set = set(s.lower() for s in older)
+        repeats = sum(1 for s in recent if s.lower() in older_set)
+        if repeats >= 3:
+            return True
+
+    # Strategy 4: filler phrase detection
+    filler_patterns = [
+        "let me know", "do let me know", "please provide",
+        "would you like", "please confirm", "your feedback",
+        "your guidance", "your input", "to clarify",
+        "to summarize", "to wrap up", "please give",
+        "feel free to ask", "how can i help",
+    ]
+    last_1000 = text[-1000:].lower() if len(text) > 1000 else text.lower()
+    filler_count = sum(last_1000.count(p) for p in filler_patterns)
+    if filler_count >= 6:
+        return True
+
     return False
 
 def _parse_files_from_response(response: str) -> list:

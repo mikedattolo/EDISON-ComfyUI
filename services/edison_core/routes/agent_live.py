@@ -69,14 +69,14 @@ class AgentEventBus:
         if len(hist) > self._max_history:
             self._history[session_id] = hist[-self._max_history:]
 
-        # Fan out
+        # Fan out to all subscribers (session filtering relaxed so
+        # "default" events reach every subscriber and vice-versa)
         dead = []
         for sub_id, q in self._subscribers.items():
-            if sub_id.startswith(session_id) or sub_id.startswith("default"):
-                try:
-                    q.put_nowait(event)
-                except asyncio.QueueFull:
-                    dead.append(sub_id)
+            try:
+                q.put_nowait(event)
+            except asyncio.QueueFull:
+                dead.append(sub_id)
         for k in dead:
             del self._subscribers[k]
 
