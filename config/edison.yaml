@@ -40,6 +40,11 @@ edison:
     tool_access: true
     # Agent mode strategy: shared_deep_model (default) or multi_worker
     agent_mode_strategy: "shared_deep_model"
+    # Swarm Boss agent settings
+    swarm_boss_enabled: true
+    swarm_session_ttl: 3600          # Session TTL in seconds (default 1 hour)
+    swarm_user_intervention: true    # Allow user to inject feedback mid-swarm
+    swarm_at_mention: true           # Allow @Agent direct messaging in swarm
 
   agent_modes:
     instant:
@@ -53,6 +58,9 @@ edison:
     swarm:
       tools: true
       parallel: true
+      boss_agent: true                 # Boss agent plans, delegates, and synthesizes
+      max_agents: 6                    # Max agents per swarm (including Boss)
+      voting_rounds: 1                 # Agent voting rounds before Boss synthesis
       # shared_deep_model: agents share one deep model, role via system prompts (default)
       # multi_worker: each agent in a separate process (advanced, requires extra RAM)
       strategy: "shared_deep_model"

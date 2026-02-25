@@ -19,6 +19,11 @@ class EdisonApp {
         this.modelSelector = null;
         this.modelSelect = null;
         this.bestVlm = null;
+
+        // Swarm collaboration state
+        this.swarmSessionId = null;
+        this.swarmAgentCatalog = [];
+        this.swarmAutocompleteVisible = false;
         
         this.initializeElements();
         this.attachEventListeners();
@@ -26,6 +31,7 @@ class EdisonApp {
         this.loadCurrentChat();
         this.setMode(this.settings.defaultMode);
         this.loadAvailableModels();
+        this.loadSwarmAgentCatalog();  // Preload swarm agent names for @mention
         this.loadUsers();  // Populate user dropdowns on startup
         this.handleViewportChange();
         window.addEventListener('resize', () => this.handleViewportChange());
@@ -295,6 +301,9 @@ class EdisonApp {
         // Auto-resize textarea
         this.messageInput.style.height = 'auto';
         this.messageInput.style.height = Math.min(this.messageInput.scrollHeight, 200) + 'px';
+
+        // @Agent mention autocomplete (only in swarm-related context)
+        this.handleSwarmAutocomplete(text);
     }
 
     handleKeyDown(e) {
@@ -425,6 +434,27 @@ class EdisonApp {
             this.isStreaming = true;
             this.abortController = new AbortController();
             
+            // Check for @Agent direct message in active swarm session
+            const atMatch = message.match(/^@(\w+)\s+([\s\S]+)/);
+            if (atMatch && this.swarmSessionId) {
+                const agentName = atMatch[1];
+                const dmMessage = atMatch[2].trim();
+                const result = await this.sendSwarmDirectMessage(agentName, dmMessage);
+                if (result && result.ok) {
+                    const r = result.response;
+                    const replyContent = `**@${r.agent || agentName}** (${r.model || 'agent'}):\n\n${r.response || 'No response'}`;
+                    this.updateMessage(assistantMessageEl, replyContent, 'swarm-dm');
+                    assistantMessageEl.classList.add('swarm-agent');
+                    this.saveMessageToChat(message, replyContent, 'swarm-dm');
+                } else {
+                    // Fall through to normal chat if DM fails (agent not found, session expired, etc.)
+                    // The error notification was already shown by sendSwarmDirectMessage
+                    this.updateMessage(assistantMessageEl, '⚠️ Could not reach that agent. The swarm session may have expired. Sending as a normal message...', 'error');
+                    await this.callEdisonAPIStream(message, mode, assistantMessageEl);
+                }
+                return; // skip the rest of sendMessage
+            }
+
             // Check if this is an image generation or regeneration request
             const isImageRequest = this.detectImageGenerationRequest(message);
             const isRegenerateRequest = this.detectImageRegenerationRequest(message);
@@ -611,7 +641,8 @@ class EdisonApp {
                 project_id: this.projectId,
                 session_id: this.sessionId,
                 images: images.length > 0 ? images : undefined,
-                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
+                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined,
+                swarm_session_id: this.swarmSessionId || undefined
             }),
             signal: this.abortController?.signal
         });
@@ -709,7 +740,8 @@ class EdisonApp {
                 project_id: this.projectId,
                 session_id: this.sessionId,
                 images: images.length > 0 ? images : undefined,
-                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined
+                selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined,
+                swarm_session_id: this.swarmSessionId || undefined
             }),
             signal: this.abortController?.signal
         });
@@ -791,6 +823,12 @@ class EdisonApp {
                                     }
                                     // Success — normal text response
                                     this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
+                                    
+                                    // Track swarm session for follow-up DMs and intervention
+                                    if (data.swarm_session_id) {
+                                        this.swarmSessionId = data.swarm_session_id;
+                                        console.log(`🐝 Swarm session active: ${this.swarmSessionId}`);
+                                    }
                                     
                                     // Display swarm agent conversation if not already inserted
                                     if (!swarmInserted && data.swarm_agents && data.swarm_agents.length > 0) {
@@ -975,14 +1013,20 @@ class EdisonApp {
         const fragment = document.createDocumentFragment();
 
         swarmAgents.forEach(agent => {
+            const agentName = agent.agent || 'Agent';
+            const isBoss = agentName.toLowerCase() === 'boss';
+            const extraClass = isBoss ? ' swarm-boss' : '';
+
             const agentMessageEl = document.createElement('div');
-            agentMessageEl.className = 'message assistant swarm-agent';
+            agentMessageEl.className = `message assistant swarm-agent${extraClass}`;
+            agentMessageEl.dataset.agentName = agentName;
 
             agentMessageEl.innerHTML = `
                 <div class="message-header">
                     <div class="message-avatar">${agent.icon || '🐝'}</div>
-                    <span class="message-role">${agent.agent || 'Agent'}</span>
+                    <span class="message-role">${agentName}</span>
                     <span class="message-mode">${(agent.model || 'Unknown Model').toUpperCase()}</span>
+                    ${isBoss ? '<span class="swarm-boss-badge">BOSS</span>' : ''}
                 </div>
                 <div class="message-content">${this.formatMessage(agent.response || '')}</div>
                 <div class="message-actions">
@@ -992,6 +1036,11 @@ class EdisonApp {
                             <path d="M9.5 1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-3a.5.5 0 0 1-.5-.5v-1a.5.5 0 0 1 .5-.5h3zm-3-1A1.5 1.5 0 0 0 5 1.5v1A1.5 1.5 0 0 0 6.5 4h3A1.5 1.5 0 0 0 11 2.5v-1A1.5 1.5 0 0 0 9.5 0h-3z"/>
                         </svg>
                     </button>
+                    <button class="action-btn reply-agent-btn" title="Reply to ${agentName}" data-agent="${agentName}">
+                        <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M6.598 5.013a.144.144 0 0 1 .202.134V6.3a.5.5 0 0 0 .5.5c.667 0 2.013.005 3.3.822.984.624 1.99 1.76 2.595 3.876-1.02-.983-2.185-1.516-3.205-1.799a8.74 8.74 0 0 0-1.921-.306 7.404 7.404 0 0 0-.798.008h-.013l-.005.001h-.001L7.3 9.9H7.2a.5.5 0 0 0-.498.45v1.17a.147.147 0 0 1-.202.134L1.904 8.045a.16.16 0 0 1 0-.281l4.694-2.75Z"/>
+                        </svg>
+                    </button>
                 </div>
             `;
 
@@ -999,9 +1048,43 @@ class EdisonApp {
             if (copyBtn) {
                 copyBtn.addEventListener('click', () => this.copyToClipboard(agent.response || ''));
             }
+            
+            const replyBtn = agentMessageEl.querySelector('.reply-agent-btn');
+            if (replyBtn) {
+                replyBtn.addEventListener('click', () => {
+                    this.messageInput.value = `@${agentName} `;
+                    this.messageInput.focus();
+                    this.handleInputChange();
+                });
+            }
 
             fragment.appendChild(agentMessageEl);
         });
+
+        // Add swarm interaction toolbar after agent messages
+        if (this.swarmSessionId) {
+            const toolbar = document.createElement('div');
+            toolbar.className = 'swarm-toolbar';
+            toolbar.innerHTML = `
+                <div class="swarm-toolbar-label">🐝 Swarm Team — Session active</div>
+                <div class="swarm-toolbar-actions">
+                    <button class="swarm-feedback-btn" title="Give feedback to the whole team">
+                        <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+                            <path d="M8 15A7 7 0 1 1 8 1a7 7 0 0 1 0 14zm0 1A8 8 0 1 0 8 0a8 8 0 0 0 0 16z"/>
+                            <path d="M4.285 9.567a.5.5 0 0 1 .683.183A3.498 3.498 0 0 0 8 11.5a3.498 3.498 0 0 0 3.032-1.75.5.5 0 1 1 .866.5A4.498 4.498 0 0 1 8 12.5a4.498 4.498 0 0 1-3.898-2.25.5.5 0 0 1 .183-.683zM7 6.5C7 7.328 6.552 8 6 8s-1-.672-1-1.5S5.448 5 6 5s1 .672 1 1.5zm4 0c0 .828-.448 1.5-1 1.5s-1-.672-1-1.5S9.448 5 10 5s1 .672 1 1.5z"/>
+                        </svg>
+                        Give Feedback
+                    </button>
+                    <span class="swarm-session-id" title="Session ID">${this.swarmSessionId.slice(0, 8)}…</span>
+                </div>
+            `;
+            
+            toolbar.querySelector('.swarm-feedback-btn').addEventListener('click', () => {
+                this.showSwarmFeedbackInput(assistantMessageEl);
+            });
+            
+            fragment.appendChild(toolbar);
+        }
 
         // Insert all agent messages before the main assistant response
         this.messagesContainer.insertBefore(fragment, assistantMessageEl);
@@ -2354,6 +2437,208 @@ class EdisonApp {
             });
         } catch (error) {
             console.warn('Could not sync chats to server:', error.message);
+        }
+    }
+
+    // ==================== SWARM COLLABORATION UI ====================
+
+    async loadSwarmAgentCatalog() {
+        try {
+            const resp = await fetch(`${this.settings.apiEndpoint}/swarm/agents`);
+            if (resp.ok) {
+                const data = await resp.json();
+                this.swarmAgentCatalog = data.agents || [];
+                console.log(`🐝 Loaded ${this.swarmAgentCatalog.length} swarm agents for @mention`);
+            }
+        } catch (e) {
+            console.warn('Could not load swarm agent catalog:', e.message);
+        }
+    }
+
+    handleSwarmAutocomplete(text) {
+        // Detect @<partial> at end of text
+        const atMatch = text.match(/@(\w*)$/);
+        if (atMatch && this.swarmAgentCatalog.length > 0) {
+            const partial = atMatch[1].toLowerCase();
+            const matches = this.swarmAgentCatalog.filter(a =>
+                a.name.toLowerCase().startsWith(partial)
+            );
+            if (matches.length > 0 && partial.length > 0) {
+                this.showSwarmAutocomplete(matches, atMatch.index);
+                return;
+            }
+        }
+        this.hideSwarmAutocomplete();
+    }
+
+    showSwarmAutocomplete(matches, atIndex) {
+        let dropdown = document.getElementById('swarmAutocomplete');
+        if (!dropdown) {
+            dropdown = document.createElement('div');
+            dropdown.id = 'swarmAutocomplete';
+            dropdown.className = 'swarm-autocomplete';
+            this.messageInput.parentElement.appendChild(dropdown);
+        }
+        dropdown.innerHTML = matches.map(a => `
+            <div class="swarm-autocomplete-item" data-name="${a.name}">
+                <span class="swarm-ac-icon">${a.icon}</span>
+                <span class="swarm-ac-name">${a.name}</span>
+                <span class="swarm-ac-role">${a.role}</span>
+            </div>
+        `).join('');
+        dropdown.style.display = 'block';
+        this.swarmAutocompleteVisible = true;
+
+        dropdown.querySelectorAll('.swarm-autocomplete-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const name = item.dataset.name;
+                const before = this.messageInput.value.slice(0, atIndex);
+                this.messageInput.value = `${before}@${name} `;
+                this.messageInput.focus();
+                this.hideSwarmAutocomplete();
+                this.handleInputChange();
+            });
+        });
+    }
+
+    hideSwarmAutocomplete() {
+        const dropdown = document.getElementById('swarmAutocomplete');
+        if (dropdown) {
+            dropdown.style.display = 'none';
+        }
+        this.swarmAutocompleteVisible = false;
+    }
+
+    showSwarmFeedbackInput(contextEl) {
+        // Show an inline feedback input below the swarm toolbar
+        let existing = document.querySelector('.swarm-feedback-area');
+        if (existing) { existing.remove(); }
+
+        const area = document.createElement('div');
+        area.className = 'swarm-feedback-area';
+        area.innerHTML = `
+            <div class="swarm-feedback-header">💬 Give feedback to the team</div>
+            <textarea class="swarm-feedback-input" placeholder="Your feedback, direction, or question to all agents..." rows="2"></textarea>
+            <div class="swarm-feedback-actions">
+                <button class="swarm-feedback-send">Send to Team</button>
+                <button class="swarm-feedback-cancel">Cancel</button>
+            </div>
+        `;
+        
+        // Insert after the context element
+        if (contextEl.nextSibling) {
+            this.messagesContainer.insertBefore(area, contextEl.nextSibling);
+        } else {
+            this.messagesContainer.appendChild(area);
+        }
+        
+        const input = area.querySelector('.swarm-feedback-input');
+        input.focus();
+        
+        area.querySelector('.swarm-feedback-send').addEventListener('click', async () => {
+            const feedback = input.value.trim();
+            if (!feedback) return;
+            await this.sendSwarmFeedback(feedback, area);
+        });
+        
+        area.querySelector('.swarm-feedback-cancel').addEventListener('click', () => {
+            area.remove();
+        });
+        
+        // Enter to send (shift+enter for newline)
+        input.addEventListener('keydown', async (e) => {
+            if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                const feedback = input.value.trim();
+                if (feedback) await this.sendSwarmFeedback(feedback, area);
+            }
+        });
+        
+        this.scrollToBottom();
+    }
+
+    async sendSwarmFeedback(feedback, feedbackAreaEl) {
+        if (!this.swarmSessionId) {
+            this.showNotification('No active swarm session');
+            return;
+        }
+
+        // Replace input with loading state
+        feedbackAreaEl.innerHTML = '<div class="swarm-feedback-loading">🐝 Agents are reviewing your feedback...</div>';
+
+        try {
+            const resp = await fetch(`${this.settings.apiEndpoint}/swarm/feedback`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: this.swarmSessionId,
+                    message: feedback,
+                }),
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || 'Feedback failed');
+            }
+
+            const data = await resp.json();
+            feedbackAreaEl.remove();
+
+            // Display each agent's response to the feedback
+            if (data.responses && data.responses.length > 0) {
+                const userFeedbackEl = this.addMessage('user', `🐝 [Team Feedback]: ${feedback}`);
+                userFeedbackEl.classList.add('swarm-feedback-msg');
+                
+                const fragment = document.createDocumentFragment();
+                data.responses.forEach(r => {
+                    const el = document.createElement('div');
+                    el.className = 'message assistant swarm-agent swarm-feedback-response';
+                    el.innerHTML = `
+                        <div class="message-header">
+                            <div class="message-avatar">${r.icon || '🐝'}</div>
+                            <span class="message-role">${r.agent || 'Agent'}</span>
+                            <span class="message-mode">FEEDBACK RESPONSE</span>
+                        </div>
+                        <div class="message-content">${this.formatMessage(r.response || '')}</div>
+                    `;
+                    fragment.appendChild(el);
+                });
+                this.messagesContainer.appendChild(fragment);
+                this.scrollToBottom();
+            }
+        } catch (e) {
+            feedbackAreaEl.innerHTML = `<div class="swarm-feedback-error">❌ ${e.message}</div>`;
+            setTimeout(() => feedbackAreaEl.remove(), 3000);
+        }
+    }
+
+    async sendSwarmDirectMessage(agentName, message) {
+        if (!this.swarmSessionId) {
+            this.showNotification('No active swarm session');
+            return null;
+        }
+        
+        try {
+            const resp = await fetch(`${this.settings.apiEndpoint}/swarm/dm`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    session_id: this.swarmSessionId,
+                    agent_name: agentName,
+                    message: message,
+                }),
+            });
+
+            if (!resp.ok) {
+                const err = await resp.json();
+                throw new Error(err.detail || 'DM failed');
+            }
+
+            return await resp.json();
+        } catch (e) {
+            console.error('Swarm DM error:', e);
+            this.showNotification(`Failed to message @${agentName}: ${e.message}`);
+            return null;
         }
     }
 

@@ -856,6 +856,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="User-selected model path override (None = use auto routing)"
     )
+    swarm_session_id: Optional[str] = Field(
+        default=None,
+        description="Active swarm session ID for @Agent direct messages"
+    )
 
 class ChatResponse(BaseModel):
     response: str
@@ -3993,11 +3997,12 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     if mode != "swarm":
         status_steps.append({"stage": "Generating response"})
 
-    # Swarm mode: Multi-agent collaboration with conversation
+    # Swarm mode: Multi-agent collaboration with Boss-led conversation
     swarm_results = []
+    swarm_session_id = None
     if mode == "swarm" and not has_images:
         try:
-            logger.info("🐝 Swarm mode activated - deploying specialized agents for collaborative discussion")
+            logger.info("🐝 Swarm mode activated — deploying Boss + specialist agents")
 
             # Import agent live emitters (best-effort)
             try:
@@ -4009,9 +4014,11 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                     def emit_agent_step(*a, **kw): pass
                     def emit_log(*a, **kw): pass
 
-            emit_agent_step(title="Swarm mode activated — selecting agents", status="running")
-            
-            # Define specialized agents with different models and roles
+            emit_agent_step(title="Swarm mode activated — Boss is assembling the team", status="running")
+
+            # Build SwarmEngine with model providers
+            from services.edison_core.swarm_engine import SwarmEngine, register_session
+
             def _available_models():
                 models = []
                 if llm_deep:
@@ -4022,195 +4029,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                     models.append(("fast", llm_fast, "Qwen 14B (Fast)"))
                 return models
 
-            def _pick_agent_model(agent_name: str, used: set):
-                preferences = {
-                    "Analyst": ["deep", "medium", "fast"],
-                    "Critic": ["deep", "medium", "fast"],
-                    "Researcher": ["medium", "deep", "fast"],
-                    "Searcher": ["medium", "deep", "fast"],
-                    "Planner": ["medium", "deep", "fast"],
-                    "Verifier": ["medium", "deep", "fast"],
-                    "Implementer": ["fast", "medium", "deep"],
-                    "Coder": ["medium", "fast", "deep"],
-                    "Designer": ["fast", "medium", "deep"],
-                    "Marketer": ["fast", "medium", "deep"]
-                }
-                order = preferences.get(agent_name, ["fast", "medium", "deep"])
-                available = _available_models()
-                # Prefer unused models first when multiple are available
-                for pref in order:
-                    for tag, model, name in available:
-                        if tag == pref and tag not in used:
-                            used.add(tag)
-                            return model, name
-                # Fallback to any available model by preference
-                for pref in order:
-                    for tag, model, name in available:
-                        if tag == pref:
-                            used.add(tag)
-                            return model, name
-                return llm, "Selected Model"
-
-            used_models = set()
-            def _make_agent(name: str, icon: str, role: str, style: str) -> dict:
-                model, model_name = _pick_agent_model(name, used_models)
-                return {
-                    "name": name,
-                    "icon": icon,
-                    "role": role,
-                    "style": style,
-                    "model": model,
-                    "model_name": model_name
-                }
-
-            agent_catalog = {
-                "Researcher": {
-                    **_make_agent("Researcher", "🔍", "research specialist", "cite sources and emphasize evidence")
-                },
-                "Searcher": {
-                    **_make_agent("Searcher", "🌐", "web search specialist who summarizes current information", "summarize findings with links and dates")
-                },
-                "Analyst": {
-                    **_make_agent("Analyst", "🧠", "strategic analyst", "structured, decisive recommendations")
-                },
-                "Implementer": {
-                    **_make_agent("Implementer", "⚙️", "implementation specialist", "actionable steps and concrete details")
-                },
-                "Coder": {
-                    **_make_agent("Coder", "💻", "coding specialist focused on implementation details", "code-first with minimal prose")
-                },
-                "Critic": {
-                    **_make_agent("Critic", "🧯", "critical reviewer who finds flaws, risks, and missing constraints", "skeptical, highlight risks and gaps")
-                },
-                "Planner": {
-                    **_make_agent("Planner", "🧭", "project planner who breaks work into steps and milestones", "sequenced plan with milestones")
-                },
-                "Designer": {
-                    **_make_agent("Designer", "🎨", "UX/UI designer focusing on layout, interaction, and aesthetics", "visual-first, UX tradeoffs")
-                },
-                "Marketer": {
-                    **_make_agent("Marketer", "📣", "growth marketer focusing on positioning, audience, and messaging", "audience, positioning, CTA")
-                },
-                "Verifier": {
-                    **_make_agent("Verifier", "✅", "validator who checks constraints, requirements, and correctness", "checklists, edge cases")
-                }
-            }
-
-            # Intent-based agent selection
-            user_text = (request.message or "").lower()
-            selected_agents = {"Analyst", "Implementer"}  # baseline
-
-            if re.search(r"research|market|trend|compare|benchmark|stats|insight", user_text):
-                selected_agents.add("Researcher")
-                selected_agents.add("Searcher")
-            if re.search(r"search|web|internet|latest|current|news|today", user_text):
-                selected_agents.add("Searcher")
-            if re.search(r"design|ui|ux|layout|branding|style|theme|visual", user_text):
-                selected_agents.add("Designer")
-            if re.search(r"plan|roadmap|milestone|phase|timeline|steps", user_text):
-                selected_agents.add("Planner")
-            if re.search(r"marketing|position|audience|persona|copy|seo|growth", user_text):
-                selected_agents.add("Marketer")
-            if re.search(r"validate|verify|test|requirements|constraints|edge cases", user_text):
-                selected_agents.add("Verifier")
-            if re.search(r"risk|critic|review|tradeoff|cons|pitfall", user_text):
-                selected_agents.add("Critic")
-            if re.search(r"code|implement|build|script|program|debug|refactor", user_text):
-                selected_agents.add("Coder")
-
-            # Always include Critic for complex tasks
-            if len(user_text) > 200:
-                selected_agents.add("Critic")
-
-            # Safety: cap max agents to limit latency
-            max_agents = 5
-            if len(selected_agents) > max_agents:
-                # Prefer Analyst/Implementer + highest-signal extras
-                priority = ["Analyst", "Implementer", "Researcher", "Searcher", "Coder", "Designer", "Planner", "Marketer", "Critic", "Verifier"]
-                selected_agents = set([a for a in priority if a in selected_agents][:max_agents])
-
-            agents = [agent_catalog[name] for name in selected_agents if name in agent_catalog]
-            logger.info(f"🐝 Swarm agents selected: {', '.join([a['name'] for a in agents])}")
-            emit_agent_step(
-                title=f"Agents: {', '.join(a['icon'] + ' ' + a['name'] for a in agents)}",
-                status="done",
-            )
-
-            # ── Swarm memory safety check ────────────────────────────
-            try:
-                from services.edison_core.swarm_safety import (
-                    get_swarm_memory_policy, apply_degraded_mode,
-                    group_agents_by_model, should_load_vision,
-                )
-                policy = get_swarm_memory_policy()
-                loaded_map = {
-                    "fast": llm_fast is not None,
-                    "medium": llm_medium is not None,
-                    "deep": llm_deep is not None,
-                }
-                swarm_mode_decision = policy.assess(agents, loaded_map)
-                logger.info(f"🐝 Swarm memory mode: {swarm_mode_decision}")
-
-                if swarm_mode_decision == "degraded":
-                    # Use fastest available model for everything
-                    fb_model = llm_fast or llm_medium or llm_deep
-                    fb_name = "Fast" if llm_fast else ("Medium" if llm_medium else "Deep")
-                    apply_degraded_mode(agents, fb_model, fb_name)
-                # time_slice is handled by existing sequential execution
-            except Exception as e:
-                logger.debug(f"Swarm safety check skipped: {e}")
-
-            # Truncate long user input for swarm prompts to avoid context overflow
-            swarm_user_message = truncate_text(request.message or "", max_chars=2500, label="User message")
-
-            # Build conversation between agents
-            conversation = []
-            shared_notes = []
-            shared_note_set = set()
-
-            def _normalize_text(text: str) -> set:
-                return set(re.findall(r"[a-zA-Z]+", (text or "").lower()))
-
-            def _avg_jaccard(responses: list) -> float:
-                if len(responses) < 2:
-                    return 0.0
-                sets = [_normalize_text(r) for r in responses]
-                scores = []
-                for i in range(len(sets)):
-                    for j in range(i + 1, len(sets)):
-                        union = sets[i] | sets[j]
-                        if not union:
-                            continue
-                        scores.append(len(sets[i] & sets[j]) / len(union))
-                return sum(scores) / len(scores) if scores else 0.0
-
-            def _contains_cjk(text: str) -> bool:
-                if not text:
-                    return False
-                return bool(re.search(r"[\u3040-\u30ff\u3400-\u4dbf\u4e00-\u9fff]", text))
-
-            def _extract_notes(text: str, max_items: int = 3) -> list:
-                if not text:
-                    return []
-                lines = [line.strip() for line in text.splitlines() if line.strip()]
-                notes = [line.lstrip("-•*").strip() for line in lines if line[:1] in ["-", "•", "*"]]
-                if not notes:
-                    sentences = re.split(r"(?<=[.!?])\s+", text.strip())
-                    notes = [s.strip() for s in sentences if s.strip()][:2]
-                return notes[:max_items]
-
-            def _update_shared_notes(text: str):
-                for note in _extract_notes(text):
-                    key = normalize_chunk(note).lower()
-                    if key and key not in shared_note_set:
-                        shared_note_set.add(key)
-                        shared_notes.append(note)
-
-            max_rounds = 4
-            rounds = 2
-            
-            # Use module-level _is_file_request
-            file_request = _is_file_request(request.message or "")
             parallel_swarm = bool(
                 config.get("edison", {})
                 .get("agent_modes", {})
@@ -4218,253 +4036,75 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 .get("parallel", False)
             )
 
-            wants_search = bool(re.search(r"search|web|internet|latest|current|news|today|research|sources", user_text))
+            engine = SwarmEngine(
+                available_models=_available_models,
+                get_lock_for_model=get_lock_for_model,
+                search_tool=search_tool,
+                config=config,
+                emit_fn=emit_agent_step,
+            )
 
-            async def _run_agent_prompt(agent: dict, prompt: str, temperature: float) -> dict:
-                def _invoke(prompt_text: str, temp: float) -> str:
-                    agent_model = agent["model"]
-                    lock = get_lock_for_model(agent_model)
-                    with lock:
-                        stream = agent_model.create_chat_completion(
-                            messages=[{"role": "user", "content": prompt_text}],
-                            max_tokens=300,
-                            temperature=temp,
-                            repeat_penalty=1.3,
-                            frequency_penalty=0.4,
-                            presence_penalty=0.3,
-                            stream=False
-                        )
-                        return stream["choices"][0]["message"]["content"]
+            file_request = _is_file_request(request.message or "")
 
-                agent_response = await asyncio.to_thread(_invoke, prompt, temperature)
-                if _contains_cjk(agent_response):
-                    retry_prompt = prompt + "\n\nStrictly respond in English only."
-                    agent_response = await asyncio.to_thread(_invoke, retry_prompt, 0.5)
-                if _contains_cjk(agent_response):
-                    agent_response = "(Response omitted: non-English output detected.)"
-                return {
-                    "agent": agent["name"],
-                    "icon": agent["icon"],
-                    "model": agent["model_name"],
-                    "response": agent_response
-                }
+            # Check for @Agent direct message
+            from services.edison_core.swarm_engine import SwarmEngine as _SE
+            target_agent, remaining_msg = _SE.parse_direct_mention(request.message or "")
 
-            prompts = []
-            for agent in agents:
-                scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
-                search_block = ""
-                if agent["name"] == "Searcher" and search_tool and wants_search:
-                    try:
-                        search_query = (request.message or "").strip()
-                        if hasattr(search_tool, "deep_search"):
-                            results, _meta = search_tool.deep_search(search_query, num_results=5)
-                        else:
-                            results = search_tool.search(search_query, num_results=3)
-                        lines = []
-                        for r in results or []:
-                            title = r.get("title") or ""
-                            url = r.get("url") or ""
-                            snippet = r.get("body") or r.get("snippet") or ""
-                            lines.append(f"- {title} ({url}) {snippet}".strip())
-                        if lines:
-                            search_block = "\n\nWeb Search Results:\n" + "\n".join(lines)
-                    except Exception as e:
-                        logger.warning(f"Searcher web search failed: {e}")
+            if target_agent:
+                # Direct message to a specific agent — check for active session
+                from services.edison_core.swarm_engine import get_session as _get_swarm_session
+                dm_session = None
+                if request.swarm_session_id:
+                    dm_session = _get_swarm_session(request.swarm_session_id)
+                if dm_session is None:
+                    # No active session — run a quick swarm first, then DM
+                    dm_session, _ = await engine.run_swarm(
+                        user_request=remaining_msg,
+                        has_images=has_images,
+                        search_results=search_results,
+                        file_request=file_request,
+                        parallel=parallel_swarm,
+                    )
+                    register_session(dm_session)
 
-                agent_prompt = f"""You are {agent['name']}, a {agent['role']}. You're in a collaborative discussion with other experts.
-Personality: {agent.get('style', 'concise and helpful')}.
+                dm_result = await engine.handle_direct_message(dm_session, target_agent, remaining_msg)
+                swarm_results = dm_session.conversation + [
+                    {"agent": "Swarm Vote", "icon": "🗳️", "model": "Consensus", "response": dm_session.vote_summary}
+                ]
+                swarm_session_id = dm_session.session_id
 
-User Request: {swarm_user_message}
+                # For DMs, the synthesis is just the agent's direct response
+                full_prompt = f"""The user asked {target_agent} directly: "{remaining_msg}"
 
-Shared Scratchpad (read/write):
-{scratchpad_block}
-{search_block}
+{target_agent}'s response: {dm_result['response']}
 
-Rules:
-- Respond only in English.
-- Be specific and concise (2-3 sentences).
-- Provide unique insights from your role.
-
-Your initial perspective:"""
-                prompts.append((agent, agent_prompt))
-
-            if parallel_swarm:
-                results = await asyncio.gather(*[
-                    _run_agent_prompt(agent, prompt, 0.7) for agent, prompt in prompts
-                ])
+Present this agent's response cleanly. Do not add your own analysis — just relay what {target_agent} said."""
+                if status_steps is not None:
+                    status_steps.append({"stage": f"Direct message to {target_agent}"})
             else:
-                results = []
-                for agent, prompt in prompts:
-                    results.append(await _run_agent_prompt(agent, prompt, 0.7))
-
-            for result in results:
-                _update_shared_notes(result["response"])
-                conversation.append(result)
-                logger.info(f"{result['icon']} {result['agent']} ({result['model']}): {result['response'][:80]}...")
-                emit_agent_step(
-                    title=f"{result['icon']} {result['agent']}: {result['response'][:100]}",
-                    status="done",
+                # Full swarm execution with Boss plan
+                session, synthesis_prompt = await engine.run_swarm(
+                    user_request=request.message or "",
+                    has_images=has_images,
+                    search_results=search_results,
+                    file_request=file_request,
+                    parallel=parallel_swarm,
                 )
+                register_session(session)
+                swarm_session_id = session.session_id
 
-            # Decide if we need an extra round based on similarity
-            round1_responses = [c["response"] for c in conversation]
-            if _avg_jaccard(round1_responses) > 0.45 and rounds < max_rounds:
-                rounds = 3
-                logger.info("🐝 Auto-round: responses too similar, adding an extra round")
+                swarm_results = session.conversation + [
+                    {"agent": "Swarm Vote", "icon": "🗳️", "model": "Consensus", "response": session.vote_summary}
+                ]
+                if status_steps is not None:
+                    for r in range(1, session.rounds_completed + 1):
+                        status_steps.append({"stage": f"Swarm round {r}"})
+                    status_steps.append({"stage": "Voting"})
+                    status_steps.append({"stage": "Synthesizing"})
 
-            if status_steps is not None:
-                if rounds >= 2:
-                    status_steps.append({"stage": "Swarm round 2"})
-                if rounds >= 3:
-                    status_steps.append({"stage": "Swarm round 3"})
-                if rounds >= 4:
-                    status_steps.append({"stage": "Swarm round 4"})
+                full_prompt = synthesis_prompt
+                logger.info("🐝 Swarm discussion complete, synthesizing final response")
 
-            for round_idx in range(2, rounds + 1):
-                logger.info(f"🐝 Round {round_idx}: Agent collaboration and refinement")
-                emit_agent_step(title=f"Swarm round {round_idx} — refining", status="running")
-                discussion_summary = "\n".join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])
-                scratchpad_block = "\n".join([f"- {n}" for n in shared_notes]) if shared_notes else "- (empty)"
-
-                round_prompts = []
-                for agent in agents:
-                    agent_prompt = f"""You are {agent['name']}, continuing the discussion.
-Personality: {agent.get('style', 'concise and helpful')}.
-
-    User Request: {swarm_user_message}
-
-Other experts said:
-{discussion_summary}
-
-Shared Scratchpad (read/write):
-{scratchpad_block}
-
-Rules:
-- Respond only in English.
-- Address at least one specific point from another agent by name.
-- Add one new insight not previously mentioned.
-- Keep it to 2-3 sentences.
-
-Your refined contribution:"""
-                    round_prompts.append((agent, agent_prompt))
-
-                if parallel_swarm:
-                    round_results = await asyncio.gather(*[
-                        _run_agent_prompt(agent, prompt, 0.6) for agent, prompt in round_prompts
-                    ])
-                else:
-                    round_results = []
-                    for agent, prompt in round_prompts:
-                        round_results.append(await _run_agent_prompt(agent, prompt, 0.6))
-
-                for result in round_results:
-                    _update_shared_notes(result["response"])
-                    conversation.append({
-                        "agent": f"{result['agent']} (Round {round_idx})",
-                        "icon": result["icon"],
-                        "model": result["model"],
-                        "response": result["response"]
-                    })
-                    logger.info(f"{result['icon']} {result['agent']} Round {round_idx}: {result['response'][:80]}...")
-                    emit_agent_step(
-                        title=f"{result['icon']} {result['agent']} R{round_idx}: {result['response'][:100]}",
-                        status="done",
-                    )
-
-                # Stop early if responses converge too much
-                recent_responses = [c["response"] for c in conversation[-len(agents):]]
-                if _avg_jaccard(recent_responses) > 0.6:
-                    logger.info("🐝 Auto-stop: responses converged, ending rounds early")
-                    break
-
-            # Voting round: choose top 2 contributions
-            latest_by_agent = {}
-            for entry in conversation:
-                base_name = entry["agent"].split(" (Round ")[0]
-                latest_by_agent[base_name] = entry
-
-            candidates = [a["name"] for a in agents]
-            candidate_summaries = "\n".join([
-                f"{name}: {latest_by_agent.get(name, {}).get('response', '')[:160]}"
-                for name in candidates
-            ])
-
-            vote_counts = {name: 0 for name in candidates}
-            for agent in agents:
-                vote_prompt = f"""You are {agent['name']}. Vote for the top 2 agent contributions (excluding yourself if possible).
-
-Candidates:
-{candidate_summaries}
-
-Rules:
-- Respond only in English.
-- Reply with two agent names separated by a comma.
-- Do not include any other text.
-
-Your vote:"""
-                agent_model = agent["model"]
-                lock = get_lock_for_model(agent_model)
-                with lock:
-                    stream = agent_model.create_chat_completion(
-                        messages=[{"role": "user", "content": vote_prompt}],
-                        max_tokens=50,
-                        temperature=0.2,
-                        stream=False
-                    )
-                    vote_response = stream["choices"][0]["message"]["content"]
-
-                if _contains_cjk(vote_response):
-                    continue
-
-                picks = [p.strip() for p in vote_response.split(",") if p.strip()]
-                for pick in picks[:2]:
-                    for name in candidates:
-                        if name.lower() in pick.lower():
-                            vote_counts[name] += 1
-                            break
-
-            sorted_votes = sorted(vote_counts.items(), key=lambda x: x[1], reverse=True)
-            winners = ", ".join([f"{name} ({count})" for name, count in sorted_votes if count > 0])
-            vote_summary = f"Vote results: {winners or 'No clear consensus'}"
-            emit_agent_step(title=f"🗳️ {vote_summary}", status="done")
-
-            swarm_results = conversation + [
-                {
-                    "agent": "Swarm Vote",
-                    "icon": "🗳️",
-                    "model": "Consensus",
-                    "response": vote_summary
-                }
-            ]
-            if status_steps is not None:
-                status_steps.append({"stage": "Voting"})
-            
-            # Synthesize with actual insight
-            file_instruction = FILE_GENERATION_PROMPT if FILE_GENERATION_PROMPT else "If the user asks you to create downloadable files, output a FILES block. Use .pptx for presentations, .docx for Word documents, .pdf for PDFs. Write FULL content. Do NOT repeat content."
-
-            synthesis_prompt = f"""You are synthesizing a collaborative discussion between experts.
-
-User Request: {swarm_user_message}
-
-Expert Discussion:
-{chr(10).join([f"{c['icon']} {c['agent']}: {c['response']}" for c in conversation])}
-
-Shared Scratchpad:
-{chr(10).join([f"- {n}" for n in shared_notes]) or "- (empty)"}
-
-Vote Summary:
-{vote_summary}
-
-Provide a clear, actionable synthesis that integrates all perspectives.
-Do not repeat yourself. Keep it concise.
-Do not include multiple summaries or "Final Summary" variants.
-{file_instruction if file_request else ""}"""
-            if status_steps is not None:
-                status_steps.append({"stage": "Synthesizing"})
-            
-            full_prompt = synthesis_prompt
-            logger.info("🐝 Swarm discussion complete, synthesizing final response")
-            
         except Exception as e:
             logger.error(f"Swarm orchestration failed: {e}")
             # Fallback to normal mode
@@ -4805,10 +4445,11 @@ Do not include multiple summaries or "Final Summary" variants.
             "model_used": model_name,
             "work_steps": work_steps,
             "work_step_results": work_step_results if work_step_results else [],
-            "swarm_agents": swarm_results if swarm_results else [],  # Add swarm agent results
+            "swarm_agents": swarm_results if swarm_results else [],
+            "swarm_session_id": swarm_session_id,
             "search_results": search_results if search_results else [],
             "response": cleaned_response,
-            "artifact": artifact,  # Add artifact info if detected
+            "artifact": artifact,
             "files": generated_files
         }
         # Cleanup
@@ -9063,6 +8704,160 @@ async def mc_serve_download(filename: str):
         raise HTTPException(status_code=404, detail="Download not found")
     media = "application/zip" if filename.endswith(".zip") else "application/octet-stream"
     return FileResponse(str(fpath), media_type=media, filename=filename)
+
+
+# ==================== SWARM COLLABORATION API ====================
+
+@app.get("/swarm/sessions")
+async def list_swarm_sessions():
+    """List active swarm sessions."""
+    try:
+        from services.edison_core.swarm_engine import list_sessions
+        return {"sessions": list_sessions()}
+    except Exception as e:
+        return {"sessions": [], "error": str(e)}
+
+
+@app.get("/swarm/session/{session_id}")
+async def get_swarm_session(session_id: str):
+    """Get details of a specific swarm session."""
+    try:
+        from services.edison_core.swarm_engine import get_session
+        session = get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Swarm session not found or expired")
+        return session.to_dict()
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/swarm/dm")
+async def swarm_direct_message(request: dict):
+    """Send a direct message to a specific agent in an active swarm session.
+
+    Parameters:
+        - session_id (str): Active swarm session ID
+        - agent_name (str): Name of the agent to talk to (e.g. "Designer", "Coder")
+        - message (str): Your message to that agent
+    """
+    try:
+        from services.edison_core.swarm_engine import get_session, SwarmEngine
+
+        session_id = request.get("session_id", "")
+        agent_name = request.get("agent_name", "")
+        message = request.get("message", "")
+
+        if not session_id or not agent_name or not message:
+            raise HTTPException(status_code=400, detail="session_id, agent_name, and message are required")
+
+        session = get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Swarm session not found or expired")
+
+        # Build engine with current models
+        def _available_models():
+            models = []
+            if llm_deep:
+                models.append(("deep", llm_deep, "Qwen 72B (Deep)"))
+            if llm_medium:
+                models.append(("medium", llm_medium, "Qwen 32B (Medium)"))
+            if llm_fast:
+                models.append(("fast", llm_fast, "Qwen 14B (Fast)"))
+            return models
+
+        engine = SwarmEngine(
+            available_models=_available_models,
+            get_lock_for_model=get_lock_for_model,
+            search_tool=search_tool,
+            config=config,
+        )
+
+        result = await engine.handle_direct_message(session, agent_name, message)
+        return {
+            "ok": True,
+            "response": result,
+            "session": session.to_dict(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Swarm DM error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/swarm/feedback")
+async def swarm_user_feedback(request: dict):
+    """Inject user feedback into an active swarm session. All agents will respond.
+
+    Parameters:
+        - session_id (str): Active swarm session ID
+        - message (str): Your feedback/direction to the team
+    """
+    try:
+        from services.edison_core.swarm_engine import get_session, SwarmEngine
+
+        session_id = request.get("session_id", "")
+        message = request.get("message", "")
+
+        if not session_id or not message:
+            raise HTTPException(status_code=400, detail="session_id and message are required")
+
+        session = get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail="Swarm session not found or expired")
+
+        def _available_models():
+            models = []
+            if llm_deep:
+                models.append(("deep", llm_deep, "Qwen 72B (Deep)"))
+            if llm_medium:
+                models.append(("medium", llm_medium, "Qwen 32B (Medium)"))
+            if llm_fast:
+                models.append(("fast", llm_fast, "Qwen 14B (Fast)"))
+            return models
+
+        engine = SwarmEngine(
+            available_models=_available_models,
+            get_lock_for_model=get_lock_for_model,
+            search_tool=search_tool,
+            config=config,
+        )
+
+        responses = await engine.handle_user_intervention(session, message)
+        return {
+            "ok": True,
+            "responses": responses,
+            "session": session.to_dict(),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Swarm feedback error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/swarm/agents")
+async def list_swarm_agent_catalog():
+    """List all available swarm agent types and their roles."""
+    try:
+        from services.edison_core.swarm_engine import AGENT_CATALOG_DEFINITIONS
+        return {
+            "agents": [
+                {
+                    "name": d["name"],
+                    "icon": d["icon"],
+                    "role": d["role"],
+                    "style": d["style"],
+                    "always_included": d.get("always_include", False),
+                    "is_boss": d.get("is_boss", False),
+                }
+                for d in AGENT_CATALOG_DEFINITIONS
+            ]
+        }
+    except Exception as e:
+        return {"agents": [], "error": str(e)}
 
 
 if __name__ == "__main__":
