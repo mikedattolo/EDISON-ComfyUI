@@ -139,8 +139,8 @@ class SwarmSession:
     vote_counts: Dict[str, int] = field(default_factory=dict)
     vote_summary: str = ""
     rounds_completed: int = 0
-    max_rounds: int = 4
-    target_rounds: int = 2
+    max_rounds: int = 7
+    target_rounds: int = 2                    # Boss will override this (1-7)
     status: str = "initializing"              # initializing | running | paused | voting | synthesizing | done
     user_interventions: List[Dict[str, Any]] = field(default_factory=list)  # user messages injected mid-swarm
     direct_messages: List[Dict[str, Any]] = field(default_factory=list)     # @agent DMs from user
@@ -187,6 +187,7 @@ class SwarmSession:
         return {
             "session_id": self.session_id,
             "status": self.status,
+            "target_rounds": self.target_rounds,
             "rounds_completed": self.rounds_completed,
             "agents": [{"name": a["name"], "icon": a["icon"], "model_name": a.get("model_name", "")} for a in self.agents],
             "conversation_count": len(self.conversation),
@@ -473,8 +474,13 @@ Your response:"""
 
 Your job:
 1. Restate the goal clearly in 1-2 sentences.
-2. Break it into 2-5 sub-tasks.
-3. Assign each sub-task to one or more of your team members.
+2. Decide how many discussion rounds the team needs (1-7).
+   - 1 round: trivial / simple factual question
+   - 2 rounds: standard task, moderate complexity
+   - 3-4 rounds: complex multi-part task, needs iteration
+   - 5-7 rounds: very complex, research-heavy, or creative task needing deep refinement
+3. Break the task into 2-5 sub-tasks.
+4. Assign each sub-task to one or more of your team members.
 
 Your team:
 {agent_roster}
@@ -483,13 +489,15 @@ User Request: {session.user_request}
 
 Rules:
 - Respond only in English.
+- You MUST include **Rounds**: <number> (a single integer 1-7).
 - Use this format:
   **Goal**: <restated goal>
+  **Rounds**: <number>
   **Plan**:
   1. <task> → @AgentName
   2. <task> → @AgentName, @AgentName
   ...
-- Be concise. Maximum 8 lines total.
+- Be concise. Maximum 10 lines total.
 
 Your plan:"""
 
@@ -499,7 +507,20 @@ Your plan:"""
         session.conversation.append(result)
         session.add_note(result["response"])
 
-        self._emit(title=f"👔 Boss plan ready", status="done")
+        # Parse Boss's round decision
+        rounds_match = re.search(r"\*\*Rounds\*\*\s*[:：]\s*(\d+)", session.boss_plan)
+        if not rounds_match:
+            # Fallback: look for "Rounds: N" without bold
+            rounds_match = re.search(r"[Rr]ounds\s*[:：]\s*(\d+)", session.boss_plan)
+        if rounds_match:
+            boss_rounds = int(rounds_match.group(1))
+            boss_rounds = max(1, min(boss_rounds, session.max_rounds))  # clamp 1-7
+            session.target_rounds = boss_rounds
+            logger.info(f"👔 Boss decided {boss_rounds} round(s)")
+        else:
+            logger.info(f"👔 Boss didn't specify rounds, defaulting to {session.target_rounds}")
+
+        self._emit(title=f"👔 Boss plan ready — {session.target_rounds} round(s)", status="done")
         logger.info(f"👔 Boss plan: {session.boss_plan[:120]}...")
 
     async def _run_rounds(
@@ -554,11 +575,12 @@ Your initial perspective:"""
 
         session.rounds_completed = 1
 
-        # ── Auto-round detection (Jaccard similarity) ────────────────────
+        # ── Auto-round adjustment (Jaccard similarity) ───────────────────
+        # If round 1 responses are too similar and Boss chose few rounds, nudge up by 1
         round1_responses = [r["response"] for r in results]
         if _avg_jaccard(round1_responses) > 0.45 and session.target_rounds < session.max_rounds:
-            session.target_rounds = 3
-            logger.info("🐝 Auto-round: adding extra round (too similar)")
+            session.target_rounds = min(session.target_rounds + 1, session.max_rounds)
+            logger.info(f"🐝 Auto-round: bumped to {session.target_rounds} (responses too similar)")
 
         # ── Rounds 2+ ───────────────────────────────────────────────────
         for round_idx in range(2, session.target_rounds + 1):
