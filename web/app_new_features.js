@@ -1889,6 +1889,193 @@ console.log('🧊 app_new_features.js v1 loading...');
     // ========================================
     // Initialization
     // ========================================
+    // ========================================
+    // FEATURE 5: API Connectors Management
+    // ========================================
+    let connectorsPanelOpen = false;
+
+    window.toggleConnectorsPanel = function() {
+        connectorsPanelOpen = !connectorsPanelOpen;
+        setPanelOpen('connectorsPanel', connectorsPanelOpen);
+        if (connectorsPanelOpen) {
+            window.refreshConnectorsList && window.refreshConnectorsList();
+        }
+    };
+
+    window.refreshConnectorsList = async function() {
+        const container = document.getElementById('connectorsListContainer');
+        if (!container) return;
+        container.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;">Loading…</div>';
+        try {
+            const res = await fetch('/integrations/connectors');
+            const data = await res.json();
+            const connectors = data.connectors || [];
+            if (connectors.length === 0) {
+                container.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;">No connectors configured yet.</div>';
+                return;
+            }
+            container.innerHTML = connectors.map(c => `
+                <div class="connector-list-item">
+                    <div class="connector-list-item-info">
+                        <div class="connector-list-item-name">${_escapeHtmlUtil(c.name)}</div>
+                        <div class="connector-list-item-url">${_escapeHtmlUtil(c.base_url)}</div>
+                    </div>
+                    <span class="connector-badge ${c.enabled ? 'enabled' : 'disabled'}">${c.enabled ? 'on' : 'off'}</span>
+                    <div class="connector-list-actions">
+                        <button class="connector-list-btn" onclick="window.loadConnectorToForm('${_escapeHtmlUtil(c.name)}')">Edit</button>
+                        <button class="connector-list-btn del" onclick="window.deleteConnector('${_escapeHtmlUtil(c.name)}')">Delete</button>
+                    </div>
+                </div>`).join('');
+        } catch (e) {
+            container.innerHTML = `<div style="color:#e74c3c;font-size:13px;">Error: ${e.message}</div>`;
+        }
+    };
+
+    window.loadConnectorToForm = function(name) {
+        document.getElementById('connectorName').value = name;
+        // user fills in rest manually — we only have base_url and header keys, not values
+        showConnectorStatus(`Loaded "${name}" — fill in any fields you want to update, then click Save.`, 'loading');
+    };
+
+    window.saveConnector = async function() {
+        const name = (document.getElementById('connectorName')?.value || '').trim();
+        const base_url = (document.getElementById('connectorBaseUrl')?.value || '').trim();
+        const headersRaw = (document.getElementById('connectorHeaders')?.value || '').trim();
+        const enabled = document.getElementById('connectorEnabled')?.checked !== false;
+        const timeout_sec = parseInt(document.getElementById('connectorTimeout')?.value || '20', 10);
+
+        if (!name && !base_url) {
+            showConnectorStatus('⚠️ Provide at least a name and base URL.', 'warning');
+            return;
+        }
+
+        let headers = {};
+        if (headersRaw) {
+            try {
+                headers = JSON.parse(headersRaw);
+            } catch {
+                showConnectorStatus('❌ Headers must be valid JSON object.', 'error');
+                return;
+            }
+        }
+
+        showConnectorStatus('⏳ Saving connector…', 'loading');
+        try {
+            const res = await fetch('/integrations/connectors', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name, base_url, headers, enabled, timeout_sec }),
+            });
+            const data = await res.json();
+            if (!res.ok) {
+                showConnectorStatus(`❌ ${data.detail || 'Save failed'}`, 'error');
+                return;
+            }
+            showConnectorStatus(`✅ Connector "${name}" saved.`, 'success');
+            document.getElementById('connectorName').value = '';
+            document.getElementById('connectorBaseUrl').value = '';
+            document.getElementById('connectorHeaders').value = '';
+            window.refreshConnectorsList();
+        } catch (e) {
+            showConnectorStatus(`❌ ${e.message}`, 'error');
+        }
+    };
+
+    window.deleteConnector = async function(name) {
+        if (!confirm(`Delete connector "${name}"?`)) return;
+        showConnectorStatus('⏳ Deleting…', 'loading');
+        try {
+            const res = await fetch(`/integrations/connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
+            const data = await res.json();
+            if (!res.ok) {
+                showConnectorStatus(`❌ ${data.detail || 'Delete failed'}`, 'error');
+                return;
+            }
+            showConnectorStatus(`✅ Connector "${name}" deleted.`, 'success');
+            window.refreshConnectorsList();
+        } catch (e) {
+            showConnectorStatus(`❌ ${e.message}`, 'error');
+        }
+    };
+
+    window.testConnector = async function() {
+        const connector = (document.getElementById('connectorTestName')?.value || '').trim();
+        const path = (document.getElementById('connectorTestPath')?.value || '/').trim();
+        const method = (document.getElementById('connectorTestMethod')?.value || 'GET');
+        const bodyRaw = (document.getElementById('connectorTestBody')?.value || '').trim();
+        const outputEl = document.getElementById('connectorTestOutput');
+
+        if (!connector) {
+            showConnectorStatus('⚠️ Enter a connector name to test.', 'warning');
+            return;
+        }
+
+        let body = {};
+        if (bodyRaw) {
+            try { body = JSON.parse(bodyRaw); } catch { body = bodyRaw; }
+        }
+
+        showConnectorStatus('⏳ Running test call…', 'loading');
+        if (outputEl) outputEl.textContent = '';
+
+        try {
+            const res = await fetch('/integrations/connectors/call', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ connector, path, method, body }),
+            });
+            const data = await res.json();
+            if (outputEl) {
+                outputEl.textContent = JSON.stringify(data, null, 2);
+            }
+            if (res.ok) {
+                showConnectorStatus('✅ Test call completed.', 'success');
+            } else {
+                showConnectorStatus(`❌ ${data.detail || 'Call failed'}`, 'error');
+            }
+        } catch (e) {
+            showConnectorStatus(`❌ ${e.message}`, 'error');
+            if (outputEl) outputEl.textContent = e.message;
+        }
+    };
+
+    function showConnectorStatus(msg, type) {
+        const el = document.getElementById('connectorsStatus');
+        if (!el) return;
+        el.style.display = 'block';
+        el.textContent = msg;
+        el.className = `feature-status ${type}`;
+        if (type === 'success') setTimeout(() => { el.style.display = 'none'; }, 3000);
+    }
+
+    function _escapeHtmlUtil(str) {
+        return String(str || '').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+    }
+
+    // ========================================
+    // FEATURE 6: Sandbox Browser Overlay
+    // ========================================
+    window.openSandboxBrowser = function(url) {
+        const panel = document.getElementById('sandboxBrowserPanel');
+        const frame = document.getElementById('sandboxBrowserFrame');
+        const urlLabel = document.getElementById('sandboxBrowserUrl');
+        const extLink = document.getElementById('sandboxBrowserExtLink');
+        if (!panel || !frame) return;
+        if (urlLabel) urlLabel.textContent = url;
+        if (extLink) extLink.href = url;
+        try { frame.src = url; } catch (e) { /* cross-origin may block but panel still shows */ }
+        panel.classList.add('open');
+    };
+
+    window.closeSandboxBrowser = function() {
+        const panel = document.getElementById('sandboxBrowserPanel');
+        const frame = document.getElementById('sandboxBrowserFrame');
+        if (panel) panel.classList.remove('open');
+        if (frame) {
+            try { frame.src = 'about:blank'; } catch (e) {}
+        }
+    };
+
     function initNewFeatures() {
         console.log('🧊 Initializing new features...');
         init3DDropzone();
@@ -1912,15 +2099,22 @@ console.log('🧊 app_new_features.js v1 loading...');
                     window.fmCloseEditor();
                     return;
                 }
+                // Close sandbox browser overlay
+                const sbPanel = document.getElementById('sandboxBrowserPanel');
+                if (sbPanel && sbPanel.classList.contains('open')) {
+                    window.closeSandboxBrowser();
+                    return;
+                }
                 if (threeDPanelOpen) window.toggle3DPanel();
                 if (mcPanelOpen) window.toggleMinecraftPanel();
                 if (fmPanelOpen) window.toggleFileManager();
                 if (codespacesPanelOpen) window.toggleCodespacesPanel();
                 if (printingPanelOpen) window.togglePrintingPanel();
+                if (connectorsPanelOpen) window.toggleConnectorsPanel();
             }
         });
 
-        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Codespaces, 3D Printing');
+        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Codespaces, 3D Printing, API Connectors, Sandbox Browser');
     }
 
     // Wait for DOM

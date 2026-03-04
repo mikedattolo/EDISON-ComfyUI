@@ -876,7 +876,7 @@ class EdisonAgentLiveView {
             <div class="agent-live-header" id="agentLiveHeader">
                 <span class="agent-live-title">
                     <span class="agent-live-dot"></span>
-                    Live Activity
+                    Sandbox Activity
                 </span>
                 <button class="agent-live-toggle" id="agentLiveToggle" aria-label="Toggle live panel">▼</button>
             </div>
@@ -996,6 +996,9 @@ class EdisonAgentLiveView {
             case 'browser_open':
                 this._addBrowserEvent(event);
                 break;
+            case 'sandbox_browser_open':
+                this._addSandboxBrowserEvent(event);
+                break;
             case 'browser_screenshot':
                 this._addScreenshot(event);
                 break;
@@ -1051,6 +1054,27 @@ class EdisonAgentLiveView {
         `;
         container.appendChild(el);
         container.scrollTop = container.scrollHeight;
+    }
+
+    _addSandboxBrowserEvent(event) {
+        const container = document.getElementById('agentLiveSteps');
+        if (!container) return;
+
+        const el = document.createElement('div');
+        el.className = 'agent-step agent-browser-event';
+        el.innerHTML = `
+            <span class="agent-step-icon">🧪</span>
+            <span class="agent-step-title">
+                Sandbox opened: <a href="${this._escapeHtml(event.url)}" target="_blank" rel="noopener">${this._escapeHtml(event.url)}</a>
+            </span>
+        `;
+        container.appendChild(el);
+        container.scrollTop = container.scrollHeight;
+
+        // Open the embedded sandbox browser overlay
+        if (window.openSandboxBrowser) {
+            window.openSandboxBrowser(event.url);
+        }
     }
 
     _addScreenshot(event) {

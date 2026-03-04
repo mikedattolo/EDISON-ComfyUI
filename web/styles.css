@@ -128,6 +128,9 @@ button, input, textarea, select {
 .sidebar-header {
     padding: 20px;
     border-bottom: 1px solid var(--border);
+    overflow-y: auto;
+    flex-shrink: 0;
+    max-height: 70vh;
 }
 
 .logo {
@@ -3309,6 +3312,22 @@ button, input, textarea, select {
     outline: none;
 }
 
+.feature-code-output {
+    width: 100%;
+    box-sizing: border-box;
+    padding: 10px 12px;
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    color: var(--text-primary);
+    font-family: 'Courier New', Courier, monospace;
+    font-size: 12px;
+    white-space: pre-wrap;
+    word-wrap: break-word;
+    margin-top: 8px;
+    min-height: 48px;
+}
+
 .feature-select {
     width: 100%;
     padding: 10px 12px;
@@ -4935,4 +4954,177 @@ details[open] > summary::after {
     content: ' ▼';
     font-size: 10px;
     color: var(--text-secondary, #999);
+}
+
+/* ===========================================
+   Sandbox Browser Overlay
+   =========================================== */
+#sandboxBrowserPanel {
+    position: fixed;
+    inset: 0;
+    z-index: 10000;
+    background: rgba(0, 0, 0, 0.88);
+    display: none;
+    flex-direction: column;
+}
+
+#sandboxBrowserPanel.open {
+    display: flex;
+}
+
+.sandbox-browser-chrome {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 18px;
+    background: var(--surface);
+    border-bottom: 1px solid var(--border);
+    gap: 12px;
+    flex-shrink: 0;
+}
+
+.sandbox-browser-label {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--text-primary);
+    white-space: nowrap;
+}
+
+.sandbox-browser-current-url {
+    flex: 1;
+    font-size: 13px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    padding: 5px 10px;
+}
+
+.sandbox-browser-actions {
+    display: flex;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.sandbox-browser-ext-btn {
+    padding: 6px 14px;
+    background: var(--surface-hover);
+    color: var(--text-primary);
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    font-size: 13px;
+    text-decoration: none;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.sandbox-browser-ext-btn:hover {
+    background: var(--primary);
+    color: white;
+    border-color: var(--primary);
+}
+
+.sandbox-browser-close-btn {
+    padding: 6px 14px;
+    background: #c0392b;
+    color: white;
+    border: none;
+    border-radius: 6px;
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.sandbox-browser-close-btn:hover {
+    background: #e74c3c;
+}
+
+.sandbox-browser-frame {
+    flex: 1;
+    width: 100%;
+    border: none;
+    background: #fff;
+}
+
+/* ===========================================
+   Connector List Items
+   =========================================== */
+.connector-list-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 10px 12px;
+    background: var(--background);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    margin-bottom: 6px;
+    gap: 8px;
+}
+
+.connector-list-item-info {
+    flex: 1;
+    overflow: hidden;
+}
+
+.connector-list-item-name {
+    font-size: 14px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.connector-list-item-url {
+    font-size: 12px;
+    color: var(--text-secondary);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.connector-badge {
+    font-size: 11px;
+    padding: 2px 7px;
+    border-radius: 20px;
+    font-weight: 600;
+    flex-shrink: 0;
+}
+
+.connector-badge.enabled {
+    background: rgba(39, 174, 96, 0.15);
+    color: #27ae60;
+}
+
+.connector-badge.disabled {
+    background: rgba(192, 57, 43, 0.15);
+    color: #c0392b;
+}
+
+.connector-list-actions {
+    display: flex;
+    gap: 6px;
+    flex-shrink: 0;
+}
+
+.connector-list-btn {
+    padding: 4px 10px;
+    font-size: 12px;
+    border: 1px solid var(--border);
+    border-radius: 6px;
+    cursor: pointer;
+    background: var(--surface);
+    color: var(--text-secondary);
+    transition: all 0.2s;
+}
+
+.connector-list-btn:hover {
+    background: var(--surface-hover);
+    color: var(--text-primary);
+}
+
+.connector-list-btn.del:hover {
+    background: rgba(192, 57, 43, 0.1);
+    border-color: #c0392b;
+    color: #c0392b;
 }

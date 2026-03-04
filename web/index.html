@@ -152,6 +152,34 @@
                     </svg>
                     Files
                 </button>
+
+                <button class="sidebar-feature-btn" id="codespacesBtn" title="Codespaces workspace" onclick="event.stopPropagation(); window.toggleCodespacesPanel && window.toggleCodespacesPanel();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M3 4h14v12H3z"/>
+                        <path d="M7 8l-2 2 2 2M13 8l2 2-2 2M10 7l-1 6"/>
+                    </svg>
+                    Codespaces
+                </button>
+
+                <button class="sidebar-feature-btn" id="printingBtn" title="3D printer control" onclick="event.stopPropagation(); window.togglePrintingPanel && window.togglePrintingPanel();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="4" y="3" width="12" height="5"/>
+                        <rect x="3" y="8" width="14" height="8" rx="1"/>
+                        <path d="M6 13h8M7 16h6"/>
+                    </svg>
+                    3D Printing
+                </button>
+
+                <button class="sidebar-feature-btn" id="connectorsBtn" title="API Connectors" onclick="event.stopPropagation(); window.toggleConnectorsPanel && window.toggleConnectorsPanel();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <circle cx="4" cy="10" r="2.5"/>
+                        <circle cx="16" cy="4" r="2.5"/>
+                        <circle cx="16" cy="16" r="2.5"/>
+                        <line x1="6.5" y1="9" x2="13.5" y2="5"/>
+                        <line x1="6.5" y1="11" x2="13.5" y2="15"/>
+                    </svg>
+                    API Connectors
+                </button>
             </div>
             
             <!-- Search bar for chat history -->
@@ -334,6 +362,14 @@
                                 <span class="mode-icon">🖥️</span>
                                 <span class="mode-label">Work</span>
                             </button>
+                            <button class="mode-btn" data-mode="codespaces" title="Developer command and code workspace">
+                                <span class="mode-icon">🧑‍💻</span>
+                                <span class="mode-label">Codespaces</span>
+                            </button>
+                            <button class="mode-btn" data-mode="printing" title="3D slicing and printer workflows">
+                                <span class="mode-icon">🖨️</span>
+                                <span class="mode-label">3D Print</span>
+                            </button>
                         </div>
                         
                         <div class="input-area">
@@ -447,6 +483,8 @@
                             <option value="agent">Agent Mode</option>
                             <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
+                            <option value="codespaces">Codespaces (Dev Workspace)</option>
+                            <option value="printing">3D Printing</option>
                         </select>
                     </div>
                     
@@ -794,6 +832,103 @@
         </div>
     </div>
 
+    <div class="feature-panel" id="codespacesPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🧑‍💻 Codespaces</h2>
+            <button class="feature-panel-close" onclick="window.toggleCodespacesPanel && window.toggleCodespacesPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
+            <div class="feature-section">
+                <label class="feature-label">Command</label>
+                <input type="text" id="codespacesCommand" class="feature-input" placeholder="e.g., pytest -q">
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Working Directory</label>
+                <input type="text" id="codespacesCwd" class="feature-input" placeholder="." value=".">
+            </div>
+            <button class="feature-generate-btn" onclick="window.runCodespacesCommand && window.runCodespacesCommand();">▶ Run Command</button>
+            <div class="feature-status" id="codespacesStatus" style="display:none;"></div>
+            <pre id="codespacesOutput" class="feature-code-output" style="max-height:320px; overflow:auto;"></pre>
+        </div>
+    </div>
+
+    <div class="feature-panel" id="printingPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🖨️ 3D Printing</h2>
+            <button class="feature-panel-close" onclick="window.togglePrintingPanel && window.togglePrintingPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
+            <div class="feature-section">
+                <label class="feature-label">Configured Printers</label>
+                <select id="printingPrinterSelect" class="feature-select"></select>
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Model Path (.stl/.3mf)</label>
+                <input type="text" id="printingModelPath" class="feature-input" placeholder="outputs/models/part.stl">
+            </div>
+            <button class="feature-generate-btn" onclick="window.sliceAndSendPrint && window.sliceAndSendPrint();">🧩 Slice + Send</button>
+            <button class="feature-generate-btn" style="margin-top:8px;" onclick="window.refreshPrintersList && window.refreshPrintersList();">🔄 Refresh Printers</button>
+            <div class="feature-status" id="printingStatus" style="display:none;"></div>
+        </div>
+    </div>
+
+    <!-- API Connectors Panel -->
+    <div class="feature-panel" id="connectorsPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🔌 API Connectors</h2>
+            <button class="feature-panel-close" onclick="window.toggleConnectorsPanel && window.toggleConnectorsPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
+            <!-- List -->
+            <div class="feature-section">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:8px;">
+                    <label class="feature-label" style="margin-bottom:0;">Configured Connectors</label>
+                    <button class="connector-list-btn" onclick="window.refreshConnectorsList && window.refreshConnectorsList();">🔄 Refresh</button>
+                </div>
+                <div id="connectorsListContainer">
+                    <div style="color:var(--text-secondary); font-size:13px;">Loading connectors…</div>
+                </div>
+            </div>
+
+            <!-- Add / Update form -->
+            <div class="feature-section" style="border-top:1px solid var(--border); padding-top:16px; margin-top:4px;">
+                <label class="feature-label">Add / Update Connector</label>
+                <input type="text" id="connectorName" class="feature-input" placeholder="Name (e.g. home_assistant)">
+                <input type="url" id="connectorBaseUrl" class="feature-input" placeholder="Base URL (e.g. http://192.168.1.1:8123)" style="margin-top:8px;">
+                <textarea id="connectorHeaders" class="feature-input feature-textarea" rows="3"
+                    placeholder='Headers JSON e.g. {"Authorization":"Bearer token"}'
+                    style="margin-top:8px; min-height:72px; resize:vertical; font-family:monospace; font-size:13px;"></textarea>
+                <div style="display:flex; gap:8px; margin-top:8px; align-items:center;">
+                    <label style="font-size:13px; color:var(--text-secondary); display:flex; align-items:center; gap:6px;">
+                        <input type="checkbox" id="connectorEnabled" checked> Enabled
+                    </label>
+                    <input type="number" id="connectorTimeout" class="feature-input" placeholder="Timeout (sec)" value="20"
+                        style="width:120px; flex-shrink:0;">
+                </div>
+                <button class="feature-generate-btn" style="margin-top:10px;" onclick="window.saveConnector && window.saveConnector();">💾 Save Connector</button>
+            </div>
+
+            <!-- Test a connector -->
+            <div class="feature-section" style="border-top:1px solid var(--border); padding-top:16px; margin-top:4px;">
+                <label class="feature-label">Test Connector</label>
+                <input type="text" id="connectorTestName" class="feature-input" placeholder="Connector name to test">
+                <div style="display:flex; gap:8px; margin-top:8px;">
+                    <select id="connectorTestMethod" class="feature-select" style="width:90px; flex-shrink:0;">
+                        <option>GET</option><option>POST</option><option>PUT</option><option>DELETE</option>
+                    </select>
+                    <input type="text" id="connectorTestPath" class="feature-input" placeholder="Path (e.g. /api/states)" style="flex:1;">
+                </div>
+                <textarea id="connectorTestBody" class="feature-input feature-textarea" rows="2"
+                    placeholder='Body JSON (optional)'
+                    style="margin-top:8px; min-height:52px; resize:vertical; font-family:monospace; font-size:13px;"></textarea>
+                <button class="feature-generate-btn" style="margin-top:8px;" onclick="window.testConnector && window.testConnector();">🧪 Run Test</button>
+                <pre id="connectorTestOutput" class="feature-code-output" style="max-height:200px; overflow:auto;"></pre>
+            </div>
+
+            <div class="feature-status" id="connectorsStatus" style="display:none;"></div>
+        </div>
+    </div>
+
     <!-- File Manager Panel -->
     <div class="feature-panel file-manager-panel" id="fileManagerPanel" style="transform: translateX(100%); visibility: hidden;">
         <div class="feature-panel-header fm-header">
@@ -968,10 +1103,26 @@
         }
     </script>
 
+    <!-- Sandbox Browser Overlay (for agent mode) -->
+    <div id="sandboxBrowserPanel">
+        <div class="sandbox-browser-chrome">
+            <span class="sandbox-browser-label">🧪 Sandbox Browser</span>
+            <span id="sandboxBrowserUrl" class="sandbox-browser-current-url"></span>
+            <div class="sandbox-browser-actions">
+                <a id="sandboxBrowserExtLink" href="#" target="_blank" rel="noopener" class="sandbox-browser-ext-btn">↗ Open in Tab</a>
+                <button class="sandbox-browser-close-btn" onclick="window.closeSandboxBrowser && window.closeSandboxBrowser()">✕ Close</button>
+            </div>
+        </div>
+        <iframe id="sandboxBrowserFrame" src="about:blank" class="sandbox-browser-frame"
+            sandbox="allow-forms allow-same-origin allow-scripts allow-popups allow-pointer-lock"
+            allow="fullscreen"
+            title="Sandbox browser"></iframe>
+    </div>
+
     <script src="gallery.js?v=13"></script>
     <script src="app_enhanced.js?v=16"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_new_features.js?v=2"></script>
-    <script src="voice_agent_live.js?v=6"></script>
+    <script src="app_new_features.js?v=3"></script>
+    <script src="voice_agent_live.js?v=7"></script>
 </body>
 </html>
