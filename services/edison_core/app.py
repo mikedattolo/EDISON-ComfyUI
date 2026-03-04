@@ -50,8 +50,10 @@ def _pw_ensure_browser():
                 args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
                       "--disable-setuid-sandbox", "--disable-accelerated-2d-canvas"]
             )
+            logging.getLogger(__name__).info("Playwright Chromium browser launched successfully")
         except Exception as e:
             _pw_browser = None
+            logging.getLogger(__name__).error(f"Could not launch Playwright browser: {e}")
             raise RuntimeError(f"Could not launch Playwright browser: {e}")
     return _pw_browser
 
@@ -332,6 +334,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Codespaces mode → code execution and workspace tooling")
+        elif mode == "agent":
+            tools_allowed = True
+            model_target = "medium"
+            reasons.append("Agent mode → tool-using assistant with medium model")
         elif mode == "printing":
             tools_allowed = True
             model_target = "medium"
