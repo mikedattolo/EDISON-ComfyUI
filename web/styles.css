@@ -5128,3 +5128,789 @@ details[open] > summary::after {
     border-color: #c0392b;
     color: #c0392b;
 }
+
+/* =========================================================
+   CODESPACES IDE PANEL — cs-* components
+   ========================================================= */
+
+/* Panel container */
+.cs-panel {
+    display: flex;
+    flex-direction: column;
+    height: 100%;
+    overflow: hidden;
+    background: var(--bg-secondary);
+}
+
+/* Header bar with tabs and logo */
+.cs-header {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 12px 0;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+}
+
+.cs-logo {
+    font-size: 14px;
+    font-weight: 700;
+    color: var(--accent-color);
+    letter-spacing: 0.04em;
+    margin-right: 8px;
+}
+
+.cs-branch-badge {
+    font-size: 11px;
+    background: rgba(var(--accent-rgb, 82,130,255), 0.15);
+    color: var(--accent-color);
+    border-radius: 4px;
+    padding: 1px 6px;
+    margin-right: auto;
+}
+
+.cs-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 16px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    transition: background 0.15s, color 0.15s;
+}
+.cs-close-btn:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
+
+/* Tabs row */
+.cs-tabs {
+    display: flex;
+    gap: 2px;
+    padding: 0 12px;
+    border-bottom: 1px solid var(--border-color);
+    background: var(--bg-secondary);
+    flex-shrink: 0;
+}
+
+.cs-tab {
+    background: none;
+    border: none;
+    border-bottom: 2px solid transparent;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 12px;
+    font-weight: 500;
+    padding: 7px 12px;
+    transition: color 0.15s, border-color 0.15s;
+}
+.cs-tab:hover { color: var(--text-primary); }
+.cs-tab.active {
+    color: var(--accent-color);
+    border-bottom-color: var(--accent-color);
+}
+
+/* Tab content wrapper */
+.cs-tab-content {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    padding: 10px 12px;
+    gap: 8px;
+}
+
+/* ----- Terminal tab ----- */
+.cs-terminal-history {
+    flex: 1;
+    overflow-y: auto;
+    font-family: 'Fira Mono', 'Courier New', monospace;
+    font-size: 12px;
+    background: #0d0d0d;
+    border-radius: 6px;
+    padding: 10px;
+    color: #d4d4d4;
+    line-height: 1.6;
+    min-height: 80px;
+}
+
+.cs-terminal-entry { margin-bottom: 8px; }
+.cs-entry-cmd { color: #569cd6; }
+.cs-entry-meta { float: right; color: #555; font-size: 10px; }
+.cs-stdout { color: #d4d4d4; white-space: pre-wrap; word-break: break-all; }
+.cs-stderr { color: #f44747; white-space: pre-wrap; word-break: break-all; }
+.cs-entry-error .cs-entry-cmd { color: #f44747; }
+
+.cs-terminal-input-row {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cs-prompt-symbol {
+    color: var(--accent-color);
+    font-weight: 700;
+    font-family: monospace;
+    font-size: 14px;
+    flex-shrink: 0;
+}
+
+.cs-cwd-input {
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 4px 8px;
+    font-size: 11px;
+    width: 110px;
+    flex-shrink: 0;
+}
+
+.cs-cmd-input {
+    flex: 1;
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 12px;
+    font-family: monospace;
+    transition: border-color 0.15s;
+}
+.cs-cmd-input:focus { outline: none; border-color: var(--accent-color); }
+
+.cs-run-btn {
+    background: var(--accent-color);
+    color: #fff;
+    border: none;
+    border-radius: 4px;
+    padding: 5px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    flex-shrink: 0;
+    transition: opacity 0.15s;
+}
+.cs-run-btn:hover { opacity: 0.85; }
+
+.cs-toolbar {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.cs-toolbar-btn {
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 4px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.15s, color 0.15s;
+}
+.cs-toolbar-btn:hover { background: rgba(255,255,255,0.06); color: var(--text-primary); }
+
+/* ----- Files tab ----- */
+.cs-file-browser {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    gap: 8px;
+}
+
+.cs-path-row {
+    display: flex;
+    gap: 6px;
+}
+
+.cs-path-input {
+    flex: 1;
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+.cs-path-input:focus { outline: none; border-color: var(--accent-color); }
+
+.cs-file-tree {
+    flex: 1;
+    overflow-y: auto;
+    font-size: 12px;
+    background: var(--bg-tertiary, #1e1e1e);
+    border-radius: 6px;
+    padding: 6px;
+}
+
+.cs-breadcrumb {
+    font-size: 10px;
+    color: var(--text-secondary);
+    padding: 2px 4px 6px;
+    border-bottom: 1px solid var(--border-color);
+    margin-bottom: 4px;
+}
+
+.cs-tree-hint { color: var(--text-secondary); font-size: 12px; padding: 8px; }
+
+.cs-tree-entry {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.12s;
+}
+.cs-tree-entry:hover { background: rgba(255,255,255,0.05); }
+.cs-tree-dir { color: var(--accent-color); }
+.cs-tree-file { color: var(--text-primary); }
+.cs-tree-icon { flex-shrink: 0; }
+.cs-tree-size { margin-left: auto; color: var(--text-secondary); font-size: 10px; }
+
+.cs-file-viewer {
+    display: none;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    background: #0d0d0d;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+}
+
+.cs-file-viewer-header {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--border-color);
+    flex-shrink: 0;
+}
+
+.cs-file-viewer-path {
+    flex: 1;
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-family: monospace;
+}
+
+.cs-file-viewer-content {
+    flex: 1;
+    overflow-y: auto;
+    padding: 10px;
+    font-family: monospace;
+    font-size: 12px;
+    color: #d4d4d4;
+    white-space: pre;
+    line-height: 1.6;
+}
+
+.cs-icon-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 3px 8px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.cs-icon-btn:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
+
+/* ----- Git tab ----- */
+.cs-git-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    gap: 8px;
+}
+
+.cs-git-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.cs-git-status {
+    flex: 1;
+    overflow-y: auto;
+    background: var(--bg-tertiary, #1e1e1e);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12px;
+    min-height: 60px;
+}
+
+.cs-git-clean { color: #2ecc71; }
+.cs-git-branch { color: var(--text-primary); margin-bottom: 6px; font-weight: 600; }
+.cs-git-file-row { padding: 2px 0; display: flex; gap: 8px; }
+.cs-git-modified .cs-git-status-code { color: #e67e22; }
+.cs-git-untracked .cs-git-status-code { color: var(--text-secondary); }
+.cs-git-added .cs-git-status-code { color: #2ecc71; }
+.cs-git-deleted .cs-git-status-code { color: #e74c3c; }
+.cs-git-status-code { font-family: monospace; font-weight: 700; width: 24px; flex-shrink: 0; }
+
+.cs-commit-row {
+    display: flex;
+    gap: 6px;
+}
+
+.cs-commit-input {
+    flex: 1;
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 12px;
+}
+.cs-commit-input:focus { outline: none; border-color: var(--accent-color); }
+
+.cs-diff-viewer {
+    display: none;
+    flex-direction: column;
+    border-radius: 6px;
+    border: 1px solid var(--border-color);
+    overflow: hidden;
+    flex-shrink: 0;
+    max-height: 200px;
+}
+
+.cs-diff-title {
+    padding: 5px 10px;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--text-secondary);
+    background: var(--bg-tertiary, #1e1e1e);
+    border-bottom: 1px solid var(--border-color);
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+}
+
+.cs-diff-content {
+    overflow-y: auto;
+    padding: 8px 10px;
+    font-family: monospace;
+    font-size: 11px;
+    background: #0d0d0d;
+    line-height: 1.6;
+    white-space: pre;
+    max-height: 150px;
+}
+
+/* Diff colors */
+.diff-add { color: #4ec94e; display: block; }
+.diff-del { color: #e74c3c; display: block; }
+.diff-hunk { color: #569cd6; display: block; }
+.diff-meta { color: #888; display: block; }
+
+.cs-git-log {
+    overflow-y: auto;
+    background: var(--bg-tertiary, #1e1e1e);
+    border-radius: 6px;
+    padding: 6px;
+    font-size: 11px;
+    max-height: 180px;
+}
+
+.cs-log-entry {
+    display: flex;
+    gap: 8px;
+    padding: 4px 6px;
+    border-radius: 4px;
+    align-items: baseline;
+    transition: background 0.1s;
+}
+.cs-log-entry:hover { background: rgba(255,255,255,0.04); }
+.cs-log-hash { color: var(--accent-color); font-family: monospace; flex-shrink: 0; }
+.cs-log-msg { flex: 1; color: var(--text-primary); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cs-log-author { color: var(--text-secondary); flex-shrink: 0; }
+
+/* ----- AI Edit tab ----- */
+.cs-ai-edit-panel {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    overflow: hidden;
+    gap: 8px;
+}
+
+.cs-label {
+    font-size: 11px;
+    color: var(--text-secondary);
+    font-weight: 500;
+    margin-bottom: 2px;
+}
+
+.cs-ai-input {
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 5px 8px;
+    font-size: 12px;
+    width: 100%;
+    box-sizing: border-box;
+}
+.cs-ai-input:focus { outline: none; border-color: var(--accent-color); }
+.cs-ai-textarea { resize: none; min-height: 70px; font-family: inherit; line-height: 1.5; }
+
+.cs-ai-actions { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; }
+
+.cs-ai-status {
+    font-size: 11px;
+    color: var(--text-secondary);
+    flex: 1;
+    min-width: 0;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.cs-badge { display: inline-block; border-radius: 3px; padding: 1px 5px; font-size: 10px; font-weight: 600; }
+.cs-badge-green { background: rgba(46,204,113,0.15); color: #2ecc71; }
+.cs-badge-red { background: rgba(231,76,60,0.15); color: #e74c3c; }
+
+/* =========================================================
+   PROMPT LIBRARY MODAL — pl-* components
+   ========================================================= */
+
+.pl-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 2200;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 60px;
+    backdrop-filter: blur(3px);
+}
+
+.pl-modal-box {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    width: 680px;
+    max-width: 95vw;
+    max-height: 70vh;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.pl-modal-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-color);
+    gap: 10px;
+    flex-shrink: 0;
+}
+
+.pl-modal-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.pl-search {
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 6px;
+    padding: 6px 10px;
+    font-size: 12px;
+    width: 200px;
+    transition: border-color 0.15s;
+}
+.pl-search:focus { outline: none; border-color: var(--accent-color); }
+
+.pl-new-btn {
+    background: var(--accent-color);
+    color: #fff;
+    border: none;
+    border-radius: 6px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.pl-new-btn:hover { opacity: 0.85; }
+
+.pl-close-btn {
+    background: none;
+    border: none;
+    color: var(--text-secondary);
+    cursor: pointer;
+    font-size: 18px;
+    padding: 2px 6px;
+    border-radius: 4px;
+    line-height: 1;
+    transition: background 0.15s;
+}
+.pl-close-btn:hover { background: rgba(255,255,255,0.07); color: var(--text-primary); }
+
+.pl-body {
+    flex: 1;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    padding: 12px 18px;
+    gap: 12px;
+}
+
+.pl-list {
+    flex: 1;
+    overflow-y: auto;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.pl-item {
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    border-radius: 8px;
+    padding: 10px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 5px;
+    transition: border-color 0.15s;
+}
+.pl-item:hover { border-color: var(--accent-color); }
+
+.pl-item-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.pl-item-tags {
+    display: flex;
+    gap: 4px;
+    flex-wrap: wrap;
+}
+
+.pl-tag {
+    font-size: 10px;
+    background: rgba(var(--accent-rgb, 82,130,255), 0.12);
+    color: var(--accent-color);
+    border-radius: 3px;
+    padding: 1px 6px;
+}
+
+.pl-item-actions {
+    display: flex;
+    gap: 6px;
+    margin-top: 2px;
+}
+
+.pl-btn {
+    background: rgba(255,255,255,0.05);
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 4px;
+    padding: 3px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s, color 0.12s;
+}
+.pl-btn:hover { background: rgba(255,255,255,0.1); color: var(--text-primary); }
+.pl-btn-del:hover { background: rgba(231,76,60,0.12); color: #e74c3c; border-color: #e74c3c; }
+
+.pl-editor {
+    display: none;
+    flex-direction: column;
+    gap: 8px;
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--accent-color);
+    border-radius: 8px;
+    padding: 12px;
+    flex-shrink: 0;
+}
+
+.pl-editor input, .pl-editor textarea {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    color: var(--text-primary);
+    border-radius: 4px;
+    padding: 6px 9px;
+    font-size: 12px;
+    width: 100%;
+    box-sizing: border-box;
+    transition: border-color 0.15s;
+    font-family: inherit;
+}
+.pl-editor input:focus, .pl-editor textarea:focus { outline: none; border-color: var(--accent-color); }
+.pl-editor textarea { resize: none; height: 90px; line-height: 1.5; }
+
+.pl-editor-actions {
+    display: flex;
+    gap: 8px;
+    justify-content: flex-end;
+}
+
+.pl-save-btn {
+    background: var(--accent-color);
+    color: #fff;
+    border: none;
+    border-radius: 5px;
+    padding: 6px 16px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: opacity 0.15s;
+}
+.pl-save-btn:hover { opacity: 0.85; }
+
+.pl-cancel-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 5px;
+    padding: 6px 12px;
+    font-size: 12px;
+    cursor: pointer;
+}
+.pl-cancel-btn:hover { background: rgba(255,255,255,0.05); color: var(--text-primary); }
+
+/* =========================================================
+   KEYBOARD SHORTCUTS MODAL
+   ========================================================= */
+
+.shortcuts-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 2300;
+    display: none;
+    align-items: center;
+    justify-content: center;
+    backdrop-filter: blur(3px);
+}
+
+.shortcuts-modal-box {
+    background: var(--bg-secondary);
+    border: 1px solid var(--border-color);
+    border-radius: 12px;
+    width: 560px;
+    max-width: 95vw;
+    max-height: 80vh;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+    box-shadow: 0 20px 60px rgba(0,0,0,0.5);
+}
+
+.shortcuts-header {
+    display: flex;
+    align-items: center;
+    padding: 14px 18px;
+    border-bottom: 1px solid var(--border-color);
+}
+
+.shortcuts-title {
+    font-size: 15px;
+    font-weight: 600;
+    color: var(--text-primary);
+    flex: 1;
+}
+
+.shortcuts-body {
+    padding: 16px 18px;
+    overflow-y: auto;
+    flex: 1;
+}
+
+.shortcuts-section-title {
+    font-size: 11px;
+    font-weight: 600;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--text-secondary);
+    margin-bottom: 8px;
+    margin-top: 14px;
+}
+.shortcuts-section-title:first-child { margin-top: 0; }
+
+.shortcuts-grid {
+    display: grid;
+    grid-template-columns: auto 1fr;
+    gap: 6px 14px;
+    margin-bottom: 4px;
+}
+
+.shortcut-row {
+    display: contents;
+}
+
+.shortcut-keys {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+}
+
+.shortcut-key {
+    display: inline-block;
+    background: var(--bg-tertiary, #1e1e1e);
+    border: 1px solid var(--border-color);
+    border-radius: 4px;
+    padding: 2px 7px;
+    font-size: 11px;
+    font-family: monospace;
+    color: var(--text-primary);
+    font-weight: 500;
+    white-space: nowrap;
+}
+
+.shortcut-desc {
+    font-size: 12px;
+    color: var(--text-secondary);
+    align-self: center;
+}
+
+/* =========================================================
+   INPUT FOOTER QUICK BUTTONS
+   ========================================================= */
+
+.input-footer-btn {
+    background: none;
+    border: 1px solid var(--border-color);
+    color: var(--text-secondary);
+    border-radius: 6px;
+    padding: 5px 10px;
+    font-size: 11px;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    transition: background 0.15s, color 0.15s, border-color 0.15s;
+    white-space: nowrap;
+}
+.input-footer-btn:hover {
+    background: rgba(255,255,255,0.06);
+    color: var(--text-primary);
+    border-color: var(--accent-color);
+}
+.input-footer-btn svg { flex-shrink: 0; }
+
+
+/* .pl-modal is the overlay class used in HTML (alias for .pl-modal-overlay) */
+.pl-modal {
+    position: fixed;
+    inset: 0;
+    background: rgba(0,0,0,0.6);
+    z-index: 2200;
+    display: none;
+    align-items: flex-start;
+    justify-content: center;
+    padding-top: 60px;
+    backdrop-filter: blur(3px);
+}

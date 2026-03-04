@@ -1784,49 +1784,380 @@ console.log('🧊 app_new_features.js v1 loading...');
         }
     };
 
+    // ========================================
+    // FEATURE 4: Advanced Codespaces IDE
+    // ========================================
+    let csCurrentTab = 'terminal';
+    let csTerminalHistory = []; // [{cmd, cwd, out, err, code, ts}]
+    let csCurrentFilePath = null;
+    let csLastAiEditResult = null;
+    let csPendingCommands = {}; // used to re-run on Enter
+
+    window.csShowTab = function(tab) {
+        csCurrentTab = tab;
+        document.querySelectorAll('.cs-tab').forEach(b => {
+            b.classList.toggle('active', b.dataset.tab === tab);
+        });
+        document.querySelectorAll('.cs-tab-content').forEach(el => {
+            el.style.display = el.id === `cs-tab-${tab}` ? 'flex' : 'none';
+        });
+        if (tab === 'git') window.csGitRefresh();
+    };
+
+    window.csClearTerminal = function() {
+        csTerminalHistory = [];
+        const el = document.getElementById('csTerminalHistory');
+        if (el) el.innerHTML = '';
+    };
+
+    function _csAppendTerminalEntry(cmd, cwd, stdout, stderr, code) {
+        const container = document.getElementById('csTerminalHistory');
+        if (!container) return;
+        const ts = new Date().toLocaleTimeString();
+        const div = document.createElement('div');
+        div.className = `cs-terminal-entry ${code === 0 ? '' : 'cs-entry-error'}`;
+        const stdoutHtml = stdout ? `<div class="cs-stdout">${_escapeHtmlUtil(stdout)}</div>` : '';
+        const stderrHtml = stderr ? `<div class="cs-stderr">${_escapeHtmlUtil(stderr)}</div>` : '';
+        div.innerHTML = `
+            <div class="cs-entry-cmd"><span class="cs-prompt-symbol">$</span> ${_escapeHtmlUtil(cmd)}
+                <span class="cs-entry-meta">${_escapeHtmlUtil(cwd)} &nbsp;·&nbsp; ${ts} &nbsp;·&nbsp; exit&nbsp;${code}</span>
+            </div>
+            ${stdoutHtml}${stderrHtml}`;
+        container.appendChild(div);
+        container.scrollTop = container.scrollHeight;
+    }
+
     window.runCodespacesCommand = async function() {
         const cmdInput = document.getElementById('codespacesCommand');
-        const cwdInput = document.getElementById('codespacesCwd');
-        const outputEl = document.getElementById('codespacesOutput');
-        const statusEl = document.getElementById('codespacesStatus');
-        const command = cmdInput?.value?.trim() || '';
-        const cwd = cwdInput?.value?.trim() || '.';
+        const cwdInput = document.getElementById('csCwd');
+        const command = (cmdInput?.value || '').trim();
+        const cwd = (cwdInput?.value || '.').trim();
+        if (!command) return;
+        cmdInput.value = '';
 
-        if (!command) {
-            showStatus(statusEl, '⚠️ Enter a command to run.', 'warning');
+        // Update CWD if the command is `cd`
+        if (command.startsWith('cd ')) {
+            const target = command.slice(3).trim();
+            if (cwdInput) cwdInput.value = target || '.';
+            _csAppendTerminalEntry(command, cwd, `Changed directory to: ${target}`, '', 0);
             return;
         }
 
-        showStatus(statusEl, '⏳ Running command in Codespaces sandbox...', 'loading');
-        if (outputEl) outputEl.textContent = '';
-
+        _csAppendTerminalEntry(command, cwd, '⏳ running…', '', 0);
         try {
             const res = await fetch(`${API}/codespaces/execute`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command, cwd, timeout: 25 }),
+                body: JSON.stringify({ command, cwd, timeout: 60 }),
             });
             const data = await res.json();
-            if (!res.ok || data.ok === false) {
-                showStatus(statusEl, `❌ ${data.error || 'Command failed'}`, 'error');
-                if (outputEl) outputEl.textContent = (data?.data?.stderr || data?.stderr || '');
+            // Remove placeholder
+            const container = document.getElementById('csTerminalHistory');
+            if (container && container.lastChild) container.removeChild(container.lastChild);
+
+            const payload = data.data || {};
+            _csAppendTerminalEntry(
+                payload.command || command,
+                payload.cwd || cwd,
+                payload.stdout || '',
+                (data.ok === false ? (data.error || '') : '') + (payload.stderr || ''),
+                payload.returncode ?? (data.ok ? 0 : 1)
+            );
+        } catch (e) {
+            const container = document.getElementById('csTerminalHistory');
+            if (container && container.lastChild) container.removeChild(container.lastChild);
+            _csAppendTerminalEntry(command, cwd, '', `Error: ${e.message}`, 1);
+        }
+    };
+
+    // Terminal keyboard shortcut — Enter to run
+    document.addEventListener('DOMContentLoaded', () => {
+        const cmdInput = document.getElementById('codespacesCommand');
+        if (cmdInput) {
+            cmdInput.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') { e.preventDefault(); window.runCodespacesCommand(); }
+            });
+        }
+    });
+
+    // ---- Files tab ----
+    window.csBrowseDir = async function(path) {
+        const pathInput = document.getElementById('csFileBrowsePath');
+        const dirPath = path ?? (pathInput?.value || '.').trim();
+        if (pathInput && path !== undefined) pathInput.value = dirPath;
+        const treeEl = document.getElementById('csFileTree');
+        if (!treeEl) return;
+        treeEl.innerHTML = '<div class="cs-tree-hint">Loading…</div>';
+        try {
+            const res = await fetch(`${API}/codespaces/list-dir`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path: dirPath }),
+            });
+            const data = await res.json();
+            if (!res.ok) { treeEl.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">${_escapeHtmlUtil(data.detail || 'Error')}</div>`; return; }
+            const entries = data.entries || [];
+            if (entries.length === 0) { treeEl.innerHTML = '<div class="cs-tree-hint">Empty directory</div>'; return; }
+
+            let html = `<div class="cs-breadcrumb">${_escapeHtmlUtil(data.path)}</div>`;
+            const parentParts = dirPath.split('/').filter(Boolean);
+            if (parentParts.length > 0) {
+                const parentPath = parentParts.slice(0, -1).join('/') || '.';
+                html += `<div class="cs-tree-entry cs-tree-dir" onclick="window.csBrowseDir('${_escapeHtmlUtil(parentPath)}')"><span class="cs-tree-icon">↑</span> ..</div>`;
+            }
+            entries.forEach(e => {
+                if (e.type === 'dir') {
+                    const childPath = dirPath === '.' ? e.name : `${dirPath}/${e.name}`;
+                    html += `<div class="cs-tree-entry cs-tree-dir" onclick="window.csBrowseDir('${_escapeHtmlUtil(childPath)}')"><span class="cs-tree-icon">📁</span> ${_escapeHtmlUtil(e.name)}/</div>`;
+                } else {
+                    const filePath = dirPath === '.' ? e.name : `${dirPath}/${e.name}`;
+                    const sizeStr = e.size > 1024 ? `${(e.size/1024).toFixed(1)}k` : `${e.size}b`;
+                    html += `<div class="cs-tree-entry cs-tree-file" onclick="window.csViewFile('${_escapeHtmlUtil(filePath)}')"><span class="cs-tree-icon">${_csFileIcon(e.ext)}</span> ${_escapeHtmlUtil(e.name)}<span class="cs-tree-size">${sizeStr}</span></div>`;
+                }
+            });
+            treeEl.innerHTML = html;
+        } catch (e) {
+            treeEl.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">Error: ${e.message}</div>`;
+        }
+    };
+
+    function _csFileIcon(ext) {
+        const icons = { js: '📜', ts: '📘', py: '🐍', json: '📋', md: '📝', html: '🌐', css: '🎨', sh: '⚙️', txt: '📄', yaml: '⚙️', yml: '⚙️', rs: '🦀', go: '🔵', cpp: '⚙️', c: '⚙️' };
+        return icons[ext?.replace('.', '')] || '📄';
+    }
+
+    window.csViewFile = async function(path) {
+        const viewer = document.getElementById('csFileViewer');
+        const pathEl = document.getElementById('csFileViewerPath');
+        const contentEl = document.getElementById('csFileViewerContent');
+        if (!viewer || !contentEl) return;
+        contentEl.textContent = 'Loading…';
+        viewer.style.display = 'flex';
+        if (pathEl) pathEl.textContent = path;
+        csCurrentFilePath = path;
+        try {
+            const res = await fetch(`${API}/codespaces/read-file`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path }),
+            });
+            const data = await res.json();
+            if (!res.ok) { contentEl.textContent = `Error: ${data.detail || 'Could not read file'}`; return; }
+            contentEl.textContent = data.content;
+            if (data.truncated) {
+                contentEl.textContent += '\n\n[... file truncated at 64KB ...]';
+            }
+        } catch (e) {
+            contentEl.textContent = `Error: ${e.message}`;
+        }
+    };
+
+    window.csCloseFileViewer = function() {
+        const v = document.getElementById('csFileViewer');
+        if (v) v.style.display = 'none';
+        csCurrentFilePath = null;
+    };
+
+    window.csCopyFileContent = function() {
+        const el = document.getElementById('csFileViewerContent');
+        if (el) navigator.clipboard.writeText(el.textContent).catch(() => {});
+    };
+
+    window.csSendFileToChat = function() {
+        const el = document.getElementById('csFileViewerContent');
+        const msgInput = document.getElementById('messageInput');
+        if (!el || !msgInput) return;
+        msgInput.value = `\`\`\`\n${el.textContent.slice(0, 3000)}\n\`\`\``;
+        msgInput.dispatchEvent(new Event('input'));
+        msgInput.focus();
+    };
+
+    // ---- Git tab ----
+    window.csGitRefresh = async function() {
+        const el = document.getElementById('csGitStatus');
+        if (!el) return;
+        el.innerHTML = '<div class="cs-tree-hint">Loading git status…</div>';
+        try {
+            const res = await fetch(`${API}/codespaces/git-status`);
+            const data = await res.json();
+            const badge = document.getElementById('csBranchBadge');
+            if (badge) { badge.textContent = `⌥ ${data.branch || '?'}`; badge.style.display = 'inline'; }
+            if (data.clean) {
+                el.innerHTML = `<div class="cs-git-clean">✅ Working tree clean — branch <strong>${_escapeHtmlUtil(data.branch)}</strong></div>`;
                 return;
             }
-            const payload = data.data || {};
-            const stdout = payload.stdout || '';
-            const stderr = payload.stderr || '';
-            if (outputEl) {
-                outputEl.textContent = [
-                    `$ ${payload.command || command}`,
-                    stdout ? `\n${stdout}` : '',
-                    stderr ? `\n[stderr]\n${stderr}` : ''
-                ].join('');
+            let html = `<div class="cs-git-branch">Branch: <strong>${_escapeHtmlUtil(data.branch)}</strong>`;
+            if (data.ahead) html += ` <span class="cs-badge cs-badge-green">↑${data.ahead}</span>`;
+            if (data.behind) html += ` <span class="cs-badge cs-badge-red">↓${data.behind}</span>`;
+            html += '</div>';
+            (data.changed || []).forEach(f => {
+                const cls = f.status === 'M' ? 'cs-git-modified' : f.status === '??' ? 'cs-git-untracked' : f.status === 'A' ? 'cs-git-added' : f.status.startsWith('D') ? 'cs-git-deleted' : '';
+                html += `<div class="cs-git-file-row ${cls}"><span class="cs-git-status-code">${_escapeHtmlUtil(f.status)}</span> ${_escapeHtmlUtil(f.file)}</div>`;
+            });
+            el.innerHTML = html;
+        } catch (e) {
+            el.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">Error: ${e.message}</div>`;
+        }
+    };
+
+    window.csGitDiff = async function() {
+        const viewer = document.getElementById('csGitDiffViewer');
+        const content = document.getElementById('csGitDiffContent');
+        if (!viewer || !content) return;
+        content.textContent = 'Loading diff…';
+        viewer.style.display = 'flex';
+        try {
+            const res = await fetch(`${API}/codespaces/git-diff`);
+            const data = await res.json();
+            content.innerHTML = _renderDiff(data.diff || '(no diff)');
+        } catch (e) {
+            content.textContent = `Error: ${e.message}`;
+        }
+    };
+
+    window.csGitLog = async function() {
+        const el = document.getElementById('csGitLog');
+        if (!el) return;
+        el.style.display = 'block';
+        el.innerHTML = '<div class="cs-tree-hint">Loading log…</div>';
+        try {
+            const res = await fetch(`${API}/codespaces/git-log?limit=20`);
+            const data = await res.json();
+            const commits = data.commits || [];
+            if (!commits.length) { el.innerHTML = '<div class="cs-tree-hint">No commits found.</div>'; return; }
+            el.innerHTML = commits.map(c => `
+                <div class="cs-log-entry">
+                    <span class="cs-log-hash">${_escapeHtmlUtil(c.short)}</span>
+                    <span class="cs-log-msg">${_escapeHtmlUtil(c.message)}</span>
+                    <span class="cs-log-author">${_escapeHtmlUtil(c.author)}</span>
+                </div>`).join('');
+        } catch (e) {
+            el.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">Error: ${e.message}</div>`;
+        }
+    };
+
+    window.csGitStageAll = async function() {
+        try {
+            const res = await fetch(`${API}/codespaces/git-stage`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ all: true }),
+            });
+            const data = await res.json();
+            if (data.ok) window.csGitRefresh();
+        } catch (e) { /* ignore */ }
+    };
+
+    window.csGitCommit = async function() {
+        const msgInput = document.getElementById('csGitCommitMsg');
+        const message = (msgInput?.value || '').trim();
+        if (!message) { showStatus(document.getElementById('codespacesStatus'), '⚠️ Enter a commit message', 'warning'); return; }
+        try {
+            const res = await fetch(`${API}/codespaces/git-commit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ message }),
+            });
+            const data = await res.json();
+            if (msgInput) msgInput.value = '';
+            if (data.ok) {
+                showStatus(document.getElementById('codespacesStatus'), `✅ Committed: ${message}`, 'success');
+                window.csGitRefresh();
+            } else {
+                showStatus(document.getElementById('codespacesStatus'), `❌ ${data.stderr || 'Commit failed'}`, 'error');
             }
-            showStatus(statusEl, `✅ Command completed (exit ${payload.returncode})`, 'success');
+        } catch (e) {
+            showStatus(document.getElementById('codespacesStatus'), `❌ ${e.message}`, 'error');
+        }
+    };
+
+    // ---- AI Edit tab ----
+    window.csAiPreview = async function() {
+        const pathInput = document.getElementById('csAiEditPath');
+        const instrInput = document.getElementById('csAiEditInstruction');
+        const statusEl = document.getElementById('csAiEditStatus');
+        const diffViewer = document.getElementById('csAiDiffViewer');
+        const diffContent = document.getElementById('csAiDiffContent');
+        const applyBtn = document.getElementById('csAiApplyBtn');
+
+        const path = (pathInput?.value || '').trim();
+        const instruction = (instrInput?.value || '').trim();
+        if (!path || !instruction) { showStatus(statusEl, '⚠️ Provide a file path and instruction', 'warning'); return; }
+
+        showStatus(statusEl, '⏳ AI is analyzing your code…', 'loading');
+        if (applyBtn) applyBtn.disabled = true;
+        csLastAiEditResult = null;
+
+        try {
+            const res = await fetch(`${API}/codespaces/ai-edit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ path, instruction, apply: false }),
+            });
+            const data = await res.json();
+            if (!res.ok) { showStatus(statusEl, `❌ ${data.detail || 'AI edit failed'}`, 'error'); return; }
+
+            csLastAiEditResult = data;
+            if (diffContent) diffContent.innerHTML = _renderDiff(data.diff || '(no changes)');
+            if (diffViewer) diffViewer.style.display = 'flex';
+            if (applyBtn) applyBtn.disabled = false;
+            showStatus(statusEl, '✅ Preview ready — review the diff, then click Apply.', 'success');
         } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
         }
     };
+
+    window.csAiApply = async function() {
+        if (!csLastAiEditResult) return;
+        const statusEl = document.getElementById('csAiEditStatus');
+        const applyBtn = document.getElementById('csAiApplyBtn');
+        showStatus(statusEl, '⏳ Applying changes…', 'loading');
+        if (applyBtn) applyBtn.disabled = true;
+        try {
+            const res = await fetch(`${API}/codespaces/ai-edit`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    path: csLastAiEditResult.path,
+                    instruction: document.getElementById('csAiEditInstruction')?.value || '',
+                    apply: true,
+                }),
+            });
+            const data = await res.json();
+            if (!res.ok) { showStatus(statusEl, `❌ ${data.detail || 'Apply failed'}`, 'error'); return; }
+            showStatus(statusEl, `✅ Changes applied to ${data.path}`, 'success');
+            csLastAiEditResult = null;
+        } catch (e) {
+            showStatus(statusEl, `❌ ${e.message}`, 'error');
+        }
+    };
+
+    // Shared diff renderer
+    function _renderDiff(diffText) {
+        if (!diffText) return '<span style="color:var(--text-secondary)">No changes</span>';
+        return diffText.split('\n').map(line => {
+            const esc = _escapeHtmlUtil(line);
+            if (line.startsWith('+') && !line.startsWith('+++')) return `<span class="diff-add">${esc}</span>`;
+            if (line.startsWith('-') && !line.startsWith('---')) return `<span class="diff-del">${esc}</span>`;
+            if (line.startsWith('@@')) return `<span class="diff-hunk">${esc}</span>`;
+            if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) return `<span class="diff-meta">${esc}</span>`;
+            return `<span>${esc}</span>`;
+        }).join('\n');
+    }
+
+    // Keyboard shortcuts for Codespaces tab
+    document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') {
+                e.preventDefault(); window.toggleCodespacesPanel && window.toggleCodespacesPanel();
+            }
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'G') {
+                e.preventDefault();
+                if (!codespacesPanelOpen) window.toggleCodespacesPanel && window.toggleCodespacesPanel();
+                window.csShowTab('git');
+            }
+        });
+    });
 
     window.refreshPrintersList = async function() {
         const select = document.getElementById('printingPrinterSelect');
@@ -1887,8 +2218,187 @@ console.log('🧊 app_new_features.js v1 loading...');
 
 
     // ========================================
-    // Initialization
+    // FEATURE 4b: Prompt Library
     // ========================================
+    let _promptsCache = [];
+    let _plEditingId = null;
+
+    window.togglePromptLibrary = function() {
+        const modal = document.getElementById('promptLibraryModal');
+        if (!modal) return;
+        const isVisible = modal.style.display === 'flex';
+        modal.style.display = isVisible ? 'none' : 'flex';
+        if (!isVisible) window.refreshPromptLibrary();
+    };
+
+    window.refreshPromptLibrary = async function() {
+        const list = document.getElementById('plList');
+        if (!list) return;
+        list.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;">Loading…</div>';
+        try {
+            const res = await fetch(`${API}/prompts`);
+            const data = await res.json();
+            _promptsCache = data.prompts || [];
+            _renderPlList(_promptsCache);
+        } catch (e) {
+            list.innerHTML = `<div style="color:#e74c3c">Error: ${e.message}</div>`;
+        }
+    };
+
+    function _renderPlList(prompts) {
+        const list = document.getElementById('plList');
+        if (!list) return;
+        if (!prompts.length) {
+            list.innerHTML = '<div style="color:var(--text-secondary);font-size:13px;padding:12px">No prompts saved yet. Click + New to add one.</div>';
+            return;
+        }
+        list.innerHTML = prompts.map(p => `
+            <div class="pl-item" id="pl-item-${_escapeHtmlUtil(p.id)}">
+                <div class="pl-item-title">${_escapeHtmlUtil(p.title)}</div>
+                ${p.tags ? `<div class="pl-item-tags">${p.tags.split(',').map(t => `<span class="pl-tag">${_escapeHtmlUtil(t.trim())}</span>`).join('')}</div>` : ''}
+                <div class="pl-item-actions">
+                    <button class="pl-btn" onclick="window.plUsePrompt(${JSON.stringify(p.content)})">Use</button>
+                    <button class="pl-btn" onclick="window.plShowEditor('${_escapeHtmlUtil(p.id)}')">Edit</button>
+                    <button class="pl-btn pl-btn-del" onclick="window.plDelete('${_escapeHtmlUtil(p.id)}')">Delete</button>
+                </div>
+            </div>`).join('');
+    }
+
+    window.plFilter = function() {
+        const q = (document.getElementById('plSearch')?.value || '').toLowerCase();
+        if (!q) { _renderPlList(_promptsCache); return; }
+        const filtered = _promptsCache.filter(p => p.title.toLowerCase().includes(q) || p.content.toLowerCase().includes(q));
+        _renderPlList(filtered);
+    };
+
+    window.plUsePrompt = function(content) {
+        const input = document.getElementById('messageInput');
+        if (input) { input.value = content; input.dispatchEvent(new Event('input')); input.focus(); }
+        window.togglePromptLibrary();
+    };
+
+    window.plShowEditor = function(id) {
+        const editor = document.getElementById('plEditor');
+        if (!editor) return;
+        _plEditingId = id || null;
+        if (id) {
+            const p = _promptsCache.find(x => x.id === id);
+            if (p) {
+                document.getElementById('plEditorTitle').value = p.title;
+                document.getElementById('plEditorContent').value = p.content;
+                document.getElementById('plEditorTags').value = p.tags || '';
+            }
+        } else {
+            document.getElementById('plEditorTitle').value = '';
+            document.getElementById('plEditorContent').value = '';
+            document.getElementById('plEditorTags').value = '';
+        }
+        editor.style.display = 'flex';
+    };
+
+    window.plCancelEditor = window.plCancelEdit = function() {
+        const editor = document.getElementById('plEditor');
+        if (editor) editor.style.display = 'none';
+        _plEditingId = null;
+    };
+
+    window.plSave = async function() {
+        const title = document.getElementById('plEditorTitle')?.value.trim();
+        const content = document.getElementById('plEditorContent')?.value.trim();
+        const tags = document.getElementById('plEditorTags')?.value.trim();
+        if (!title || !content) { alert('Title and content are required'); return; }
+        try {
+            const body = { title, content, tags };
+            if (_plEditingId) body.id = _plEditingId;
+            const res = await fetch(`${API}/prompts`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify(body),
+            });
+            const data = await res.json();
+            window.plCancelEditor();
+            window.refreshPromptLibrary();
+        } catch (e) { alert(`Error: ${e.message}`); }
+    };
+
+    window.plDelete = async function(id) {
+        if (!confirm('Delete this prompt?')) return;
+        try {
+            await fetch(`${API}/prompts/${encodeURIComponent(id)}`, { method: 'DELETE' });
+            window.refreshPromptLibrary();
+        } catch (e) { /* ignore */ }
+    };
+
+    // ========================================
+    // FEATURE 4c: Export Chat
+    // ========================================
+    window.exportCurrentChat = async function() {
+        // Collect messages from DOM
+        const messages = [];
+        document.querySelectorAll('.message').forEach(el => {
+            const role = el.dataset.role || (el.classList.contains('user-message') ? 'user' : 'assistant');
+            const content = el.querySelector('.message-content, .message-text, p, [class*=content]')?.innerText || el.innerText || '';
+            if (content.trim()) messages.push({ role, content: content.trim() });
+        });
+        // Also try to send existing chat variable if available
+        let chatPayload = null;
+        if (typeof currentChatId !== 'undefined' && currentChatId) {
+            try {
+                const res = await fetch(`${API}/chat/export`, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ chat_id: currentChatId }),
+                });
+                if (res.ok) {
+                    const data = await res.json();
+                    chatPayload = data.markdown;
+                }
+            } catch (e) { /* fall back to DOM export */ }
+        }
+        const markdown = chatPayload || messages.map(m => `**${m.role.toUpperCase()}**\n\n${m.content}`).join('\n\n---\n\n');
+        const blob = new Blob([markdown], { type: 'text/markdown' });
+        const url = URL.createObjectURL(blob);
+        const a = document.createElement('a');
+        a.href = url;
+        a.download = `edison-chat-${new Date().toISOString().slice(0,10)}.md`;
+        a.click();
+        URL.revokeObjectURL(url);
+    };
+
+    // ========================================
+    // FEATURE 4d: Keyboard Shortcuts Modal
+    // ========================================
+    window.toggleShortcutsModal = function() {
+        const modal = document.getElementById('shortcutsModal');
+        if (!modal) return;
+        modal.style.display = modal.style.display === 'flex' ? 'none' : 'flex';
+    };
+
+    document.addEventListener('DOMContentLoaded', () => {
+        document.addEventListener('keydown', (e) => {
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'P') {
+                e.preventDefault(); window.togglePromptLibrary();
+            }
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === '?') {
+                e.preventDefault(); window.toggleShortcutsModal();
+            }
+            // Close modals on Escape
+            if (e.key === 'Escape') {
+                const pl = document.getElementById('promptLibraryModal');
+                if (pl && pl.style.display === 'flex') { window.togglePromptLibrary(); return; }
+                const sc = document.getElementById('shortcutsModal');
+                if (sc && sc.style.display === 'flex') { window.toggleShortcutsModal(); return; }
+            }
+        });
+        // Click-outside to close modals
+        ['promptLibraryModal', 'shortcutsModal'].forEach(id => {
+            const modal = document.getElementById(id);
+            if (modal) modal.addEventListener('click', (e) => {
+                if (e.target === modal) modal.style.display = 'none';
+            });
+        });
+    });
+
     // ========================================
     // FEATURE 5: API Connectors Management
     // ========================================

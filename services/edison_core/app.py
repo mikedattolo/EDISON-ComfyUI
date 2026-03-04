@@ -529,6 +529,7 @@ model_manager_v2_instance = None
 INTEGRATIONS_DIR = REPO_ROOT / "config" / "integrations"
 CONNECTORS_DB = INTEGRATIONS_DIR / "connectors.json"
 PRINTERS_DB = INTEGRATIONS_DIR / "printers.json"
+PROMPTS_DB = INTEGRATIONS_DIR / "prompts.json"
 PERSONALITY_TRAITS = ("innovative", "thoughtful", "kind")
 
 def _is_file_request(text: str) -> bool:
@@ -654,12 +655,13 @@ def _safe_workspace_path(path_str: str) -> Path:
     return candidate
 
 
-def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 20) -> dict:
+def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 30) -> dict:
     """Execute whitelisted shell commands in workspace for Codespaces mode."""
     if not command or not isinstance(command, str):
         return {"ok": False, "error": "Command required"}
 
-    blocked_patterns = [r"\|\|", r"&&", r">", r"<", r"`", r"\$\(", r"\bsudo\b", r"\brm\s+-rf\b", r"\bshutdown\b", r"\breboot\b"]
+    # Block dangerous shell metacharacters
+    blocked_patterns = [r"`", r"\$\(", r"\bsudo\b", r"\brm\s+-rf\b", r"\bshutdown\b", r"\breboot\b", r"\bmkfs\b", r"\bdd\s+if="]
     if any(re.search(p, command) for p in blocked_patterns):
         return {"ok": False, "error": "Command contains blocked shell patterns"}
 
@@ -672,8 +674,25 @@ def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 20) -> 
         return {"ok": False, "error": "Empty command"}
 
     allowed_roots = {
-        "ls", "pwd", "cat", "echo", "grep", "find", "head", "tail", "wc", "du", "df", "python", "python3",
-        "pytest", "pip", "pip3", "git", "sed", "awk", "tree", "mkdir", "cp", "mv", "touch", "stat"
+        # Navigation / inspection
+        "ls", "pwd", "cat", "echo", "grep", "find", "head", "tail", "wc", "du", "df",
+        "stat", "file", "which", "type", "env", "printenv",
+        # File ops
+        "tree", "mkdir", "cp", "mv", "touch", "ln", "sort", "uniq", "cut", "tr", "tee",
+        # Text processing
+        "sed", "awk", "xargs", "diff", "patch",
+        # Python / testing
+        "python", "python3", "pytest", "pip", "pip3", "ruff", "black", "pylint", "mypy",
+        # Node / JS
+        "node", "npm", "npx", "yarn",
+        # Rust / Go
+        "cargo", "go",
+        # Git
+        "git",
+        # Compression
+        "zip", "unzip", "tar", "gzip", "gunzip",
+        # Build / run
+        "make", "cmake",
     }
     if parts[0] not in allowed_roots:
         return {"ok": False, "error": f"Command '{parts[0]}' is not allowed in sandbox"}
@@ -685,7 +704,7 @@ def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 20) -> 
             cwd=str(safe_cwd),
             capture_output=True,
             text=True,
-            timeout=max(1, min(int(timeout), 60)),
+            timeout=max(1, min(int(timeout), 120)),
             env={k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}},
         )
         return {
@@ -694,8 +713,8 @@ def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 20) -> 
                 "command": command,
                 "cwd": str(safe_cwd),
                 "returncode": proc.returncode,
-                "stdout": (proc.stdout or "")[:12000],
-                "stderr": (proc.stderr or "")[:12000],
+                "stdout": (proc.stdout or "")[:16000],
+                "stderr": (proc.stderr or "")[:8000],
             },
             "error": None if proc.returncode == 0 else f"Command failed ({proc.returncode})",
         }
@@ -711,6 +730,21 @@ def _ensure_integrations_dir():
         CONNECTORS_DB.write_text(json.dumps({"connectors": []}, indent=2))
     if not PRINTERS_DB.exists():
         PRINTERS_DB.write_text(json.dumps({"printers": []}, indent=2))
+    if not PROMPTS_DB.exists():
+        PROMPTS_DB.write_text(json.dumps({"prompts": []}, indent=2))
+
+
+def _load_prompts() -> dict:
+    _ensure_integrations_dir()
+    try:
+        return json.loads(PROMPTS_DB.read_text())
+    except Exception:
+        return {"prompts": []}
+
+
+def _save_prompts(data: dict):
+    _ensure_integrations_dir()
+    PROMPTS_DB.write_text(json.dumps(data, indent=2))
 
 
 def _load_connectors() -> dict:
@@ -2473,7 +2507,7 @@ def _register_models_with_v2():
     # Vision
     if core.get("vision_model"):
         _reg("vision", _path(core["vision_model"]),
-             n_ctx=int(core.get("vision_n_ctx", 2048)),
+             n_ctx=int(core.get("vision_n_ctx", 4096)),
              n_gpu_layers=int(core.get("vision_n_gpu_layers", default_gl)),
              tensor_split=ts, use_flash_attn=use_fa,
              clip_path=_path(core.get("vision_clip", "")))
@@ -9270,6 +9304,400 @@ async def codespaces_rewrite_file(request: dict):
         raise HTTPException(status_code=403, detail=str(e))
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/codespaces/list-dir")
+@app.post("/codespaces/list-dir")
+async def codespaces_list_dir(request: dict = None, path: str = "."):
+    """List directory contents inside the workspace (with file type, size)."""
+    body = request or {}
+    dir_path = (body.get("path") or path or ".").strip()
+    try:
+        safe_dir = _safe_workspace_path(dir_path)
+        if not safe_dir.is_dir():
+            raise HTTPException(status_code=400, detail=f"Not a directory: {dir_path}")
+        entries = []
+        for entry in sorted(safe_dir.iterdir(), key=lambda e: (e.is_file(), e.name.lower())):
+            try:
+                stat = entry.stat()
+                entries.append({
+                    "name": entry.name,
+                    "type": "file" if entry.is_file() else "dir",
+                    "size": stat.st_size if entry.is_file() else 0,
+                    "mtime": int(stat.st_mtime),
+                    "ext": entry.suffix.lower() if entry.is_file() else "",
+                })
+            except OSError:
+                pass
+        return {"ok": True, "path": str(safe_dir.relative_to(REPO_ROOT)), "entries": entries}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/codespaces/read-file")
+async def codespaces_read_file(request: dict):
+    """Read a workspace file (capped at 64 KB)."""
+    path = request.get("path", "")
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+    try:
+        safe_path = _safe_workspace_path(path)
+        if not safe_path.is_file():
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+        size = safe_path.stat().st_size
+        cap = 65536
+        try:
+            raw = safe_path.read_bytes()[:cap]
+            content = raw.decode("utf-8", errors="replace")
+        except Exception:
+            content = "[Cannot read binary file]"
+        lines = content.count("\n") + 1
+        return {
+            "ok": True,
+            "path": str(safe_path.relative_to(REPO_ROOT)),
+            "content": content,
+            "size": size,
+            "lines": lines,
+            "truncated": size > cap,
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/codespaces/search-files")
+async def codespaces_search_files(request: dict):
+    """Search for a text pattern across workspace files."""
+    query = (request.get("query") or "").strip()
+    search_path = (request.get("path") or ".").strip()
+    case_sensitive = bool(request.get("case_sensitive", False))
+    max_results = min(int(request.get("max_results", 50)), 200)
+    file_glob = (request.get("glob") or "**/*").strip()
+
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+    try:
+        safe_dir = _safe_workspace_path(search_path)
+        flag = 0 if case_sensitive else re.IGNORECASE
+        pattern = re.compile(re.escape(query), flag)
+        results = []
+        for fpath in safe_dir.rglob("*"):
+            if len(results) >= max_results:
+                break
+            if not fpath.is_file():
+                continue
+            # Skip binary / large files
+            if fpath.stat().st_size > 512000:
+                continue
+            try:
+                text = fpath.read_bytes().decode("utf-8", errors="strict")
+            except (UnicodeDecodeError, OSError):
+                continue
+            for lineno, line in enumerate(text.splitlines(), 1):
+                if pattern.search(line):
+                    results.append({
+                        "file": str(fpath.relative_to(REPO_ROOT)),
+                        "line": lineno,
+                        "text": line.rstrip()[:200],
+                    })
+                    if len(results) >= max_results:
+                        break
+        return {"ok": True, "query": query, "count": len(results), "results": results}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/codespaces/git-status")
+async def codespaces_git_status():
+    """Return current git status, branch, and ahead/behind counts."""
+    def _run(cmd: list, cwd: str = None) -> str:
+        try:
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
+                               cwd=cwd or str(REPO_ROOT))
+            return (r.stdout or "").strip()
+        except Exception:
+            return ""
+
+    branch = _run(["git", "rev-parse", "--abbrev-ref", "HEAD"])
+    status_output = _run(["git", "status", "--short"])
+    ahead_behind = _run(["git", "rev-list", "--count", "--left-right",
+                         f"{branch}...origin/{branch}"])
+    ahead = behind = 0
+    if "\t" in ahead_behind:
+        parts = ahead_behind.split("\t")
+        try:
+            ahead, behind = int(parts[0]), int(parts[1])
+        except ValueError:
+            pass
+
+    changed = []
+    for line in (status_output or "").splitlines():
+        if len(line) >= 3:
+            changed.append({"status": line[:2].strip(), "file": line[3:].strip()})
+
+    return {
+        "ok": True,
+        "branch": branch,
+        "ahead": ahead,
+        "behind": behind,
+        "changed": changed,
+        "clean": len(changed) == 0,
+    }
+
+
+@app.get("/codespaces/git-diff")
+async def codespaces_git_diff(file: str = "", staged: bool = False):
+    """Return git diff for all or a specific file."""
+    try:
+        cmd = ["git", "diff"]
+        if staged:
+            cmd.append("--staged")
+        if file:
+            safe = _safe_workspace_path(file)
+            cmd.append(str(safe))
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                           cwd=str(REPO_ROOT))
+        diff_text = (r.stdout or "")[:80000]
+        return {"ok": True, "diff": diff_text, "lines": diff_text.count("\n")}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/codespaces/git-log")
+async def codespaces_git_log(limit: int = 20):
+    """Return recent git log entries."""
+    try:
+        limit = max(1, min(int(limit), 100))
+        r = subprocess.run(
+            ["git", "log", f"-{limit}", "--pretty=format:%H|%an|%ae|%ad|%s", "--date=iso"],
+            capture_output=True, text=True, timeout=10, cwd=str(REPO_ROOT)
+        )
+        commits = []
+        for line in (r.stdout or "").splitlines():
+            parts = line.split("|", 4)
+            if len(parts) == 5:
+                commits.append({
+                    "hash": parts[0],
+                    "short": parts[0][:8],
+                    "author": parts[1],
+                    "email": parts[2],
+                    "date": parts[3],
+                    "message": parts[4],
+                })
+        return {"ok": True, "commits": commits}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/codespaces/git-stage")
+async def codespaces_git_stage(request: dict):
+    """Stage files for commit (git add)."""
+    files = request.get("files") or []
+    all_files = bool(request.get("all", False))
+    try:
+        if all_files:
+            cmd = ["git", "add", "-A"]
+        elif files:
+            cmd = ["git", "add", "--"] + [str(_safe_workspace_path(f)) for f in files]
+        else:
+            raise HTTPException(status_code=400, detail="Provide files or set all=true")
+        r = subprocess.run(cmd, capture_output=True, text=True, timeout=15,
+                           cwd=str(REPO_ROOT))
+        return {"ok": r.returncode == 0, "stderr": (r.stderr or "").strip()}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/codespaces/git-commit")
+async def codespaces_git_commit(request: dict):
+    """Create a git commit with the given message."""
+    message = (request.get("message") or "").strip()
+    if not message:
+        raise HTTPException(status_code=400, detail="Commit message is required")
+    try:
+        r = subprocess.run(
+            ["git", "commit", "-m", message],
+            capture_output=True, text=True, timeout=20, cwd=str(REPO_ROOT)
+        )
+        return {
+            "ok": r.returncode == 0,
+            "stdout": (r.stdout or "").strip(),
+            "stderr": (r.stderr or "").strip(),
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/codespaces/ai-edit")
+async def codespaces_ai_edit(request: dict):
+    """Use the LLM to apply an AI-described edit to a workspace file.
+    
+    Returns the original content, the new proposed content, and optionally
+    applies the change if apply=true.
+    """
+    path = (request.get("path") or "").strip()
+    instruction = (request.get("instruction") or "").strip()
+    apply = bool(request.get("apply", False))
+
+    if not path or not instruction:
+        raise HTTPException(status_code=400, detail="path and instruction are required")
+
+    llm = llm_medium or llm_fast or llm_deep
+    if not llm:
+        raise HTTPException(status_code=503, detail="No LLM available")
+
+    try:
+        safe_path = _safe_workspace_path(path)
+        if not safe_path.is_file():
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+        original = safe_path.read_text(encoding="utf-8", errors="replace")[:32000]
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    fname = safe_path.name
+    ext = safe_path.suffix.lstrip(".")
+    prompt = (
+        f"You are a code editor. I will give you a file and an instruction."
+        f" Return ONLY the complete updated file content with no extra commentary, "
+        f"no markdown fences, and no explanation.\n\n"
+        f"FILE: {fname}\n"
+        f"---\n{original}\n---\n\n"
+        f"INSTRUCTION: {instruction}\n\n"
+        f"Updated file content:"
+    )
+
+    lock = get_lock_for_model(llm)
+    with lock:
+        resp = llm(prompt, max_tokens=4096, temperature=0.2, stop=["---END---"])
+
+    new_content = resp["choices"][0]["text"].strip()
+    # Strip accidental markdown fences
+    if new_content.startswith("```"):
+        lines = new_content.splitlines()
+        new_content = "\n".join(lines[1:]).rstrip("`").rstrip()
+
+    if apply:
+        try:
+            safe_path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Could not write file: {e}")
+
+    # Build simple unified diff
+    import difflib
+    diff_lines = list(difflib.unified_diff(
+        original.splitlines(keepends=True),
+        new_content.splitlines(keepends=True),
+        fromfile=f"a/{fname}",
+        tofile=f"b/{fname}",
+        n=3,
+    ))
+    diff_text = "".join(diff_lines)
+
+    return {
+        "ok": True,
+        "path": str(safe_path.relative_to(REPO_ROOT)),
+        "original": original,
+        "new_content": new_content,
+        "diff": diff_text,
+        "applied": apply,
+    }
+
+
+# ==================== PROMPT LIBRARY ====================
+
+@app.get("/prompts")
+async def list_prompts():
+    """List all saved prompt library entries."""
+    db = _load_prompts()
+    return {"prompts": db.get("prompts", [])}
+
+
+@app.post("/prompts")
+async def save_prompt(request: dict):
+    """Save a prompt to the library (create or update by id)."""
+    title = (request.get("title") or "").strip()
+    content = (request.get("content") or "").strip()
+    if not title or not content:
+        raise HTTPException(status_code=400, detail="title and content are required")
+    db = _load_prompts()
+    items = db.get("prompts", [])
+    pid = request.get("id") or f"p_{uuid.uuid4().hex[:10]}"
+    existing = next((p for p in items if p.get("id") == pid), None)
+    entry = {
+        "id": pid,
+        "title": title,
+        "content": content,
+        "tags": request.get("tags") or [],
+        "created_at": existing.get("created_at", int(time.time())) if existing else int(time.time()),
+        "updated_at": int(time.time()),
+    }
+    if existing:
+        existing.update(entry)
+    else:
+        items.append(entry)
+    db["prompts"] = items
+    _save_prompts(db)
+    return {"ok": True, "prompt": entry}
+
+
+@app.delete("/prompts/{prompt_id}")
+async def delete_prompt(prompt_id: str):
+    """Delete a prompt from the library."""
+    db = _load_prompts()
+    items = db.get("prompts", [])
+    kept = [p for p in items if p.get("id") != prompt_id]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="Prompt not found")
+    db["prompts"] = kept
+    _save_prompts(db)
+    return {"ok": True, "deleted": prompt_id}
+
+
+# ==================== CHAT EXPORT ====================
+
+@app.post("/chat/export")
+async def export_chat(request: dict):
+    """Export a chat conversation as Markdown text."""
+    messages = request.get("messages") or []
+    title = (request.get("title") or "EDISON Chat Export").strip()
+    chat_id = request.get("chat_id") or ""
+
+    lines = [f"# {title}", ""]
+    if chat_id:
+        lines += [f"*Chat ID: `{chat_id}`*", ""]
+    lines += [f"*Exported: {__import__('datetime').datetime.now().strftime('%Y-%m-%d %H:%M')}*", "", "---", ""]
+
+    for msg in messages:
+        role = (msg.get("role") or "user").strip()
+        content = (msg.get("content") or "").strip()
+        if role == "user":
+            lines += [f"**You:** {content}", ""]
+        elif role == "assistant":
+            lines += [f"**EDISON:** {content}", ""]
+        else:
+            lines += [f"**{role.title()}:** {content}", ""]
+
+    md = "\n".join(lines)
+    return {"ok": True, "markdown": md, "title": title}
 
 
 @app.post("/sandbox/browser/open")
