@@ -3,6 +3,9 @@
 
 echo "🔄 Restarting EDISON..."
 
+# Detect install location — works in both dev container and production
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
 # Stop any running instances
 pkill -f "python.*edison_core" || true
 pkill -f "uvicorn.*edison" || true
@@ -11,11 +14,17 @@ pkill -f "uvicorn.*edison" || true
 sleep 2
 
 # Start EDISON core in background
-cd /workspaces/EDISON-ComfyUI
-source venv/bin/activate
+cd "$SCRIPT_DIR"
+
+# Activate venv if present, otherwise use system python
+if [ -f "$SCRIPT_DIR/venv/bin/activate" ]; then
+    source "$SCRIPT_DIR/venv/bin/activate"
+else
+    echo "⚠️  No venv found at $SCRIPT_DIR/venv — using system python"
+fi
 
 echo "✅ Starting EDISON core..."
-cd services/edison_core
+cd "$SCRIPT_DIR/services/edison_core"
 python -m uvicorn app:app --host 0.0.0.0 --port 8811 > /tmp/edison.log 2>&1 &
 
 echo "✅ EDISON restarted!"
