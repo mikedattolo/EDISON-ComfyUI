@@ -53,10 +53,27 @@
 
 ### 👁️ **Agent Live View**
 - **Real-time streaming**: SSE (`/agent/stream`) and WebSocket (`/ws/agent`) transports
-- **Event types**: agent_step, browser_open, browser_screenshot, file_diff, log
+- **Event types**: agent_step, browser_open, browser_view, browser_screenshot, file_diff, log
 - **Secret redaction**: Automatic regex-based scrubbing of API keys, tokens, Bearer headers
 - **Collapsible panel**: Shows in the chat UI with live pulse indicator and auto-scroll
 - **Event bus**: Fan-out architecture with per-session queues and 200-event history buffer
+
+### 🧭 **Persistent Sandbox Browser Sessions**
+- Session-based browser control via Playwright worker thread (no new context per action)
+- New endpoints:
+  - `POST /sandbox/browser/session/create`
+  - `POST /sandbox/browser/session/navigate`
+  - `POST /sandbox/browser/session/click`
+  - `POST /sandbox/browser/session/type`
+  - `POST /sandbox/browser/session/key`
+  - `POST /sandbox/browser/session/scroll`
+  - `POST /sandbox/browser/session/move`
+  - `POST /sandbox/browser/session/screenshot`
+  - `POST /sandbox/browser/session/close`
+- Config options in `config/edison.yaml`:
+  - `sandbox_allow_any_host: false`
+  - `sandbox_allowed_hosts: ["example.com", "google.com"]`
+  - `sandbox_session_ttl_seconds: 900`
 
 ### 🧪 **New Tests**
 - `tests/test_gpu_config.py` — 13 tests for tensor_split normalization + config validation

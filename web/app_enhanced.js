@@ -757,6 +757,7 @@ class EdisonApp {
         let accumulatedResponse = '';
         let currentEventType = null;
         let swarmInserted = false;
+        let streamCompleted = false;
         
         try {
             while (true) {
@@ -797,6 +798,7 @@ class EdisonApp {
                                 this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
                             } else if (data.ok !== undefined) {
                                 // Done event
+                                streamCompleted = true;
                                 this.currentRequestId = null;  // Clear request ID
                                 if (data.ok) {
                                     // Handle video generation trigger from backend
@@ -869,6 +871,20 @@ class EdisonApp {
                             console.warn('Failed to parse SSE data:', dataStr, e);
                         }
                     }
+                }
+            }
+
+            // Fallback: stream ended without explicit done event
+            if (!streamCompleted) {
+                this.currentRequestId = null;
+                this.clearStatus(assistantMessageEl);
+                assistantMessageEl.classList.remove('streaming');
+
+                if (accumulatedResponse && accumulatedResponse.trim().length > 0) {
+                    this.updateMessage(assistantMessageEl, accumulatedResponse, mode);
+                    this.saveMessageToChat(message, accumulatedResponse, mode);
+                } else {
+                    this.updateMessage(assistantMessageEl, '⚠️ Stream ended before completion.', 'stopped');
                 }
             }
         } finally {

@@ -542,6 +542,7 @@ Your plan:"""
         non_boss_agents = [a for a in session.agents if not a.get("is_boss")]
 
         for agent in non_boss_agents:
+            shared_signals = self._relevant_shared_signals(session, agent["name"])
             search_block = ""
             if agent["name"] == "Searcher" and self._search_tool and wants_search:
                 search_block = self._do_web_search(session.user_request)
@@ -556,6 +557,8 @@ Boss's Plan:
 
 Shared Scratchpad (read/write):
 {session.scratchpad_text()}
+Relevant Shared Signals:
+{shared_signals}
 {search_block}
 
 Rules:
@@ -588,6 +591,7 @@ Your initial perspective:"""
             round_prompts = []
 
             for agent in non_boss_agents:
+                shared_signals = self._relevant_shared_signals(session, agent["name"])
                 prompt = f"""You are {agent['name']}, continuing the discussion.
 Personality: {agent.get('style', 'concise and helpful')}.
 
@@ -601,6 +605,8 @@ Other experts said:
 
 Shared Scratchpad (read/write):
 {session.scratchpad_text()}
+Relevant Shared Signals:
+{shared_signals}
 
 Rules:
 - Respond only in English.
@@ -675,9 +681,72 @@ Your vote:"""
 
         session.vote_counts = vote_counts
         sorted_votes = sorted(vote_counts.items(), key=lambda x: x[1], reverse=True)
+
+        if sorted_votes:
+            top_score = sorted_votes[0][1]
+            tied = [name for name, score in sorted_votes if score == top_score and top_score > 0]
+            if len(tied) > 1:
+                self._emit(title=f"🗳️ Tie detected ({', '.join(tied)}). Running reasoned re-vote.", status="running")
+                revote_counts = {name: 0 for name in tied}
+                for agent in session.agents:
+                    revote_prompt = f"""You are {agent['name']}. The vote is tied.
+
+Tied candidates: {', '.join(tied)}
+
+Provide:
+1) One short reason (max 20 words) for your best candidate.
+2) One final vote using this exact format:
+   VOTE: <AgentName>
+
+No other formatting.
+"""
+                    result = await self._run_agent_prompt(agent, revote_prompt, 0.2, max_tokens=80)
+                    match = re.search(r"VOTE\s*:\s*(.+)", result.get("response", ""), re.IGNORECASE)
+                    pick_raw = (match.group(1).strip() if match else "")
+                    pick = next((name for name in tied if name.lower() in pick_raw.lower()), None)
+                    if pick:
+                        revote_counts[pick] += 1
+
+                sorted_revote = sorted(revote_counts.items(), key=lambda x: x[1], reverse=True)
+                if sorted_revote:
+                    top_revote = sorted_revote[0][1]
+                    finalists = [n for n, s in sorted_revote if s == top_revote]
+                    if len(finalists) > 1:
+                        # Boss adjudicates if tie persists after reasoned re-vote
+                        boss = next((a for a in session.agents if a.get("is_boss")), None)
+                        chosen = finalists[0]
+                        if boss:
+                            boss_prompt = f"""You are Boss. A final tie remains after a reasoned re-vote.
+Choose exactly one winner from: {', '.join(finalists)}
+Reply with only the agent name."""
+                            boss_pick = await self._run_agent_prompt(boss, boss_prompt, 0.1, max_tokens=20)
+                            picked = boss_pick.get("response", "").strip()
+                            match_name = next((n for n in finalists if n.lower() in picked.lower()), None)
+                            if match_name:
+                                chosen = match_name
+                        revote_counts[chosen] += 1  # force decisive outcome
+                    vote_counts = {**vote_counts, **{k: vote_counts.get(k, 0) + v for k, v in revote_counts.items()}}
+                    sorted_votes = sorted(vote_counts.items(), key=lambda x: x[1], reverse=True)
+
         winners = ", ".join(f"{name} ({count})" for name, count in sorted_votes if count > 0)
-        session.vote_summary = f"Vote results: {winners or 'No clear consensus'}"
+        session.vote_summary = f"Vote results (decisive): {winners or 'No clear consensus'}"
         self._emit(title=f"🗳️ {session.vote_summary}", status="done")
+
+    def _relevant_shared_signals(self, session: SwarmSession, agent_name: str) -> str:
+        """Return compact, relevant shared notes for an agent to improve collaboration."""
+        notes = session.shared_notes[-10:]
+        if not notes:
+            return "- (none yet)"
+
+        tokens = set(re.findall(r"[a-zA-Z]+", agent_name.lower()))
+        scored = []
+        for note in notes:
+            note_tokens = set(re.findall(r"[a-zA-Z]+", note.lower()))
+            overlap = len(tokens & note_tokens)
+            scored.append((overlap, note))
+        scored.sort(key=lambda x: x[0], reverse=True)
+        top = [n for _, n in scored[:4]]
+        return "\n".join(f"- {n}" for n in top)
 
     def _build_synthesis_prompt(self, session: SwarmSession, file_request: bool = False) -> str:
         """Build the final synthesis prompt — Boss delivers the verdict."""

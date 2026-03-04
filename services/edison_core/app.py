@@ -6,8 +6,8 @@ FastAPI server with llama-cpp-python for local LLM inference
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, Literal, Iterator, List, Dict, Any
+from pydantic import BaseModel, Field, validator
+from typing import Optional, Literal, Iterator, List, Dict, Any, Union
 import logging
 from pathlib import Path
 import yaml
@@ -120,7 +120,9 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
         return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
 
 def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = None,
-                       status: str = "done", error: str | None = None):
+                       status: str = "done", error: str | None = None,
+                       session_id: str = "default", width: int | None = None,
+                       height: int | None = None):
     """Emit a browser_view SSE event so the frontend can show an inline browser card."""
     try:
         from .routes.agent_live import get_event_bus
@@ -131,9 +133,25 @@ def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = N
             "screenshot_b64": screenshot_b64,
             "status": status,
             "error": error,
-        })
+            "width": width,
+            "height": height,
+        }, session_id=session_id)
     except Exception:
         pass
+
+
+try:
+    from .browser_session import BrowserSessionManager, BrowserSessionError
+except Exception:
+    try:
+        from browser_session import BrowserSessionManager, BrowserSessionError
+    except Exception:
+        BrowserSessionManager = None
+
+        class BrowserSessionError(Exception):
+            def __init__(self, message: str, status_code: int = 400):
+                super().__init__(message)
+                self.status_code = status_code
 
 # Configure logging
 logging.basicConfig(
@@ -908,6 +926,41 @@ _models_unloaded_for_image_gen = False
 _image_gen_lock = threading.Lock()
 _reload_lock = threading.Lock()
 _reload_in_progress = False
+browser_session_manager = None
+_browser_cleanup_task = None
+
+
+def _sandbox_host_config() -> tuple[bool, list[str], int]:
+    ed = config.get("edison", {}) if isinstance(config, dict) else {}
+    allow_any = bool(ed.get("sandbox_allow_any_host", False))
+    hosts = ed.get("sandbox_allowed_hosts") or []
+    if not isinstance(hosts, list):
+        hosts = []
+    ttl_seconds = int(ed.get("sandbox_session_ttl_seconds", 900))
+    return allow_any, hosts, max(60, ttl_seconds)
+
+
+def _get_browser_session_manager() -> BrowserSessionManager:
+    global browser_session_manager
+    if browser_session_manager is not None:
+        return browser_session_manager
+    if BrowserSessionManager is None:
+        raise RuntimeError("BrowserSessionManager is unavailable")
+
+    allow_any, hosts, _ttl = _sandbox_host_config()
+    browser_session_manager = BrowserSessionManager(
+        pw_run=_pw_run,
+        get_browser=lambda: _pw_browser,
+        emit_browser_view=_emit_browser_view,
+        default_allowed_hosts=hosts,
+        allow_any_host=allow_any,
+    )
+    logger.info(
+        "✓ Browser session manager initialized (allow_any=%s, allowed_hosts=%s)",
+        allow_any,
+        hosts,
+    )
+    return browser_session_manager
 
 def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
     """Get free VRAM in MiB for a specific GPU"""
@@ -1348,6 +1401,53 @@ TOOL_REGISTRY = {
             "url": {"type": str, "required": True}
         }
     },
+    "browser.observe": {
+        "args": {
+            "session_id": {"type": str, "required": True}
+        }
+    },
+    "browser.navigate": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "url": {"type": str, "required": True}
+        }
+    },
+    "browser.click": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "x": {"type": int, "required": True},
+            "y": {"type": int, "required": True},
+            "button": {"type": str, "required": False, "default": "left"},
+            "click_count": {"type": int, "required": False, "default": 1}
+        }
+    },
+    "browser.type": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "text": {"type": str, "required": True},
+            "delay_ms": {"type": int, "required": False, "default": 10}
+        }
+    },
+    "browser.press": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "key": {"type": str, "required": True}
+        }
+    },
+    "browser.scroll": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "delta_x": {"type": int, "required": False, "default": 0},
+            "delta_y": {"type": int, "required": True}
+        }
+    },
+    "browser.create_session": {
+        "args": {
+            "url": {"type": str, "required": True},
+            "width": {"type": int, "required": False, "default": 1280},
+            "height": {"type": int, "required": False, "default": 800}
+        }
+    },
     "list_printers": {
         "args": {}
     },
@@ -1488,6 +1588,16 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         url = data.get('url', '')
         desc = data.get('description', '')
         return f"Browser loaded: {title} ({url}). {desc}" if title else f"Sandbox browser opened: {url}"
+
+    if tool_name.startswith("browser.") and isinstance(data, dict):
+        url = data.get("url", "")
+        title = data.get("title", "")
+        sid = data.get("session_id", "")
+        if tool_name == "browser.create_session":
+            return f"Browser session created: {sid} at {url} ({title})"
+        if tool_name == "browser.observe":
+            return f"Observed browser session {sid}: {title} ({url})"
+        return f"Browser action complete for {sid}: {title} ({url})"
 
     if tool_name == "list_printers" and isinstance(data, dict):
         printers = data.get("printers", [])
@@ -1745,6 +1855,59 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                                    status="error", error=str(exc))
                 return {"ok": False, "error": f"Browser error: {exc}"}
 
+        if tool_name == "browser.create_session":
+            manager = _get_browser_session_manager()
+            data = manager.create_session(
+                start_url=args.get("url", ""),
+                width=args.get("width", 1280),
+                height=args.get("height", 800),
+            )
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.observe":
+            manager = _get_browser_session_manager()
+            data = manager.observe(session_id=args.get("session_id", ""))
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.navigate":
+            manager = _get_browser_session_manager()
+            data = manager.navigate(session_id=args.get("session_id", ""), url=args.get("url", ""))
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.click":
+            manager = _get_browser_session_manager()
+            data = manager.click(
+                session_id=args.get("session_id", ""),
+                x=args.get("x", 0),
+                y=args.get("y", 0),
+                button=args.get("button", "left"),
+                click_count=args.get("click_count", 1),
+            )
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.type":
+            manager = _get_browser_session_manager()
+            data = manager.type(
+                session_id=args.get("session_id", ""),
+                text=args.get("text", ""),
+                delay_ms=args.get("delay_ms", 10),
+            )
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.press":
+            manager = _get_browser_session_manager()
+            data = manager.keypress(session_id=args.get("session_id", ""), key=args.get("key", "Enter"))
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.scroll":
+            manager = _get_browser_session_manager()
+            data = manager.scroll(
+                session_id=args.get("session_id", ""),
+                delta_x=args.get("delta_x", 0),
+                delta_y=args.get("delta_y", 0),
+            )
+            return {"ok": True, "data": data}
+
         if tool_name == "list_printers":
             db = _load_printers()
             return {"ok": True, "data": {"printers": db.get("printers", [])}}
@@ -1980,7 +2143,13 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str), list_printers(), send_3d_print(printer_id:str,file_path:str)."
+        "open_sandbox_browser(url:str), "
+        "browser.create_session(url:str,width:int,height:int), "
+        "browser.observe(session_id:str), browser.navigate(session_id:str,url:str), "
+        "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
+        "browser.type(session_id:str,text:str,delay_ms:int), "
+        "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
+        "list_printers(), send_3d_print(printer_id:str,file_path:str)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
@@ -2090,8 +2259,29 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
 # OpenAI-Compatible Models for /v1/chat/completions endpoint
 class OpenAIMessage(BaseModel):
     role: str = Field(..., description="Role: user, assistant, or system")
-    content: str = Field(..., description="Message content")
+    content: Union[str, List[Dict[str, Any]]] = Field(..., description="Message content")
     name: Optional[str] = Field(default=None, description="Optional name for the message author")
+
+    @validator("content")
+    def validate_content_blocks(cls, value):
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            raise ValueError("content must be a string or list of content blocks")
+        for block in value:
+            if not isinstance(block, dict):
+                raise ValueError("multimodal content blocks must be objects")
+            block_type = block.get("type")
+            if block_type == "text":
+                if not isinstance(block.get("text"), str):
+                    raise ValueError("text blocks require a string 'text' field")
+            elif block_type == "image_url":
+                image_url = block.get("image_url")
+                if not isinstance(image_url, dict) or not isinstance(image_url.get("url"), str):
+                    raise ValueError("image_url blocks require image_url.url string")
+            else:
+                raise ValueError("only 'text' and 'image_url' blocks are supported")
+        return value
 
 class OpenAITool(BaseModel):
     type: str = Field(default="function", description="Tool type")
@@ -2106,6 +2296,59 @@ class OpenAIChatCompletionRequest(BaseModel):
     stream: Optional[bool] = Field(default=False, description="Stream response tokens")
     tools: Optional[List[OpenAITool]] = Field(default=None, description="Optional tools/functions")
     tool_choice: Optional[str] = Field(default=None, description="Tool selection strategy")
+
+    @validator("messages")
+    def validate_multimodal_roles(cls, messages):
+        for message in messages:
+            if isinstance(message.content, list) and message.role not in {"user", "system"}:
+                raise ValueError("multimodal content blocks are only allowed for user/system roles")
+        return messages
+
+
+def _flatten_openai_content(content: Union[str, List[Dict[str, Any]]]) -> str:
+    if isinstance(content, str):
+        return content
+    parts: List[str] = []
+    for block in content or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _normalize_openai_multimodal_content(content: Union[str, List[Dict[str, Any]]]) -> Union[str, List[Dict[str, Any]]]:
+    if isinstance(content, str):
+        return content
+    normalized: List[Dict[str, Any]] = []
+    for block in content:
+        block_type = block.get("type")
+        if block_type == "text":
+            normalized.append({"type": "text", "text": block.get("text", "")})
+            continue
+        if block_type == "image_url":
+            image_url = block.get("image_url") or {}
+            raw_url = image_url.get("url", "")
+            if isinstance(raw_url, str) and raw_url.startswith("data:image/"):
+                raw_url = _preprocess_vision_image(raw_url) or raw_url
+            normalized.append({"type": "image_url", "image_url": {"url": raw_url}})
+    return normalized
+
+
+def _openai_messages_have_images(messages: List[OpenAIMessage]) -> bool:
+    for message in messages:
+        if not isinstance(message.content, list):
+            continue
+        for block in message.content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "image_url":
+                continue
+            image_url = block.get("image_url") or {}
+            url = image_url.get("url", "")
+            if isinstance(url, str) and (url.startswith("data:image/") or url.startswith("http://") or url.startswith("https://")):
+                return True
+    return False
 
 class OpenAIChoice(BaseModel):
     index: int = Field(description="Choice index")
@@ -2561,7 +2804,7 @@ def get_intent_from_coral(message: str) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global _detected_gpus, _normalized_tensor_split
+    global _detected_gpus, _normalized_tensor_split, _browser_cleanup_task
 
     # Startup
     logger.info("=" * 50)
@@ -2591,6 +2834,25 @@ async def lifespan(app: FastAPI):
     # ── Register all models with ModelManager v2 (new) ───────────────
     _register_models_with_v2()
 
+    # Initialize persistent sandbox browser sessions and periodic cleanup.
+    try:
+        _get_browser_session_manager()
+    except Exception as e:
+        logger.warning(f"⚠ Browser session manager unavailable at startup: {e}")
+
+    async def _browser_cleanup_loop():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                mgr = _get_browser_session_manager()
+                _allow_any, _hosts, ttl = _sandbox_host_config()
+                await asyncio.to_thread(mgr.cleanup_expired_sessions, ttl)
+            except Exception:
+                # Best-effort cleanup only.
+                pass
+
+    _browser_cleanup_task = asyncio.create_task(_browser_cleanup_loop())
+
     # Optional model manager v1 for hot-swap (legacy)
     global model_manager
     try:
@@ -2607,6 +2869,12 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down EDISON Core Service...")
+    if _browser_cleanup_task:
+        _browser_cleanup_task.cancel()
+        try:
+            await _browser_cleanup_task
+        except BaseException:
+            pass
     if model_manager_v2_instance:
         model_manager_v2_instance.unload_all()
 
@@ -5295,7 +5563,56 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
         elif llm_deep:
             model_target = "deep"
     
-    # Select model
+    has_images = _openai_messages_have_images(request.messages)
+
+    # Vision path for true multimodal requests
+    if has_images:
+        model_text = (request.model or "").lower()
+        prefer_vision_code = "code" in model_text
+
+        vision_model = llm_vision_code if prefer_vision_code and llm_vision_code is not None else llm_vision
+        model_name = "vision_code" if vision_model is llm_vision_code else "vision"
+
+        if vision_model is None:
+            if not _try_load_vision_on_demand():
+                raise HTTPException(status_code=503, detail="Vision model not loaded")
+            vision_model = llm_vision
+            model_name = "vision"
+
+        if vision_model is None:
+            raise HTTPException(status_code=503, detail="No suitable vision model available")
+
+        chat_messages: List[Dict[str, Any]] = []
+        for msg in request.messages:
+            if isinstance(msg.content, list):
+                content = _normalize_openai_multimodal_content(msg.content)
+                # Keep multimodal blocks on user/system messages only.
+                if msg.role not in {"user", "system"}:
+                    content = _flatten_openai_content(content)
+            else:
+                content = msg.content
+            chat_messages.append({"role": msg.role, "content": content})
+
+        if request.stream:
+            return await openai_stream_completions(
+                raw_request,
+                vision_model,
+                model_name,
+                full_prompt=None,
+                request=request,
+                chat_messages=chat_messages,
+                is_vision_chat=True,
+            )
+        return await openai_non_stream_completions(
+            vision_model,
+            model_name,
+            full_prompt=None,
+            request=request,
+            chat_messages=chat_messages,
+            is_vision_chat=True,
+        )
+
+    # Select text model (legacy behavior)
     if model_target == "deep" and llm_deep:
         llm = llm_deep
         model_name = "deep"
@@ -5305,32 +5622,35 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
     else:
         llm = llm_fast
         model_name = "fast"
-    
+
     if not llm:
         raise HTTPException(status_code=503, detail="No suitable model available")
-    
+
     # Convert OpenAI messages to internal prompt format
     system_prompt = "You are a helpful assistant."
     user_message = ""
-    
+
     for msg in request.messages:
         if msg.role == "system":
-            system_prompt = msg.content
+            system_prompt = _flatten_openai_content(msg.content)
         elif msg.role == "user":
-            user_message = msg.content
-        # Assistant messages are used for context but not regenerated
-    
-    # Build prompt
-    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
-    
-    if request.stream:
-        # Streaming response
-        return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
-    else:
-        # Non-streaming response
-        return await openai_non_stream_completions(llm, model_name, full_prompt, request)
+            user_message = _flatten_openai_content(msg.content)
 
-async def openai_stream_completions(raw_request: Request, llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
+    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
+
+    if request.stream:
+        return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
+    return await openai_non_stream_completions(llm, model_name, full_prompt, request)
+
+async def openai_stream_completions(
+    raw_request: Request,
+    llm,
+    model_name: str,
+    full_prompt: Optional[str],
+    request: OpenAIChatCompletionRequest,
+    chat_messages: Optional[List[Dict[str, Any]]] = None,
+    is_vision_chat: bool = False,
+):
     """Generate OpenAI-compatible streaming response."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
@@ -5341,7 +5661,13 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         active_requests[request_id] = {"cancelled": False, "timestamp": created_time}
     
     async def stream_generator():
-        prompt_tokens = len(full_prompt.split())  # Approximate
+        if chat_messages is not None:
+            prompt_blob = []
+            for msg in chat_messages:
+                prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
+            prompt_tokens = len("\n".join(prompt_blob).split())
+        else:
+            prompt_tokens = len((full_prompt or "").split())
         completion_tokens = 0
         assistant_response = ""
         empty_chunks = 0
@@ -5351,14 +5677,23 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         try:
             lock = get_lock_for_model(llm)
             with lock:
-                stream = llm(
-                    full_prompt,
-                    max_tokens=request.max_tokens or 2048,
-                    temperature=request.temperature or 0.7,
-                    top_p=request.top_p or 0.9,
-                    echo=False,
-                    stream=True
-                )
+                if chat_messages is not None:
+                    stream = llm.create_chat_completion(
+                        messages=chat_messages,
+                        max_tokens=request.max_tokens or 2048,
+                        temperature=request.temperature if request.temperature is not None else 0.2,
+                        top_p=request.top_p if request.top_p is not None else 0.9,
+                        stream=True,
+                    )
+                else:
+                    stream = llm(
+                        full_prompt,
+                        max_tokens=request.max_tokens or 2048,
+                        temperature=request.temperature or 0.7,
+                        top_p=request.top_p or 0.9,
+                        echo=False,
+                        stream=True
+                    )
                 
                 for chunk in stream:
                     if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
@@ -5379,7 +5714,7 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
                                 active_requests[request_id]["cancelled"] = True
                         break
                     
-                    token, finished = _extract_stream_token_and_finished(chunk)
+                    token, finished = _extract_stream_token_and_finished(chunk, vision=is_vision_chat)
                     if token:
                         assistant_response += token
                         completion_tokens += 1
@@ -5452,29 +5787,51 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         }
     )
 
-async def openai_non_stream_completions(llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
+async def openai_non_stream_completions(
+    llm,
+    model_name: str,
+    full_prompt: Optional[str],
+    request: OpenAIChatCompletionRequest,
+    chat_messages: Optional[List[Dict[str, Any]]] = None,
+    is_vision_chat: bool = False,
+):
     """Generate OpenAI-compatible non-streaming response."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
-    
+
     try:
         lock = get_lock_for_model(llm)
         with lock:
-            response = llm(
-                full_prompt,
-                max_tokens=request.max_tokens or 2048,
-                temperature=request.temperature or 0.7,
-                top_p=request.top_p or 0.9,
-                echo=False
-            )
-        
-        assistant_response = response["choices"][0]["text"].strip()
-        
-        # Approximate token counts
-        prompt_tokens = len(full_prompt.split())
+            if chat_messages is not None:
+                response = llm.create_chat_completion(
+                    messages=chat_messages,
+                    max_tokens=request.max_tokens or 2048,
+                    temperature=request.temperature if request.temperature is not None else 0.2,
+                    top_p=request.top_p if request.top_p is not None else 0.9,
+                    stream=False,
+                )
+                message = response["choices"][0]["message"]["content"]
+                if isinstance(message, list):
+                    assistant_response = _flatten_openai_content(message)
+                else:
+                    assistant_response = str(message or "").strip()
+                prompt_blob = []
+                for msg in chat_messages:
+                    prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
+                prompt_tokens = len("\n".join(prompt_blob).split())
+            else:
+                response = llm(
+                    full_prompt,
+                    max_tokens=request.max_tokens or 2048,
+                    temperature=request.temperature or 0.7,
+                    top_p=request.top_p or 0.9,
+                    echo=False
+                )
+                assistant_response = response["choices"][0]["text"].strip()
+                prompt_tokens = len((full_prompt or "").split())
+
         completion_tokens = len(assistant_response.split())
-        
-        # Format response in OpenAI format
+
         return OpenAIChatCompletionResponse(
             id=completion_id,
             created=created_time,
@@ -5490,9 +5847,11 @@ async def openai_non_stream_completions(llm, model_name: str, full_prompt: str, 
                 total_tokens=prompt_tokens + completion_tokens
             )
         )
-    
+
     except Exception as e:
         logger.error(f"OpenAI completion error: {e}")
+        if is_vision_chat and request.stream:
+            raise HTTPException(status_code=400, detail="vision streaming not supported yet")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search", response_model=SearchResponse)
@@ -9973,6 +10332,163 @@ async def sandbox_browser_screenshot(request: dict):
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("error", "screenshot failed"))
     return result
+
+
+def _browser_error_to_http(exc: Exception) -> HTTPException:
+    if isinstance(exc, BrowserSessionError):
+        return HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail=str(exc))
+    return HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/sandbox/browser/session/create")
+async def sandbox_browser_session_create(request: dict):
+    """Create a persistent sandbox browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        _allow_any, _hosts, ttl = _sandbox_host_config()
+        await asyncio.to_thread(mgr.cleanup_expired_sessions, ttl)
+        data = await asyncio.to_thread(
+            mgr.create_session,
+            request.get("url", ""),
+            int(request.get("width") or 1280),
+            int(request.get("height") or 800),
+            request.get("allowed_hosts"),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/navigate")
+async def sandbox_browser_session_navigate(request: dict):
+    """Navigate an existing browser session to a new URL."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.navigate, request.get("session_id", ""), request.get("url", ""))
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/click")
+async def sandbox_browser_session_click(request: dict):
+    """Click at viewport coordinates in a persistent browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.click,
+            request.get("session_id", ""),
+            int(request.get("x") or 0),
+            int(request.get("y") or 0),
+            request.get("button", "left"),
+            int(request.get("click_count") or 1),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/type")
+async def sandbox_browser_session_type(request: dict):
+    """Type text into the active focused element in a browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.type,
+            request.get("session_id", ""),
+            request.get("text", ""),
+            int(request.get("delay_ms") or 10),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/key")
+async def sandbox_browser_session_key(request: dict):
+    """Press a keyboard key in the active browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.keypress,
+            request.get("session_id", ""),
+            request.get("key", "Enter"),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/scroll")
+async def sandbox_browser_session_scroll(request: dict):
+    """Scroll the current page in a browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.scroll,
+            request.get("session_id", ""),
+            int(request.get("dx") or request.get("delta_x") or 0),
+            int(request.get("dy") or request.get("delta_y") or 0),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/move")
+async def sandbox_browser_session_move(request: dict):
+    """Move mouse cursor in a browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.move_mouse,
+            request.get("session_id", ""),
+            int(request.get("x") or 0),
+            int(request.get("y") or 0),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/viewport")
+async def sandbox_browser_session_viewport(request: dict):
+    """Update session viewport dimensions."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.set_viewport,
+            request.get("session_id", ""),
+            int(request.get("width") or 1280),
+            int(request.get("height") or 800),
+        )
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/screenshot")
+async def sandbox_browser_session_screenshot(request: dict):
+    """Capture current screenshot from an existing browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.screenshot, request.get("session_id", ""))
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/close")
+async def sandbox_browser_session_close(request: dict):
+    """Close a persistent browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.close_session, request.get("session_id", ""))
+        return {"ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
 
 
 @app.get("/integrations/connectors")

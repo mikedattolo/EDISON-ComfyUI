@@ -881,6 +881,7 @@ class EdisonAgentLiveView {
                 <button class="agent-live-toggle" id="agentLiveToggle" aria-label="Toggle live panel">▼</button>
             </div>
             <div class="agent-live-body" id="agentLiveBody">
+                <div id="agentLiveBrowserPreview" style="display:none; margin-bottom:10px;"></div>
                 <div class="agent-live-steps" id="agentLiveSteps"></div>
             </div>
         `;
@@ -999,12 +1000,23 @@ class EdisonAgentLiveView {
             case 'browser_view':
                 // New: inject inline chat browser card
                 if (window.injectBrowserCard) window.injectBrowserCard(event);
+                this._renderBrowserPreview(event);
                 this._addBrowserViewStep(event);
                 break;
             case 'sandbox_browser_open':
                 this._addSandboxBrowserEvent(event);
                 break;
             case 'browser_screenshot':
+                this._renderBrowserPreview({
+                    url: event.url || '',
+                    title: event.title || event.url || 'Browser',
+                    screenshot_b64: event.screenshot_b64 || event.png_base64 || null,
+                    status: event.status || 'done',
+                    session_id: event.session_id || 'default',
+                    width: event.width,
+                    height: event.height,
+                    error: event.error || null,
+                });
                 this._addScreenshot(event);
                 break;
             case 'file_diff':
@@ -1088,6 +1100,30 @@ class EdisonAgentLiveView {
         if (window.injectBrowserCard) {
             window.injectBrowserCard({ ...event, status: 'loading', screenshot_b64: null });
         }
+    }
+
+    _renderBrowserPreview(event) {
+        const holder = document.getElementById('agentLiveBrowserPreview');
+        if (!holder) return;
+
+        const url = event.url || '';
+        const title = event.title || url || 'Browser';
+        const screenshot = event.screenshot_b64 || null;
+        const status = event.status || 'loading';
+        const sid = event.session_id || 'default';
+
+        holder.style.display = 'block';
+        holder.innerHTML = `
+            <div style="border:1px solid rgba(255,255,255,0.15); border-radius:10px; overflow:hidden; background:rgba(0,0,0,0.25)">
+                <div style="display:flex; justify-content:space-between; gap:8px; padding:8px 10px; font-size:12px; border-bottom:1px solid rgba(255,255,255,0.12)">
+                    <strong style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${this._escapeHtml(title)}</strong>
+                    <span style="opacity:0.7">${this._escapeHtml(sid)} · ${this._escapeHtml(status)}</span>
+                </div>
+                ${screenshot ? `<img src="data:image/jpeg;base64,${screenshot}" alt="Browser stream" style="display:block; width:100%; height:auto;"/>`
+                    : `<div style="padding:12px; font-size:12px; opacity:0.75">${this._escapeHtml(event.error || 'Waiting for screenshot...')}</div>`}
+                <div style="padding:6px 10px; font-size:11px; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${this._escapeHtml(url)}</div>
+            </div>
+        `;
     }
 
     _addScreenshot(event) {

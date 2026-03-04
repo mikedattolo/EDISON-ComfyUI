@@ -164,3 +164,7 @@ edison:
     enabled: true          # Show live activity panel in UI during agent tasks
     redact_secrets: true   # Strip API keys / tokens from streamed logs
     screenshot_interval_s: 5  # Seconds between browser screenshots (0=disable)
+
+  sandbox_allow_any_host: false
+  sandbox_allowed_hosts: []   # Example: ["example.com", "google.com"]
+  sandbox_session_ttl_seconds: 900
