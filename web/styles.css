@@ -5914,3 +5914,220 @@ details[open] > summary::after {
     padding-top: 60px;
     backdrop-filter: blur(3px);
 }
+
+/* =========================================================
+   INLINE CHAT BROWSER CARD — .chat-browser-card
+   Shows what Edison's headless browser sees, embedded in the
+   chat messages area during agent mode.
+   ========================================================= */
+
+.chat-browser-card {
+    background: var(--bg-secondary, #1a1a2e);
+    border: 1px solid var(--border-color, rgba(255,255,255,0.12));
+    border-radius: 12px;
+    overflow: hidden;
+    margin: 12px 0;
+    max-width: 100%;
+    box-shadow: 0 8px 32px rgba(0,0,0,0.4), 0 2px 8px rgba(0,0,0,0.3);
+    transition: box-shadow 0.2s;
+}
+.chat-browser-card:hover {
+    box-shadow: 0 12px 40px rgba(0,0,0,0.5), 0 2px 8px rgba(0,0,0,0.3);
+}
+
+/* Header bar */
+.cbc-header {
+    background: #2d2d3a;
+    padding: 8px 12px 6px;
+    border-bottom: 1px solid rgba(255,255,255,0.08);
+    flex-shrink: 0;
+}
+
+.cbc-robot-badge {
+    font-size: 10px;
+    font-weight: 600;
+    color: rgba(255,255,255,0.4);
+    text-transform: uppercase;
+    letter-spacing: 0.08em;
+    display: block;
+    margin-bottom: 5px;
+}
+
+.cbc-nav-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+}
+
+/* macOS-style traffic lights */
+.cbc-traffic-lights {
+    display: flex;
+    gap: 5px;
+    flex-shrink: 0;
+    padding-right: 4px;
+}
+.cbc-tl {
+    width: 11px;
+    height: 11px;
+    border-radius: 50%;
+    display: inline-block;
+    flex-shrink: 0;
+}
+.cbc-tl-red    { background: #ff5f56; }
+.cbc-tl-yellow { background: #ffbd2e; }
+.cbc-tl-green  { background: #27c93f; }
+
+/* URL bar */
+.cbc-urlbar {
+    flex: 1;
+    background: rgba(0,0,0,0.3);
+    border: 1px solid rgba(255,255,255,0.1);
+    border-radius: 6px;
+    padding: 4px 10px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    min-width: 0;
+}
+.cbc-lock-icon {
+    font-size: 11px;
+    flex-shrink: 0;
+    filter: grayscale(0.2);
+}
+.cbc-url-text {
+    font-size: 12px;
+    color: rgba(255,255,255,0.75);
+    font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', monospace;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    min-width: 0;
+}
+
+.cbc-open-link {
+    font-size: 14px;
+    color: rgba(255,255,255,0.4);
+    text-decoration: none;
+    flex-shrink: 0;
+    padding: 2px 4px;
+    border-radius: 4px;
+    transition: color 0.15s, background 0.15s;
+}
+.cbc-open-link:hover { color: rgba(255,255,255,0.9); background: rgba(255,255,255,0.08); }
+
+.cbc-close-btn {
+    background: none;
+    border: none;
+    color: rgba(255,255,255,0.3);
+    cursor: pointer;
+    font-size: 13px;
+    padding: 2px 5px;
+    border-radius: 4px;
+    flex-shrink: 0;
+    transition: color 0.15s, background 0.15s;
+    line-height: 1;
+}
+.cbc-close-btn:hover { color: rgba(255,255,255,0.85); background: rgba(255,0,0,0.15); }
+
+/* Main screen area */
+.cbc-screen {
+    position: relative;
+    background: #f9f9f9;
+    min-height: 200px;
+    max-height: 520px;
+    overflow: hidden;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+}
+
+/* Loading skeleton/spinner */
+.cbc-loading {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    padding: 40px 20px;
+    width: 100%;
+}
+.cbc-loading::before {
+    content: '';
+    width: 36px;
+    height: 36px;
+    border: 3px solid rgba(82,130,255,0.2);
+    border-top-color: var(--accent-color, #5282ff);
+    border-radius: 50%;
+    animation: cbcSpin 0.8s linear infinite;
+}
+.cbc-loading::after {
+    content: 'Loading page…';
+    font-size: 13px;
+    color: #666;
+    font-family: -apple-system, sans-serif;
+}
+@keyframes cbcSpin {
+    to { transform: rotate(360deg); }
+}
+
+/* Screenshot image */
+.cbc-screenshot {
+    display: block;
+    width: 100%;
+    max-height: 520px;
+    object-fit: contain;
+    object-position: top center;
+    background: #fff;
+    cursor: pointer;
+    transition: opacity 0.2s;
+}
+.cbc-screenshot:hover { opacity: 0.95; }
+
+/* Error state */
+.cbc-error {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 30px 20px;
+    font-size: 13px;
+    color: #c0392b;
+    background: #fff5f5;
+    text-align: center;
+    width: 100%;
+    font-family: -apple-system, sans-serif;
+}
+
+/* Footer status bar */
+.cbc-footer {
+    background: #2d2d3a;
+    border-top: 1px solid rgba(255,255,255,0.06);
+    padding: 5px 12px;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.cbc-status-dot {
+    width: 7px;
+    height: 7px;
+    border-radius: 50%;
+    flex-shrink: 0;
+}
+.cbc-dot-loading {
+    background: #e67e22;
+    animation: cbcPulse 1s ease-in-out infinite;
+}
+.cbc-dot-done { background: #27c93f; }
+.cbc-dot-error { background: #ff5f56; }
+@keyframes cbcPulse { 0%,100% { opacity:1; } 50% { opacity: 0.35; } }
+
+.cbc-footer-text {
+    font-size: 11px;
+    color: rgba(255,255,255,0.45);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
+    font-family: -apple-system, sans-serif;
+}
+

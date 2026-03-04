@@ -996,6 +996,11 @@ class EdisonAgentLiveView {
             case 'browser_open':
                 this._addBrowserEvent(event);
                 break;
+            case 'browser_view':
+                // New: inject inline chat browser card
+                if (window.injectBrowserCard) window.injectBrowserCard(event);
+                this._addBrowserViewStep(event);
+                break;
             case 'sandbox_browser_open':
                 this._addSandboxBrowserEvent(event);
                 break;
@@ -1056,24 +1061,32 @@ class EdisonAgentLiveView {
         container.scrollTop = container.scrollHeight;
     }
 
-    _addSandboxBrowserEvent(event) {
+    _addBrowserViewStep(event) {
+        // Adds a compact activity-bar step for browser navigation
         const container = document.getElementById('agentLiveSteps');
         if (!container) return;
-
-        const el = document.createElement('div');
-        el.className = 'agent-step agent-browser-event';
-        el.innerHTML = `
-            <span class="agent-step-icon">🧪</span>
-            <span class="agent-step-title">
-                Sandbox opened: <a href="${this._escapeHtml(event.url)}" target="_blank" rel="noopener">${this._escapeHtml(event.url)}</a>
-            </span>
-        `;
-        container.appendChild(el);
+        const icon = event.status === 'loading' ? '⏳' :
+                     event.status === 'error' ? '❌' : '🌐';
+        // Reuse card-anchor by scanning existing steps for same URL
+        let el = null;
+        container.querySelectorAll('[data-browser-url]').forEach(node => {
+            if (node.dataset.browserUrl === event.url) el = node;
+        });
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'agent-step agent-browser-event';
+            el.dataset.browserUrl = event.url;
+            container.appendChild(el);
+        }
+        el.innerHTML = `<span class="agent-step-icon">${icon}</span>
+            <span class="agent-step-title">${event.status === 'loading' ? 'Navigating to ' : 'Visited '}<a href="${this._escapeHtml(event.url)}" target="_blank" rel="noopener">${this._escapeHtml(event.title || event.url)}</a></span>`;
         container.scrollTop = container.scrollHeight;
+    }
 
-        // Open the embedded sandbox browser overlay
-        if (window.openSandboxBrowser) {
-            window.openSandboxBrowser(event.url);
+    _addSandboxBrowserEvent(event) {
+        // Legacy sandbox_browser_open → forward to new inline browser card
+        if (window.injectBrowserCard) {
+            window.injectBrowserCard({ ...event, status: 'loading', screenshot_b64: null });
         }
     }
 

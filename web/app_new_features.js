@@ -2563,26 +2563,154 @@ console.log('🧊 app_new_features.js v1 loading...');
     }
 
     // ========================================
-    // FEATURE 6: Sandbox Browser Overlay
+    // FEATURE 6: Inline Chat Browser Card
     // ========================================
-    window.openSandboxBrowser = function(url) {
-        const panel = document.getElementById('sandboxBrowserPanel');
-        const frame = document.getElementById('sandboxBrowserFrame');
-        const urlLabel = document.getElementById('sandboxBrowserUrl');
-        const extLink = document.getElementById('sandboxBrowserExtLink');
-        if (!panel || !frame) return;
-        if (urlLabel) urlLabel.textContent = url;
-        if (extLink) extLink.href = url;
-        try { frame.src = url; } catch (e) { /* cross-origin may block but panel still shows */ }
-        panel.classList.add('open');
+    // Session state: track the active browser card DOM element
+    let _browserCardEl = null;
+    let _browserCardSessionUrl = null;
+
+    /**
+     * injectBrowserCard(event)
+     * Creates or updates a browser card INLINE in the chat messages area.
+     * Called by voice_agent_live.js when a browser_view / sandbox_browser_open SSE event arrives.
+     * event = { url, title, screenshot_b64, status: 'loading'|'done'|'error', error? }
+     */
+    window.injectBrowserCard = function(event) {
+        const container = document.getElementById('messagesContainer');
+        if (!container) return;
+
+        const url = event.url || '';
+        const title = event.title || url;
+        const screenshot = event.screenshot_b64 || null;
+        const status = event.status || 'loading';
+        const errMsg = event.error || '';
+
+        // Reuse the existing card if same session (same host or loading state)
+        const sameSession = _browserCardEl &&
+            (_browserCardSessionUrl === url ||
+             (status === 'done' && _tryMatchHost(_browserCardSessionUrl, url)));
+
+        if (!sameSession) {
+            // Create a new browser card element
+            _browserCardEl = _createBrowserCard();
+            container.appendChild(_browserCardEl);
+            _browserCardSessionUrl = url;
+            container.scrollTop = container.scrollHeight;
+        }
+
+        // Update the card content
+        _updateBrowserCard(_browserCardEl, { url, title, screenshot, status, errMsg });
+        container.scrollTop = container.scrollHeight;
     };
 
+    function _tryMatchHost(a, b) {
+        try { return new URL(a).hostname === new URL(b).hostname; } catch { return false; }
+    }
+
+    function _createBrowserCard() {
+        const card = document.createElement('div');
+        card.className = 'chat-browser-card';
+        card.innerHTML = `
+            <div class="cbc-header">
+                <span class="cbc-robot-badge">🤖 Edison Browser</span>
+                <div class="cbc-nav-row">
+                    <div class="cbc-traffic-lights">
+                        <span class="cbc-tl cbc-tl-red"></span>
+                        <span class="cbc-tl cbc-tl-yellow"></span>
+                        <span class="cbc-tl cbc-tl-green"></span>
+                    </div>
+                    <div class="cbc-urlbar">
+                        <span class="cbc-lock-icon">🔒</span>
+                        <span class="cbc-url-text">about:blank</span>
+                    </div>
+                    <a class="cbc-open-link" href="#" target="_blank" rel="noopener" title="Open in new tab">↗</a>
+                    <button class="cbc-close-btn" onclick="this.closest('.chat-browser-card').remove(); window._browserCardEl=null;">✕</button>
+                </div>
+            </div>
+            <div class="cbc-screen">
+                <div class="cbc-loading"></div>
+                <img class="cbc-screenshot" src="" alt="" style="display:none">
+                <div class="cbc-error" style="display:none"></div>
+            </div>
+            <div class="cbc-footer">
+                <span class="cbc-status-dot cbc-dot-loading"></span>
+                <span class="cbc-footer-text">Initializing…</span>
+            </div>`;
+        return card;
+    }
+
+    function _updateBrowserCard(card, { url, title, screenshot, status, errMsg }) {
+        const urlText = card.querySelector('.cbc-url-text');
+        const lockIcon = card.querySelector('.cbc-lock-icon');
+        const openLink = card.querySelector('.cbc-open-link');
+        const loading = card.querySelector('.cbc-loading');
+        const img = card.querySelector('.cbc-screenshot');
+        const errorEl = card.querySelector('.cbc-error');
+        const dot = card.querySelector('.cbc-status-dot');
+        const footerText = card.querySelector('.cbc-footer-text');
+
+        if (urlText) urlText.textContent = url;
+        if (lockIcon) lockIcon.textContent = url.startsWith('https://') ? '🔒' : '🌐';
+        if (openLink) openLink.href = url;
+
+        if (status === 'loading') {
+            if (loading) loading.style.display = 'flex';
+            if (img) img.style.display = 'none';
+            if (errorEl) errorEl.style.display = 'none';
+            if (dot) { dot.className = 'cbc-status-dot cbc-dot-loading'; }
+            if (footerText) footerText.textContent = `Navigating to ${url}…`;
+        } else if (status === 'done' && screenshot) {
+            if (loading) loading.style.display = 'none';
+            if (img) {
+                img.src = `data:image/jpeg;base64,${screenshot}`;
+                img.alt = title;
+                img.style.display = 'block';
+                img.onclick = () => window.open(url, '_blank');
+                img.title = 'Click to open in new tab';
+            }
+            if (errorEl) errorEl.style.display = 'none';
+            if (dot) dot.className = 'cbc-status-dot cbc-dot-done';
+            if (footerText) footerText.textContent = title || url;
+        } else if (status === 'error') {
+            if (loading) loading.style.display = 'none';
+            if (img) img.style.display = 'none';
+            if (errorEl) {
+                errorEl.style.display = 'flex';
+                errorEl.textContent = `Could not load page: ${errMsg || url}`;
+            }
+            if (dot) dot.className = 'cbc-status-dot cbc-dot-error';
+            if (footerText) footerText.textContent = `Error loading ${url}`;
+        }
+    }
+
+    // Keep the old overlay API alive but redirect to card
+    window.openSandboxBrowser = function(url) {
+        window.injectBrowserCard({ url, title: 'Loading…', screenshot_b64: null, status: 'loading' });
+    };
     window.closeSandboxBrowser = function() {
-        const panel = document.getElementById('sandboxBrowserPanel');
-        const frame = document.getElementById('sandboxBrowserFrame');
-        if (panel) panel.classList.remove('open');
-        if (frame) {
-            try { frame.src = 'about:blank'; } catch (e) {}
+        if (_browserCardEl) { _browserCardEl.remove(); _browserCardEl = null; }
+    };
+
+    // Also expose a manual trigger for the type-in URL bar in codespaces
+    window.browseTo = async function(url) {
+        if (!url.startsWith('http')) url = `https://${url}`;
+        window.injectBrowserCard({ url, title: 'Loading…', screenshot_b64: null, status: 'loading' });
+        try {
+            const res = await fetch('/sandbox/browser/screenshot', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({ url }),
+            });
+            const data = await res.json();
+            window.injectBrowserCard({
+                url: data.url || url,
+                title: data.title || url,
+                screenshot_b64: data.screenshot_b64,
+                status: data.screenshot_b64 ? 'done' : 'error',
+                error: data.error,
+            });
+        } catch (e) {
+            window.injectBrowserCard({ url, title: url, screenshot_b64: null, status: 'error', error: e.message });
         }
     };
 
@@ -2609,9 +2737,8 @@ console.log('🧊 app_new_features.js v1 loading...');
                     window.fmCloseEditor();
                     return;
                 }
-                // Close sandbox browser overlay
-                const sbPanel = document.getElementById('sandboxBrowserPanel');
-                if (sbPanel && sbPanel.classList.contains('open')) {
+                // Close inline browser card if visible
+                if (_browserCardEl && _browserCardEl.isConnected) {
                     window.closeSandboxBrowser();
                     return;
                 }

@@ -1262,26 +1262,21 @@
         </div>
     </div>
 
-    <!-- Sandbox Browser Overlay (for agent mode) -->
-    <div id="sandboxBrowserPanel">
+    <!-- Sandbox Browser Overlay — DEPRECATED: browser now renders inline in chat -->
+    <div id="sandboxBrowserPanel" style="display:none!important">
         <div class="sandbox-browser-chrome">
             <span class="sandbox-browser-label">🧪 Sandbox Browser</span>
             <span id="sandboxBrowserUrl" class="sandbox-browser-current-url"></span>
-            <div class="sandbox-browser-actions">
-                <a id="sandboxBrowserExtLink" href="#" target="_blank" rel="noopener" class="sandbox-browser-ext-btn">↗ Open in Tab</a>
-                <button class="sandbox-browser-close-btn" onclick="window.closeSandboxBrowser && window.closeSandboxBrowser()">✕ Close</button>
-            </div>
         </div>
         <iframe id="sandboxBrowserFrame" src="about:blank" class="sandbox-browser-frame"
-            sandbox="allow-forms allow-same-origin allow-scripts allow-popups allow-pointer-lock"
-            allow="fullscreen"
-            title="Sandbox browser"></iframe>
+            sandbox="allow-forms allow-same-origin allow-scripts"
+            title="Sandbox browser (inactive)"></iframe>
     </div>
 
     <script src="gallery.js?v=13"></script>
     <script src="app_enhanced.js?v=16"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_new_features.js?v=4"></script>
-    <script src="voice_agent_live.js?v=7"></script>
+    <script src="app_new_features.js?v=5"></script>
+    <script src="voice_agent_live.js?v=8"></script>
 </body>
 </html>
