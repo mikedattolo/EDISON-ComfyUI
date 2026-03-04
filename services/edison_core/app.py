@@ -30,54 +30,94 @@ import gc
 import subprocess
 import shlex
 
-# ── Playwright headless browser (lazy-initialized, used for sandbox browser) ──
+# ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
+# Playwright sync API uses greenlets and requires ALL calls from the same thread.
+# We run a dedicated daemon thread with its own event queue.
+import queue as _queue
+
+_pw_thread = None
+_pw_queue = _queue.Queue()       # (func, args, result_queue)
 _pw_browser = None
 _pw_playwright = None
-_pw_lock = threading.Lock()
+_pw_started = threading.Event()
 
-def _pw_ensure_browser():
-    """Lazily launch Playwright Chromium browser (singleton)."""
+def _pw_worker():
+    """Dedicated thread that owns the Playwright browser instance."""
     global _pw_browser, _pw_playwright
-    if _pw_browser is not None:
-        return _pw_browser
-    with _pw_lock:
-        if _pw_browser is not None:
-            return _pw_browser
+    try:
+        from playwright.sync_api import sync_playwright as _spw
+        _pw_playwright = _spw().start()
+        _pw_browser = _pw_playwright.chromium.launch(
+            args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
+                  "--disable-setuid-sandbox", "--disable-accelerated-2d-canvas"]
+        )
+        logging.getLogger(__name__).info("Playwright Chromium browser launched successfully on dedicated thread")
+    except Exception as e:
+        logging.getLogger(__name__).error(f"Could not launch Playwright browser: {e}")
+        _pw_started.set()
+        return
+    _pw_started.set()
+
+    while True:
+        item = _pw_queue.get()
+        if item is None:
+            break  # shutdown sentinel
+        func, args, result_q = item
         try:
-            from playwright.sync_api import sync_playwright as _spw
-            _pw_playwright = _spw().start()
-            _pw_browser = _pw_playwright.chromium.launch(
-                args=["--no-sandbox", "--disable-dev-shm-usage", "--disable-gpu",
-                      "--disable-setuid-sandbox", "--disable-accelerated-2d-canvas"]
-            )
-            logging.getLogger(__name__).info("Playwright Chromium browser launched successfully")
-        except Exception as e:
-            _pw_browser = None
-            logging.getLogger(__name__).error(f"Could not launch Playwright browser: {e}")
-            raise RuntimeError(f"Could not launch Playwright browser: {e}")
-    return _pw_browser
+            result = func(*args)
+            result_q.put(("ok", result))
+        except Exception as exc:
+            result_q.put(("error", exc))
+
+def _pw_ensure_thread():
+    """Start the dedicated Playwright thread if not already running."""
+    global _pw_thread
+    if _pw_thread is not None and _pw_thread.is_alive():
+        return
+    _pw_thread = threading.Thread(target=_pw_worker, daemon=True, name="playwright-worker")
+    _pw_thread.start()
+    _pw_started.wait(timeout=30)
+
+def _pw_run(func, *args, timeout=25):
+    """Submit work to the Playwright thread and wait for the result."""
+    _pw_ensure_thread()
+    if _pw_browser is None:
+        raise RuntimeError("Playwright browser failed to launch — check logs")
+    result_q = _queue.Queue()
+    _pw_queue.put((func, args, result_q))
+    tag, value = result_q.get(timeout=timeout)
+    if tag == "error":
+        raise value
+    return value
 
 def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
-    """Navigate to a URL with Playwright and return a screenshot + metadata dict."""
-    browser = _pw_ensure_browser()
-    ctx = browser.new_context(viewport={"width": width, "height": height},
-                               user_agent="Mozilla/5.0 (X11; Linux x86_64) "
-                                          "AppleWebKit/537.36 (KHTML, like Gecko) "
-                                          "Chrome/122 Safari/537.36")
-    page = ctx.new_page()
+    """Navigate to a URL with Playwright and return a screenshot + metadata dict (thread-safe)."""
+    def _do_screenshot(url, width, height):
+        ctx = _pw_browser.new_context(
+            viewport={"width": width, "height": height},
+            user_agent="Mozilla/5.0 (X11; Linux x86_64) "
+                       "AppleWebKit/537.36 (KHTML, like Gecko) "
+                       "Chrome/122 Safari/537.36"
+        )
+        page = ctx.new_page()
+        try:
+            page.goto(url, timeout=20000, wait_until="domcontentloaded")
+            page.wait_for_timeout(800)
+            title = page.title() or url
+            png_bytes = page.screenshot(type="jpeg", quality=82,
+                                        full_page=False, clip=None)
+            b64 = base64.b64encode(png_bytes).decode()
+            return {"ok": True, "url": page.url, "title": title, "screenshot_b64": b64,
+                    "width": width, "height": height}
+        except Exception as e:
+            return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
+        finally:
+            ctx.close()
+
     try:
-        page.goto(url, timeout=20000, wait_until="domcontentloaded")
-        page.wait_for_timeout(800)        # let JS settle briefly
-        title = page.title() or url
-        png_bytes = page.screenshot(type="jpeg", quality=82,
-                                    full_page=False, clip=None)
-        b64 = base64.b64encode(png_bytes).decode()
-        return {"ok": True, "url": page.url, "title": title, "screenshot_b64": b64,
-                "width": width, "height": height}
+        return _pw_run(_do_screenshot, url, width, height, timeout=25)
     except Exception as e:
         return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
-    finally:
-        ctx.close()
 
 def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = None,
                        status: str = "done", error: str | None = None):
@@ -9920,7 +9960,7 @@ async def sandbox_browser_open(request: dict):
 
 @app.post("/sandbox/browser/screenshot")
 async def sandbox_browser_screenshot(request: dict):
-    """Take a synchronous Playwright screenshot and return it immediately."""
+    """Take a Playwright screenshot and return it immediately."""
     url = (request.get("url") or "").strip()
     if not url:
         raise HTTPException(status_code=400, detail="url is required")
@@ -9928,8 +9968,8 @@ async def sandbox_browser_screenshot(request: dict):
         url = f"https://{url}"
     width = int(request.get("width") or 1280)
     height = int(request.get("height") or 800)
-    loop = asyncio.get_event_loop()
-    result = await loop.run_in_executor(None, lambda: _pw_screenshot(url, width, height))
+    # _pw_screenshot is now thread-safe (uses dedicated Playwright thread)
+    result = await asyncio.to_thread(_pw_screenshot, url, width, height)
     if not result.get("ok"):
         raise HTTPException(status_code=500, detail=result.get("error", "screenshot failed"))
     return result
