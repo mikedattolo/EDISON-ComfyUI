@@ -575,6 +575,60 @@ def _normalize_image_data_uri(raw_image: str) -> Optional[str]:
     return f"data:image/png;base64,{value}"
 
 
+def _preprocess_vision_image(raw_image: str, max_dim: int = 1024) -> Optional[str]:
+    """
+    Normalize + resize an image for VLM consumption.
+
+    LLaVA-style models tokenize each image into 256–576 patch tokens.  Very
+    large images can saturate the context window *before* the model reads any
+    text, causing it to hallucinate generic descriptions instead of looking at
+    the actual content.  This helper:
+
+      1. Decodes the base64 payload.
+      2. Downsizes the image so the longer edge is at most ``max_dim`` pixels
+         (default 1024), preserving aspect ratio.
+      3. Re-encodes as JPEG (quality 85) for efficient token usage.
+      4. Returns a normalised ``data:image/jpeg;base64,…`` URI.
+
+    If PIL is unavailable the function falls back to plain normalisation.
+    """
+    normalised = _normalize_image_data_uri(raw_image)
+    if not normalised:
+        return None
+
+    try:
+        import base64
+        import io
+        from PIL import Image
+
+        # Decode
+        if "," in normalised:
+            _, b64_data = normalised.split(",", 1)
+        else:
+            b64_data = normalised
+        img_bytes = base64.b64decode(b64_data)
+        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
+
+        # Resize if needed
+        w, h = img.size
+        if max(w, h) > max_dim:
+            scale = max_dim / max(w, h)
+            new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
+            img = img.resize((new_w, new_h), Image.LANCZOS)
+            logger.debug(f"Vision image resized {w}×{h} → {new_w}×{new_h}")
+        else:
+            logger.debug(f"Vision image size OK: {w}×{h}")
+
+        # Re-encode as JPEG
+        buf = io.BytesIO()
+        img.save(buf, format="JPEG", quality=85, optimize=True)
+        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
+        return f"data:image/jpeg;base64,{encoded}"
+    except Exception as e:
+        logger.debug(f"Vision image preprocessing skipped: {e}")
+        return normalised  # fall back to original normalised URI
+
+
 def detect_user_mood(text: str) -> str:
     """Lightweight mood detection for adaptive assistant tone."""
     if not text:
@@ -3694,13 +3748,10 @@ async def chat(request: ChatRequest):
                 steps_text = "\n".join([f"{s['id']}. {s['title']}" for s in work_steps])
                 system_prompt += f"\n\nTask Plan:\n{steps_text}\n\nFollow these steps to complete the task thoroughly."
     
-    # For vision requests, handle images differently
+    # For vision requests, use a clean focused prompt — not the full EDISON system prompt
+    # (walls of system text confuse VLMs and cause hallucinations)
     if has_images:
-        # Vision models use different format with images
-        full_prompt = request.message
-        if context_chunks:
-            context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
-            full_prompt = f"Context: {context_text}\n\n{full_prompt}"
+        full_prompt = (request.message or "").strip() or "Describe in detail what you see in this image."
     else:
         full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
     
@@ -3721,18 +3772,12 @@ async def chat(request: ChatRequest):
         if has_images:
             # Vision model with images - llama-cpp-python LLaVA format
             logger.info(f"Processing {len(request.images)} images with vision model")
-            
-            # For llama-cpp-python with LLaVA, we need to use data_uri format directly
-            # The API expects image data as base64 strings in the message content
-            import base64
-            import io
-            from PIL import Image
-            
-            # Process each image
+
+            # Process each image — resize + normalize before sending to VLM
             image_data_list = []
             for img_b64 in request.images:
                 if isinstance(img_b64, str):
-                    normalized = _normalize_image_data_uri(img_b64)
+                    normalized = _preprocess_vision_image(img_b64)
                     if normalized:
                         image_data_list.append(normalized)
             
@@ -3740,18 +3785,23 @@ async def chat(request: ChatRequest):
             logger.info(f"Prompt: {full_prompt}")
             logger.info(f"Image data length: {len(image_data_list[0][:100])}..." if image_data_list else "No images")
             
-            # Try the multimodal content format
-            content = [
-                {"type": "text", "text": full_prompt}
-            ]
-            
+            # LLaVA format: images FIRST, then the text question.
+            # Putting text first causes the model to ignore the image and hallucinate.
+            vision_sys = (
+                "You are a precise visual assistant. Look carefully at the provided image(s) "
+                "and describe exactly what you observe. Include all visible objects, characters, "
+                "artistic style, text, colors, and context. Be specific and accurate — never "
+                "fabricate or guess details that are not present in the image."
+            )
+            content = []
             for img_data in image_data_list:
                 content.append({
                     "type": "image_url",
                     "image_url": {"url": img_data}
                 })
-            
-            logger.info(f"Content structure: {len(content)} parts (1 text + {len(image_data_list)} images)")
+            content.append({"type": "text", "text": full_prompt})
+
+            logger.info(f"Content structure: {len(content)} parts ({len(image_data_list)} images + 1 text)")
             
             try:
                 # Acquire lock for vision model inference
@@ -3759,13 +3809,11 @@ async def chat(request: ChatRequest):
                 with vision_lock:
                     response = llm.create_chat_completion(
                         messages=[
-                            {
-                                "role": "user",
-                                "content": content
-                            }
+                            {"role": "system", "content": vision_sys},
+                            {"role": "user", "content": content}
                         ],
                         max_tokens=2048,
-                        temperature=0.7
+                        temperature=0.1
                     )
                 assistant_response = response["choices"][0]["message"]["content"]
                 logger.info(f"Vision response generated: {assistant_response[:100]}...")
@@ -3773,13 +3821,13 @@ async def chat(request: ChatRequest):
                 logger.error(f"Vision model error: {e}")
                 logger.error(f"Trying fallback method...")
                 
-                # Fallback: try simple text prompt (vision model should still work as text model)
+                # Fallback: text-only mode with bracketed image notice
                 fallback_lock = get_lock_for_model(llm)
                 with fallback_lock:
                     response = llm(
-                        f"[Image provided] {full_prompt}",
+                        f"[Image provided — describe what you see] {full_prompt}",
                         max_tokens=2048,
-                        temperature=0.7
+                        temperature=0.1
                     )
                 assistant_response = response["choices"][0]["text"].strip()
                 logger.warning("Vision model used in text-only mode - images not processed")
@@ -4577,19 +4625,33 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             if has_images:
                 empty_chunks = 0
                 max_empty_chunks = 256
-                content = [{"type": "text", "text": full_prompt}]
+                # LLaVA format: images FIRST, then the text question.
+                # Putting text first causes the model to ignore the image and hallucinate.
+                vision_question = (request.message or "").strip() or "Describe in detail what you see in this image."
+                vision_sys = (
+                    "You are a precise visual assistant. Look carefully at the provided image(s) "
+                    "and describe exactly what you observe. Include all visible objects, characters, "
+                    "artistic style, text, colors, and context. Be specific and accurate — never "
+                    "fabricate or guess details that are not present in the image."
+                )
+                content = []
                 if request.images:
                     for img_b64 in request.images:
                         if isinstance(img_b64, str):
-                            normalized = _normalize_image_data_uri(img_b64)
+                            # Preprocess: resize large images so they don't overflow VLM context
+                            normalized = _preprocess_vision_image(img_b64)
                             if normalized:
                                 content.append({"type": "image_url", "image_url": {"url": normalized}})
+                content.append({"type": "text", "text": vision_question})
                 lock = get_lock_for_model(llm)
                 with lock:
                     stream = llm.create_chat_completion(
-                        messages=[{"role": "user", "content": content}],
+                        messages=[
+                            {"role": "system", "content": vision_sys},
+                            {"role": "user", "content": content}
+                        ],
                         max_tokens=2048,
-                        temperature=0.7,
+                        temperature=0.1,
                         stream=True
                     )
                     for chunk in stream:
@@ -4872,7 +4934,7 @@ async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
 
     img_data = await image.read()
     img_b64 = base64.b64encode(img_data).decode("ascii")
-    normalized_img = _normalize_image_data_uri(img_b64)
+    normalized_img = _preprocess_vision_image(img_b64)
     if not normalized_img:
         raise HTTPException(status_code=400, detail="Invalid image payload")
 
