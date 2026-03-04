@@ -1753,6 +1753,138 @@ console.log('🧊 app_new_features.js v1 loading...');
         }
     }
 
+    // ========================================
+    // FEATURE 4: Codespaces + 3D Printing
+    // ========================================
+    let codespacesPanelOpen = false;
+    let printingPanelOpen = false;
+
+    function setPanelOpen(panelId, open) {
+        const panel = document.getElementById(panelId);
+        if (!panel) return;
+        if (open) {
+            panel.style.visibility = 'visible';
+            panel.style.transform = 'translateX(0)';
+        } else {
+            panel.style.transform = 'translateX(100%)';
+            setTimeout(() => { panel.style.visibility = 'hidden'; }, 300);
+        }
+    }
+
+    window.toggleCodespacesPanel = function() {
+        codespacesPanelOpen = !codespacesPanelOpen;
+        setPanelOpen('codespacesPanel', codespacesPanelOpen);
+    };
+
+    window.togglePrintingPanel = function() {
+        printingPanelOpen = !printingPanelOpen;
+        setPanelOpen('printingPanel', printingPanelOpen);
+        if (printingPanelOpen) {
+            window.refreshPrintersList && window.refreshPrintersList();
+        }
+    };
+
+    window.runCodespacesCommand = async function() {
+        const cmdInput = document.getElementById('codespacesCommand');
+        const cwdInput = document.getElementById('codespacesCwd');
+        const outputEl = document.getElementById('codespacesOutput');
+        const statusEl = document.getElementById('codespacesStatus');
+        const command = cmdInput?.value?.trim() || '';
+        const cwd = cwdInput?.value?.trim() || '.';
+
+        if (!command) {
+            showStatus(statusEl, '⚠️ Enter a command to run.', 'warning');
+            return;
+        }
+
+        showStatus(statusEl, '⏳ Running command in Codespaces sandbox...', 'loading');
+        if (outputEl) outputEl.textContent = '';
+
+        try {
+            const res = await fetch(`${API}/codespaces/execute`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ command, cwd, timeout: 25 }),
+            });
+            const data = await res.json();
+            if (!res.ok || data.ok === false) {
+                showStatus(statusEl, `❌ ${data.error || 'Command failed'}`, 'error');
+                if (outputEl) outputEl.textContent = (data?.data?.stderr || data?.stderr || '');
+                return;
+            }
+            const payload = data.data || {};
+            const stdout = payload.stdout || '';
+            const stderr = payload.stderr || '';
+            if (outputEl) {
+                outputEl.textContent = [
+                    `$ ${payload.command || command}`,
+                    stdout ? `\n${stdout}` : '',
+                    stderr ? `\n[stderr]\n${stderr}` : ''
+                ].join('');
+            }
+            showStatus(statusEl, `✅ Command completed (exit ${payload.returncode})`, 'success');
+        } catch (e) {
+            showStatus(statusEl, `❌ ${e.message}`, 'error');
+        }
+    };
+
+    window.refreshPrintersList = async function() {
+        const select = document.getElementById('printingPrinterSelect');
+        const statusEl = document.getElementById('printingStatus');
+        if (!select) return;
+        try {
+            const res = await fetch(`${API}/printing/printers`);
+            const data = await res.json();
+            const printers = data.printers || [];
+            select.innerHTML = '';
+            if (printers.length === 0) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = 'No printers configured';
+                select.appendChild(opt);
+                showStatus(statusEl, 'ℹ️ No printers found. Add one via API /printing/printers.', 'warning');
+                return;
+            }
+            printers.forEach((p) => {
+                const opt = document.createElement('option');
+                opt.value = p.id;
+                opt.textContent = `${p.name} (${p.type || 'generic'})`;
+                select.appendChild(opt);
+            });
+            hideStatus(statusEl);
+        } catch (e) {
+            showStatus(statusEl, `❌ Failed to load printers: ${e.message}`, 'error');
+        }
+    };
+
+    window.sliceAndSendPrint = async function() {
+        const select = document.getElementById('printingPrinterSelect');
+        const modelPathInput = document.getElementById('printingModelPath');
+        const statusEl = document.getElementById('printingStatus');
+        const printer_id = select?.value || '';
+        const model_path = modelPathInput?.value?.trim() || '';
+        if (!printer_id || !model_path) {
+            showStatus(statusEl, '⚠️ Select a printer and provide a model path.', 'warning');
+            return;
+        }
+        showStatus(statusEl, '⏳ Slicing and sending print job...', 'loading');
+        try {
+            const res = await fetch(`${API}/printing/slice-and-send`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ printer_id, model_path, profile: '0.2mm' }),
+            });
+            const data = await res.json();
+            if (!res.ok || data.ok === false) {
+                showStatus(statusEl, `❌ ${data.detail || data.error || 'Failed to send print'}`, 'error');
+                return;
+            }
+            showStatus(statusEl, `✅ Print dispatched. G-code: ${data.gcode}`, 'success');
+        } catch (e) {
+            showStatus(statusEl, `❌ ${e.message}`, 'error');
+        }
+    };
+
 
     // ========================================
     // Initialization
@@ -1783,10 +1915,12 @@ console.log('🧊 app_new_features.js v1 loading...');
                 if (threeDPanelOpen) window.toggle3DPanel();
                 if (mcPanelOpen) window.toggleMinecraftPanel();
                 if (fmPanelOpen) window.toggleFileManager();
+                if (codespacesPanelOpen) window.toggleCodespacesPanel();
+                if (printingPanelOpen) window.togglePrintingPanel();
             }
         });
 
-        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager');
+        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Codespaces, 3D Printing');
     }
 
     // Wait for DOM

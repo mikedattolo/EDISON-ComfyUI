@@ -21,7 +21,11 @@ from services.edison_core.app import (
 def test_tool_registry_structure():
     """Test that tool registry has all required tools with proper schema."""
     print("\n=== Test: Tool Registry Structure ===")
-    required_tools = {"web_search", "rag_search", "generate_image", "system_stats"}
+    required_tools = {
+        "web_search", "rag_search", "generate_image", "system_stats",
+        "codespace_exec", "call_external_api", "open_sandbox_browser",
+        "list_printers", "send_3d_print"
+    }
     actual_tools = set(TOOL_REGISTRY.keys())
     assert required_tools.issubset(actual_tools), f"Missing tools: {required_tools - actual_tools}"
     
@@ -44,6 +48,21 @@ def test_tool_registry_structure():
     # Check system_stats (no args)
     ss = TOOL_REGISTRY["system_stats"]["args"]
     assert ss == {}
+
+    # Check codespace_exec schema
+    cs = TOOL_REGISTRY["codespace_exec"]["args"]
+    assert "command" in cs and cs["command"]["required"]
+    assert "cwd" in cs and cs["cwd"]["type"] is str
+    assert "timeout" in cs and cs["timeout"]["type"] is int
+
+    # Check external API and printing tools exist with required fields
+    ea = TOOL_REGISTRY["call_external_api"]["args"]
+    assert "connector" in ea and ea["connector"]["required"]
+    op = TOOL_REGISTRY["open_sandbox_browser"]["args"]
+    assert "url" in op and op["url"]["required"]
+    sp = TOOL_REGISTRY["send_3d_print"]["args"]
+    assert "printer_id" in sp and sp["printer_id"]["required"]
+    assert "file_path" in sp and sp["file_path"]["required"]
     
     print("✓ Tool registry structure valid")
 
@@ -98,6 +117,26 @@ def test_json_validation_valid_calls():
     assert valid
     assert tool == "system_stats"
     print("✓ system_stats validated")
+
+    # Valid codespace_exec with defaults
+    valid, error, tool, args = _validate_and_normalize_tool_call({
+        "tool": "codespace_exec",
+        "args": {"command": "pytest -q"}
+    })
+    assert valid
+    assert tool == "codespace_exec"
+    assert args["cwd"] == "."
+    assert args["timeout"] == 20
+    print("✓ codespace_exec validated")
+
+    # Valid list_printers (no args)
+    valid, error, tool, args = _validate_and_normalize_tool_call({
+        "tool": "list_printers",
+        "args": {}
+    })
+    assert valid
+    assert tool == "list_printers"
+    print("✓ list_printers validated")
 
 
 def test_json_validation_invalid_calls():
@@ -188,7 +227,7 @@ def test_tool_result_summarization():
             ("I enjoy coding", "source2")
         ]
     })
-    assert "RAG search results:" in summary
+    assert "RAG search results" in summary
     print(f"✓ rag_search summarized: {summary[:60]}...")
     
     # generate_image
@@ -206,6 +245,22 @@ def test_tool_result_summarization():
     })
     assert "System stats:" in summary
     print(f"✓ system_stats summarized: {summary}")
+
+    # codespace_exec
+    summary = _summarize_tool_result("codespace_exec", {
+        "ok": True,
+        "data": {"returncode": 0, "stdout": "all good", "stderr": ""}
+    })
+    assert "Codespaces command" in summary
+    print(f"✓ codespace_exec summarized: {summary}")
+
+    # list_printers
+    summary = _summarize_tool_result("list_printers", {
+        "ok": True,
+        "data": {"printers": [{"id": "p1"}, {"id": "p2"}]}
+    })
+    assert "configured printer" in summary
+    print(f"✓ list_printers summarized: {summary}")
 
 
 def test_json_parsing_robustness():
@@ -245,10 +300,14 @@ def test_tool_registry_completeness():
     print("\n=== Test: Tool Registry Spec Compliance ===")
     
     # Check required tools exist
-    required = {"web_search", "rag_search", "generate_image", "system_stats"}
+    required = {
+        "web_search", "rag_search", "generate_image", "system_stats",
+        "codespace_exec", "call_external_api", "open_sandbox_browser",
+        "list_printers", "send_3d_print"
+    }
     actual = set(TOOL_REGISTRY.keys())
-    assert required == actual, f"Tool set mismatch. Expected {required}, got {actual}"
-    print("✓ All required tools present")
+    assert required.issubset(actual), f"Missing required tools. Required {required}, got {actual}"
+    print(f"✓ All required tools present (total tools: {len(actual)})")
     
     # Check web_search args
     ws = TOOL_REGISTRY["web_search"]

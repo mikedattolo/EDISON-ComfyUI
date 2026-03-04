@@ -7,7 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
-from typing import Optional, Literal, Iterator, List, Dict
+from typing import Optional, Literal, Iterator, List, Dict, Any
 import logging
 from pathlib import Path
 import yaml
@@ -27,6 +27,8 @@ import io
 import zipfile
 import numpy as np
 import gc
+import subprocess
+import shlex
 
 # Configure logging
 logging.basicConfig(
@@ -263,6 +265,14 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Work mode → step-by-step execution with deep model and tools")
+        elif mode == "codespaces":
+            tools_allowed = True
+            model_target = "deep"
+            reasons.append("Codespaces mode → code execution and workspace tooling")
+        elif mode == "printing":
+            tools_allowed = True
+            model_target = "medium"
+            reasons.append("Printing mode → 3D printer workflow tooling")
         elif mode == "thinking":
             mode = "reasoning"
             model_target = "reasoning"
@@ -354,6 +364,11 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                             "glb file", "3d object", "3d asset", "sculpt",
                             "make me a 3d", "design a 3d"]
 
+            codespace_patterns = ["terminal", "command", "shell", "run tests", "fix this codebase",
+                                  "rewrite file", "workspace", "repo", "codespace", "dev server"]
+
+            printing_patterns = ["slice", "gcode", "bambu", "3d printer", "send to printer", "print profile", "orca slicer"]
+
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
@@ -364,6 +379,8 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             has_video = any(pattern in msg_lower for pattern in video_patterns)
             has_music = any(pattern in msg_lower for pattern in music_patterns)
             has_mesh = any(pattern in msg_lower for pattern in mesh_patterns)
+            has_codespaces = any(pattern in msg_lower for pattern in codespace_patterns)
+            has_printing = any(pattern in msg_lower for pattern in printing_patterns)
 
             # Real-time queries get tools enabled for instant data retrieval
             if has_realtime:
@@ -378,10 +395,18 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Music generation request detected → agent mode with tools")
+            elif has_printing:
+                mode = "printing"
+                tools_allowed = True
+                reasons.append("3D printing workflow detected → printing mode")
             elif has_mesh:
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("3D mesh generation request detected → agent mode with tools")
+            elif has_codespaces:
+                mode = "codespaces"
+                tools_allowed = True
+                reasons.append("Developer workspace request detected → codespaces mode")
             elif any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
@@ -422,17 +447,24 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
         model_target = "reasoning"
         reasons.append("Auto reasoning → reasoning model")
 
-    # Determine model target based on mode (only if not already set to vision, instant, or swarm)
-    if model_target not in ["vision", "fast", "deep", "reasoning"]:
-        if mode in ["work", "reasoning", "swarm"]:
-            model_target = "deep"  # Work, reasoning, and swarm need most capable model
-            reasons.append(f"Mode '{mode}' requires deep model")
-        elif mode in ["code", "agent"]:
-            model_target = "medium"  # Code and agent use medium model
-            reasons.append(f"Mode '{mode}' requires medium model")
+    # Determine model target based on selected mode unless already pinned
+    if model_target != "vision":
+        if mode in ["reasoning"]:
+            if model_target != "reasoning":
+                model_target = "reasoning"
+                reasons.append(f"Mode '{mode}' requires reasoning model")
+        elif mode in ["work", "swarm", "codespaces"]:
+            if model_target != "deep":
+                model_target = "deep"
+                reasons.append(f"Mode '{mode}' requires deep model")
+        elif mode in ["code", "agent", "printing"]:
+            if model_target != "medium":
+                model_target = "medium"
+                reasons.append(f"Mode '{mode}' requires medium model")
         else:
-            model_target = "fast"  # Chat and other modes use fast model
-            reasons.append(f"Mode '{mode}' uses fast model")
+            if model_target != "fast":
+                model_target = "fast"
+                reasons.append(f"Mode '{mode}' uses fast model")
 
     # Log routing decision once
     logger.info(f"ROUTING: mode={mode}, model={model_target}, tools={tools_allowed}, reasons={reasons}")
@@ -493,6 +525,12 @@ provenance_tracker_instance = None
 memory_gate_instance = None
 model_manager_v2_instance = None
 
+# Integration stores
+INTEGRATIONS_DIR = REPO_ROOT / "config" / "integrations"
+CONNECTORS_DB = INTEGRATIONS_DIR / "connectors.json"
+PRINTERS_DB = INTEGRATIONS_DIR / "printers.json"
+PERSONALITY_TRAITS = ("innovative", "thoughtful", "kind")
+
 def _is_file_request(text: str) -> bool:
     """Check if user is explicitly requesting file/document creation.
     
@@ -520,6 +558,131 @@ def _is_file_request(text: str) -> bool:
         text, re.IGNORECASE
     )
     return bool(creation_pattern or extension_pattern or save_pattern)
+
+
+def _normalize_image_data_uri(raw_image: str) -> Optional[str]:
+    """Normalize raw base64/data URI image payloads for VLM consumption."""
+    if not isinstance(raw_image, str) or not raw_image.strip():
+        return None
+
+    value = raw_image.strip()
+    if value.startswith("data:image/") and "," in value:
+        header, payload = value.split(",", 1)
+        if not payload.strip():
+            return None
+        return f"{header},{payload.strip()}"
+
+    return f"data:image/png;base64,{value}"
+
+
+def detect_user_mood(text: str) -> str:
+    """Lightweight mood detection for adaptive assistant tone."""
+    if not text:
+        return "neutral"
+    lowered = text.lower()
+    if any(k in lowered for k in ["anxious", "stressed", "overwhelmed", "panic", "worried", "afraid"]):
+        return "stressed"
+    if any(k in lowered for k in ["sad", "depressed", "down", "upset", "lonely", "grief"]):
+        return "sad"
+    if any(k in lowered for k in ["angry", "frustrated", "mad", "annoyed", "furious"]):
+        return "frustrated"
+    if any(k in lowered for k in ["excited", "motivated", "great", "awesome", "happy", "let's go"]):
+        return "energized"
+    return "neutral"
+
+
+def _safe_workspace_path(path_str: str) -> Path:
+    """Resolve a path and keep it scoped to repository root."""
+    path_obj = Path(path_str or ".")
+    candidate = (path_obj if path_obj.is_absolute() else (REPO_ROOT / path_obj)).resolve()
+    if not str(candidate).startswith(str(REPO_ROOT.resolve())):
+        raise ValueError("Access denied: path outside workspace")
+    return candidate
+
+
+def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 20) -> dict:
+    """Execute whitelisted shell commands in workspace for Codespaces mode."""
+    if not command or not isinstance(command, str):
+        return {"ok": False, "error": "Command required"}
+
+    blocked_patterns = [r"\|\|", r"&&", r">", r"<", r"`", r"\$\(", r"\bsudo\b", r"\brm\s+-rf\b", r"\bshutdown\b", r"\breboot\b"]
+    if any(re.search(p, command) for p in blocked_patterns):
+        return {"ok": False, "error": "Command contains blocked shell patterns"}
+
+    try:
+        parts = shlex.split(command)
+    except Exception as e:
+        return {"ok": False, "error": f"Invalid command: {e}"}
+
+    if not parts:
+        return {"ok": False, "error": "Empty command"}
+
+    allowed_roots = {
+        "ls", "pwd", "cat", "echo", "grep", "find", "head", "tail", "wc", "du", "df", "python", "python3",
+        "pytest", "pip", "pip3", "git", "sed", "awk", "tree", "mkdir", "cp", "mv", "touch", "stat"
+    }
+    if parts[0] not in allowed_roots:
+        return {"ok": False, "error": f"Command '{parts[0]}' is not allowed in sandbox"}
+
+    try:
+        safe_cwd = _safe_workspace_path(cwd)
+        proc = subprocess.run(
+            parts,
+            cwd=str(safe_cwd),
+            capture_output=True,
+            text=True,
+            timeout=max(1, min(int(timeout), 60)),
+            env={k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}},
+        )
+        return {
+            "ok": proc.returncode == 0,
+            "data": {
+                "command": command,
+                "cwd": str(safe_cwd),
+                "returncode": proc.returncode,
+                "stdout": (proc.stdout or "")[:12000],
+                "stderr": (proc.stderr or "")[:12000],
+            },
+            "error": None if proc.returncode == 0 else f"Command failed ({proc.returncode})",
+        }
+    except subprocess.TimeoutExpired:
+        return {"ok": False, "error": "Command timed out"}
+    except Exception as e:
+        return {"ok": False, "error": f"Command execution failed: {e}"}
+
+
+def _ensure_integrations_dir():
+    INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+    if not CONNECTORS_DB.exists():
+        CONNECTORS_DB.write_text(json.dumps({"connectors": []}, indent=2))
+    if not PRINTERS_DB.exists():
+        PRINTERS_DB.write_text(json.dumps({"printers": []}, indent=2))
+
+
+def _load_connectors() -> dict:
+    _ensure_integrations_dir()
+    try:
+        return json.loads(CONNECTORS_DB.read_text())
+    except Exception:
+        return {"connectors": []}
+
+
+def _save_connectors(data: dict):
+    _ensure_integrations_dir()
+    CONNECTORS_DB.write_text(json.dumps(data, indent=2))
+
+
+def _load_printers() -> dict:
+    _ensure_integrations_dir()
+    try:
+        return json.loads(PRINTERS_DB.read_text())
+    except Exception:
+        return {"printers": []}
+
+
+def _save_printers(data: dict):
+    _ensure_integrations_dir()
+    PRINTERS_DB.write_text(json.dumps(data, indent=2))
 
 # Thread locks for concurrent model access safety
 lock_fast = threading.Lock()
@@ -828,7 +991,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant"] = Field(
+    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant", "codespaces", "printing"] = Field(
         default="auto", 
         description="Interaction mode"
     )
@@ -967,11 +1130,42 @@ TOOL_REGISTRY = {
             "mood": {"type": str, "required": False, "default": ""},
             "duration": {"type": int, "required": False, "default": 15}
         }
+    },
+    "codespace_exec": {
+        "args": {
+            "command": {"type": str, "required": True},
+            "cwd": {"type": str, "required": False, "default": "."},
+            "timeout": {"type": int, "required": False, "default": 20}
+        }
+    },
+    "call_external_api": {
+        "args": {
+            "connector": {"type": str, "required": True},
+            "path": {"type": str, "required": False, "default": "/"},
+            "method": {"type": str, "required": False, "default": "GET"},
+            "body": {"type": str, "required": False, "default": ""}
+        }
+    },
+    "open_sandbox_browser": {
+        "args": {
+            "url": {"type": str, "required": True}
+        }
+    },
+    "list_printers": {
+        "args": {}
+    },
+    "send_3d_print": {
+        "args": {
+            "printer_id": {"type": str, "required": True},
+            "file_path": {"type": str, "required": True}
+        }
     }
 }
 
 TOOL_LOOP_MAX_STEPS = 5
 TOOL_CALL_TIMEOUT_SEC = 12
+STREAM_MAX_SECONDS = 180
+STREAM_MAX_OUTPUT_CHARS = 24000
 TOOL_RESULT_CHAR_LIMIT = 900
 
 
@@ -1085,6 +1279,22 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "system_stats" and isinstance(data, dict):
         return "System stats: " + ", ".join([f"{k}={v}" for k, v in data.items()])
+
+    if tool_name == "codespace_exec" and isinstance(data, dict):
+        return f"Codespaces command exit={data.get('returncode', '?')}, stdout={str(data.get('stdout', ''))[:180]}"
+
+    if tool_name == "call_external_api":
+        return f"External API call completed: {str(data)[:180]}" if data is not None else result.get("message", "External API call complete")
+
+    if tool_name == "open_sandbox_browser" and isinstance(data, dict):
+        return f"Sandbox browser opened: {data.get('url', '')}"
+
+    if tool_name == "list_printers" and isinstance(data, dict):
+        printers = data.get("printers", [])
+        return f"Found {len(printers)} configured printer(s)"
+
+    if tool_name == "send_3d_print":
+        return result.get("message", "3D print job submitted")
 
     return f"{tool_name} completed"
 
@@ -1248,6 +1458,128 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             except Exception as e:
                 logger.error(f"Code execution failed: {e}")
                 return {"ok": False, "error": f"Code execution failed: {str(e)}"}
+
+        if tool_name == "codespace_exec":
+            return _run_codespaces_command(
+                command=args.get("command", ""),
+                cwd=args.get("cwd", "."),
+                timeout=args.get("timeout", 20),
+            )
+
+        if tool_name == "call_external_api":
+            connector_name = args.get("connector", "").strip()
+            path = args.get("path", "/")
+            method = (args.get("method", "GET") or "GET").upper()
+            body_text = args.get("body", "")
+
+            db = _load_connectors()
+            connector = next((c for c in db.get("connectors", []) if c.get("name") == connector_name and c.get("enabled", True)), None)
+            if not connector:
+                return {"ok": False, "error": f"Connector '{connector_name}' not found"}
+
+            base_url = (connector.get("base_url") or "").rstrip("/")
+            if not base_url:
+                return {"ok": False, "error": "Connector missing base_url"}
+
+            if not path.startswith("/"):
+                path = "/" + path
+
+            url = f"{base_url}{path}"
+            headers = connector.get("headers", {}) or {}
+            timeout = int(connector.get("timeout_sec", 20))
+            try:
+                request_body = json.loads(body_text) if body_text else None
+            except Exception:
+                request_body = body_text
+
+            try:
+                resp = requests.request(method=method, url=url, headers=headers, json=request_body if isinstance(request_body, dict) else None, data=request_body if isinstance(request_body, str) else None, timeout=max(3, min(timeout, 60)))
+                content_type = resp.headers.get("content-type", "")
+                data = resp.json() if "application/json" in content_type else resp.text[:4000]
+                return {
+                    "ok": resp.ok,
+                    "data": {
+                        "status_code": resp.status_code,
+                        "url": url,
+                        "method": method,
+                        "response": data,
+                    },
+                    "error": None if resp.ok else f"HTTP {resp.status_code}",
+                }
+            except Exception as e:
+                return {"ok": False, "error": f"External API call failed: {e}"}
+
+        if tool_name == "open_sandbox_browser":
+            url = args.get("url", "").strip()
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = f"https://{url}"
+            try:
+                from .routes.agent_live import emit_log
+            except Exception:
+                def emit_log(*a, **kw):
+                    return None
+            emit_log(f"Sandbox browser opening: {url}", level="info")
+            get_event_bus = None
+            try:
+                from .routes.agent_live import get_event_bus
+                get_event_bus().emit({"type": "sandbox_browser_open", "url": url, "message": "Sandbox browser session opened"})
+            except Exception:
+                pass
+            return {"ok": True, "data": {"url": url, "sandbox": True}}
+
+        if tool_name == "list_printers":
+            db = _load_printers()
+            return {"ok": True, "data": {"printers": db.get("printers", [])}}
+
+        if tool_name == "send_3d_print":
+            printer_id = args.get("printer_id", "").strip()
+            file_path = args.get("file_path", "").strip()
+            if not printer_id or not file_path:
+                return {"ok": False, "error": "printer_id and file_path are required"}
+
+            db = _load_printers()
+            printer = next((p for p in db.get("printers", []) if p.get("id") == printer_id), None)
+            if not printer:
+                return {"ok": False, "error": f"Printer '{printer_id}' not found"}
+
+            try:
+                safe_file = _safe_workspace_path(file_path)
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+
+            if not safe_file.exists():
+                return {"ok": False, "error": "G-code file not found"}
+
+            ptype = (printer.get("type") or "generic").lower()
+            if ptype == "octoprint":
+                api_url = (printer.get("endpoint") or "").rstrip("/")
+                api_key = printer.get("api_key", "")
+                if not api_url or not api_key:
+                    return {"ok": False, "error": "OctoPrint printer missing endpoint/api_key"}
+                files = {"file": (safe_file.name, safe_file.read_bytes(), "application/octet-stream")}
+                headers = {"X-Api-Key": api_key}
+                resp = requests.post(f"{api_url}/api/files/local", headers=headers, files=files, timeout=30)
+                if not resp.ok:
+                    return {"ok": False, "error": f"OctoPrint upload failed ({resp.status_code})"}
+                return {"ok": True, "message": f"Uploaded {safe_file.name} to OctoPrint", "data": {"printer": printer_id}}
+
+            if ptype == "bambu":
+                bridge_cmd = shutil.which("bambu_send")
+                if not bridge_cmd:
+                    return {
+                        "ok": False,
+                        "error": "Bambu bridge not installed. Install 'bambu_send' helper or configure OctoPrint bridge.",
+                    }
+                res = subprocess.run([bridge_cmd, "--host", str(printer.get("host", "")), "--file", str(safe_file)], capture_output=True, text=True, timeout=40)
+                if res.returncode != 0:
+                    return {"ok": False, "error": res.stderr[:1000] or "Bambu send failed"}
+                return {"ok": True, "message": f"Sent {safe_file.name} to Bambu printer", "data": {"printer": printer_id, "stdout": res.stdout[:1000]}}
+
+            return {
+                "ok": True,
+                "message": f"Printer '{printer_id}' is configured but type '{ptype}' requires manual bridge setup",
+                "data": {"printer": printer_id, "file": str(safe_file)},
+            }
 
         if tool_name == "read_file":
             # Read file from gallery or uploads
@@ -1426,7 +1758,10 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "get_current_time(timezone:str), get_weather(location:str), "
         "get_news(topic:str,max_results:int), "
         "generate_video(prompt:str,width:int,height:int,frames:int,fps:int), "
-        "generate_music(prompt:str,genre:str,mood:str,duration:int)."
+        "generate_music(prompt:str,genre:str,mood:str,duration:int), "
+        "codespace_exec(command:str,cwd:str,timeout:int), "
+        "call_external_api(connector:str,path:str,method:str,body:str), "
+        "open_sandbox_browser(url:str), list_printers(), send_3d_print(printer_id:str,file_path:str)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
@@ -3288,7 +3623,15 @@ async def chat(request: ChatRequest):
         if rt_context:
             logger.info(f"Injected real-time context: {rt_context[:80]}...")
     file_requested = _is_file_request(request.message or "")
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context, is_file_request=file_requested)
+    detected_mood = detect_user_mood(request.message or "")
+    system_prompt = build_system_prompt(
+        mode,
+        has_context=len(context_chunks) > 0,
+        has_search=len(search_results) > 0,
+        realtime_context=rt_context,
+        is_file_request=file_requested,
+        user_mood=detected_mood,
+    )
     status_steps = []
 
     status_steps = [{"stage": "Analyzing request"}]
@@ -3389,12 +3732,9 @@ async def chat(request: ChatRequest):
             image_data_list = []
             for img_b64 in request.images:
                 if isinstance(img_b64, str):
-                    # Remove data URL prefix if present (data:image/...;base64,)
-                    if ',' in img_b64:
-                        img_b64 = img_b64.split(',', 1)[1]
-                    
-                    # Add to data list with proper format
-                    image_data_list.append(f"data:image/jpeg;base64,{img_b64}")
+                    normalized = _normalize_image_data_uri(img_b64)
+                    if normalized:
+                        image_data_list.append(normalized)
             
             logger.info(f"Vision request with {len(image_data_list)} images")
             logger.info(f"Prompt: {full_prompt}")
@@ -3954,7 +4294,15 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         if rt_context_stream:
             logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
     file_requested = _is_file_request(request.message or "")
-    system_prompt = build_system_prompt(mode, has_context=len(context_chunks) > 0, has_search=len(search_results) > 0, realtime_context=rt_context_stream, is_file_request=file_requested)
+    detected_mood = detect_user_mood(request.message or "")
+    system_prompt = build_system_prompt(
+        mode,
+        has_context=len(context_chunks) > 0,
+        has_search=len(search_results) > 0,
+        realtime_context=rt_context_stream,
+        is_file_request=file_requested,
+        user_mood=detected_mood,
+    )
     work_steps = []
     work_step_results = []
     if original_mode == "work" and not has_images:
@@ -4224,15 +4572,18 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         
         assistant_response = ""
         client_disconnected = False
+        stream_started_at = time.monotonic()
         try:
             if has_images:
+                empty_chunks = 0
+                max_empty_chunks = 256
                 content = [{"type": "text", "text": full_prompt}]
                 if request.images:
                     for img_b64 in request.images:
                         if isinstance(img_b64, str):
-                            if ',' in img_b64:
-                                img_b64 = img_b64.split(',', 1)[1]
-                            content.append({"type": "image_url", "image_url": {"url": f"data:image/jpeg;base64,{img_b64}"}})
+                            normalized = _normalize_image_data_uri(img_b64)
+                            if normalized:
+                                content.append({"type": "image_url", "image_url": {"url": normalized}})
                 lock = get_lock_for_model(llm)
                 with lock:
                     stream = llm.create_chat_completion(
@@ -4242,6 +4593,10 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                         stream=True
                     )
                     for chunk in stream:
+                        if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                            logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
+                            break
+
                         # Check for cancellation
                         with active_requests_lock:
                             if request_id in active_requests and active_requests[request_id]["cancelled"]:
@@ -4256,21 +4611,25 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                     active_requests[request_id]["cancelled"] = True
                             client_disconnected = True
                             break
-                        delta = chunk["choices"][0].get("delta", {})
-                        token = delta.get("content") if isinstance(delta, dict) else None
-                        if isinstance(token, list):
-                            parts = []
-                            for item in token:
-                                if isinstance(item, str):
-                                    parts.append(item)
-                                elif isinstance(item, dict):
-                                    text_part = item.get("text") or item.get("content") or ""
-                                    if text_part:
-                                        parts.append(text_part)
-                            token = "".join(parts)
+                        token, finished = _extract_stream_token_and_finished(chunk, vision=True)
                         if token:
                             assistant_response += token
+                            empty_chunks = 0
+                            if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                                logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                                yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                break
                             yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                        else:
+                            empty_chunks += 1
+
+                        if finished:
+                            logger.debug("Vision stream finished (reason signaled by model)")
+                            break
+
+                        if empty_chunks >= max_empty_chunks:
+                            logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
+                            break
             else:
                 # Detect file generation requests for higher token limit
                 _is_file_gen = bool(re.search(
@@ -4301,6 +4660,10 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
 
                 if vllm_text is not None:
                     for token in _chunk_text(vllm_text, chunk_size=12):
+                        if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                            logger.warning(f"vLLM stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
+                            break
+
                         # Check for cancellation
                         with active_requests_lock:
                             if request_id in active_requests and active_requests[request_id]["cancelled"]:
@@ -4315,12 +4678,18 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             client_disconnected = True
                             break
                         assistant_response += token
+                        if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                            logger.warning(f"vLLM stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                            break
                         # Check for repetition loop
                         if _detect_repetition(assistant_response):
                             logger.warning("Repetition detected in vLLM output, stopping generation")
                             break
                         yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
                 else:
+                    empty_chunks = 0
+                    max_empty_chunks = 256
                     lock = get_lock_for_model(llm)
                     with lock:
                         stream = llm(
@@ -4340,6 +4709,10 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             stream=True
                         )
                         for chunk in stream:
+                            if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                                logger.warning(f"LLM stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
+                                break
+
                             # Check for cancellation
                             with active_requests_lock:
                                 if request_id in active_requests and active_requests[request_id]["cancelled"]:
@@ -4354,14 +4727,29 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                         active_requests[request_id]["cancelled"] = True
                                 client_disconnected = True
                                 break
-                            token = chunk["choices"][0].get("text", "")
+                            token, finished = _extract_stream_token_and_finished(chunk)
                             if token:
                                 assistant_response += token
+                                empty_chunks = 0
+                                if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                                    logger.warning(f"LLM stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                                    yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                    break
                                 # Check for repetition loop
                                 if _detect_repetition(assistant_response):
                                     logger.warning("Repetition detected in LLM output, stopping generation")
                                     break
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                            else:
+                                empty_chunks += 1
+
+                            if finished:
+                                logger.debug("LLM stream finished (reason signaled by model)")
+                                break
+
+                            if empty_chunks >= max_empty_chunks:
+                                logger.warning(f"LLM stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
+                                break
         except Exception as e:
             logger.error(f"Streaming generation failed: {e}")
             # ── Awareness: record error ──────────────────────────────
@@ -4484,11 +4872,14 @@ async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
 
     img_data = await image.read()
     img_b64 = base64.b64encode(img_data).decode("ascii")
+    normalized_img = _normalize_image_data_uri(img_b64)
+    if not normalized_img:
+        raise HTTPException(status_code=400, detail="Invalid image payload")
 
     layout_prompt = [
         {
             "type": "image_url",
-            "image_url": {"url": f"data:image/png;base64,{img_b64}"}
+            "image_url": {"url": normalized_img}
         },
         {
             "type": "text",
@@ -4620,6 +5011,9 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         prompt_tokens = len(full_prompt.split())  # Approximate
         completion_tokens = 0
         assistant_response = ""
+        empty_chunks = 0
+        max_empty_chunks = 256
+        stream_started_at = time.monotonic()
         
         try:
             lock = get_lock_for_model(llm)
@@ -4634,6 +5028,10 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
                 )
                 
                 for chunk in stream:
+                    if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                        logger.warning(f"OpenAI stream exceeded {STREAM_MAX_SECONDS}s; ending request {request_id}")
+                        break
+
                     # Check cancellation
                     with active_requests_lock:
                         if request_id in active_requests and active_requests[request_id]["cancelled"]:
@@ -4648,10 +5046,30 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
                                 active_requests[request_id]["cancelled"] = True
                         break
                     
-                    token = chunk["choices"][0].get("text", "")
+                    token, finished = _extract_stream_token_and_finished(chunk)
                     if token:
                         assistant_response += token
                         completion_tokens += 1
+                        empty_chunks = 0
+
+                        if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                            logger.warning(
+                                f"OpenAI stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); ending request {request_id}"
+                            )
+                            # Send the token that crossed the cap, then stop
+                            stream_response = OpenAIStreamResponse(
+                                id=completion_id,
+                                created=created_time,
+                                model=f"qwen2.5-{model_name}",
+                                choices=[OpenAIChoice(
+                                    index=0,
+                                    delta={"role": "assistant" if len(assistant_response) == len(token) else None, "content": token},
+                                    finish_reason=None
+                                )]
+                            )
+                            response_dict = stream_response.dict(exclude_none=True)
+                            yield f"data: {json.dumps(response_dict)}\n\n"
+                            break
                         
                         # Stream chunk in OpenAI format
                         stream_response = OpenAIStreamResponse(
@@ -4667,6 +5085,18 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
                         # Clean up None values
                         response_dict = stream_response.dict(exclude_none=True)
                         yield f"data: {json.dumps(response_dict)}\n\n"
+                    else:
+                        empty_chunks += 1
+
+                    if finished:
+                        logger.debug(f"OpenAI stream finished for request {request_id} (reason signaled by model)")
+                        break
+
+                    if empty_chunks >= max_empty_chunks:
+                        logger.warning(
+                            f"OpenAI stream exceeded empty chunk threshold ({max_empty_chunks}); ending request {request_id}"
+                        )
+                        break
         
         except Exception as e:
             logger.error(f"OpenAI streaming error: {e}")
@@ -6088,7 +6518,8 @@ async def cleanup_auto_users(request: dict = None):
 
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
-                        realtime_context: str = None, is_file_request: bool = False) -> str:
+                        realtime_context: str = None, is_file_request: bool = False,
+                        user_mood: str = "neutral") -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
     now = datetime.now()
@@ -6096,10 +6527,20 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     current_time = now.strftime("%I:%M %p")
     current_day = now.strftime("%A")
     
+    personality_text = ", ".join(PERSONALITY_TRAITS[:-1]) + f", and {PERSONALITY_TRAITS[-1]}"
     base = (
-        f"You are EDISON, a helpful AI assistant. "
+        f"You are EDISON, an {personality_text} all-in-one AI assistant. "
         f"Today is {current_day}, {current_date}. The current time is {current_time}."
     )
+
+    mood_guidance = {
+        "stressed": "The user sounds stressed. Respond calmly, reduce cognitive load, and propose one clear next step.",
+        "sad": "The user sounds low. Be warm, supportive, and practical without being overly sentimental.",
+        "frustrated": "The user sounds frustrated. Be direct, validate friction briefly, and move quickly to fixes.",
+        "energized": "The user sounds energized. Match momentum while staying precise and grounded.",
+        "neutral": "Use a balanced, concise, and collaborative tone.",
+    }
+    base += f" {mood_guidance.get(user_mood, mood_guidance['neutral'])}"
 
     # Inject real-time data context if available (weather, news, etc.)
     if realtime_context:
@@ -6136,7 +6577,9 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
         "reasoning": base + " Think step-by-step and explain clearly.",
         "agent": base + " You can search the web for current information. You can generate videos, music, and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
         "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
-        "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented."
+        "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented.",
+        "codespaces": base + " You are in Codespaces mode: prioritize safe command execution, concrete file rewrites, and runnable developer workflows.",
+        "printing": base + " You are in 3D Printing mode: help prepare models, slicing settings, and safe printer dispatch steps."
     }
     
     return prompts.get(mode, base)
@@ -6478,6 +6921,37 @@ def _detect_repetition(text: str, window: int = 200) -> bool:
         return True
 
     return False
+
+def _extract_stream_token_and_finished(chunk: dict, vision: bool = False) -> tuple[str, bool]:
+    """Extract token text and terminal state from a llama-cpp stream chunk."""
+    if not isinstance(chunk, dict):
+        return "", False
+
+    choices = chunk.get("choices")
+    if not isinstance(choices, list) or not choices:
+        return "", bool(chunk.get("done"))
+
+    choice = choices[0] if isinstance(choices[0], dict) else {}
+    finish_reason = choice.get("finish_reason")
+    finished = bool(finish_reason) or bool(choice.get("stop")) or bool(chunk.get("done"))
+
+    if vision:
+        delta = choice.get("delta", {})
+        token = delta.get("content") if isinstance(delta, dict) else None
+        if isinstance(token, list):
+            parts = []
+            for item in token:
+                if isinstance(item, str):
+                    parts.append(item)
+                elif isinstance(item, dict):
+                    text_part = item.get("text") or item.get("content") or ""
+                    if text_part:
+                        parts.append(text_part)
+            token = "".join(parts)
+        return (token or ""), finished
+
+    token = choice.get("text", "")
+    return (token or ""), finished
 
 def _parse_files_from_response(response: str) -> list:
     if not response:
@@ -8704,6 +9178,342 @@ async def mc_serve_download(filename: str):
         raise HTTPException(status_code=404, detail="Download not found")
     media = "application/zip" if filename.endswith(".zip") else "application/octet-stream"
     return FileResponse(str(fpath), media_type=media, filename=filename)
+
+
+# ==================== CODESPACES / CONNECTORS / PRINTING ====================
+
+@app.post("/codespaces/execute")
+async def codespaces_execute(request: dict):
+    """Run a safe, sandboxed workspace command."""
+    return _run_codespaces_command(
+        command=request.get("command", ""),
+        cwd=request.get("cwd", "."),
+        timeout=request.get("timeout", 20),
+    )
+
+
+@app.post("/codespaces/rewrite-file")
+async def codespaces_rewrite_file(request: dict):
+    """Rewrite a workspace file with new content (scoped to repo root)."""
+    path = request.get("path", "")
+    content = request.get("content", "")
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+    try:
+        safe_path = _safe_workspace_path(path)
+        safe_path.parent.mkdir(parents=True, exist_ok=True)
+        safe_path.write_text(content, encoding="utf-8")
+        return {"ok": True, "path": str(safe_path.relative_to(REPO_ROOT)), "bytes": len(content.encode("utf-8"))}
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/open")
+async def sandbox_browser_open(request: dict):
+    """Open a URL in Edison sandbox browser activity feed."""
+    url = (request.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    if not url.startswith("http://") and not url.startswith("https://"):
+        url = f"https://{url}"
+    try:
+        from services.edison_core.routes.agent_live import get_event_bus
+        get_event_bus().emit({
+            "type": "sandbox_browser_open",
+            "url": url,
+            "title": request.get("title", "Sandbox Browser"),
+        })
+    except Exception:
+        pass
+    return {"ok": True, "sandbox": True, "url": url}
+
+
+@app.get("/integrations/connectors")
+async def list_connectors():
+    """List configured external API connectors."""
+    db = _load_connectors()
+    redacted = []
+    for c in db.get("connectors", []):
+        redacted.append({
+            "name": c.get("name"),
+            "base_url": c.get("base_url"),
+            "enabled": c.get("enabled", True),
+            "timeout_sec": c.get("timeout_sec", 20),
+            "headers": list((c.get("headers") or {}).keys()),
+        })
+    return {"connectors": redacted}
+
+
+@app.post("/integrations/connectors")
+async def upsert_connector(request: dict):
+    """Create/update an external API connector profile."""
+    name = (request.get("name") or "").strip()
+    base_url = (request.get("base_url") or "").strip()
+    if not name or not base_url:
+        raise HTTPException(status_code=400, detail="name and base_url are required")
+
+    headers = request.get("headers") or {}
+    if not isinstance(headers, dict):
+        raise HTTPException(status_code=400, detail="headers must be an object")
+
+    db = _load_connectors()
+    items = db.get("connectors", [])
+    existing = next((c for c in items if c.get("name") == name), None)
+    payload = {
+        "name": name,
+        "base_url": base_url,
+        "headers": headers,
+        "enabled": bool(request.get("enabled", True)),
+        "timeout_sec": int(request.get("timeout_sec", 20)),
+    }
+    if existing:
+        existing.update(payload)
+    else:
+        items.append(payload)
+    db["connectors"] = items
+    _save_connectors(db)
+    return {"ok": True, "connector": {"name": name, "base_url": base_url}}
+
+
+@app.patch("/integrations/connectors/{name}")
+async def patch_connector(name: str, request: dict):
+    """Patch selected fields for an existing connector profile."""
+    target_name = (name or "").strip()
+    if not target_name:
+        raise HTTPException(status_code=400, detail="connector name is required")
+
+    allowed_fields = {"base_url", "headers", "enabled", "timeout_sec", "name"}
+    updates = {k: v for k, v in (request or {}).items() if k in allowed_fields}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields provided")
+
+    if "headers" in updates and not isinstance(updates["headers"], dict):
+        raise HTTPException(status_code=400, detail="headers must be an object")
+
+    db = _load_connectors()
+    items = db.get("connectors", [])
+    existing = next((c for c in items if c.get("name") == target_name), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    if "timeout_sec" in updates:
+        updates["timeout_sec"] = int(updates["timeout_sec"])
+    if "enabled" in updates:
+        updates["enabled"] = bool(updates["enabled"])
+
+    new_name = (updates.get("name") or target_name).strip()
+    if not new_name:
+        raise HTTPException(status_code=400, detail="name cannot be empty")
+    if new_name != target_name and any(c.get("name") == new_name for c in items):
+        raise HTTPException(status_code=409, detail="Connector name already exists")
+
+    updates["name"] = new_name
+    existing.update(updates)
+    db["connectors"] = items
+    _save_connectors(db)
+    return {
+        "ok": True,
+        "connector": {
+            "name": existing.get("name"),
+            "base_url": existing.get("base_url"),
+            "enabled": existing.get("enabled", True),
+            "timeout_sec": existing.get("timeout_sec", 20),
+            "headers": list((existing.get("headers") or {}).keys()),
+        },
+    }
+
+
+@app.delete("/integrations/connectors/{name}")
+async def delete_connector(name: str):
+    """Delete a connector profile by name."""
+    target_name = (name or "").strip()
+    if not target_name:
+        raise HTTPException(status_code=400, detail="connector name is required")
+
+    db = _load_connectors()
+    items = db.get("connectors", [])
+    kept = [c for c in items if c.get("name") != target_name]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    db["connectors"] = kept
+    _save_connectors(db)
+    return {"ok": True, "deleted": target_name}
+
+
+@app.post("/integrations/connectors/call")
+async def call_connector(request: dict):
+    """Call a connector by name with method/path/body."""
+    result = await _execute_tool("call_external_api", {
+        "connector": request.get("connector", ""),
+        "path": request.get("path", "/"),
+        "method": request.get("method", "GET"),
+        "body": json.dumps(request.get("body", {})) if isinstance(request.get("body", {}), dict) else str(request.get("body", "")),
+    }, chat_id=None)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error", "connector call failed"))
+    return result
+
+
+@app.get("/printers")
+@app.get("/printing/printers")
+async def list_printers():
+    """List configured 3D printers."""
+    db = _load_printers()
+    return {"printers": db.get("printers", [])}
+
+
+@app.post("/printers")
+@app.post("/printing/printers")
+async def upsert_printer(request: dict):
+    """Register or update a Wi-Fi 3D printer profile (OctoPrint/Bambu/generic)."""
+    printer_id = (request.get("id") or "").strip() or f"printer_{uuid.uuid4().hex[:8]}"
+    printer = {
+        "id": printer_id,
+        "name": request.get("name", printer_id),
+        "type": request.get("type", "generic"),
+        "host": request.get("host", ""),
+        "endpoint": request.get("endpoint", ""),
+        "api_key": request.get("api_key", ""),
+        "enabled": bool(request.get("enabled", True)),
+    }
+    db = _load_printers()
+    items = db.get("printers", [])
+    existing = next((p for p in items if p.get("id") == printer_id), None)
+    if existing:
+        existing.update(printer)
+    else:
+        items.append(printer)
+    db["printers"] = items
+    _save_printers(db)
+    return {"ok": True, "printer": {k: v for k, v in printer.items() if k != "api_key"}}
+
+
+@app.patch("/printers/{printer_id}")
+@app.patch("/printing/printers/{printer_id}")
+async def patch_printer(printer_id: str, request: dict):
+    """Patch selected fields for an existing printer profile."""
+    pid = (printer_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="printer id is required")
+
+    allowed_fields = {"name", "type", "host", "endpoint", "api_key", "enabled", "id"}
+    updates = {k: v for k, v in (request or {}).items() if k in allowed_fields}
+    if not updates:
+        raise HTTPException(status_code=400, detail="No valid fields provided")
+
+    db = _load_printers()
+    items = db.get("printers", [])
+    existing = next((p for p in items if p.get("id") == pid), None)
+    if not existing:
+        raise HTTPException(status_code=404, detail="Printer not found")
+
+    new_id = (updates.get("id") or pid).strip()
+    if not new_id:
+        raise HTTPException(status_code=400, detail="id cannot be empty")
+    if new_id != pid and any(p.get("id") == new_id for p in items):
+        raise HTTPException(status_code=409, detail="Printer id already exists")
+
+    if "enabled" in updates:
+        updates["enabled"] = bool(updates["enabled"])
+    updates["id"] = new_id
+    existing.update(updates)
+
+    db["printers"] = items
+    _save_printers(db)
+    return {"ok": True, "printer": {k: v for k, v in existing.items() if k != "api_key"}}
+
+
+@app.delete("/printers/{printer_id}")
+@app.delete("/printing/printers/{printer_id}")
+async def delete_printer(printer_id: str):
+    """Delete a printer profile by id."""
+    pid = (printer_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="printer id is required")
+
+    db = _load_printers()
+    items = db.get("printers", [])
+    kept = [p for p in items if p.get("id") != pid]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="Printer not found")
+
+    db["printers"] = kept
+    _save_printers(db)
+    return {"ok": True, "deleted": pid}
+
+
+_SLICE_STATUS: Dict[str, dict] = {}
+
+
+@app.post("/printing/slice")
+async def enqueue_slice_job(request: dict):
+    """Queue a slice request and return a status handle (stub endpoint)."""
+    model_path = (request.get("model_path") or "").strip()
+    profile = (request.get("profile") or "0.2mm").strip() or "0.2mm"
+    if not model_path:
+        raise HTTPException(status_code=400, detail="model_path is required")
+
+    job_id = f"slice_{uuid.uuid4().hex[:10]}"
+    _SLICE_STATUS[job_id] = {
+        "job_id": job_id,
+        "status": "queued",
+        "model_path": model_path,
+        "profile": profile,
+        "created_at": int(time.time()),
+    }
+    return {"ok": True, "job_id": job_id, "status": "queued"}
+
+
+@app.get("/printing/slice/{job_id}")
+async def get_slice_job_status(job_id: str):
+    """Get status for a previously queued slice job (stub endpoint)."""
+    job = _SLICE_STATUS.get(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Slice job not found")
+    return {"ok": True, **job}
+
+
+@app.post("/printers/slice-and-send")
+@app.post("/printing/slice-and-send")
+async def slice_and_send_print(request: dict):
+    """Slice STL/3MF using local slicer if available, then dispatch to configured printer."""
+    model_path = request.get("model_path", "")
+    printer_id = request.get("printer_id", "")
+    profile = request.get("profile", "0.2mm")
+    if not model_path or not printer_id:
+        raise HTTPException(status_code=400, detail="model_path and printer_id are required")
+
+    try:
+        safe_model = _safe_workspace_path(model_path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+
+    if not safe_model.exists():
+        raise HTTPException(status_code=404, detail="Model file not found")
+
+    gcode_out = safe_model.with_suffix(".gcode")
+    slicer_bin = shutil.which("prusa-slicer") or shutil.which("orca-slicer")
+    if slicer_bin:
+        cmd = [slicer_bin, "--export-gcode", str(safe_model), "--output", str(gcode_out)]
+        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
+        if res.returncode != 0:
+            raise HTTPException(status_code=500, detail=f"Slicing failed: {res.stderr[:1000]}")
+    else:
+        raise HTTPException(status_code=503, detail="No slicer found (install prusa-slicer or orca-slicer)")
+
+    dispatch = await _execute_tool("send_3d_print", {"printer_id": printer_id, "file_path": str(gcode_out)}, chat_id=None)
+    if not dispatch.get("ok"):
+        raise HTTPException(status_code=400, detail=dispatch.get("error", "Print dispatch failed"))
+
+    return {
+        "ok": True,
+        "profile": profile,
+        "gcode": str(gcode_out.relative_to(REPO_ROOT)),
+        "dispatch": dispatch,
+    }
 
 
 # ==================== SWARM COLLABORATION API ====================

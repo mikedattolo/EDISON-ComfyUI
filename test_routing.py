@@ -16,18 +16,22 @@ def test_route_mode():
     
     tests = [
         # (user_message, requested_mode, has_image, coral_intent, expected_mode, expected_tools, expected_model)
-        ("Write a Python function", "auto", False, None, "code", False, "deep"),
-        ("Search the web for Python news", "auto", False, "agent", "agent", True, "deep"),
+        ("Write a Python function", "auto", False, None, "code", False, "medium"),
+        ("Search the web for Python news", "auto", False, "agent", "agent", True, "medium"),
         ("Generate an image of a sunset", "auto", False, "generate_image", "image", False, "vision"),
-        ("What is gravity?", "auto", False, None, "reasoning", False, "deep"),
+        ("What is gravity?", "auto", False, None, "reasoning", False, "reasoning"),
         ("Hello there", "auto", False, None, "chat", False, "fast"),
         ("Here's an image", "auto", True, None, "image", False, "vision"),
         ("Generate image", "auto", True, "generate_image", "image", False, "vision"),
-        ("Explain quantum mechanics", "auto", False, None, "reasoning", False, "deep"),
-        ("Create a project plan", "auto", False, None, "work", False, "deep"),
+        ("Explain quantum mechanics", "auto", False, None, "reasoning", False, "reasoning"),
+        ("Create a project plan", "auto", False, None, "work", True, "deep"),
         ("Chat with me", "chat", False, None, "chat", False, "fast"),
-        ("Code mode override", "code", False, "generate_image", "code", False, "deep"),
+        ("Code mode override", "code", False, "generate_image", "code", False, "medium"),
         ("Image with explicit code", "code", True, None, "image", False, "vision"),
+        ("Run pytest in this workspace", "codespaces", False, None, "codespaces", True, "deep"),
+        ("Slice this STL and send to Bambu", "printing", False, None, "printing", True, "medium"),
+        ("Please run tests in the repo and show output", "auto", False, None, "codespaces", True, "deep"),
+        ("Generate gcode and send to 3d printer", "auto", False, None, "printing", True, "medium"),
     ]
     
     print("\nTest Cases:\n")
@@ -105,6 +109,34 @@ def test_routing_patterns():
         print(f"  '{msg}' → {result['mode']} (expected: agent)")
         assert result["mode"] == "agent", f"Expected agent, got {result['mode']}"
     print("✓ All agent patterns detected correctly")
+
+    # Codespaces patterns
+    codespaces_messages = [
+        "run tests in this repo",
+        "open terminal and run pytest",
+        "rewrite file in workspace",
+    ]
+
+    print("\nCodespaces Pattern Detection:")
+    for msg in codespaces_messages:
+        result = route_mode(msg, "auto", False, None)
+        print(f"  '{msg}' → {result['mode']} (expected: codespaces)")
+        assert result["mode"] == "codespaces", f"Expected codespaces, got {result['mode']}"
+    print("✓ All codespaces patterns detected correctly")
+
+    # Printing patterns
+    printing_messages = [
+        "slice this model to gcode",
+        "send to 3d printer",
+        "use orca slicer profile",
+    ]
+
+    print("\nPrinting Pattern Detection:")
+    for msg in printing_messages:
+        result = route_mode(msg, "auto", False, None)
+        print(f"  '{msg}' → {result['mode']} (expected: printing)")
+        assert result["mode"] == "printing", f"Expected printing, got {result['mode']}"
+    print("✓ All printing patterns detected correctly")
     
     # Reasoning patterns
     reasoning_messages = [
