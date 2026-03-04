@@ -1320,7 +1320,7 @@ TOOL_REGISTRY = {
 }
 
 TOOL_LOOP_MAX_STEPS = 5
-TOOL_CALL_TIMEOUT_SEC = 12
+TOOL_CALL_TIMEOUT_SEC = 30
 STREAM_MAX_SECONDS = 180
 STREAM_MAX_OUTPUT_CHARS = 24000
 TOOL_RESULT_CHAR_LIMIT = 900
@@ -1444,7 +1444,10 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         return f"External API call completed: {str(data)[:180]}" if data is not None else result.get("message", "External API call complete")
 
     if tool_name == "open_sandbox_browser" and isinstance(data, dict):
-        return f"Sandbox browser opened: {data.get('url', '')}"
+        title = data.get('title', '')
+        url = data.get('url', '')
+        desc = data.get('description', '')
+        return f"Browser loaded: {title} ({url}). {desc}" if title else f"Sandbox browser opened: {url}"
 
     if tool_name == "list_printers" and isinstance(data, dict):
         printers = data.get("printers", [])
@@ -1678,22 +1681,29 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             emit_log(f"Browser navigating: {url}", level="info")
             # Emit loading state immediately so the browser card appears
             _emit_browser_view(url, title="Loading\u2026", screenshot_b64=None, status="loading")
-            # Take screenshot in background thread (Playwright sync API)
-            def _take_shot(_url=url):
-                try:
-                    result = _pw_screenshot(_url)
-                    _emit_browser_view(
-                        result.get("url", _url),
-                        title=result.get("title", _url),
-                        screenshot_b64=result.get("screenshot_b64"),
-                        status="done" if result.get("ok") else "error",
-                        error=result.get("error"),
-                    )
-                except Exception as exc:
-                    _emit_browser_view(_url, title=_url, screenshot_b64=None,
-                                       status="error", error=str(exc))
-            threading.Thread(target=_take_shot, daemon=True).start()
-            return {"ok": True, "data": {"url": url, "sandbox": True}}
+            # Take screenshot synchronously so tool loop gets real result
+            try:
+                result = _pw_screenshot(url)
+                _emit_browser_view(
+                    result.get("url", url),
+                    title=result.get("title", url),
+                    screenshot_b64=result.get("screenshot_b64"),
+                    status="done" if result.get("ok") else "error",
+                    error=result.get("error"),
+                )
+                if result.get("ok"):
+                    return {"ok": True, "data": {
+                        "url": result.get("url", url),
+                        "title": result.get("title", url),
+                        "sandbox": True,
+                        "description": f"Successfully loaded page: {result.get('title', url)} at {result.get('url', url)}"
+                    }}
+                else:
+                    return {"ok": False, "error": f"Browser failed: {result.get('error', 'unknown error')}"}
+            except Exception as exc:
+                _emit_browser_view(url, title=url, screenshot_b64=None,
+                                   status="error", error=str(exc))
+                return {"ok": False, "error": f"Browser error: {exc}"}
 
         if tool_name == "list_printers":
             db = _load_printers()
@@ -1910,7 +1920,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
                     max_tokens=512,
                     temperature=0.4,
                     top_p=0.9,
-                    echo=False
+                    echo=False,
+                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n"]
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
@@ -1955,12 +1966,29 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         raw_output = await call_llm(prompt)
         raw_output = raw_output.strip()
 
-        # Attempt to parse JSON
+        # Attempt to parse JSON — robust extraction handles LLM adding text after JSON
         parsed = None
         try:
             parsed = json.loads(raw_output)
         except Exception:
-            parsed = None
+            # Try to extract the first JSON object from the output
+            try:
+                brace_start = raw_output.index('{')
+                depth = 0
+                brace_end = brace_start
+                for i in range(brace_start, len(raw_output)):
+                    if raw_output[i] == '{':
+                        depth += 1
+                    elif raw_output[i] == '}':
+                        depth -= 1
+                        if depth == 0:
+                            brace_end = i + 1
+                            break
+                if brace_end > brace_start:
+                    json_candidate = raw_output[brace_start:brace_end]
+                    parsed = json.loads(json_candidate)
+            except (ValueError, json.JSONDecodeError):
+                parsed = None
 
         if parsed:
             valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
