@@ -4622,6 +4622,37 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
     if 'status_steps' not in locals():
         status_steps = []
 
+    # ── Agent tool loop (structured tools for streaming path) ────────
+    agent_tool_answer = None
+    agent_tool_events = []
+    if tools_allowed and mode == "agent" and not has_images and not swarm_results:
+        try:
+            logger.info(f"⚙️ Running structured tool loop for streaming agent mode")
+            context_note = ""
+            if context_chunks:
+                context_note = "\n".join([
+                    (chunk[0] if isinstance(chunk, tuple) else chunk)[:150]
+                    for chunk in context_chunks[:3]
+                ])
+            agent_tool_answer, agent_tool_events = await run_structured_tool_loop(
+                llm,
+                request.message,
+                context_note,
+                model_name,
+                chat_id=request.chat_id,
+                request_id=request_id
+            )
+            if agent_tool_events:
+                logger.info(f"⚙️ Tool loop executed {len(agent_tool_events)} steps: {[e['tool'] for e in agent_tool_events]}")
+                # Add tool steps to status
+                for evt in agent_tool_events:
+                    status_steps.append({"stage": f"Tool: {evt['tool']}", "detail": evt.get('summary', '')[:80]})
+                status_steps.append({"stage": "Generating response"})
+        except Exception as e:
+            logger.error(f"Agent tool loop failed: {e}")
+            agent_tool_answer = None
+            agent_tool_events = []
+
     async def sse_generator():
         nonlocal work_step_results, full_prompt, system_prompt
         if image_intent_payload is not None:
@@ -4633,6 +4664,64 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         if music_intent_payload is not None:
             yield f"event: done\ndata: {json.dumps(music_intent_payload)}\n\n"
             return
+
+        # ── Agent tool loop pre-computed answer ──────────────────────
+        if agent_tool_answer is not None:
+            # Send request_id
+            yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
+
+            # Emit status steps (including tool steps)
+            if status_steps:
+                try:
+                    from services.edison_core.routes.agent_live import emit_agent_step
+                except ImportError:
+                    try:
+                        from routes.agent_live import emit_agent_step
+                    except ImportError:
+                        def emit_agent_step(*a, **kw): pass
+
+                total_steps = len(status_steps)
+                for idx, step in enumerate(status_steps, start=1):
+                    payload = {
+                        "stage": step.get("stage"),
+                        "detail": step.get("detail"),
+                        "current": idx,
+                        "total": total_steps
+                    }
+                    yield f"event: status\ndata: {json.dumps(payload)}\n\n"
+                    emit_agent_step(
+                        title=f"{step.get('stage', 'Processing')}"
+                              + (f" — {step['detail']}" if step.get('detail') else ""),
+                        status="running" if idx < total_steps else "done",
+                    )
+
+            # Stream the pre-computed answer token by token
+            assistant_response = agent_tool_answer.strip()
+            for token_chunk in _chunk_text(assistant_response, chunk_size=12):
+                yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
+
+            # Store conversation
+            store_conversation_exchange(request, assistant_response, original_mode, remember)
+
+            # Detect artifacts
+            artifact = detect_artifact(assistant_response)
+
+            done_payload = {
+                "ok": True,
+                "mode_used": original_mode,
+                "model_used": model_name,
+                "tools_used": [e["tool"] for e in agent_tool_events] if agent_tool_events else [],
+                "search_results": search_results if search_results else [],
+                "response": assistant_response,
+                "artifact": artifact,
+                "files": []
+            }
+            with active_requests_lock:
+                if request_id in active_requests:
+                    del active_requests[request_id]
+            yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+            return
+
         # Send request_id as first event
         yield f"event: init\ndata: {json.dumps({'request_id': request_id})}\n\n"
 
