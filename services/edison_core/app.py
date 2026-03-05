@@ -2133,7 +2133,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "You can call structured tools before answering. "
         "Reply with either a final answer in plain text (include citations like [source:web_search]) "
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
-        "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
+        "Tools: web_search(query:str,max_results:int) — search the web for information on a topic, "
+        "rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
         "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
@@ -2143,16 +2144,55 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str), "
+        "open_sandbox_browser(url:str) — open a URL in the sandbox browser with live screenshot (use this when asked to open/visit/browse/go to a website or URL), "
         "browser.create_session(url:str,width:int,height:int), "
         "browser.observe(session_id:str), browser.navigate(session_id:str,url:str), "
         "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
         "browser.type(session_id:str,text:str,delay_ms:int), "
         "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
-        "list_printers(), send_3d_print(printer_id:str,file_path:str)."
+        "list_printers(), send_3d_print(printer_id:str,file_path:str). "
+        "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
+        "Only use web_search when the user wants to SEARCH for information (no specific URL given)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
+
+    # Auto-route: detect explicit URL opening intent and inject browser tool call
+    _url_open_match = re.search(
+        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+        r'(https?://\S+|(?:www\.)\S+)',
+        user_message, re.IGNORECASE
+    )
+    if not _url_open_match:
+        # Also detect bare URLs when user intent is clearly "open"
+        _url_open_match = re.search(
+            r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+            r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
+            user_message, re.IGNORECASE
+        )
+    if _url_open_match:
+        browser_url = _url_open_match.group(1).strip()
+        if not browser_url.startswith("http"):
+            browser_url = f"https://{browser_url}"
+        logger.info(f"⚙️ Auto-routing to open_sandbox_browser for URL: {browser_url}")
+        try:
+            tool_result = await asyncio.wait_for(
+                _execute_tool("open_sandbox_browser", {"url": browser_url}, chat_id),
+                timeout=TOOL_CALL_TIMEOUT_SEC
+            )
+            summary = _summarize_tool_result("open_sandbox_browser", tool_result)
+            tool_events.append({
+                "tool": "open_sandbox_browser",
+                "args": {"url": browser_url},
+                "result": tool_result,
+                "summary": summary
+            })
+            emit_agent_step(
+                title=f"Tool: open_sandbox_browser(url={browser_url!r})",
+                status="done",
+            )
+        except Exception as e:
+            logger.error(f"Auto browser tool failed: {e}")
 
     step = 0
     while step < TOOL_LOOP_MAX_STEPS and not final_answer:
@@ -5174,6 +5214,7 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                     "fabricate or guess details that are not present in the image."
                 )
                 content = []
+                image_count = 0
                 if request.images:
                     for img_b64 in request.images:
                         if isinstance(img_b64, str):
@@ -5181,56 +5222,82 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             normalized = _preprocess_vision_image(img_b64)
                             if normalized:
                                 content.append({"type": "image_url", "image_url": {"url": normalized}})
+                                image_count += 1
+                            else:
+                                logger.warning(f"Vision image preprocessing returned None (input length: {len(img_b64)})")
                 content.append({"type": "text", "text": vision_question})
-                lock = get_lock_for_model(llm)
-                with lock:
-                    stream = llm.create_chat_completion(
-                        messages=[
-                            {"role": "system", "content": vision_sys},
-                            {"role": "user", "content": content}
-                        ],
-                        max_tokens=2048,
-                        temperature=0.1,
-                        stream=True
-                    )
-                    for chunk in stream:
-                        if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
-                            logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
-                            break
 
-                        # Check for cancellation
-                        with active_requests_lock:
-                            if request_id in active_requests and active_requests[request_id]["cancelled"]:
-                                logger.info(f"Request {request_id} cancelled by user")
+                if image_count == 0:
+                    logger.error("No valid images after preprocessing — all images dropped")
+
+                logger.info(f"Vision stream: {image_count} images, question: {vision_question[:120]}")
+
+                try:
+                    lock = get_lock_for_model(llm)
+                    with lock:
+                        stream = llm.create_chat_completion(
+                            messages=[
+                                {"role": "system", "content": vision_sys},
+                                {"role": "user", "content": content}
+                            ],
+                            max_tokens=2048,
+                            temperature=0.1,
+                            stream=True
+                        )
+                        for chunk in stream:
+                            if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                                logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
+                                break
+
+                            # Check for cancellation
+                            with active_requests_lock:
+                                if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                                    logger.info(f"Request {request_id} cancelled by user")
+                                    client_disconnected = True
+                                    break
+
+                            if await raw_request.is_disconnected():
+                                logger.info(f"Client disconnected for request {request_id}")
+                                with active_requests_lock:
+                                    if request_id in active_requests:
+                                        active_requests[request_id]["cancelled"] = True
                                 client_disconnected = True
                                 break
-                        
-                        if await raw_request.is_disconnected():
-                            logger.info(f"Client disconnected for request {request_id}")
-                            with active_requests_lock:
-                                if request_id in active_requests:
-                                    active_requests[request_id]["cancelled"] = True
-                            client_disconnected = True
-                            break
-                        token, finished = _extract_stream_token_and_finished(chunk, vision=True)
-                        if token:
-                            assistant_response += token
-                            empty_chunks = 0
-                            if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
-                                logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                            token, finished = _extract_stream_token_and_finished(chunk, vision=True)
+                            if token:
+                                assistant_response += token
+                                empty_chunks = 0
+                                if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                                    logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                                    yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                    break
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                            else:
+                                empty_chunks += 1
+
+                            if finished:
+                                logger.debug("Vision stream finished (reason signaled by model)")
                                 break
-                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
-                        else:
-                            empty_chunks += 1
 
-                        if finished:
-                            logger.debug("Vision stream finished (reason signaled by model)")
-                            break
-
-                        if empty_chunks >= max_empty_chunks:
-                            logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
-                            break
+                            if empty_chunks >= max_empty_chunks:
+                                logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
+                                break
+                except Exception as vision_exc:
+                    logger.error(f"Vision streaming failed: {vision_exc}")
+                    logger.error(f"Falling back to text-only vision prompt")
+                    # Fallback: text-only description request
+                    fallback_lock = get_lock_for_model(llm)
+                    with fallback_lock:
+                        fb_resp = llm(
+                            f"[Image provided but could not be processed] {vision_question}",
+                            max_tokens=2048,
+                            temperature=0.1,
+                            echo=False
+                        )
+                    fallback_text = fb_resp["choices"][0]["text"].strip()
+                    assistant_response = f"⚠️ Vision processing failed — the image could not be analyzed.\n\n{fallback_text}"
+                    for token_chunk in _chunk_text(assistant_response, chunk_size=12):
+                        yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
             else:
                 # Detect file generation requests for higher token limit
                 _is_file_gen = bool(re.search(

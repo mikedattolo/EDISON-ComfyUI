@@ -53,7 +53,52 @@ def test_browser_tools_registered():
     assert not missing, f"Missing browser tools: {missing}"
 
 
+def test_browser_url_auto_routing():
+    """Verify that explicit URL-opening messages are detected for auto-routing."""
+    import re
+
+    pattern_full = (
+        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+        r'(https?://\S+|(?:www\.)\S+)'
+    )
+    pattern_bare = (
+        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+        r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)'
+    )
+
+    # Should match (explicit URL opening intent)
+    should_match = [
+        ("open https://github.com", "https://github.com"),
+        ("visit https://example.org/page", "https://example.org/page"),
+        ("browse to http://localhost:8080", "http://localhost:8080"),
+        ("go to https://news.ycombinator.com", "https://news.ycombinator.com"),
+        ("navigate to https://docs.python.org", "https://docs.python.org"),
+        ("open github.com", "github.com"),
+        ("visit reddit.com/r/python", "reddit.com/r/python"),
+    ]
+    for msg, expected_url in should_match:
+        m = re.search(pattern_full, msg, re.IGNORECASE)
+        if not m:
+            m = re.search(pattern_bare, msg, re.IGNORECASE)
+        assert m is not None, f"Should match: {msg!r}"
+        assert m.group(1) == expected_url, f"URL mismatch for {msg!r}: got {m.group(1)!r}"
+
+    # Should NOT match (general search/chat intent)
+    should_not_match = [
+        "search for python tutorials",
+        "what is the latest news about AI",
+        "tell me about github.com",
+        "how to use github",
+    ]
+    for msg in should_not_match:
+        m = re.search(pattern_full, msg, re.IGNORECASE)
+        if not m:
+            m = re.search(pattern_bare, msg, re.IGNORECASE)
+        assert m is None, f"Should NOT match: {msg!r}"
+
+
 if __name__ == "__main__":
     test_sandbox_browser_session_routes_present()
     test_browser_tools_registered()
+    test_browser_url_auto_routing()
     print("✓ test_sandbox_browser_sessions passed")
