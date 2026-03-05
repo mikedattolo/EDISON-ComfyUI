@@ -2671,6 +2671,13 @@ console.log('🧊 app_new_features.js v1 loading...');
             if (errorEl) errorEl.style.display = 'none';
             if (dot) dot.className = 'cbc-status-dot cbc-dot-done';
             if (footerText) footerText.textContent = title || url;
+        } else if (status === 'done' && !screenshot) {
+            // Done but no screenshot (e.g., sent via main SSE without image data)
+            if (loading) loading.style.display = 'none';
+            if (img) img.style.display = 'none';
+            if (errorEl) errorEl.style.display = 'none';
+            if (dot) dot.className = 'cbc-status-dot cbc-dot-done';
+            if (footerText) footerText.textContent = title || url;
         } else if (status === 'error') {
             if (loading) loading.style.display = 'none';
             if (img) img.style.display = 'none';

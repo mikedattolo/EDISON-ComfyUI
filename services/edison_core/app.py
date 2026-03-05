@@ -1069,13 +1069,14 @@ def _try_load_vision_on_demand() -> bool:
 
     When a vision request arrives but llm_vision is None (VRAM was too tight at
     startup), this helper:
-      1. Unloads the medium model to free VRAM.
+      1. Unloads ALL non-vision models to free VRAM.
       2. Attempts to load the vision model with the correct chat_handler.
-      3. Returns True if vision is now available, False otherwise.
+      3. If CUDA OOM, retries with n_gpu_layers=0 (CPU-only fallback).
+      4. Returns True if vision is now available, False otherwise.
 
-    The medium model is reloaded later by reload_llm_models_background().
+    Other models are reloaded later by reload_llm_models_background().
     """
-    global llm_vision, llm_medium
+    global llm_vision, llm_fast, llm_medium, llm_deep, llm_reasoning
 
     # Already loaded?
     if llm_vision is not None:
@@ -1097,12 +1098,21 @@ def _try_load_vision_on_demand() -> bool:
         logger.warning(f"Vision model files not found: {vision_model_path}")
         return False
 
-    # Free VRAM by unloading the medium model
-    if llm_medium is not None:
-        logger.info("⏳ Unloading medium model to make room for vision model...")
+    # Free VRAM by unloading ALL non-vision models (GPU 0 is often shared)
+    unloaded = []
+    for name, ref in [("fast", llm_fast), ("medium", llm_medium),
+                       ("deep", llm_deep), ("reasoning", llm_reasoning)]:
+        if ref is not None:
+            unloaded.append(name)
+    if unloaded:
+        logger.info(f"⏳ Unloading models to make room for vision: {', '.join(unloaded)}")
+        llm_fast = None
         llm_medium = None
+        llm_deep = None
+        llm_reasoning = None
         _flush_gpu_memory()
-        time.sleep(0.5)
+        time.sleep(1)
+        _flush_gpu_memory()
 
     vision_n_ctx = core_config.get("vision_n_ctx", 4096)
     default_n_gpu_layers = int(core_config.get("n_gpu_layers", -1))
@@ -1115,22 +1125,32 @@ def _try_load_vision_on_demand() -> bool:
         common_kwargs["use_flash_attn"] = True
         common_kwargs["flash_attn_recompute"] = bool(core_config.get("flash_attn_recompute", False))
 
-    try:
-        logger.info(f"⏳ Loading vision model on-demand: {vision_model_name}")
-        vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
-        llm_vision = Llama(
-            model_path=str(vision_model_path),
-            chat_handler=vision_handler,
-            n_ctx=vision_n_ctx,
-            n_gpu_layers=vision_n_gpu_layers,
-            **common_kwargs,
-        )
-        logger.info("✓ Vision model loaded on-demand (with explicit chat_handler)")
-        return True
-    except Exception as e:
-        llm_vision = None
-        logger.error(f"❌ Failed to load vision model on-demand: {e}")
-        return False
+    # Try loading with configured GPU layers first, fall back to CPU-only on OOM
+    for attempt, gpu_layers in enumerate([vision_n_gpu_layers, 0]):
+        try:
+            label = "GPU" if gpu_layers > 0 else "CPU-only"
+            logger.info(f"⏳ Loading vision model on-demand ({label}): {vision_model_name}")
+            vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
+            llm_vision = Llama(
+                model_path=str(vision_model_path),
+                chat_handler=vision_handler,
+                n_ctx=vision_n_ctx,
+                n_gpu_layers=gpu_layers,
+                **common_kwargs,
+            )
+            logger.info(f"✓ Vision model loaded on-demand ({label}, with explicit chat_handler)")
+            return True
+        except Exception as e:
+            llm_vision = None
+            err_str = str(e).lower()
+            if attempt == 0 and ("out of memory" in err_str or "cudamalloc" in err_str or "alloc" in err_str):
+                logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying with CPU-only: {e}")
+                _flush_gpu_memory()
+                time.sleep(0.5)
+                continue
+            logger.error(f"❌ Failed to load vision model on-demand: {e}")
+            return False
+    return False
 
 
 def reload_llm_models_background():
@@ -2159,11 +2179,15 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             with lock:
                 response = llm(
                     prompt,
-                    max_tokens=512,
+                    max_tokens=1024,
                     temperature=0.4,
                     top_p=0.9,
+                    repeat_penalty=1.3,
+                    frequency_penalty=0.5,
+                    presence_penalty=0.4,
                     echo=False,
-                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n"]
+                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n",
+                          "Would you like", "Let me know if", "Do let me know"]
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
@@ -2731,22 +2755,34 @@ def load_llm_models():
         vision_clip_path = models_path / vision_clip_name
         
         if vision_model_path.exists() and vision_clip_path.exists():
-            try:
-                logger.info(f"Loading vision model: {vision_model_path}")
-                logger.info(f"Loading CLIP projector: {vision_clip_path}")
-                
-                vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
-                llm_vision = Llama(
-                    model_path=str(vision_model_path),
-                    chat_handler=vision_handler,
-                    n_ctx=vision_n_ctx,
-                    n_gpu_layers=vision_n_gpu_layers,
-                    **common_kwargs
-                )
-                logger.info("✓ Vision model loaded successfully (with explicit chat_handler)")
-            except Exception as e:
-                llm_vision = None
-                logger.warning(f"Failed to load vision model: {e}")
+            _vision_loaded = False
+            for _vattempt, _vgpu_layers in enumerate([vision_n_gpu_layers, 0]):
+                try:
+                    _vlabel = "GPU" if _vgpu_layers > 0 else "CPU-only"
+                    logger.info(f"Loading vision model ({_vlabel}): {vision_model_path}")
+                    logger.info(f"Loading CLIP projector: {vision_clip_path}")
+                    
+                    vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
+                    llm_vision = Llama(
+                        model_path=str(vision_model_path),
+                        chat_handler=vision_handler,
+                        n_ctx=vision_n_ctx,
+                        n_gpu_layers=_vgpu_layers,
+                        **common_kwargs
+                    )
+                    logger.info(f"✓ Vision model loaded successfully ({_vlabel}, with explicit chat_handler)")
+                    _vision_loaded = True
+                    break
+                except Exception as e:
+                    llm_vision = None
+                    _err = str(e).lower()
+                    if _vattempt == 0 and ("out of memory" in _err or "cudamalloc" in _err or "alloc" in _err):
+                        logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying CPU-only: {e}")
+                        _flush_gpu_memory()
+                        time.sleep(0.5)
+                        continue
+                    logger.warning(f"Failed to load vision model: {e}")
+                    break
         else:
             logger.info("Vision model or CLIP projector not found (optional - image understanding disabled)")
     else:
@@ -2757,21 +2793,31 @@ def load_llm_models():
         vision_code_model_path = models_path / vision_code_model_name
         vision_code_clip_path = models_path / vision_code_clip_name
         if vision_code_model_path.exists() and vision_code_clip_path.exists():
-            try:
-                logger.info(f"Loading vision-to-code model: {vision_code_model_path}")
-                logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
-                vision_code_handler = _create_vision_chat_handler(str(vision_code_clip_path), vision_code_model_name)
-                llm_vision_code = Llama(
-                    model_path=str(vision_code_model_path),
-                    chat_handler=vision_code_handler,
-                    n_ctx=vision_code_n_ctx,
-                    n_gpu_layers=vision_code_n_gpu_layers,
-                    **common_kwargs
-                )
-                logger.info("✓ Vision-to-code model loaded successfully (with explicit chat_handler)")
-            except Exception as e:
-                llm_vision_code = None
-                logger.warning(f"Failed to load vision-to-code model: {e}")
+            for _vcattempt, _vcgpu_layers in enumerate([vision_code_n_gpu_layers, 0]):
+                try:
+                    _vclabel = "GPU" if _vcgpu_layers > 0 else "CPU-only"
+                    logger.info(f"Loading vision-to-code model ({_vclabel}): {vision_code_model_path}")
+                    logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
+                    vision_code_handler = _create_vision_chat_handler(str(vision_code_clip_path), vision_code_model_name)
+                    llm_vision_code = Llama(
+                        model_path=str(vision_code_model_path),
+                        chat_handler=vision_code_handler,
+                        n_ctx=vision_code_n_ctx,
+                        n_gpu_layers=_vcgpu_layers,
+                        **common_kwargs
+                    )
+                    logger.info(f"✓ Vision-to-code model loaded successfully ({_vclabel}, with explicit chat_handler)")
+                    break
+                except Exception as e:
+                    llm_vision_code = None
+                    _vcerr = str(e).lower()
+                    if _vcattempt == 0 and ("out of memory" in _vcerr or "cudamalloc" in _vcerr or "alloc" in _vcerr):
+                        logger.warning(f"⚠️ Vision-to-code GPU load failed (OOM), retrying CPU-only: {e}")
+                        _flush_gpu_memory()
+                        time.sleep(0.5)
+                        continue
+                    logger.warning(f"Failed to load vision-to-code model: {e}")
+                    break
         else:
             logger.info("Vision-to-code model or CLIP projector not found (optional)")
 
@@ -5112,8 +5158,26 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                         status="running" if idx < total_steps else "done",
                     )
 
+            # Emit browser_view events from tool results on the main stream
+            # so the frontend can render browser cards even without /agent/stream
+            for evt in agent_tool_events:
+                if evt.get("tool") == "open_sandbox_browser":
+                    result = evt.get("result", {})
+                    data = result.get("data", {}) if isinstance(result, dict) else {}
+                    if isinstance(data, dict) and data.get("url"):
+                        bv_evt = {
+                            "type": "browser_view",
+                            "url": data.get("url", ""),
+                            "title": data.get("title", data.get("url", "")),
+                            "status": "done" if result.get("ok") else "error",
+                            "error": result.get("error"),
+                        }
+                        yield f"event: browser_view\ndata: {json.dumps(bv_evt)}\n\n"
+
             # Stream the pre-computed answer token by token
             assistant_response = agent_tool_answer.strip()
+            # Clean up repetitive output from tool loop
+            assistant_response = _dedupe_repeated_lines(assistant_response)
             for token_chunk in _chunk_text(assistant_response, chunk_size=12):
                 yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
 
@@ -5311,6 +5375,10 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                 if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
                                     logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
                                     yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                    break
+                                # Check for repetition loop in vision output
+                                if _detect_repetition(assistant_response):
+                                    logger.warning("Repetition detected in vision output, stopping generation")
                                     break
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
                             else:
@@ -5535,6 +5603,13 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
         artifact = detect_artifact(cleaned_response)
+
+        # If vision was used and other models were unloaded, reload them in background
+        if has_images and model_name == "vision":
+            try:
+                reload_llm_models_background()
+            except Exception:
+                pass
         
         done_payload = {
             "ok": True,

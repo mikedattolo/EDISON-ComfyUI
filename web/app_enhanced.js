@@ -790,6 +790,11 @@ class EdisonApp {
                                     this.insertSwarmConversation(assistantMessageEl, data.swarm_agents);
                                     swarmInserted = true;
                                 }
+                            } else if (currentEventType === 'browser_view' && data.type === 'browser_view') {
+                                // Browser card from agent tool loop
+                                if (window.injectBrowserCard) {
+                                    window.injectBrowserCard(data);
+                                }
                             } else if (currentEventType === 'status' && data.stage) {
                                 this.updateStatus(assistantMessageEl, data);
                             } else if (data.t) {
