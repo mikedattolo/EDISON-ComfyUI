@@ -124,9 +124,14 @@ def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = N
                        session_id: str = "default", width: int | None = None,
                        height: int | None = None):
     """Emit a browser_view SSE event so the frontend can show an inline browser card."""
+    _logger = logging.getLogger(__name__)
     try:
-        from .routes.agent_live import get_event_bus
-        get_event_bus().emit({
+        try:
+            from .routes.agent_live import get_event_bus
+        except ImportError:
+            from routes.agent_live import get_event_bus
+        bus = get_event_bus()
+        evt = {
             "type": "browser_view",
             "url": url,
             "title": title or url,
@@ -135,9 +140,11 @@ def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = N
             "error": error,
             "width": width,
             "height": height,
-        }, session_id=session_id)
-    except Exception:
-        pass
+        }
+        bus.emit(evt, session_id=session_id)
+        _logger.info(f"Browser view event emitted: status={status}, url={url[:80]}")
+    except Exception as exc:
+        _logger.warning(f"Failed to emit browser_view event: {exc}")
 
 
 try:
@@ -1025,6 +1032,37 @@ def unload_all_llm_models():
     return unloaded
 
 
+def _create_vision_chat_handler(clip_model_path: str, model_name: str = ""):
+    """Create the correct llama-cpp-python chat handler for a vision model.
+
+    In llama-cpp-python >= 0.3.x, `clip_model_path` is no longer a Llama()
+    constructor parameter.  The CLIP projector must be wrapped in an explicit
+    chat handler and passed via `chat_handler=`.
+
+    This helper auto-detects the right handler class:
+      - Qwen2-VL  → Qwen25VLChatHandler
+      - LLaVA 1.6 → Llava16ChatHandler
+      - fallback  → Llava15ChatHandler
+    """
+    model_lower = model_name.lower()
+    try:
+        if "qwen2-vl" in model_lower or "qwen2_vl" in model_lower or "qwen25vl" in model_lower:
+            from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+            logger.info(f"Using Qwen25VLChatHandler for {model_name}")
+            return Qwen25VLChatHandler(clip_model_path=clip_model_path)
+        if "llava" in model_lower and ("1.6" in model_lower or "v1.6" in model_lower or "16" in model_lower):
+            from llama_cpp.llama_chat_format import Llava16ChatHandler
+            logger.info(f"Using Llava16ChatHandler for {model_name}")
+            return Llava16ChatHandler(clip_model_path=clip_model_path)
+        # Default fallback to LLaVA 1.5
+        from llama_cpp.llama_chat_format import Llava15ChatHandler
+        logger.info(f"Using Llava15ChatHandler (fallback) for {model_name}")
+        return Llava15ChatHandler(clip_model_path=clip_model_path)
+    except Exception as e:
+        logger.error(f"Failed to create vision chat handler: {e}")
+        raise
+
+
 def _try_load_vision_on_demand() -> bool:
     """
     On-demand vision model loader.
@@ -1032,7 +1070,7 @@ def _try_load_vision_on_demand() -> bool:
     When a vision request arrives but llm_vision is None (VRAM was too tight at
     startup), this helper:
       1. Unloads the medium model to free VRAM.
-      2. Attempts to load the vision model.
+      2. Attempts to load the vision model with the correct chat_handler.
       3. Returns True if vision is now available, False otherwise.
 
     The medium model is reloaded later by reload_llm_models_background().
@@ -1079,14 +1117,15 @@ def _try_load_vision_on_demand() -> bool:
 
     try:
         logger.info(f"⏳ Loading vision model on-demand: {vision_model_name}")
+        vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
         llm_vision = Llama(
             model_path=str(vision_model_path),
-            clip_model_path=str(vision_clip_path),
+            chat_handler=vision_handler,
             n_ctx=vision_n_ctx,
             n_gpu_layers=vision_n_gpu_layers,
             **common_kwargs,
         )
-        logger.info("✓ Vision model loaded on-demand")
+        logger.info("✓ Vision model loaded on-demand (with explicit chat_handler)")
         return True
     except Exception as e:
         llm_vision = None
@@ -2696,14 +2735,15 @@ def load_llm_models():
                 logger.info(f"Loading vision model: {vision_model_path}")
                 logger.info(f"Loading CLIP projector: {vision_clip_path}")
                 
+                vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
                 llm_vision = Llama(
                     model_path=str(vision_model_path),
-                    clip_model_path=str(vision_clip_path),
+                    chat_handler=vision_handler,
                     n_ctx=vision_n_ctx,
                     n_gpu_layers=vision_n_gpu_layers,
                     **common_kwargs
                 )
-                logger.info("✓ Vision model loaded successfully")
+                logger.info("✓ Vision model loaded successfully (with explicit chat_handler)")
             except Exception as e:
                 llm_vision = None
                 logger.warning(f"Failed to load vision model: {e}")
@@ -2720,14 +2760,15 @@ def load_llm_models():
             try:
                 logger.info(f"Loading vision-to-code model: {vision_code_model_path}")
                 logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
+                vision_code_handler = _create_vision_chat_handler(str(vision_code_clip_path), vision_code_model_name)
                 llm_vision_code = Llama(
                     model_path=str(vision_code_model_path),
-                    clip_model_path=str(vision_code_clip_path),
+                    chat_handler=vision_code_handler,
                     n_ctx=vision_code_n_ctx,
                     n_gpu_layers=vision_code_n_gpu_layers,
                     **common_kwargs
                 )
-                logger.info("✓ Vision-to-code model loaded successfully")
+                logger.info("✓ Vision-to-code model loaded successfully (with explicit chat_handler)")
             except Exception as e:
                 llm_vision_code = None
                 logger.warning(f"Failed to load vision-to-code model: {e}")
