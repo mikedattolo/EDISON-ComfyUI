@@ -119,6 +119,24 @@ AGENT_CATALOG_DEFINITIONS: List[Dict[str, Any]] = [
         "model_preference": ["medium", "deep", "fast"],
         "keywords": r"validate|verify|test|requirements|constraints|edge cases",
     },
+    {
+        "name": "ProjectManager",
+        "icon": "🗂️",
+        "role": "project manager who turns goals into tasks, tracks status, milestones, and ownership",
+        "style": "structured task lists, clear ownership, status updates",
+        "model_preference": ["medium", "deep", "fast"],
+        "keywords": r"project|task|manage|milestone|track|assign|kanban|sprint",
+        "can_use_tools": True,
+    },
+    {
+        "name": "FileManager",
+        "icon": "📁",
+        "role": "file operations specialist who writes/edits files, organizes folders, and produces deliverables",
+        "style": "precise file paths, structured output, clean organization",
+        "model_preference": ["medium", "deep", "fast"],
+        "keywords": r"file|write|create|folder|organize|template|document|deliverable",
+        "can_use_tools": True,
+    },
 ]
 
 
@@ -145,6 +163,10 @@ class SwarmSession:
     user_interventions: List[Dict[str, Any]] = field(default_factory=list)  # user messages injected mid-swarm
     direct_messages: List[Dict[str, Any]] = field(default_factory=list)     # @agent DMs from user
     created_at: float = field(default_factory=time.time)
+    # ── Project task & artifact tracking ──
+    tasks: List[Dict[str, Any]] = field(default_factory=list)
+    artifacts: List[Dict[str, Any]] = field(default_factory=list)
+    _task_counter: int = 0
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -167,6 +189,33 @@ class SwarmSession:
         if self.shared_notes:
             return "\n".join(f"- {n}" for n in self.shared_notes)
         return "- (empty)"
+
+    def add_task(self, title: str, owner: str = "") -> Dict[str, Any]:
+        self._task_counter += 1
+        task = {"id": f"T{self._task_counter}", "title": title, "status": "todo",
+                "owner_agent": owner, "files": [], "notes": ""}
+        self.tasks.append(task)
+        return task
+
+    def update_task(self, task_id: str, status: str = "", notes: str = ""):
+        for t in self.tasks:
+            if t["id"] == task_id:
+                if status:
+                    t["status"] = status
+                if notes:
+                    t["notes"] = notes
+                return t
+        return None
+
+    def add_artifact(self, path: str, kind: str = "file", summary: str = "", created_by: str = ""):
+        art = {"path": path, "kind": kind, "summary": summary, "created_by": created_by}
+        self.artifacts.append(art)
+        return art
+
+    def tasks_text(self) -> str:
+        if not self.tasks:
+            return "- (no tasks)"
+        return "\n".join(f"- [{t['status']}] {t['id']}: {t['title']} (owner: {t.get('owner_agent', '?')})" for t in self.tasks)
 
     def discussion_text(self) -> str:
         return "\n".join(
@@ -194,6 +243,8 @@ class SwarmSession:
             "shared_notes": self.shared_notes[:10],
             "vote_summary": self.vote_summary,
             "user_interventions": len(self.user_interventions),
+            "tasks": self.tasks,
+            "artifacts": self.artifacts,
         }
 
 
@@ -211,6 +262,7 @@ class SwarmEngine:
         search_tool: Any = None,
         config: Dict[str, Any] = None,
         emit_fn: Callable = None,
+        execute_tool: Callable = None,
     ):
         """
         Args:
@@ -219,12 +271,14 @@ class SwarmEngine:
             search_tool: optional web search tool
             config: edison config dict
             emit_fn: optional callable(title, status) for agent live view events
+            execute_tool: optional async callable(tool_name, args, chat_id) for tool execution
         """
         self._available_models = available_models
         self._get_lock = get_lock_for_model
         self._search_tool = search_tool
         self._config = config or {}
         self._emit = emit_fn or (lambda *a, **kw: None)
+        self._execute_tool = execute_tool
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -235,6 +289,7 @@ class SwarmEngine:
         search_results: List[dict] = None,
         file_request: bool = False,
         parallel: bool = False,
+        chat_id: str = None,
     ) -> Tuple[SwarmSession, str]:
         """
         Full swarm execution:  Boss plan → agent rounds → voting → Boss synthesis.
@@ -257,8 +312,8 @@ class SwarmEngine:
         session.status = "running"
         await self._boss_plan(session)
 
-        # 4) Multi-round discussion
-        await self._run_rounds(session, parallel, search_results)
+        # 4) Multi-round discussion (with optional tool execution)
+        await self._run_rounds(session, parallel, search_results, chat_id=chat_id)
 
         # 5) Voting
         session.status = "voting"
@@ -276,6 +331,7 @@ class SwarmEngine:
         session: SwarmSession,
         target_agent_name: str,
         user_message: str,
+        chat_id: str = None,
     ) -> Dict[str, Any]:
         """
         Handle @Agent direct message from the user.
@@ -310,6 +366,10 @@ User says to you directly: {user_message}
 Your response (be specific, personal, address their question):"""
 
         result = await self._run_agent_prompt(agent, prompt, 0.7)
+        # If agent supports tools, also try tool-enabled path
+        agent_defn = next((d for d in AGENT_CATALOG_DEFINITIONS if d["name"] == agent["name"]), {})
+        if agent_defn.get("can_use_tools") and self._execute_tool:
+            result = await self._run_agent_with_tools(agent, prompt, session, chat_id=chat_id)
         result["is_direct"] = True
         result["dm_from_user"] = user_message
 
@@ -481,6 +541,7 @@ Your job:
    - 5-7 rounds: very complex, research-heavy, or creative task needing deep refinement
 3. Break the task into 2-5 sub-tasks.
 4. Assign each sub-task to one or more of your team members.
+5. If the task requires creating files or code, include a TASKS_JSON block.
 
 Your team:
 {agent_roster}
@@ -497,7 +558,10 @@ Rules:
   1. <task> → @AgentName
   2. <task> → @AgentName, @AgentName
   ...
-- Be concise. Maximum 10 lines total.
+- If file creation or code tasks are needed, also include:
+  TASKS_JSON:
+  {{"tasks":[{{"id":"T1","owner":"AgentName","action":"description"}}]}}
+- Be concise. Maximum 15 lines total.
 
 Your plan:"""
 
@@ -523,11 +587,26 @@ Your plan:"""
         self._emit(title=f"👔 Boss plan ready — {session.target_rounds} round(s)", status="done")
         logger.info(f"👔 Boss plan: {session.boss_plan[:120]}...")
 
+        # Parse TASKS_JSON block if present
+        tasks_match = re.search(r"TASKS_JSON\s*:\s*(\{.*\})", session.boss_plan, re.DOTALL)
+        if tasks_match:
+            try:
+                tasks_data = json.loads(tasks_match.group(1))
+                for t in tasks_data.get("tasks", []):
+                    session.add_task(
+                        title=t.get("action", t.get("title", "")),
+                        owner=t.get("owner", ""),
+                    )
+                logger.info(f"👔 Boss created {len(session.tasks)} task(s)")
+            except (json.JSONDecodeError, ValueError):
+                pass
+
     async def _run_rounds(
         self,
         session: SwarmSession,
         parallel: bool,
         search_results: List[dict] = None,
+        chat_id: str = None,
     ):
         """Execute multi-round agent discussion."""
         user_msg_truncated = _truncate(session.user_request, 2500)
@@ -570,7 +649,7 @@ Rules:
 Your initial perspective:"""
             round1_prompts.append((agent, prompt))
 
-        results = await self._execute_prompts(round1_prompts, parallel, 0.7)
+        results = await self._execute_prompts(round1_prompts, parallel, 0.7, session=session, chat_id=chat_id)
         for result in results:
             session.add_note(result["response"])
             session.conversation.append(result)
@@ -617,7 +696,7 @@ Rules:
 Your refined contribution:"""
                 round_prompts.append((agent, prompt))
 
-            round_results = await self._execute_prompts(round_prompts, parallel, 0.6)
+            round_results = await self._execute_prompts(round_prompts, parallel, 0.6, session=session, chat_id=chat_id)
             for result in round_results:
                 session.add_note(result["response"])
                 session.conversation.append({
@@ -777,6 +856,12 @@ Expert Discussion:
 Shared Scratchpad:
 {session.scratchpad_text()}
 
+Task Status:
+{session.tasks_text()}
+
+Artifacts Created:
+{chr(10).join(f"- {a['path']} ({a['kind']}): {a['summary']}" for a in session.artifacts) if session.artifacts else '- (none)'}
+
 Vote Summary:
 {session.vote_summary}
 {intervention_block}
@@ -813,15 +898,21 @@ Instructions:
         prompts: List[Tuple[Dict, str]],
         parallel: bool,
         temperature: float,
+        session: SwarmSession = None,
+        chat_id: str = None,
     ) -> List[Dict[str, Any]]:
-        """Run a batch of agent prompts (parallel or sequential)."""
+        """Run a batch of agent prompts (parallel or sequential), with optional tool use."""
+        async def _run_one(agent, prompt):
+            defn = next((d for d in AGENT_CATALOG_DEFINITIONS if d["name"] == agent["name"]), {})
+            if defn.get("can_use_tools") and self._execute_tool and session:
+                return await self._run_agent_with_tools(agent, prompt, session, chat_id=chat_id)
+            return await self._run_agent_prompt(agent, prompt, temperature)
+
         if parallel:
-            return list(await asyncio.gather(*[
-                self._run_agent_prompt(agent, prompt, temperature) for agent, prompt in prompts
-            ]))
+            return list(await asyncio.gather(*[_run_one(a, p) for a, p in prompts]))
         results = []
         for agent, prompt in prompts:
-            results.append(await self._run_agent_prompt(agent, prompt, temperature))
+            results.append(await _run_one(agent, prompt))
         return results
 
     async def _run_agent_prompt(
@@ -863,6 +954,89 @@ Instructions:
             "model": agent.get("model_name", "Unknown"),
             "response": response,
         }
+
+    async def _run_agent_with_tools(
+        self,
+        agent: Dict[str, Any],
+        prompt: str,
+        session: SwarmSession,
+        chat_id: str = None,
+        max_tool_iters: int = 3,
+    ) -> Dict[str, Any]:
+        """Run an agent prompt that can call tools (up to max_tool_iters rounds).
+
+        The agent outputs either plain text or a JSON tool call
+        ``{"tool":"name","args":{…}}``. Results are fed back until the agent
+        produces a final text answer or exhausts iterations.
+        """
+        if not self._execute_tool:
+            return await self._run_agent_prompt(agent, prompt, 0.5)
+
+        # Available tool subset for swarm agents
+        tool_hint = (
+            "\nYou may call tools by outputting ONLY a JSON object: "
+            '{"tool":"<name>","args":{…}}. Available: '
+            "workspace.init, fs.read, fs.write, fs.list, fs.mkdir, fs.diff, "
+            "pm.create_task, pm.list_tasks, pm.update_task, "
+            "code.search, code.apply_unified_diff, codespace_exec, web_search. "
+            "If done, reply with plain text (no JSON)."
+        )
+        messages = [prompt + tool_hint]
+        tool_results = []
+
+        for i in range(max_tool_iters):
+            result = await self._run_agent_prompt(agent, "\n".join(messages), 0.5, max_tokens=600)
+            text = result.get("response", "")
+
+            # Try to parse tool call JSON
+            parsed = None
+            try:
+                parsed = json.loads(text)
+            except (json.JSONDecodeError, ValueError):
+                # Try extracting embedded JSON
+                m = re.search(r'\{[^{}]*"tool"\s*:', text)
+                if m:
+                    depth, start = 0, m.start()
+                    for j in range(start, len(text)):
+                        if text[j] == '{': depth += 1
+                        elif text[j] == '}':
+                            depth -= 1
+                            if depth == 0:
+                                try:
+                                    parsed = json.loads(text[start:j + 1])
+                                except (json.JSONDecodeError, ValueError):
+                                    pass
+                                break
+
+            if parsed and isinstance(parsed, dict) and "tool" in parsed:
+                tool_name = parsed["tool"]
+                tool_args = parsed.get("args", {})
+                self._emit(
+                    title=f"{agent['icon']} {agent['name']} calling {tool_name}",
+                    status="running",
+                )
+                try:
+                    tool_result = await self._execute_tool(tool_name, tool_args, chat_id)
+                    summary = json.dumps(tool_result, default=str)[:800]
+                except Exception as exc:
+                    summary = f"Tool error: {exc}"
+                    tool_result = {"ok": False, "error": str(exc)}
+
+                tool_results.append({"tool": tool_name, "args": tool_args, "result": tool_result})
+                messages.append(f"\nTool result ({tool_name}): {summary}\nContinue or give your final answer:")
+                self._emit(
+                    title=f"{agent['icon']} {agent['name']}: {tool_name} → done",
+                    status="done",
+                )
+                continue
+
+            # Plain text → final answer
+            result["tool_calls"] = tool_results
+            return result
+
+        # Exhausted iterations — return last result
+        result["tool_calls"] = tool_results
+        return result
 
 
 # ──────────────────────────────────────────────────────────────────────────────

@@ -148,6 +148,8 @@ class BrowserSessionManager:
             session_id=session_id,
             width=payload.get("width"),
             height=payload.get("height"),
+            cursor_x=payload.get("cursor_x"),
+            cursor_y=payload.get("cursor_y"),
         )
 
     def create_session(
@@ -272,7 +274,10 @@ class BrowserSessionManager:
             session = self._get_session(sid)
             session.page.mouse.move(int(px), int(py))
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap["cursor_x"] = int(px)
+            snap["cursor_y"] = int(py)
+            return snap
 
         payload = self._pw_run(_move, session_id, x, y, timeout=25)
         payload["session_id"] = session_id

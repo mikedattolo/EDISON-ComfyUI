@@ -4950,6 +4950,53 @@ details > summary::-webkit-details-marker {
     display: none;
 }
 
+/* ── Browser Frame ────────────────────────────────────────────────────── */
+.browser-frame {
+    border: 1px solid rgba(255, 255, 255, 0.15);
+    border-radius: 10px;
+    overflow: hidden;
+    background: rgba(0, 0, 0, 0.25);
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.3);
+}
+
+/* ── Diff View ────────────────────────────────────────────────────────── */
+.diff-view {
+    font-family: 'Menlo', 'Monaco', 'Courier New', monospace;
+    font-size: 11px;
+    padding: 8px;
+    margin: 4px 0 0 28px;
+    border-radius: 6px;
+    background: rgba(0, 0, 0, 0.3);
+    color: #b0b0b0;
+    overflow-x: auto;
+    white-space: pre;
+    max-height: 300px;
+    overflow-y: auto;
+    line-height: 1.5;
+}
+
+.diff-view .diff-add { color: #4caf50; }
+.diff-view .diff-del { color: #f44336; }
+.diff-view .diff-hunk { color: #2196f3; font-weight: bold; }
+
+/* ── Takeover Notice ──────────────────────────────────────────────────── */
+.takeover-notice {
+    background: rgba(255, 152, 0, 0.15);
+    border: 1px solid rgba(255, 152, 0, 0.3);
+    color: #ffa726;
+    padding: 8px 12px;
+    border-radius: 6px;
+    font-size: 12px;
+    margin-top: 8px;
+}
+
+/* ── Copy Session Button ──────────────────────────────────────────────── */
+.copy-session-btn:hover,
+.takeover-btn:hover {
+    background: rgba(255, 255, 255, 0.1) !important;
+}
+}
+
 details[open] > summary::after {
     content: ' ▼';
     font-size: 10px;

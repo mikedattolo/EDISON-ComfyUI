@@ -1111,19 +1111,62 @@ class EdisonAgentLiveView {
         const screenshot = event.screenshot_b64 || null;
         const status = event.status || 'loading';
         const sid = event.session_id || 'default';
+        const cursorX = event.cursor_x;
+        const cursorY = event.cursor_y;
+        const imgWidth = event.width || 1280;
+        const imgHeight = event.height || 800;
 
         holder.style.display = 'block';
+
+        // Build cursor overlay if coordinates present
+        let cursorOverlay = '';
+        if (cursorX != null && cursorY != null && screenshot) {
+            const pctX = (cursorX / imgWidth * 100).toFixed(2);
+            const pctY = (cursorY / imgHeight * 100).toFixed(2);
+            cursorOverlay = `<div style="position:absolute;left:${pctX}%;top:${pctY}%;width:16px;height:16px;margin:-8px 0 0 -8px;border-radius:50%;background:rgba(255,80,80,0.7);border:2px solid #fff;pointer-events:none;z-index:2;box-shadow:0 0 6px rgba(255,0,0,0.5)"></div>`;
+        }
+
         holder.innerHTML = `
-            <div style="border:1px solid rgba(255,255,255,0.15); border-radius:10px; overflow:hidden; background:rgba(0,0,0,0.25)">
+            <div class="browser-frame">
                 <div style="display:flex; justify-content:space-between; gap:8px; padding:8px 10px; font-size:12px; border-bottom:1px solid rgba(255,255,255,0.12)">
                     <strong style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${this._escapeHtml(title)}</strong>
-                    <span style="opacity:0.7">${this._escapeHtml(sid)} · ${this._escapeHtml(status)}</span>
+                    <span style="display:flex; gap:6px; align-items:center;">
+                        <button class="copy-session-btn" data-sid="${this._escapeHtml(sid)}" title="Copy session ID" style="background:none;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:inherit;cursor:pointer;padding:1px 6px;font-size:11px;">📋</button>
+                        <button class="takeover-btn" title="Take over" style="background:none;border:1px solid rgba(255,255,255,0.2);border-radius:4px;color:inherit;cursor:pointer;padding:1px 6px;font-size:11px;">🖱️ Take over</button>
+                        <span style="opacity:0.7">${this._escapeHtml(sid)} · ${this._escapeHtml(status)}</span>
+                    </span>
                 </div>
-                ${screenshot ? `<img src="data:image/jpeg;base64,${screenshot}" alt="Browser stream" style="display:block; width:100%; height:auto;"/>`
-                    : `<div style="padding:12px; font-size:12px; opacity:0.75">${this._escapeHtml(event.error || 'Waiting for screenshot...')}</div>`}
+                <div style="position:relative;">
+                    ${screenshot ? `<img src="data:image/jpeg;base64,${screenshot}" alt="Browser stream" style="display:block; width:100%; height:auto;"/>` + cursorOverlay
+                        : `<div style="padding:12px; font-size:12px; opacity:0.75">${this._escapeHtml(event.error || 'Waiting for screenshot...')}</div>`}
+                </div>
                 <div style="padding:6px 10px; font-size:11px; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${this._escapeHtml(url)}</div>
             </div>
         `;
+
+        // Bind copy session ID button
+        const copyBtn = holder.querySelector('.copy-session-btn');
+        if (copyBtn) {
+            copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(copyBtn.dataset.sid).then(() => {
+                    copyBtn.textContent = '✓';
+                    setTimeout(() => { copyBtn.textContent = '📋'; }, 1500);
+                });
+            });
+        }
+
+        // Bind takeover button
+        const takeoverBtn = holder.querySelector('.takeover-btn');
+        if (takeoverBtn) {
+            takeoverBtn.addEventListener('click', () => {
+                takeoverBtn.textContent = '⏸️ Paused';
+                takeoverBtn.disabled = true;
+                const note = document.createElement('div');
+                note.className = 'takeover-notice';
+                note.textContent = '⚠️ Takeover mode: agent paused. Interact directly in a separate browser window.';
+                holder.appendChild(note);
+            });
+        }
     }
 
     _addScreenshot(event) {
@@ -1147,6 +1190,18 @@ class EdisonAgentLiveView {
         const container = document.getElementById('agentLiveSteps');
         if (!container) return;
 
+        // Color diff lines
+        const diffLines = (event.diff || '').split('\n').map(line => {
+            if (line.startsWith('+') && !line.startsWith('+++')) {
+                return `<span class="diff-add">${this._escapeHtml(line)}</span>`;
+            } else if (line.startsWith('-') && !line.startsWith('---')) {
+                return `<span class="diff-del">${this._escapeHtml(line)}</span>`;
+            } else if (line.startsWith('@@')) {
+                return `<span class="diff-hunk">${this._escapeHtml(line)}</span>`;
+            }
+            return this._escapeHtml(line);
+        }).join('\n');
+
         const el = document.createElement('div');
         el.className = 'agent-step agent-file-diff';
         el.innerHTML = `
@@ -1155,7 +1210,7 @@ class EdisonAgentLiveView {
                     <span class="agent-step-icon">📝</span>
                     <span class="agent-step-title">${this._escapeHtml(event.path)}</span>
                 </summary>
-                <pre class="agent-diff-code">${this._escapeHtml(event.diff)}</pre>
+                <pre class="diff-view">${diffLines}</pre>
             </details>
         `;
         container.appendChild(el);

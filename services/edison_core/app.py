@@ -122,7 +122,8 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
 def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = None,
                        status: str = "done", error: str | None = None,
                        session_id: str = "default", width: int | None = None,
-                       height: int | None = None):
+                       height: int | None = None, cursor_x: int | None = None,
+                       cursor_y: int | None = None):
     """Emit a browser_view SSE event so the frontend can show an inline browser card."""
     _logger = logging.getLogger(__name__)
     try:
@@ -141,6 +142,9 @@ def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = N
             "width": width,
             "height": height,
         }
+        if cursor_x is not None and cursor_y is not None:
+            evt["cursor_x"] = cursor_x
+            evt["cursor_y"] = cursor_y
         bus.emit(evt, session_id=session_id)
         _logger.info(f"Browser view event emitted: status={status}, url={url[:80]}")
     except Exception as exc:
@@ -159,6 +163,20 @@ except Exception:
             def __init__(self, message: str, status_code: int = 400):
                 super().__init__(message)
                 self.status_code = status_code
+
+# ── Active browser sessions per chat_id (for periodic screenshot streaming) ──
+_active_browser_sessions: Dict[str, str] = {}           # chat_id → session_id
+_periodic_screenshot_tasks: Dict[str, asyncio.Task] = {}  # chat_id → task
+
+# ── Background dev server handles per chat_id ──
+_dev_server_processes: Dict[str, dict] = {}   # handle → {proc, chat_id, command, port}
+
+# ── Project task state per project_id ──
+_project_tasks: Dict[str, List[Dict[str, Any]]] = {}       # project_id → [task]
+_project_artifacts: Dict[str, List[Dict[str, Any]]] = {}   # project_id → [artifact]
+_project_task_counter: Dict[str, int] = {}                  # project_id → next_id
+
+import difflib
 
 # Configure logging
 logging.basicConfig(
@@ -787,6 +805,73 @@ def _safe_workspace_path(path_str: str) -> Path:
     if not str(candidate).startswith(str(REPO_ROOT.resolve())):
         raise ValueError("Access denied: path outside workspace")
     return candidate
+
+
+def get_workspace_root(chat_id: str = None, project_id: str = None) -> Path:
+    """Return a per-project/chat workspace root, creating it if needed."""
+    ed = config.get("edison", {}) if isinstance(config, dict) else {}
+    base = Path(ed.get("projects", {}).get("root", "outputs"))
+    if not base.is_absolute():
+        base = REPO_ROOT / base
+    folder = project_id or chat_id or "default"
+    # Sanitise folder name
+    folder = re.sub(r"[^a-zA-Z0-9_\-]", "_", folder)[:64]
+    root = (base / "workspaces" / folder).resolve()
+    if not str(root).startswith(str(base.resolve())):
+        raise ValueError("Access denied: workspace path escape")
+    root.mkdir(parents=True, exist_ok=True)
+    return root
+
+
+def _safe_project_path(workspace_root: Path, relative_path: str) -> Path:
+    """Resolve *relative_path* inside *workspace_root* with traversal protection."""
+    raw = Path(relative_path)
+    if raw.is_absolute():
+        candidate = raw.resolve()
+    else:
+        candidate = (workspace_root / raw).resolve()
+    ws_resolved = workspace_root.resolve()
+    if candidate != ws_resolved and ws_resolved not in candidate.parents:
+        raise ValueError("Access denied: path outside workspace root")
+    return candidate
+
+
+def _start_periodic_screenshots(chat_id: str, session_id: str):
+    """Start a background task that emits periodic observe screenshots."""
+    if chat_id in _periodic_screenshot_tasks:
+        _periodic_screenshot_tasks[chat_id].cancel()
+
+    _active_browser_sessions[chat_id] = session_id
+
+    ed = config.get("edison", {}) if isinstance(config, dict) else {}
+    interval = int(ed.get("agent_live_view", {}).get("screenshot_interval_s", 5))
+    if interval <= 0:
+        return
+
+    async def _loop():
+        try:
+            while True:
+                await asyncio.sleep(interval)
+                sid = _active_browser_sessions.get(chat_id)
+                if not sid:
+                    break
+                try:
+                    mgr = _get_browser_session_manager()
+                    await asyncio.to_thread(mgr.observe, sid)
+                except Exception:
+                    break  # session closed or error
+        except asyncio.CancelledError:
+            pass
+
+    _periodic_screenshot_tasks[chat_id] = asyncio.create_task(_loop())
+
+
+def _stop_periodic_screenshots(chat_id: str):
+    """Cancel periodic screenshot streaming for a chat."""
+    _active_browser_sessions.pop(chat_id, None)
+    task = _periodic_screenshot_tasks.pop(chat_id, None)
+    if task:
+        task.cancel()
 
 
 def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 30) -> dict:
@@ -1515,7 +1600,103 @@ TOOL_REGISTRY = {
             "printer_id": {"type": str, "required": True},
             "file_path": {"type": str, "required": True}
         }
-    }
+    },
+    # ── Workspace / filesystem tools ──────────────────────────────────
+    "workspace.init": {
+        "args": {
+            "project_id": {"type": str, "required": False, "default": ""}
+        }
+    },
+    "fs.read": {
+        "args": {
+            "path": {"type": str, "required": True}
+        }
+    },
+    "fs.write": {
+        "args": {
+            "path": {"type": str, "required": True},
+            "contents": {"type": str, "required": True},
+            "mode": {"type": str, "required": False, "default": "overwrite"}
+        }
+    },
+    "fs.list": {
+        "args": {
+            "dir": {"type": str, "required": False, "default": "."}
+        }
+    },
+    "fs.mkdir": {
+        "args": {
+            "dir": {"type": str, "required": True}
+        }
+    },
+    "fs.delete": {
+        "args": {
+            "path": {"type": str, "required": True},
+            "confirm": {"type": bool, "required": False, "default": False}
+        }
+    },
+    "fs.diff": {
+        "args": {
+            "path": {"type": str, "required": True},
+            "new_contents": {"type": str, "required": True}
+        }
+    },
+    "fs.apply_patch": {
+        "args": {
+            "path": {"type": str, "required": True},
+            "unified_diff": {"type": str, "required": True},
+            "confirm": {"type": bool, "required": False, "default": False}
+        }
+    },
+    # ── Project management tools ──────────────────────────────────────
+    "pm.create_task": {
+        "args": {
+            "project_id": {"type": str, "required": True},
+            "title": {"type": str, "required": True},
+            "description": {"type": str, "required": False, "default": ""},
+            "owner": {"type": str, "required": False, "default": ""}
+        }
+    },
+    "pm.list_tasks": {
+        "args": {
+            "project_id": {"type": str, "required": True}
+        }
+    },
+    "pm.update_task": {
+        "args": {
+            "project_id": {"type": str, "required": True},
+            "task_id": {"type": str, "required": True},
+            "status": {"type": str, "required": False, "default": ""},
+            "notes": {"type": str, "required": False, "default": ""}
+        }
+    },
+    # ── Code editing tools ────────────────────────────────────────────
+    "code.apply_unified_diff": {
+        "args": {
+            "path": {"type": str, "required": True},
+            "diff": {"type": str, "required": True}
+        }
+    },
+    "code.search": {
+        "args": {
+            "pattern": {"type": str, "required": True},
+            "dir": {"type": str, "required": False, "default": "."}
+        }
+    },
+    # ── Dev server tools ──────────────────────────────────────────────
+    "dev.run_server": {
+        "args": {
+            "command": {"type": str, "required": True},
+            "cwd": {"type": str, "required": False, "default": "."},
+            "port": {"type": int, "required": False, "default": 8000}
+        }
+    },
+    "dev.stop_server": {
+        "args": {
+            "handle": {"type": str, "required": True},
+            "confirm": {"type": bool, "required": False, "default": False}
+        }
+    },
 }
 
 TOOL_LOOP_MAX_STEPS = 5
@@ -1921,6 +2102,8 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 width=args.get("width", 1280),
                 height=args.get("height", 800),
             )
+            if chat_id and data.get("session_id"):
+                _start_periodic_screenshots(chat_id, data["session_id"])
             return {"ok": True, "data": data}
 
         if tool_name == "browser.observe":
@@ -2020,6 +2203,365 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 "message": f"Printer '{printer_id}' is configured but type '{ptype}' requires manual bridge setup",
                 "data": {"printer": printer_id, "file": str(safe_file)},
             }
+
+        # ── Workspace / Filesystem tools ─────────────────────────────────
+        if tool_name == "workspace.init":
+            try:
+                proj = args.get("project_id", "") or (chat_id or "default")
+                ws = get_workspace_root(chat_id=chat_id, project_id=proj if args.get("project_id") else None)
+                return {"ok": True, "data": {"workspace_root": str(ws), "project_id": proj}}
+            except Exception as e:
+                return {"ok": False, "error": str(e)}
+
+        if tool_name == "fs.read":
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("path", ""))
+                if not safe.exists():
+                    return {"ok": False, "error": f"File not found: {args.get('path')}"}
+                if safe.is_dir():
+                    return {"ok": False, "error": "Path is a directory"}
+                content = safe.read_text(encoding="utf-8", errors="replace")[:64000]
+                return {"ok": True, "data": {"content": content, "path": str(safe.relative_to(ws))}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Read failed: {e}"}
+
+        if tool_name == "fs.write":
+            try:
+                from routes.agent_live import emit_file_diff, emit_agent_step
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_file_diff, emit_agent_step
+                except ImportError:
+                    def emit_file_diff(*a, **kw): pass
+                    def emit_agent_step(*a, **kw): pass
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("path", ""))
+                mode = args.get("mode", "overwrite")
+                contents = args.get("contents", "")
+                rel = str(safe.relative_to(ws))
+
+                old_text = ""
+                if safe.exists() and safe.is_file():
+                    old_text = safe.read_text(encoding="utf-8", errors="replace")
+
+                safe.parent.mkdir(parents=True, exist_ok=True)
+                if mode == "append":
+                    with open(safe, "a", encoding="utf-8") as f:
+                        f.write(contents)
+                    new_text = old_text + contents
+                elif mode == "patch":
+                    # Apply as unified diff
+                    import subprocess as _sp
+                    tmp = safe.with_suffix(safe.suffix + ".patch")
+                    tmp.write_text(contents, encoding="utf-8")
+                    _sp.run(["patch", str(safe), str(tmp)], capture_output=True, timeout=10)
+                    tmp.unlink(missing_ok=True)
+                    new_text = safe.read_text(encoding="utf-8", errors="replace") if safe.exists() else ""
+                else:
+                    safe.write_text(contents, encoding="utf-8")
+                    new_text = contents
+
+                diff_text = "".join(difflib.unified_diff(
+                    old_text.splitlines(True), new_text.splitlines(True),
+                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
+                ))
+                emit_file_diff(rel, diff_text)
+                emit_agent_step(title=f"Wrote file: {rel}", status="done")
+                return {"ok": True, "data": {"path": rel, "bytes": len(new_text.encode("utf-8"))}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Write failed: {e}"}
+
+        if tool_name == "fs.list":
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("dir", "."))
+                if not safe.exists():
+                    return {"ok": False, "error": "Directory not found"}
+                if not safe.is_dir():
+                    return {"ok": False, "error": "Path is not a directory"}
+                files = []
+                for item in sorted(safe.iterdir()):
+                    files.append({
+                        "name": item.name,
+                        "type": "directory" if item.is_dir() else "file",
+                        "size": item.stat().st_size if item.is_file() else 0,
+                    })
+                return {"ok": True, "data": {"files": files, "dir": str(safe.relative_to(ws))}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"List failed: {e}"}
+
+        if tool_name == "fs.mkdir":
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("dir", ""))
+                safe.mkdir(parents=True, exist_ok=True)
+                return {"ok": True, "data": {"dir": str(safe.relative_to(ws))}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Mkdir failed: {e}"}
+
+        if tool_name == "fs.delete":
+            if not args.get("confirm"):
+                return {"ok": False, "error": "confirm_required: fs.delete requires confirm=true"}
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("path", ""))
+                if not safe.exists():
+                    return {"ok": False, "error": "Path not found"}
+                rel = str(safe.relative_to(ws))
+                if safe.is_dir():
+                    shutil.rmtree(safe)
+                else:
+                    safe.unlink()
+                return {"ok": True, "data": {"deleted": rel}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Delete failed: {e}"}
+
+        if tool_name == "fs.diff":
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("path", ""))
+                old_text = ""
+                if safe.exists() and safe.is_file():
+                    old_text = safe.read_text(encoding="utf-8", errors="replace")
+                new_text = args.get("new_contents", "")
+                rel = str(safe.relative_to(ws))
+                diff_text = "".join(difflib.unified_diff(
+                    old_text.splitlines(True), new_text.splitlines(True),
+                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
+                ))
+                return {"ok": True, "data": {"path": rel, "diff": diff_text or "(no changes)"}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Diff failed: {e}"}
+
+        if tool_name == "fs.apply_patch":
+            if not args.get("confirm"):
+                return {"ok": False, "error": "confirm_required: fs.apply_patch requires confirm=true"}
+            try:
+                from routes.agent_live import emit_file_diff
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_file_diff
+                except ImportError:
+                    def emit_file_diff(*a, **kw): pass
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("path", ""))
+                rel = str(safe.relative_to(ws))
+                patch_text = args.get("unified_diff", "")
+                if not safe.exists():
+                    return {"ok": False, "error": "File not found"}
+                old = safe.read_text(encoding="utf-8", errors="replace")
+                # Apply patch using subprocess
+                proc = subprocess.run(
+                    ["patch", "--no-backup-if-mismatch", "-p0", str(safe)],
+                    input=patch_text, capture_output=True, text=True, timeout=10,
+                )
+                new = safe.read_text(encoding="utf-8", errors="replace") if safe.exists() else ""
+                diff_text = "".join(difflib.unified_diff(
+                    old.splitlines(True), new.splitlines(True),
+                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
+                ))
+                emit_file_diff(rel, diff_text)
+                return {"ok": True, "data": {"path": rel, "applied": proc.returncode == 0, "stderr": proc.stderr[:500]}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Patch failed: {e}"}
+
+        # ── Project management tools ─────────────────────────────────────
+        if tool_name == "pm.create_task":
+            proj = args.get("project_id", "default")
+            if proj not in _project_tasks:
+                _project_tasks[proj] = []
+                _project_task_counter[proj] = 0
+            _project_task_counter[proj] += 1
+            tid = f"T{_project_task_counter[proj]}"
+            task = {
+                "id": tid,
+                "title": args.get("title", ""),
+                "description": args.get("description", ""),
+                "owner": args.get("owner", ""),
+                "status": "todo",
+                "notes": "",
+                "created_at": time.time(),
+            }
+            _project_tasks[proj].append(task)
+            try:
+                from routes.agent_live import emit_agent_step
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_agent_step
+                except ImportError:
+                    def emit_agent_step(*a, **kw): pass
+            emit_agent_step(title=f"Task created: {tid} — {task['title']}", status="done")
+            return {"ok": True, "data": task}
+
+        if tool_name == "pm.list_tasks":
+            proj = args.get("project_id", "default")
+            tasks = _project_tasks.get(proj, [])
+            return {"ok": True, "data": {"project_id": proj, "tasks": tasks}}
+
+        if tool_name == "pm.update_task":
+            proj = args.get("project_id", "default")
+            tid = args.get("task_id", "")
+            tasks = _project_tasks.get(proj, [])
+            task = next((t for t in tasks if t["id"] == tid), None)
+            if not task:
+                return {"ok": False, "error": f"Task {tid} not found in project {proj}"}
+            if args.get("status"):
+                task["status"] = args["status"]
+            if args.get("notes"):
+                task["notes"] = args["notes"]
+            try:
+                from routes.agent_live import emit_agent_step
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_agent_step
+                except ImportError:
+                    def emit_agent_step(*a, **kw): pass
+            emit_agent_step(title=f"Task {tid} → {task['status']}", status="done")
+            return {"ok": True, "data": task}
+
+        # ── Code editing tools ───────────────────────────────────────────
+        if tool_name == "code.apply_unified_diff":
+            try:
+                from routes.agent_live import emit_file_diff
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_file_diff
+                except ImportError:
+                    def emit_file_diff(*a, **kw): pass
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                safe = _safe_project_path(ws, args.get("path", ""))
+                rel = str(safe.relative_to(ws))
+                diff_text = args.get("diff", "")
+                if not safe.exists():
+                    return {"ok": False, "error": "File not found"}
+                old = safe.read_text(encoding="utf-8", errors="replace")
+                proc = subprocess.run(
+                    ["patch", "--no-backup-if-mismatch", "-p0", str(safe)],
+                    input=diff_text, capture_output=True, text=True, timeout=10,
+                )
+                new = safe.read_text(encoding="utf-8", errors="replace") if safe.exists() else ""
+                result_diff = "".join(difflib.unified_diff(
+                    old.splitlines(True), new.splitlines(True),
+                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
+                ))
+                emit_file_diff(rel, result_diff)
+                return {"ok": True, "data": {"path": rel, "applied": proc.returncode == 0, "stderr": proc.stderr[:500]}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Diff apply failed: {e}"}
+
+        if tool_name == "code.search":
+            try:
+                ws = get_workspace_root(chat_id=chat_id)
+                search_dir = _safe_project_path(ws, args.get("dir", "."))
+                pattern = args.get("pattern", "")
+                if not pattern:
+                    return {"ok": False, "error": "pattern is required"}
+                # Prefer ripgrep, fallback to grep
+                rg = shutil.which("rg")
+                if rg:
+                    cmd = [rg, "--max-count=50", "--no-heading", "--line-number", "--color=never", pattern, str(search_dir)]
+                else:
+                    cmd = ["grep", "-rnI", "--max-count=50", "--color=never", pattern, str(search_dir)]
+                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
+                return {"ok": True, "data": {"matches": (proc.stdout or "")[:16000], "count": proc.stdout.count("\n") if proc.stdout else 0}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Search failed: {e}"}
+
+        # ── Dev server tools ─────────────────────────────────────────────
+        if tool_name == "dev.run_server":
+            try:
+                command = args.get("command", "").strip()
+                port = int(args.get("port", 8000))
+                cwd = args.get("cwd", ".")
+                if not command:
+                    return {"ok": False, "error": "command is required"}
+                # Check port availability
+                import socket
+                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+                    if s.connect_ex(("127.0.0.1", port)) == 0:
+                        return {"ok": False, "error": f"Port {port} is already in use"}
+                ws = get_workspace_root(chat_id=chat_id)
+                safe_cwd = _safe_project_path(ws, cwd)
+                parts = shlex.split(command)
+                allowed_server_cmds = {"python", "python3", "node", "npm", "npx", "uvicorn", "gunicorn", "flask", "yarn", "pnpm"}
+                if parts[0] not in allowed_server_cmds:
+                    return {"ok": False, "error": f"Command '{parts[0]}' not allowed for dev server"}
+                handle = f"srv_{uuid.uuid4().hex[:8]}"
+                proc = subprocess.Popen(
+                    parts,
+                    cwd=str(safe_cwd),
+                    stdout=subprocess.PIPE,
+                    stderr=subprocess.PIPE,
+                    text=True,
+                    env={k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}},
+                )
+                _dev_server_processes[handle] = {
+                    "proc": proc,
+                    "chat_id": chat_id,
+                    "command": command,
+                    "port": port,
+                    "pid": proc.pid,
+                }
+                try:
+                    from routes.agent_live import emit_log
+                except ImportError:
+                    try:
+                        from .routes.agent_live import emit_log
+                    except ImportError:
+                        def emit_log(*a, **kw): pass
+                emit_log(f"Dev server started: {command} (port {port}, handle={handle})", level="info")
+                return {"ok": True, "data": {"handle": handle, "pid": proc.pid, "port": port, "command": command}}
+            except ValueError as e:
+                return {"ok": False, "error": str(e)}
+            except Exception as e:
+                return {"ok": False, "error": f"Server start failed: {e}"}
+
+        if tool_name == "dev.stop_server":
+            if not args.get("confirm"):
+                return {"ok": False, "error": "confirm_required: dev.stop_server requires confirm=true"}
+            handle = args.get("handle", "")
+            entry = _dev_server_processes.pop(handle, None)
+            if not entry:
+                return {"ok": False, "error": f"Server handle '{handle}' not found"}
+            try:
+                entry["proc"].terminate()
+                entry["proc"].wait(timeout=5)
+            except Exception:
+                try:
+                    entry["proc"].kill()
+                except Exception:
+                    pass
+            try:
+                from routes.agent_live import emit_log
+            except ImportError:
+                try:
+                    from .routes.agent_live import emit_log
+                except ImportError:
+                    def emit_log(*a, **kw): pass
+            emit_log(f"Dev server stopped: {entry['command']} (handle={handle})", level="info")
+            return {"ok": True, "data": {"handle": handle, "stopped": True}}
 
         if tool_name == "read_file":
             # Read file from gallery or uploads
@@ -2213,9 +2755,21 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
         "browser.type(session_id:str,text:str,delay_ms:int), "
         "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
-        "list_printers(), send_3d_print(printer_id:str,file_path:str). "
+        "list_printers(), send_3d_print(printer_id:str,file_path:str), "
+        "workspace.init(project_id:str), fs.read(path:str), fs.write(path:str,contents:str,mode:str), "
+        "fs.list(dir:str), fs.mkdir(dir:str), fs.delete(path:str,confirm:bool), "
+        "fs.diff(path:str,new_contents:str), fs.apply_patch(path:str,unified_diff:str,confirm:bool), "
+        "pm.create_task(project_id:str,title:str,description:str,owner:str), "
+        "pm.list_tasks(project_id:str), pm.update_task(project_id:str,task_id:str,status:str,notes:str), "
+        "code.apply_unified_diff(path:str,diff:str), code.search(pattern:str,dir:str), "
+        "dev.run_server(command:str,cwd:str,port:int), dev.stop_server(handle:str,confirm:bool). "
         "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
-        "Only use web_search when the user wants to SEARCH for information (no specific URL given)."
+        "Only use web_search when the user wants to SEARCH for information (no specific URL given). "
+        "For file/code tasks: use fs.read to read, code.search to find references, fs.diff to preview changes, fs.write to save. "
+        "CODING WORKFLOW: 1) code.search to locate relevant code, 2) fs.read to understand context, "
+        "3) fs.diff to preview proposed changes, 4) code.apply_unified_diff or fs.write to apply, "
+        "5) codespace_exec to test (e.g. run linter/tests), 6) summarize what changed. "
+        "Always use workspace.init before fs.* tools to get a workspace root."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
@@ -5015,6 +5569,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 search_tool=search_tool,
                 config=config,
                 emit_fn=emit_agent_step,
+                execute_tool=_execute_tool,
             )
 
             file_request = _is_file_request(request.message or "")
@@ -11026,6 +11581,7 @@ async def swarm_direct_message(request: dict):
             get_lock_for_model=get_lock_for_model,
             search_tool=search_tool,
             config=config,
+            execute_tool=_execute_tool,
         )
 
         result = await engine.handle_direct_message(session, agent_name, message)
@@ -11077,6 +11633,7 @@ async def swarm_user_feedback(request: dict):
             get_lock_for_model=get_lock_for_model,
             search_tool=search_tool,
             config=config,
+            execute_tool=_execute_tool,
         )
 
         responses = await engine.handle_user_intervention(session, message)
