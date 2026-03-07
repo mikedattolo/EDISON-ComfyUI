@@ -6,8 +6,8 @@ FastAPI server with llama-cpp-python for local LLM inference
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field, validator
-from typing import Optional, Literal, Iterator, List, Dict, Any, Union
+from pydantic import BaseModel, Field
+from typing import Optional, Literal, Iterator, List, Dict, Any
 import logging
 from pathlib import Path
 import yaml
@@ -91,7 +91,7 @@ def _pw_run(func, *args, timeout=25):
     return value
 
 def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
-    """Navigate to a URL with Playwright and return a screenshot + metadata dict (thread-safe)."""
+    """Navigate to a URL with Playwright and return a screenshot + page text + metadata dict (thread-safe)."""
     def _do_screenshot(url, width, height):
         ctx = _pw_browser.new_context(
             viewport={"width": width, "height": height},
@@ -107,7 +107,27 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
             png_bytes = page.screenshot(type="jpeg", quality=82,
                                         full_page=False, clip=None)
             b64 = base64.b64encode(png_bytes).decode()
+            # Extract visible text content for the LLM to process
+            page_text = ""
+            try:
+                page_text = page.evaluate("""() => {
+                    const sel = 'main, article, [role="main"], .content, #content, body';
+                    const el = document.querySelector('main') ||
+                               document.querySelector('article') ||
+                               document.querySelector('[role="main"]') ||
+                               document.querySelector('.content') ||
+                               document.querySelector('#content') ||
+                               document.body;
+                    if (!el) return '';
+                    // Remove script/style/nav/footer noise
+                    const clone = el.cloneNode(true);
+                    clone.querySelectorAll('script, style, nav, footer, header, [aria-hidden="true"]').forEach(e => e.remove());
+                    return clone.innerText.replace(/\\s+/g, ' ').trim().substring(0, 3000);
+                }""")
+            except Exception:
+                pass
             return {"ok": True, "url": page.url, "title": title, "screenshot_b64": b64,
+                    "page_text": page_text[:3000] if page_text else "",
                     "width": width, "height": height}
         except Exception as e:
             return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
@@ -120,63 +140,20 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
         return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
 
 def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = None,
-                       status: str = "done", error: str | None = None,
-                       session_id: str = "default", width: int | None = None,
-                       height: int | None = None, cursor_x: int | None = None,
-                       cursor_y: int | None = None):
+                       status: str = "done", error: str | None = None):
     """Emit a browser_view SSE event so the frontend can show an inline browser card."""
-    _logger = logging.getLogger(__name__)
     try:
-        try:
-            from .routes.agent_live import get_event_bus
-        except ImportError:
-            from routes.agent_live import get_event_bus
-        bus = get_event_bus()
-        evt = {
+        from .routes.agent_live import get_event_bus
+        get_event_bus().emit({
             "type": "browser_view",
             "url": url,
             "title": title or url,
             "screenshot_b64": screenshot_b64,
             "status": status,
             "error": error,
-            "width": width,
-            "height": height,
-        }
-        if cursor_x is not None and cursor_y is not None:
-            evt["cursor_x"] = cursor_x
-            evt["cursor_y"] = cursor_y
-        bus.emit(evt, session_id=session_id)
-        _logger.info(f"Browser view event emitted: status={status}, url={url[:80]}")
-    except Exception as exc:
-        _logger.warning(f"Failed to emit browser_view event: {exc}")
-
-
-try:
-    from .browser_session import BrowserSessionManager, BrowserSessionError
-except Exception:
-    try:
-        from browser_session import BrowserSessionManager, BrowserSessionError
+        })
     except Exception:
-        BrowserSessionManager = None
-
-        class BrowserSessionError(Exception):
-            def __init__(self, message: str, status_code: int = 400):
-                super().__init__(message)
-                self.status_code = status_code
-
-# ── Active browser sessions per chat_id (for periodic screenshot streaming) ──
-_active_browser_sessions: Dict[str, str] = {}           # chat_id → session_id
-_periodic_screenshot_tasks: Dict[str, asyncio.Task] = {}  # chat_id → task
-
-# ── Background dev server handles per chat_id ──
-_dev_server_processes: Dict[str, dict] = {}   # handle → {proc, chat_id, command, port}
-
-# ── Project task state per project_id ──
-_project_tasks: Dict[str, List[Dict[str, Any]]] = {}       # project_id → [task]
-_project_artifacts: Dict[str, List[Dict[str, Any]]] = {}   # project_id → [artifact]
-_project_task_counter: Dict[str, int] = {}                  # project_id → next_id
-
-import difflib
+        pass
 
 # Configure logging
 logging.basicConfig(
@@ -807,73 +784,6 @@ def _safe_workspace_path(path_str: str) -> Path:
     return candidate
 
 
-def get_workspace_root(chat_id: str = None, project_id: str = None) -> Path:
-    """Return a per-project/chat workspace root, creating it if needed."""
-    ed = config.get("edison", {}) if isinstance(config, dict) else {}
-    base = Path(ed.get("projects", {}).get("root", "outputs"))
-    if not base.is_absolute():
-        base = REPO_ROOT / base
-    folder = project_id or chat_id or "default"
-    # Sanitise folder name
-    folder = re.sub(r"[^a-zA-Z0-9_\-]", "_", folder)[:64]
-    root = (base / "workspaces" / folder).resolve()
-    if not str(root).startswith(str(base.resolve())):
-        raise ValueError("Access denied: workspace path escape")
-    root.mkdir(parents=True, exist_ok=True)
-    return root
-
-
-def _safe_project_path(workspace_root: Path, relative_path: str) -> Path:
-    """Resolve *relative_path* inside *workspace_root* with traversal protection."""
-    raw = Path(relative_path)
-    if raw.is_absolute():
-        candidate = raw.resolve()
-    else:
-        candidate = (workspace_root / raw).resolve()
-    ws_resolved = workspace_root.resolve()
-    if candidate != ws_resolved and ws_resolved not in candidate.parents:
-        raise ValueError("Access denied: path outside workspace root")
-    return candidate
-
-
-def _start_periodic_screenshots(chat_id: str, session_id: str):
-    """Start a background task that emits periodic observe screenshots."""
-    if chat_id in _periodic_screenshot_tasks:
-        _periodic_screenshot_tasks[chat_id].cancel()
-
-    _active_browser_sessions[chat_id] = session_id
-
-    ed = config.get("edison", {}) if isinstance(config, dict) else {}
-    interval = int(ed.get("agent_live_view", {}).get("screenshot_interval_s", 5))
-    if interval <= 0:
-        return
-
-    async def _loop():
-        try:
-            while True:
-                await asyncio.sleep(interval)
-                sid = _active_browser_sessions.get(chat_id)
-                if not sid:
-                    break
-                try:
-                    mgr = _get_browser_session_manager()
-                    await asyncio.to_thread(mgr.observe, sid)
-                except Exception:
-                    break  # session closed or error
-        except asyncio.CancelledError:
-            pass
-
-    _periodic_screenshot_tasks[chat_id] = asyncio.create_task(_loop())
-
-
-def _stop_periodic_screenshots(chat_id: str):
-    """Cancel periodic screenshot streaming for a chat."""
-    _active_browser_sessions.pop(chat_id, None)
-    task = _periodic_screenshot_tasks.pop(chat_id, None)
-    if task:
-        task.cancel()
-
-
 def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 30) -> dict:
     """Execute whitelisted shell commands in workspace for Codespaces mode."""
     if not command or not isinstance(command, str):
@@ -1018,41 +928,6 @@ _models_unloaded_for_image_gen = False
 _image_gen_lock = threading.Lock()
 _reload_lock = threading.Lock()
 _reload_in_progress = False
-browser_session_manager = None
-_browser_cleanup_task = None
-
-
-def _sandbox_host_config() -> tuple[bool, list[str], int]:
-    ed = config.get("edison", {}) if isinstance(config, dict) else {}
-    allow_any = bool(ed.get("sandbox_allow_any_host", False))
-    hosts = ed.get("sandbox_allowed_hosts") or []
-    if not isinstance(hosts, list):
-        hosts = []
-    ttl_seconds = int(ed.get("sandbox_session_ttl_seconds", 900))
-    return allow_any, hosts, max(60, ttl_seconds)
-
-
-def _get_browser_session_manager() -> BrowserSessionManager:
-    global browser_session_manager
-    if browser_session_manager is not None:
-        return browser_session_manager
-    if BrowserSessionManager is None:
-        raise RuntimeError("BrowserSessionManager is unavailable")
-
-    allow_any, hosts, _ttl = _sandbox_host_config()
-    browser_session_manager = BrowserSessionManager(
-        pw_run=_pw_run,
-        get_browser=lambda: _pw_browser,
-        emit_browser_view=_emit_browser_view,
-        default_allowed_hosts=hosts,
-        allow_any_host=allow_any,
-    )
-    logger.info(
-        "✓ Browser session manager initialized (allow_any=%s, allowed_hosts=%s)",
-        allow_any,
-        hosts,
-    )
-    return browser_session_manager
 
 def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
     """Get free VRAM in MiB for a specific GPU"""
@@ -1117,51 +992,19 @@ def unload_all_llm_models():
     return unloaded
 
 
-def _create_vision_chat_handler(clip_model_path: str, model_name: str = ""):
-    """Create the correct llama-cpp-python chat handler for a vision model.
-
-    In llama-cpp-python >= 0.3.x, `clip_model_path` is no longer a Llama()
-    constructor parameter.  The CLIP projector must be wrapped in an explicit
-    chat handler and passed via `chat_handler=`.
-
-    This helper auto-detects the right handler class:
-      - Qwen2-VL  → Qwen25VLChatHandler
-      - LLaVA 1.6 → Llava16ChatHandler
-      - fallback  → Llava15ChatHandler
-    """
-    model_lower = model_name.lower()
-    try:
-        if "qwen2-vl" in model_lower or "qwen2_vl" in model_lower or "qwen25vl" in model_lower:
-            from llama_cpp.llama_chat_format import Qwen25VLChatHandler
-            logger.info(f"Using Qwen25VLChatHandler for {model_name}")
-            return Qwen25VLChatHandler(clip_model_path=clip_model_path)
-        if "llava" in model_lower and ("1.6" in model_lower or "v1.6" in model_lower or "16" in model_lower):
-            from llama_cpp.llama_chat_format import Llava16ChatHandler
-            logger.info(f"Using Llava16ChatHandler for {model_name}")
-            return Llava16ChatHandler(clip_model_path=clip_model_path)
-        # Default fallback to LLaVA 1.5
-        from llama_cpp.llama_chat_format import Llava15ChatHandler
-        logger.info(f"Using Llava15ChatHandler (fallback) for {model_name}")
-        return Llava15ChatHandler(clip_model_path=clip_model_path)
-    except Exception as e:
-        logger.error(f"Failed to create vision chat handler: {e}")
-        raise
-
-
 def _try_load_vision_on_demand() -> bool:
     """
     On-demand vision model loader.
 
     When a vision request arrives but llm_vision is None (VRAM was too tight at
     startup), this helper:
-      1. Unloads ALL non-vision models to free VRAM.
-      2. Attempts to load the vision model with the correct chat_handler.
-      3. If CUDA OOM, retries with n_gpu_layers=0 (CPU-only fallback).
-      4. Returns True if vision is now available, False otherwise.
+      1. Unloads the medium model to free VRAM.
+      2. Attempts to load the vision model.
+      3. Returns True if vision is now available, False otherwise.
 
-    Other models are reloaded later by reload_llm_models_background().
+    The medium model is reloaded later by reload_llm_models_background().
     """
-    global llm_vision, llm_fast, llm_medium, llm_deep, llm_reasoning
+    global llm_vision, llm_medium
 
     # Already loaded?
     if llm_vision is not None:
@@ -1183,21 +1026,12 @@ def _try_load_vision_on_demand() -> bool:
         logger.warning(f"Vision model files not found: {vision_model_path}")
         return False
 
-    # Free VRAM by unloading ALL non-vision models (GPU 0 is often shared)
-    unloaded = []
-    for name, ref in [("fast", llm_fast), ("medium", llm_medium),
-                       ("deep", llm_deep), ("reasoning", llm_reasoning)]:
-        if ref is not None:
-            unloaded.append(name)
-    if unloaded:
-        logger.info(f"⏳ Unloading models to make room for vision: {', '.join(unloaded)}")
-        llm_fast = None
+    # Free VRAM by unloading the medium model
+    if llm_medium is not None:
+        logger.info("⏳ Unloading medium model to make room for vision model...")
         llm_medium = None
-        llm_deep = None
-        llm_reasoning = None
         _flush_gpu_memory()
-        time.sleep(1)
-        _flush_gpu_memory()
+        time.sleep(0.5)
 
     vision_n_ctx = core_config.get("vision_n_ctx", 4096)
     default_n_gpu_layers = int(core_config.get("n_gpu_layers", -1))
@@ -1210,32 +1044,21 @@ def _try_load_vision_on_demand() -> bool:
         common_kwargs["use_flash_attn"] = True
         common_kwargs["flash_attn_recompute"] = bool(core_config.get("flash_attn_recompute", False))
 
-    # Try loading with configured GPU layers first, fall back to CPU-only on OOM
-    for attempt, gpu_layers in enumerate([vision_n_gpu_layers, 0]):
-        try:
-            label = "GPU" if gpu_layers > 0 else "CPU-only"
-            logger.info(f"⏳ Loading vision model on-demand ({label}): {vision_model_name}")
-            vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
-            llm_vision = Llama(
-                model_path=str(vision_model_path),
-                chat_handler=vision_handler,
-                n_ctx=vision_n_ctx,
-                n_gpu_layers=gpu_layers,
-                **common_kwargs,
-            )
-            logger.info(f"✓ Vision model loaded on-demand ({label}, with explicit chat_handler)")
-            return True
-        except Exception as e:
-            llm_vision = None
-            err_str = str(e).lower()
-            if attempt == 0 and ("out of memory" in err_str or "cudamalloc" in err_str or "alloc" in err_str):
-                logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying with CPU-only: {e}")
-                _flush_gpu_memory()
-                time.sleep(0.5)
-                continue
-            logger.error(f"❌ Failed to load vision model on-demand: {e}")
-            return False
-    return False
+    try:
+        logger.info(f"⏳ Loading vision model on-demand: {vision_model_name}")
+        llm_vision = Llama(
+            model_path=str(vision_model_path),
+            clip_model_path=str(vision_clip_path),
+            n_ctx=vision_n_ctx,
+            n_gpu_layers=vision_n_gpu_layers,
+            **common_kwargs,
+        )
+        logger.info("✓ Vision model loaded on-demand")
+        return True
+    except Exception as e:
+        llm_vision = None
+        logger.error(f"❌ Failed to load vision model on-demand: {e}")
+        return False
 
 
 def reload_llm_models_background():
@@ -1545,53 +1368,6 @@ TOOL_REGISTRY = {
             "url": {"type": str, "required": True}
         }
     },
-    "browser.observe": {
-        "args": {
-            "session_id": {"type": str, "required": True}
-        }
-    },
-    "browser.navigate": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "url": {"type": str, "required": True}
-        }
-    },
-    "browser.click": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "x": {"type": int, "required": True},
-            "y": {"type": int, "required": True},
-            "button": {"type": str, "required": False, "default": "left"},
-            "click_count": {"type": int, "required": False, "default": 1}
-        }
-    },
-    "browser.type": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "text": {"type": str, "required": True},
-            "delay_ms": {"type": int, "required": False, "default": 10}
-        }
-    },
-    "browser.press": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "key": {"type": str, "required": True}
-        }
-    },
-    "browser.scroll": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "delta_x": {"type": int, "required": False, "default": 0},
-            "delta_y": {"type": int, "required": True}
-        }
-    },
-    "browser.create_session": {
-        "args": {
-            "url": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 1280},
-            "height": {"type": int, "required": False, "default": 800}
-        }
-    },
     "list_printers": {
         "args": {}
     },
@@ -1600,103 +1376,7 @@ TOOL_REGISTRY = {
             "printer_id": {"type": str, "required": True},
             "file_path": {"type": str, "required": True}
         }
-    },
-    # ── Workspace / filesystem tools ──────────────────────────────────
-    "workspace.init": {
-        "args": {
-            "project_id": {"type": str, "required": False, "default": ""}
-        }
-    },
-    "fs.read": {
-        "args": {
-            "path": {"type": str, "required": True}
-        }
-    },
-    "fs.write": {
-        "args": {
-            "path": {"type": str, "required": True},
-            "contents": {"type": str, "required": True},
-            "mode": {"type": str, "required": False, "default": "overwrite"}
-        }
-    },
-    "fs.list": {
-        "args": {
-            "dir": {"type": str, "required": False, "default": "."}
-        }
-    },
-    "fs.mkdir": {
-        "args": {
-            "dir": {"type": str, "required": True}
-        }
-    },
-    "fs.delete": {
-        "args": {
-            "path": {"type": str, "required": True},
-            "confirm": {"type": bool, "required": False, "default": False}
-        }
-    },
-    "fs.diff": {
-        "args": {
-            "path": {"type": str, "required": True},
-            "new_contents": {"type": str, "required": True}
-        }
-    },
-    "fs.apply_patch": {
-        "args": {
-            "path": {"type": str, "required": True},
-            "unified_diff": {"type": str, "required": True},
-            "confirm": {"type": bool, "required": False, "default": False}
-        }
-    },
-    # ── Project management tools ──────────────────────────────────────
-    "pm.create_task": {
-        "args": {
-            "project_id": {"type": str, "required": True},
-            "title": {"type": str, "required": True},
-            "description": {"type": str, "required": False, "default": ""},
-            "owner": {"type": str, "required": False, "default": ""}
-        }
-    },
-    "pm.list_tasks": {
-        "args": {
-            "project_id": {"type": str, "required": True}
-        }
-    },
-    "pm.update_task": {
-        "args": {
-            "project_id": {"type": str, "required": True},
-            "task_id": {"type": str, "required": True},
-            "status": {"type": str, "required": False, "default": ""},
-            "notes": {"type": str, "required": False, "default": ""}
-        }
-    },
-    # ── Code editing tools ────────────────────────────────────────────
-    "code.apply_unified_diff": {
-        "args": {
-            "path": {"type": str, "required": True},
-            "diff": {"type": str, "required": True}
-        }
-    },
-    "code.search": {
-        "args": {
-            "pattern": {"type": str, "required": True},
-            "dir": {"type": str, "required": False, "default": "."}
-        }
-    },
-    # ── Dev server tools ──────────────────────────────────────────────
-    "dev.run_server": {
-        "args": {
-            "command": {"type": str, "required": True},
-            "cwd": {"type": str, "required": False, "default": "."},
-            "port": {"type": int, "required": False, "default": 8000}
-        }
-    },
-    "dev.stop_server": {
-        "args": {
-            "handle": {"type": str, "required": True},
-            "confirm": {"type": bool, "required": False, "default": False}
-        }
-    },
+    }
 }
 
 TOOL_LOOP_MAX_STEPS = 5
@@ -1826,18 +1506,11 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "open_sandbox_browser" and isinstance(data, dict):
         title = data.get('title', '')
         url = data.get('url', '')
-        desc = data.get('description', '')
-        return f"Browser loaded: {title} ({url}). {desc}" if title else f"Sandbox browser opened: {url}"
-
-    if tool_name.startswith("browser.") and isinstance(data, dict):
-        url = data.get("url", "")
-        title = data.get("title", "")
-        sid = data.get("session_id", "")
-        if tool_name == "browser.create_session":
-            return f"Browser session created: {sid} at {url} ({title})"
-        if tool_name == "browser.observe":
-            return f"Observed browser session {sid}: {title} ({url})"
-        return f"Browser action complete for {sid}: {title} ({url})"
+        page_text = data.get('page_text', '')
+        summary = f"Browser loaded: {title} ({url})."
+        if page_text:
+            summary += f" Page content: {page_text[:2000]}"
+        return summary
 
     if tool_name == "list_printers" and isinstance(data, dict):
         printers = data.get("printers", [])
@@ -2082,10 +1755,12 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                     error=result.get("error"),
                 )
                 if result.get("ok"):
+                    page_text = result.get("page_text", "")
                     return {"ok": True, "data": {
                         "url": result.get("url", url),
                         "title": result.get("title", url),
                         "sandbox": True,
+                        "page_text": page_text,
                         "description": f"Successfully loaded page: {result.get('title', url)} at {result.get('url', url)}"
                     }}
                 else:
@@ -2094,61 +1769,6 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 _emit_browser_view(url, title=url, screenshot_b64=None,
                                    status="error", error=str(exc))
                 return {"ok": False, "error": f"Browser error: {exc}"}
-
-        if tool_name == "browser.create_session":
-            manager = _get_browser_session_manager()
-            data = manager.create_session(
-                start_url=args.get("url", ""),
-                width=args.get("width", 1280),
-                height=args.get("height", 800),
-            )
-            if chat_id and data.get("session_id"):
-                _start_periodic_screenshots(chat_id, data["session_id"])
-            return {"ok": True, "data": data}
-
-        if tool_name == "browser.observe":
-            manager = _get_browser_session_manager()
-            data = manager.observe(session_id=args.get("session_id", ""))
-            return {"ok": True, "data": data}
-
-        if tool_name == "browser.navigate":
-            manager = _get_browser_session_manager()
-            data = manager.navigate(session_id=args.get("session_id", ""), url=args.get("url", ""))
-            return {"ok": True, "data": data}
-
-        if tool_name == "browser.click":
-            manager = _get_browser_session_manager()
-            data = manager.click(
-                session_id=args.get("session_id", ""),
-                x=args.get("x", 0),
-                y=args.get("y", 0),
-                button=args.get("button", "left"),
-                click_count=args.get("click_count", 1),
-            )
-            return {"ok": True, "data": data}
-
-        if tool_name == "browser.type":
-            manager = _get_browser_session_manager()
-            data = manager.type(
-                session_id=args.get("session_id", ""),
-                text=args.get("text", ""),
-                delay_ms=args.get("delay_ms", 10),
-            )
-            return {"ok": True, "data": data}
-
-        if tool_name == "browser.press":
-            manager = _get_browser_session_manager()
-            data = manager.keypress(session_id=args.get("session_id", ""), key=args.get("key", "Enter"))
-            return {"ok": True, "data": data}
-
-        if tool_name == "browser.scroll":
-            manager = _get_browser_session_manager()
-            data = manager.scroll(
-                session_id=args.get("session_id", ""),
-                delta_x=args.get("delta_x", 0),
-                delta_y=args.get("delta_y", 0),
-            )
-            return {"ok": True, "data": data}
 
         if tool_name == "list_printers":
             db = _load_printers()
@@ -2203,365 +1823,6 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 "message": f"Printer '{printer_id}' is configured but type '{ptype}' requires manual bridge setup",
                 "data": {"printer": printer_id, "file": str(safe_file)},
             }
-
-        # ── Workspace / Filesystem tools ─────────────────────────────────
-        if tool_name == "workspace.init":
-            try:
-                proj = args.get("project_id", "") or (chat_id or "default")
-                ws = get_workspace_root(chat_id=chat_id, project_id=proj if args.get("project_id") else None)
-                return {"ok": True, "data": {"workspace_root": str(ws), "project_id": proj}}
-            except Exception as e:
-                return {"ok": False, "error": str(e)}
-
-        if tool_name == "fs.read":
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("path", ""))
-                if not safe.exists():
-                    return {"ok": False, "error": f"File not found: {args.get('path')}"}
-                if safe.is_dir():
-                    return {"ok": False, "error": "Path is a directory"}
-                content = safe.read_text(encoding="utf-8", errors="replace")[:64000]
-                return {"ok": True, "data": {"content": content, "path": str(safe.relative_to(ws))}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Read failed: {e}"}
-
-        if tool_name == "fs.write":
-            try:
-                from routes.agent_live import emit_file_diff, emit_agent_step
-            except ImportError:
-                try:
-                    from .routes.agent_live import emit_file_diff, emit_agent_step
-                except ImportError:
-                    def emit_file_diff(*a, **kw): pass
-                    def emit_agent_step(*a, **kw): pass
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("path", ""))
-                mode = args.get("mode", "overwrite")
-                contents = args.get("contents", "")
-                rel = str(safe.relative_to(ws))
-
-                old_text = ""
-                if safe.exists() and safe.is_file():
-                    old_text = safe.read_text(encoding="utf-8", errors="replace")
-
-                safe.parent.mkdir(parents=True, exist_ok=True)
-                if mode == "append":
-                    with open(safe, "a", encoding="utf-8") as f:
-                        f.write(contents)
-                    new_text = old_text + contents
-                elif mode == "patch":
-                    # Apply as unified diff
-                    import subprocess as _sp
-                    tmp = safe.with_suffix(safe.suffix + ".patch")
-                    tmp.write_text(contents, encoding="utf-8")
-                    _sp.run(["patch", str(safe), str(tmp)], capture_output=True, timeout=10)
-                    tmp.unlink(missing_ok=True)
-                    new_text = safe.read_text(encoding="utf-8", errors="replace") if safe.exists() else ""
-                else:
-                    safe.write_text(contents, encoding="utf-8")
-                    new_text = contents
-
-                diff_text = "".join(difflib.unified_diff(
-                    old_text.splitlines(True), new_text.splitlines(True),
-                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
-                ))
-                emit_file_diff(rel, diff_text)
-                emit_agent_step(title=f"Wrote file: {rel}", status="done")
-                return {"ok": True, "data": {"path": rel, "bytes": len(new_text.encode("utf-8"))}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Write failed: {e}"}
-
-        if tool_name == "fs.list":
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("dir", "."))
-                if not safe.exists():
-                    return {"ok": False, "error": "Directory not found"}
-                if not safe.is_dir():
-                    return {"ok": False, "error": "Path is not a directory"}
-                files = []
-                for item in sorted(safe.iterdir()):
-                    files.append({
-                        "name": item.name,
-                        "type": "directory" if item.is_dir() else "file",
-                        "size": item.stat().st_size if item.is_file() else 0,
-                    })
-                return {"ok": True, "data": {"files": files, "dir": str(safe.relative_to(ws))}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"List failed: {e}"}
-
-        if tool_name == "fs.mkdir":
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("dir", ""))
-                safe.mkdir(parents=True, exist_ok=True)
-                return {"ok": True, "data": {"dir": str(safe.relative_to(ws))}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Mkdir failed: {e}"}
-
-        if tool_name == "fs.delete":
-            if not args.get("confirm"):
-                return {"ok": False, "error": "confirm_required: fs.delete requires confirm=true"}
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("path", ""))
-                if not safe.exists():
-                    return {"ok": False, "error": "Path not found"}
-                rel = str(safe.relative_to(ws))
-                if safe.is_dir():
-                    shutil.rmtree(safe)
-                else:
-                    safe.unlink()
-                return {"ok": True, "data": {"deleted": rel}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Delete failed: {e}"}
-
-        if tool_name == "fs.diff":
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("path", ""))
-                old_text = ""
-                if safe.exists() and safe.is_file():
-                    old_text = safe.read_text(encoding="utf-8", errors="replace")
-                new_text = args.get("new_contents", "")
-                rel = str(safe.relative_to(ws))
-                diff_text = "".join(difflib.unified_diff(
-                    old_text.splitlines(True), new_text.splitlines(True),
-                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
-                ))
-                return {"ok": True, "data": {"path": rel, "diff": diff_text or "(no changes)"}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Diff failed: {e}"}
-
-        if tool_name == "fs.apply_patch":
-            if not args.get("confirm"):
-                return {"ok": False, "error": "confirm_required: fs.apply_patch requires confirm=true"}
-            try:
-                from routes.agent_live import emit_file_diff
-            except ImportError:
-                try:
-                    from .routes.agent_live import emit_file_diff
-                except ImportError:
-                    def emit_file_diff(*a, **kw): pass
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("path", ""))
-                rel = str(safe.relative_to(ws))
-                patch_text = args.get("unified_diff", "")
-                if not safe.exists():
-                    return {"ok": False, "error": "File not found"}
-                old = safe.read_text(encoding="utf-8", errors="replace")
-                # Apply patch using subprocess
-                proc = subprocess.run(
-                    ["patch", "--no-backup-if-mismatch", "-p0", str(safe)],
-                    input=patch_text, capture_output=True, text=True, timeout=10,
-                )
-                new = safe.read_text(encoding="utf-8", errors="replace") if safe.exists() else ""
-                diff_text = "".join(difflib.unified_diff(
-                    old.splitlines(True), new.splitlines(True),
-                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
-                ))
-                emit_file_diff(rel, diff_text)
-                return {"ok": True, "data": {"path": rel, "applied": proc.returncode == 0, "stderr": proc.stderr[:500]}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Patch failed: {e}"}
-
-        # ── Project management tools ─────────────────────────────────────
-        if tool_name == "pm.create_task":
-            proj = args.get("project_id", "default")
-            if proj not in _project_tasks:
-                _project_tasks[proj] = []
-                _project_task_counter[proj] = 0
-            _project_task_counter[proj] += 1
-            tid = f"T{_project_task_counter[proj]}"
-            task = {
-                "id": tid,
-                "title": args.get("title", ""),
-                "description": args.get("description", ""),
-                "owner": args.get("owner", ""),
-                "status": "todo",
-                "notes": "",
-                "created_at": time.time(),
-            }
-            _project_tasks[proj].append(task)
-            try:
-                from routes.agent_live import emit_agent_step
-            except ImportError:
-                try:
-                    from .routes.agent_live import emit_agent_step
-                except ImportError:
-                    def emit_agent_step(*a, **kw): pass
-            emit_agent_step(title=f"Task created: {tid} — {task['title']}", status="done")
-            return {"ok": True, "data": task}
-
-        if tool_name == "pm.list_tasks":
-            proj = args.get("project_id", "default")
-            tasks = _project_tasks.get(proj, [])
-            return {"ok": True, "data": {"project_id": proj, "tasks": tasks}}
-
-        if tool_name == "pm.update_task":
-            proj = args.get("project_id", "default")
-            tid = args.get("task_id", "")
-            tasks = _project_tasks.get(proj, [])
-            task = next((t for t in tasks if t["id"] == tid), None)
-            if not task:
-                return {"ok": False, "error": f"Task {tid} not found in project {proj}"}
-            if args.get("status"):
-                task["status"] = args["status"]
-            if args.get("notes"):
-                task["notes"] = args["notes"]
-            try:
-                from routes.agent_live import emit_agent_step
-            except ImportError:
-                try:
-                    from .routes.agent_live import emit_agent_step
-                except ImportError:
-                    def emit_agent_step(*a, **kw): pass
-            emit_agent_step(title=f"Task {tid} → {task['status']}", status="done")
-            return {"ok": True, "data": task}
-
-        # ── Code editing tools ───────────────────────────────────────────
-        if tool_name == "code.apply_unified_diff":
-            try:
-                from routes.agent_live import emit_file_diff
-            except ImportError:
-                try:
-                    from .routes.agent_live import emit_file_diff
-                except ImportError:
-                    def emit_file_diff(*a, **kw): pass
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                safe = _safe_project_path(ws, args.get("path", ""))
-                rel = str(safe.relative_to(ws))
-                diff_text = args.get("diff", "")
-                if not safe.exists():
-                    return {"ok": False, "error": "File not found"}
-                old = safe.read_text(encoding="utf-8", errors="replace")
-                proc = subprocess.run(
-                    ["patch", "--no-backup-if-mismatch", "-p0", str(safe)],
-                    input=diff_text, capture_output=True, text=True, timeout=10,
-                )
-                new = safe.read_text(encoding="utf-8", errors="replace") if safe.exists() else ""
-                result_diff = "".join(difflib.unified_diff(
-                    old.splitlines(True), new.splitlines(True),
-                    fromfile=f"a/{rel}", tofile=f"b/{rel}",
-                ))
-                emit_file_diff(rel, result_diff)
-                return {"ok": True, "data": {"path": rel, "applied": proc.returncode == 0, "stderr": proc.stderr[:500]}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Diff apply failed: {e}"}
-
-        if tool_name == "code.search":
-            try:
-                ws = get_workspace_root(chat_id=chat_id)
-                search_dir = _safe_project_path(ws, args.get("dir", "."))
-                pattern = args.get("pattern", "")
-                if not pattern:
-                    return {"ok": False, "error": "pattern is required"}
-                # Prefer ripgrep, fallback to grep
-                rg = shutil.which("rg")
-                if rg:
-                    cmd = [rg, "--max-count=50", "--no-heading", "--line-number", "--color=never", pattern, str(search_dir)]
-                else:
-                    cmd = ["grep", "-rnI", "--max-count=50", "--color=never", pattern, str(search_dir)]
-                proc = subprocess.run(cmd, capture_output=True, text=True, timeout=15)
-                return {"ok": True, "data": {"matches": (proc.stdout or "")[:16000], "count": proc.stdout.count("\n") if proc.stdout else 0}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Search failed: {e}"}
-
-        # ── Dev server tools ─────────────────────────────────────────────
-        if tool_name == "dev.run_server":
-            try:
-                command = args.get("command", "").strip()
-                port = int(args.get("port", 8000))
-                cwd = args.get("cwd", ".")
-                if not command:
-                    return {"ok": False, "error": "command is required"}
-                # Check port availability
-                import socket
-                with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
-                    if s.connect_ex(("127.0.0.1", port)) == 0:
-                        return {"ok": False, "error": f"Port {port} is already in use"}
-                ws = get_workspace_root(chat_id=chat_id)
-                safe_cwd = _safe_project_path(ws, cwd)
-                parts = shlex.split(command)
-                allowed_server_cmds = {"python", "python3", "node", "npm", "npx", "uvicorn", "gunicorn", "flask", "yarn", "pnpm"}
-                if parts[0] not in allowed_server_cmds:
-                    return {"ok": False, "error": f"Command '{parts[0]}' not allowed for dev server"}
-                handle = f"srv_{uuid.uuid4().hex[:8]}"
-                proc = subprocess.Popen(
-                    parts,
-                    cwd=str(safe_cwd),
-                    stdout=subprocess.PIPE,
-                    stderr=subprocess.PIPE,
-                    text=True,
-                    env={k: v for k, v in os.environ.items() if k not in {"OPENAI_API_KEY", "ANTHROPIC_API_KEY"}},
-                )
-                _dev_server_processes[handle] = {
-                    "proc": proc,
-                    "chat_id": chat_id,
-                    "command": command,
-                    "port": port,
-                    "pid": proc.pid,
-                }
-                try:
-                    from routes.agent_live import emit_log
-                except ImportError:
-                    try:
-                        from .routes.agent_live import emit_log
-                    except ImportError:
-                        def emit_log(*a, **kw): pass
-                emit_log(f"Dev server started: {command} (port {port}, handle={handle})", level="info")
-                return {"ok": True, "data": {"handle": handle, "pid": proc.pid, "port": port, "command": command}}
-            except ValueError as e:
-                return {"ok": False, "error": str(e)}
-            except Exception as e:
-                return {"ok": False, "error": f"Server start failed: {e}"}
-
-        if tool_name == "dev.stop_server":
-            if not args.get("confirm"):
-                return {"ok": False, "error": "confirm_required: dev.stop_server requires confirm=true"}
-            handle = args.get("handle", "")
-            entry = _dev_server_processes.pop(handle, None)
-            if not entry:
-                return {"ok": False, "error": f"Server handle '{handle}' not found"}
-            try:
-                entry["proc"].terminate()
-                entry["proc"].wait(timeout=5)
-            except Exception:
-                try:
-                    entry["proc"].kill()
-                except Exception:
-                    pass
-            try:
-                from routes.agent_live import emit_log
-            except ImportError:
-                try:
-                    from .routes.agent_live import emit_log
-                except ImportError:
-                    def emit_log(*a, **kw): pass
-            emit_log(f"Dev server stopped: {entry['command']} (handle={handle})", level="info")
-            return {"ok": True, "data": {"handle": handle, "stopped": True}}
 
         if tool_name == "read_file":
             # Read file from gallery or uploads
@@ -2721,25 +1982,23 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             with lock:
                 response = llm(
                     prompt,
-                    max_tokens=1024,
+                    max_tokens=512,
                     temperature=0.4,
                     top_p=0.9,
-                    repeat_penalty=1.3,
-                    frequency_penalty=0.5,
-                    presence_penalty=0.4,
                     echo=False,
-                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n",
-                          "Would you like", "Let me know if", "Do let me know"]
+                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n"]
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
 
     base_instructions = (
-        "You can call structured tools before answering. "
+        "You are an AI agent that can call tools to help answer the user's request. "
         "Reply with either a final answer in plain text (include citations like [source:web_search]) "
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
-        "Tools: web_search(query:str,max_results:int) — search the web for information on a topic, "
-        "rag_search(query:str,limit:int,global:bool), "
+        "IMPORTANT: After calling a tool, you MUST provide a final answer summarizing what you found. "
+        "When using open_sandbox_browser, the page content will be returned to you — use it to answer the user's question. "
+        "Do NOT just browse and stop — always synthesize the results into a helpful response.\n"
+        "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
         "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
@@ -2749,67 +2008,10 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str) — open a URL in the sandbox browser with live screenshot (use this when asked to open/visit/browse/go to a website or URL), "
-        "browser.create_session(url:str,width:int,height:int), "
-        "browser.observe(session_id:str), browser.navigate(session_id:str,url:str), "
-        "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
-        "browser.type(session_id:str,text:str,delay_ms:int), "
-        "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
-        "list_printers(), send_3d_print(printer_id:str,file_path:str), "
-        "workspace.init(project_id:str), fs.read(path:str), fs.write(path:str,contents:str,mode:str), "
-        "fs.list(dir:str), fs.mkdir(dir:str), fs.delete(path:str,confirm:bool), "
-        "fs.diff(path:str,new_contents:str), fs.apply_patch(path:str,unified_diff:str,confirm:bool), "
-        "pm.create_task(project_id:str,title:str,description:str,owner:str), "
-        "pm.list_tasks(project_id:str), pm.update_task(project_id:str,task_id:str,status:str,notes:str), "
-        "code.apply_unified_diff(path:str,diff:str), code.search(pattern:str,dir:str), "
-        "dev.run_server(command:str,cwd:str,port:int), dev.stop_server(handle:str,confirm:bool). "
-        "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
-        "Only use web_search when the user wants to SEARCH for information (no specific URL given). "
-        "For file/code tasks: use fs.read to read, code.search to find references, fs.diff to preview changes, fs.write to save. "
-        "CODING WORKFLOW: 1) code.search to locate relevant code, 2) fs.read to understand context, "
-        "3) fs.diff to preview proposed changes, 4) code.apply_unified_diff or fs.write to apply, "
-        "5) codespace_exec to test (e.g. run linter/tests), 6) summarize what changed. "
-        "Always use workspace.init before fs.* tools to get a workspace root."
+        "open_sandbox_browser(url:str), list_printers(), send_3d_print(printer_id:str,file_path:str)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
-
-    # Auto-route: detect explicit URL opening intent and inject browser tool call
-    _url_open_match = re.search(
-        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
-        r'(https?://\S+|(?:www\.)\S+)',
-        user_message, re.IGNORECASE
-    )
-    if not _url_open_match:
-        # Also detect bare URLs when user intent is clearly "open"
-        _url_open_match = re.search(
-            r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
-            r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
-            user_message, re.IGNORECASE
-        )
-    if _url_open_match:
-        browser_url = _url_open_match.group(1).strip()
-        if not browser_url.startswith("http"):
-            browser_url = f"https://{browser_url}"
-        logger.info(f"⚙️ Auto-routing to open_sandbox_browser for URL: {browser_url}")
-        try:
-            tool_result = await asyncio.wait_for(
-                _execute_tool("open_sandbox_browser", {"url": browser_url}, chat_id),
-                timeout=TOOL_CALL_TIMEOUT_SEC
-            )
-            summary = _summarize_tool_result("open_sandbox_browser", tool_result)
-            tool_events.append({
-                "tool": "open_sandbox_browser",
-                "args": {"url": browser_url},
-                "result": tool_result,
-                "summary": summary
-            })
-            emit_agent_step(
-                title=f"Tool: open_sandbox_browser(url={browser_url!r})",
-                status="done",
-            )
-        except Exception as e:
-            logger.error(f"Auto browser tool failed: {e}")
 
     step = 0
     while step < TOOL_LOOP_MAX_STEPS and not final_answer:
@@ -2902,7 +2104,10 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         for idx, event in enumerate(tool_events, 1):
             history_lines.append(f"Tool {idx} [{event['tool']}]: {event['summary']}")
         prompt = (
-            f"Use the gathered tool evidence to answer. Cite sources as [source:TOOLNAME].\n" + "\n".join(history_lines)
+            "You MUST now provide a complete, helpful answer to the user based on all tool results above. "
+            "Summarize the key information you found. Cite sources as [source:TOOLNAME]. "
+            "If you browsed a website, include the relevant information from the page content.\n\n"
+            + "\n".join(history_lines)
         )
         final_answer = await call_llm(prompt)
 
@@ -2916,29 +2121,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
 # OpenAI-Compatible Models for /v1/chat/completions endpoint
 class OpenAIMessage(BaseModel):
     role: str = Field(..., description="Role: user, assistant, or system")
-    content: Union[str, List[Dict[str, Any]]] = Field(..., description="Message content")
+    content: str = Field(..., description="Message content")
     name: Optional[str] = Field(default=None, description="Optional name for the message author")
-
-    @validator("content")
-    def validate_content_blocks(cls, value):
-        if isinstance(value, str):
-            return value
-        if not isinstance(value, list):
-            raise ValueError("content must be a string or list of content blocks")
-        for block in value:
-            if not isinstance(block, dict):
-                raise ValueError("multimodal content blocks must be objects")
-            block_type = block.get("type")
-            if block_type == "text":
-                if not isinstance(block.get("text"), str):
-                    raise ValueError("text blocks require a string 'text' field")
-            elif block_type == "image_url":
-                image_url = block.get("image_url")
-                if not isinstance(image_url, dict) or not isinstance(image_url.get("url"), str):
-                    raise ValueError("image_url blocks require image_url.url string")
-            else:
-                raise ValueError("only 'text' and 'image_url' blocks are supported")
-        return value
 
 class OpenAITool(BaseModel):
     type: str = Field(default="function", description="Tool type")
@@ -2953,59 +2137,6 @@ class OpenAIChatCompletionRequest(BaseModel):
     stream: Optional[bool] = Field(default=False, description="Stream response tokens")
     tools: Optional[List[OpenAITool]] = Field(default=None, description="Optional tools/functions")
     tool_choice: Optional[str] = Field(default=None, description="Tool selection strategy")
-
-    @validator("messages")
-    def validate_multimodal_roles(cls, messages):
-        for message in messages:
-            if isinstance(message.content, list) and message.role not in {"user", "system"}:
-                raise ValueError("multimodal content blocks are only allowed for user/system roles")
-        return messages
-
-
-def _flatten_openai_content(content: Union[str, List[Dict[str, Any]]]) -> str:
-    if isinstance(content, str):
-        return content
-    parts: List[str] = []
-    for block in content or []:
-        if not isinstance(block, dict):
-            continue
-        if block.get("type") == "text" and isinstance(block.get("text"), str):
-            parts.append(block["text"])
-    return "\n".join(p for p in parts if p).strip()
-
-
-def _normalize_openai_multimodal_content(content: Union[str, List[Dict[str, Any]]]) -> Union[str, List[Dict[str, Any]]]:
-    if isinstance(content, str):
-        return content
-    normalized: List[Dict[str, Any]] = []
-    for block in content:
-        block_type = block.get("type")
-        if block_type == "text":
-            normalized.append({"type": "text", "text": block.get("text", "")})
-            continue
-        if block_type == "image_url":
-            image_url = block.get("image_url") or {}
-            raw_url = image_url.get("url", "")
-            if isinstance(raw_url, str) and raw_url.startswith("data:image/"):
-                raw_url = _preprocess_vision_image(raw_url) or raw_url
-            normalized.append({"type": "image_url", "image_url": {"url": raw_url}})
-    return normalized
-
-
-def _openai_messages_have_images(messages: List[OpenAIMessage]) -> bool:
-    for message in messages:
-        if not isinstance(message.content, list):
-            continue
-        for block in message.content:
-            if not isinstance(block, dict):
-                continue
-            if block.get("type") != "image_url":
-                continue
-            image_url = block.get("image_url") or {}
-            url = image_url.get("url", "")
-            if isinstance(url, str) and (url.startswith("data:image/") or url.startswith("http://") or url.startswith("https://")):
-                return True
-    return False
 
 class OpenAIChoice(BaseModel):
     index: int = Field(description="Choice index")
@@ -3309,34 +2440,21 @@ def load_llm_models():
         vision_clip_path = models_path / vision_clip_name
         
         if vision_model_path.exists() and vision_clip_path.exists():
-            _vision_loaded = False
-            for _vattempt, _vgpu_layers in enumerate([vision_n_gpu_layers, 0]):
-                try:
-                    _vlabel = "GPU" if _vgpu_layers > 0 else "CPU-only"
-                    logger.info(f"Loading vision model ({_vlabel}): {vision_model_path}")
-                    logger.info(f"Loading CLIP projector: {vision_clip_path}")
-                    
-                    vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
-                    llm_vision = Llama(
-                        model_path=str(vision_model_path),
-                        chat_handler=vision_handler,
-                        n_ctx=vision_n_ctx,
-                        n_gpu_layers=_vgpu_layers,
-                        **common_kwargs
-                    )
-                    logger.info(f"✓ Vision model loaded successfully ({_vlabel}, with explicit chat_handler)")
-                    _vision_loaded = True
-                    break
-                except Exception as e:
-                    llm_vision = None
-                    _err = str(e).lower()
-                    if _vattempt == 0 and ("out of memory" in _err or "cudamalloc" in _err or "alloc" in _err):
-                        logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying CPU-only: {e}")
-                        _flush_gpu_memory()
-                        time.sleep(0.5)
-                        continue
-                    logger.warning(f"Failed to load vision model: {e}")
-                    break
+            try:
+                logger.info(f"Loading vision model: {vision_model_path}")
+                logger.info(f"Loading CLIP projector: {vision_clip_path}")
+                
+                llm_vision = Llama(
+                    model_path=str(vision_model_path),
+                    clip_model_path=str(vision_clip_path),
+                    n_ctx=vision_n_ctx,
+                    n_gpu_layers=vision_n_gpu_layers,
+                    **common_kwargs
+                )
+                logger.info("✓ Vision model loaded successfully")
+            except Exception as e:
+                llm_vision = None
+                logger.warning(f"Failed to load vision model: {e}")
         else:
             logger.info("Vision model or CLIP projector not found (optional - image understanding disabled)")
     else:
@@ -3347,31 +2465,20 @@ def load_llm_models():
         vision_code_model_path = models_path / vision_code_model_name
         vision_code_clip_path = models_path / vision_code_clip_name
         if vision_code_model_path.exists() and vision_code_clip_path.exists():
-            for _vcattempt, _vcgpu_layers in enumerate([vision_code_n_gpu_layers, 0]):
-                try:
-                    _vclabel = "GPU" if _vcgpu_layers > 0 else "CPU-only"
-                    logger.info(f"Loading vision-to-code model ({_vclabel}): {vision_code_model_path}")
-                    logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
-                    vision_code_handler = _create_vision_chat_handler(str(vision_code_clip_path), vision_code_model_name)
-                    llm_vision_code = Llama(
-                        model_path=str(vision_code_model_path),
-                        chat_handler=vision_code_handler,
-                        n_ctx=vision_code_n_ctx,
-                        n_gpu_layers=_vcgpu_layers,
-                        **common_kwargs
-                    )
-                    logger.info(f"✓ Vision-to-code model loaded successfully ({_vclabel}, with explicit chat_handler)")
-                    break
-                except Exception as e:
-                    llm_vision_code = None
-                    _vcerr = str(e).lower()
-                    if _vcattempt == 0 and ("out of memory" in _vcerr or "cudamalloc" in _vcerr or "alloc" in _vcerr):
-                        logger.warning(f"⚠️ Vision-to-code GPU load failed (OOM), retrying CPU-only: {e}")
-                        _flush_gpu_memory()
-                        time.sleep(0.5)
-                        continue
-                    logger.warning(f"Failed to load vision-to-code model: {e}")
-                    break
+            try:
+                logger.info(f"Loading vision-to-code model: {vision_code_model_path}")
+                logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
+                llm_vision_code = Llama(
+                    model_path=str(vision_code_model_path),
+                    clip_model_path=str(vision_code_clip_path),
+                    n_ctx=vision_code_n_ctx,
+                    n_gpu_layers=vision_code_n_gpu_layers,
+                    **common_kwargs
+                )
+                logger.info("✓ Vision-to-code model loaded successfully")
+            except Exception as e:
+                llm_vision_code = None
+                logger.warning(f"Failed to load vision-to-code model: {e}")
         else:
             logger.info("Vision-to-code model or CLIP projector not found (optional)")
 
@@ -3485,7 +2592,7 @@ def get_intent_from_coral(message: str) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global _detected_gpus, _normalized_tensor_split, _browser_cleanup_task
+    global _detected_gpus, _normalized_tensor_split
 
     # Startup
     logger.info("=" * 50)
@@ -3515,25 +2622,6 @@ async def lifespan(app: FastAPI):
     # ── Register all models with ModelManager v2 (new) ───────────────
     _register_models_with_v2()
 
-    # Initialize persistent sandbox browser sessions and periodic cleanup.
-    try:
-        _get_browser_session_manager()
-    except Exception as e:
-        logger.warning(f"⚠ Browser session manager unavailable at startup: {e}")
-
-    async def _browser_cleanup_loop():
-        while True:
-            await asyncio.sleep(60)
-            try:
-                mgr = _get_browser_session_manager()
-                _allow_any, _hosts, ttl = _sandbox_host_config()
-                await asyncio.to_thread(mgr.cleanup_expired_sessions, ttl)
-            except Exception:
-                # Best-effort cleanup only.
-                pass
-
-    _browser_cleanup_task = asyncio.create_task(_browser_cleanup_loop())
-
     # Optional model manager v1 for hot-swap (legacy)
     global model_manager
     try:
@@ -3550,12 +2638,6 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down EDISON Core Service...")
-    if _browser_cleanup_task:
-        _browser_cleanup_task.cancel()
-        try:
-            await _browser_cleanup_task
-        except BaseException:
-            pass
     if model_manager_v2_instance:
         model_manager_v2_instance.unload_all()
 
@@ -3620,10 +2702,63 @@ def _register_models_with_v2():
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="EDISON Core Service",
-    description="Local LLM service with RAG capabilities",
-    version="1.0.0",
-    lifespan=lifespan
+    title="EDISON Core API",
+    description="""
+# EDISON Core AI Service
+
+Local LLM service with RAG, multi-agent swarm, browser automation, image/video/music generation, and 3D printing.
+
+## Quick Start
+
+### Chat (Simple)
+```bash
+curl -X POST http://localhost:8811/v1/chat/completions \\
+  -H "Content-Type: application/json" \\
+  -d '{"model": "fast", "messages": [{"role": "user", "content": "Hello!"}]}'
+```
+
+### Chat (Streaming with modes)
+```bash
+curl -X POST http://localhost:8811/chat/stream \\
+  -H "Content-Type: application/json" \\
+  -d '{"message": "Research AI trends", "mode": "swarm"}'
+```
+
+### Available Modes
+- **fast** — Quick responses (14B model)
+- **medium** — Balanced (32B model)
+- **deep** — Most capable (72B model)
+- **agent** — Tool-using assistant (browser, search, code execution)
+- **swarm** — Multi-agent collaboration (Boss + specialists)
+- **thinking** — Deep reasoning mode
+
+### Image Generation
+```bash
+curl -X POST http://localhost:8811/generate-image \\
+  -H "Content-Type: application/json" \\
+  -d '{"prompt": "a sunset over mountains"}'
+```
+
+### 3D Printing
+```bash
+# List printers
+curl http://localhost:8811/printers
+
+# Register a printer
+curl -X POST http://localhost:8811/printers \\
+  -H "Content-Type: application/json" \\
+  -d '{"name": "My Printer", "type": "octoprint", "host": "192.168.1.100", "endpoint": "http://192.168.1.100", "api_key": "YOUR_KEY"}'
+
+# Slice and send
+curl -X POST http://localhost:8811/printing/slice-and-send \\
+  -H "Content-Type: application/json" \\
+  -d '{"model_path": "path/to/model.stl", "printer_id": "printer_abc123"}'
+```
+""",
+    version="2.0.0",
+    lifespan=lifespan,
+    docs_url="/docs",
+    redoc_url="/redoc",
 )
 
 # Add CORS middleware for web UI
@@ -3759,6 +2894,132 @@ async def health():
         "vision_enabled": llm_vision is not None,
         "qdrant_ready": rag_system is not None,
         "repo_root": str(REPO_ROOT)
+    }
+
+
+@app.get("/api/guide", tags=["docs"])
+async def api_guide():
+    """Interactive API quick-reference with curl examples for every major endpoint."""
+    return {
+        "title": "EDISON API Quick Reference",
+        "base_url": "http://localhost:8811",
+        "docs_url": "/docs",
+        "endpoints": {
+            "chat": {
+                "openai_compatible": {
+                    "method": "POST",
+                    "path": "/v1/chat/completions",
+                    "description": "OpenAI-compatible chat completions (easiest to use from code)",
+                    "example": {
+                        "model": "fast",
+                        "messages": [{"role": "user", "content": "Hello!"}],
+                        "stream": False,
+                        "temperature": 0.7,
+                        "max_tokens": 2048
+                    },
+                    "models": ["fast (14B)", "medium (32B)", "deep (72B)"],
+                },
+                "streaming": {
+                    "method": "POST",
+                    "path": "/chat/stream",
+                    "description": "SSE streaming chat with mode selection, tools, and swarm",
+                    "example": {
+                        "message": "Research AI trends",
+                        "mode": "agent",
+                        "chat_id": "optional-session-id"
+                    },
+                    "modes": ["fast", "medium", "deep", "thinking", "agent", "swarm", "work"],
+                },
+                "cancel": {
+                    "method": "POST",
+                    "path": "/chat/cancel",
+                    "description": "Cancel an in-progress streaming request",
+                    "example": {"request_id": "uuid-from-init-event"}
+                },
+            },
+            "generation": {
+                "image": {
+                    "method": "POST",
+                    "path": "/generate-image",
+                    "description": "Generate images via ComfyUI/FLUX",
+                    "example": {"prompt": "a sunset over mountains", "width": 1024, "height": 1024}
+                },
+                "video": {
+                    "method": "POST",
+                    "path": "/generate-video",
+                    "description": "Generate videos via CogVideoX",
+                    "example": {"prompt": "a cat playing piano", "duration": 6}
+                },
+                "music": {
+                    "method": "POST",
+                    "path": "/generate-music",
+                    "description": "Generate music via MusicGen",
+                    "example": {"prompt": "upbeat electronic", "duration": 15}
+                },
+            },
+            "printing_3d": {
+                "list_printers": {
+                    "method": "GET",
+                    "path": "/printers",
+                    "description": "List all configured 3D printers"
+                },
+                "add_printer": {
+                    "method": "POST",
+                    "path": "/printers",
+                    "description": "Register a new 3D printer (OctoPrint, Bambu Lab, or generic)",
+                    "example": {
+                        "name": "My Bambu X1C",
+                        "type": "bambu",
+                        "host": "192.168.1.100",
+                        "api_key": "optional"
+                    },
+                    "supported_types": ["octoprint", "bambu", "generic"],
+                },
+                "upload_and_slice": {
+                    "method": "POST",
+                    "path": "/printing/slice-and-send",
+                    "description": "Upload STL/3MF, slice it, and send G-code to printer",
+                    "example": {
+                        "model_path": "outputs/model.stl",
+                        "printer_id": "printer_abc123",
+                        "profile": "0.2mm"
+                    },
+                },
+                "upload_file": {
+                    "method": "POST",
+                    "path": "/files/upload",
+                    "description": "Upload an STL/3MF file first, then use slice-and-send",
+                },
+            },
+            "browser": {
+                "open": {
+                    "method": "POST",
+                    "path": "/sandbox/browser/open",
+                    "description": "Open a URL and get a screenshot",
+                    "example": {"url": "https://example.com"}
+                },
+                "screenshot": {
+                    "method": "POST",
+                    "path": "/sandbox/browser/screenshot",
+                    "description": "Take a screenshot of a URL",
+                    "example": {"url": "https://example.com", "width": 1280, "height": 800}
+                },
+            },
+            "memory": {
+                "search": {
+                    "method": "POST",
+                    "path": "/rag/search",
+                    "description": "Search long-term memory/knowledge base",
+                    "example": {"query": "user preferences", "limit": 5}
+                },
+            },
+            "system": {
+                "health": {"method": "GET", "path": "/health"},
+                "models": {"method": "GET", "path": "/models/list"},
+                "tools": {"method": "GET", "path": "/tools/list"},
+                "stats": {"method": "GET", "path": "/system/stats"},
+            },
+        }
     }
 
 @app.get("/models/list")
@@ -5569,7 +4830,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 search_tool=search_tool,
                 config=config,
                 emit_fn=emit_agent_step,
-                execute_tool=_execute_tool,
             )
 
             file_request = _is_file_request(request.message or "")
@@ -5713,26 +4973,8 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                         status="running" if idx < total_steps else "done",
                     )
 
-            # Emit browser_view events from tool results on the main stream
-            # so the frontend can render browser cards even without /agent/stream
-            for evt in agent_tool_events:
-                if evt.get("tool") == "open_sandbox_browser":
-                    result = evt.get("result", {})
-                    data = result.get("data", {}) if isinstance(result, dict) else {}
-                    if isinstance(data, dict) and data.get("url"):
-                        bv_evt = {
-                            "type": "browser_view",
-                            "url": data.get("url", ""),
-                            "title": data.get("title", data.get("url", "")),
-                            "status": "done" if result.get("ok") else "error",
-                            "error": result.get("error"),
-                        }
-                        yield f"event: browser_view\ndata: {json.dumps(bv_evt)}\n\n"
-
             # Stream the pre-computed answer token by token
             assistant_response = agent_tool_answer.strip()
-            # Clean up repetitive output from tool loop
-            assistant_response = _dedupe_repeated_lines(assistant_response)
             for token_chunk in _chunk_text(assistant_response, chunk_size=12):
                 yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
 
@@ -5874,7 +5116,6 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                     "fabricate or guess details that are not present in the image."
                 )
                 content = []
-                image_count = 0
                 if request.images:
                     for img_b64 in request.images:
                         if isinstance(img_b64, str):
@@ -5882,86 +5123,56 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             normalized = _preprocess_vision_image(img_b64)
                             if normalized:
                                 content.append({"type": "image_url", "image_url": {"url": normalized}})
-                                image_count += 1
-                            else:
-                                logger.warning(f"Vision image preprocessing returned None (input length: {len(img_b64)})")
                 content.append({"type": "text", "text": vision_question})
+                lock = get_lock_for_model(llm)
+                with lock:
+                    stream = llm.create_chat_completion(
+                        messages=[
+                            {"role": "system", "content": vision_sys},
+                            {"role": "user", "content": content}
+                        ],
+                        max_tokens=2048,
+                        temperature=0.1,
+                        stream=True
+                    )
+                    for chunk in stream:
+                        if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                            logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
+                            break
 
-                if image_count == 0:
-                    logger.error("No valid images after preprocessing — all images dropped")
-
-                logger.info(f"Vision stream: {image_count} images, question: {vision_question[:120]}")
-
-                try:
-                    lock = get_lock_for_model(llm)
-                    with lock:
-                        stream = llm.create_chat_completion(
-                            messages=[
-                                {"role": "system", "content": vision_sys},
-                                {"role": "user", "content": content}
-                            ],
-                            max_tokens=2048,
-                            temperature=0.1,
-                            stream=True
-                        )
-                        for chunk in stream:
-                            if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
-                                logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
-                                break
-
-                            # Check for cancellation
-                            with active_requests_lock:
-                                if request_id in active_requests and active_requests[request_id]["cancelled"]:
-                                    logger.info(f"Request {request_id} cancelled by user")
-                                    client_disconnected = True
-                                    break
-
-                            if await raw_request.is_disconnected():
-                                logger.info(f"Client disconnected for request {request_id}")
-                                with active_requests_lock:
-                                    if request_id in active_requests:
-                                        active_requests[request_id]["cancelled"] = True
+                        # Check for cancellation
+                        with active_requests_lock:
+                            if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                                logger.info(f"Request {request_id} cancelled by user")
                                 client_disconnected = True
                                 break
-                            token, finished = _extract_stream_token_and_finished(chunk, vision=True)
-                            if token:
-                                assistant_response += token
-                                empty_chunks = 0
-                                if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
-                                    logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
-                                    yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
-                                    break
-                                # Check for repetition loop in vision output
-                                if _detect_repetition(assistant_response):
-                                    logger.warning("Repetition detected in vision output, stopping generation")
-                                    break
+                        
+                        if await raw_request.is_disconnected():
+                            logger.info(f"Client disconnected for request {request_id}")
+                            with active_requests_lock:
+                                if request_id in active_requests:
+                                    active_requests[request_id]["cancelled"] = True
+                            client_disconnected = True
+                            break
+                        token, finished = _extract_stream_token_and_finished(chunk, vision=True)
+                        if token:
+                            assistant_response += token
+                            empty_chunks = 0
+                            if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                                logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
-                            else:
-                                empty_chunks += 1
-
-                            if finished:
-                                logger.debug("Vision stream finished (reason signaled by model)")
                                 break
+                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                        else:
+                            empty_chunks += 1
 
-                            if empty_chunks >= max_empty_chunks:
-                                logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
-                                break
-                except Exception as vision_exc:
-                    logger.error(f"Vision streaming failed: {vision_exc}")
-                    logger.error(f"Falling back to text-only vision prompt")
-                    # Fallback: text-only description request
-                    fallback_lock = get_lock_for_model(llm)
-                    with fallback_lock:
-                        fb_resp = llm(
-                            f"[Image provided but could not be processed] {vision_question}",
-                            max_tokens=2048,
-                            temperature=0.1,
-                            echo=False
-                        )
-                    fallback_text = fb_resp["choices"][0]["text"].strip()
-                    assistant_response = f"⚠️ Vision processing failed — the image could not be analyzed.\n\n{fallback_text}"
-                    for token_chunk in _chunk_text(assistant_response, chunk_size=12):
-                        yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
+                        if finished:
+                            logger.debug("Vision stream finished (reason signaled by model)")
+                            break
+
+                        if empty_chunks >= max_empty_chunks:
+                            logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
+                            break
             else:
                 # Detect file generation requests for higher token limit
                 _is_file_gen = bool(re.search(
@@ -6158,13 +5369,6 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
         artifact = detect_artifact(cleaned_response)
-
-        # If vision was used and other models were unloaded, reload them in background
-        if has_images and model_name == "vision":
-            try:
-                reload_llm_models_background()
-            except Exception:
-                pass
         
         done_payload = {
             "ok": True,
@@ -6301,56 +5505,7 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
         elif llm_deep:
             model_target = "deep"
     
-    has_images = _openai_messages_have_images(request.messages)
-
-    # Vision path for true multimodal requests
-    if has_images:
-        model_text = (request.model or "").lower()
-        prefer_vision_code = "code" in model_text
-
-        vision_model = llm_vision_code if prefer_vision_code and llm_vision_code is not None else llm_vision
-        model_name = "vision_code" if vision_model is llm_vision_code else "vision"
-
-        if vision_model is None:
-            if not _try_load_vision_on_demand():
-                raise HTTPException(status_code=503, detail="Vision model not loaded")
-            vision_model = llm_vision
-            model_name = "vision"
-
-        if vision_model is None:
-            raise HTTPException(status_code=503, detail="No suitable vision model available")
-
-        chat_messages: List[Dict[str, Any]] = []
-        for msg in request.messages:
-            if isinstance(msg.content, list):
-                content = _normalize_openai_multimodal_content(msg.content)
-                # Keep multimodal blocks on user/system messages only.
-                if msg.role not in {"user", "system"}:
-                    content = _flatten_openai_content(content)
-            else:
-                content = msg.content
-            chat_messages.append({"role": msg.role, "content": content})
-
-        if request.stream:
-            return await openai_stream_completions(
-                raw_request,
-                vision_model,
-                model_name,
-                full_prompt=None,
-                request=request,
-                chat_messages=chat_messages,
-                is_vision_chat=True,
-            )
-        return await openai_non_stream_completions(
-            vision_model,
-            model_name,
-            full_prompt=None,
-            request=request,
-            chat_messages=chat_messages,
-            is_vision_chat=True,
-        )
-
-    # Select text model (legacy behavior)
+    # Select model
     if model_target == "deep" and llm_deep:
         llm = llm_deep
         model_name = "deep"
@@ -6360,35 +5515,32 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
     else:
         llm = llm_fast
         model_name = "fast"
-
+    
     if not llm:
         raise HTTPException(status_code=503, detail="No suitable model available")
-
+    
     # Convert OpenAI messages to internal prompt format
     system_prompt = "You are a helpful assistant."
     user_message = ""
-
+    
     for msg in request.messages:
         if msg.role == "system":
-            system_prompt = _flatten_openai_content(msg.content)
+            system_prompt = msg.content
         elif msg.role == "user":
-            user_message = _flatten_openai_content(msg.content)
-
+            user_message = msg.content
+        # Assistant messages are used for context but not regenerated
+    
+    # Build prompt
     full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
-
+    
     if request.stream:
+        # Streaming response
         return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
-    return await openai_non_stream_completions(llm, model_name, full_prompt, request)
+    else:
+        # Non-streaming response
+        return await openai_non_stream_completions(llm, model_name, full_prompt, request)
 
-async def openai_stream_completions(
-    raw_request: Request,
-    llm,
-    model_name: str,
-    full_prompt: Optional[str],
-    request: OpenAIChatCompletionRequest,
-    chat_messages: Optional[List[Dict[str, Any]]] = None,
-    is_vision_chat: bool = False,
-):
+async def openai_stream_completions(raw_request: Request, llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
     """Generate OpenAI-compatible streaming response."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
@@ -6399,13 +5551,7 @@ async def openai_stream_completions(
         active_requests[request_id] = {"cancelled": False, "timestamp": created_time}
     
     async def stream_generator():
-        if chat_messages is not None:
-            prompt_blob = []
-            for msg in chat_messages:
-                prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
-            prompt_tokens = len("\n".join(prompt_blob).split())
-        else:
-            prompt_tokens = len((full_prompt or "").split())
+        prompt_tokens = len(full_prompt.split())  # Approximate
         completion_tokens = 0
         assistant_response = ""
         empty_chunks = 0
@@ -6415,23 +5561,14 @@ async def openai_stream_completions(
         try:
             lock = get_lock_for_model(llm)
             with lock:
-                if chat_messages is not None:
-                    stream = llm.create_chat_completion(
-                        messages=chat_messages,
-                        max_tokens=request.max_tokens or 2048,
-                        temperature=request.temperature if request.temperature is not None else 0.2,
-                        top_p=request.top_p if request.top_p is not None else 0.9,
-                        stream=True,
-                    )
-                else:
-                    stream = llm(
-                        full_prompt,
-                        max_tokens=request.max_tokens or 2048,
-                        temperature=request.temperature or 0.7,
-                        top_p=request.top_p or 0.9,
-                        echo=False,
-                        stream=True
-                    )
+                stream = llm(
+                    full_prompt,
+                    max_tokens=request.max_tokens or 2048,
+                    temperature=request.temperature or 0.7,
+                    top_p=request.top_p or 0.9,
+                    echo=False,
+                    stream=True
+                )
                 
                 for chunk in stream:
                     if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
@@ -6452,7 +5589,7 @@ async def openai_stream_completions(
                                 active_requests[request_id]["cancelled"] = True
                         break
                     
-                    token, finished = _extract_stream_token_and_finished(chunk, vision=is_vision_chat)
+                    token, finished = _extract_stream_token_and_finished(chunk)
                     if token:
                         assistant_response += token
                         completion_tokens += 1
@@ -6525,51 +5662,29 @@ async def openai_stream_completions(
         }
     )
 
-async def openai_non_stream_completions(
-    llm,
-    model_name: str,
-    full_prompt: Optional[str],
-    request: OpenAIChatCompletionRequest,
-    chat_messages: Optional[List[Dict[str, Any]]] = None,
-    is_vision_chat: bool = False,
-):
+async def openai_non_stream_completions(llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
     """Generate OpenAI-compatible non-streaming response."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
-
+    
     try:
         lock = get_lock_for_model(llm)
         with lock:
-            if chat_messages is not None:
-                response = llm.create_chat_completion(
-                    messages=chat_messages,
-                    max_tokens=request.max_tokens or 2048,
-                    temperature=request.temperature if request.temperature is not None else 0.2,
-                    top_p=request.top_p if request.top_p is not None else 0.9,
-                    stream=False,
-                )
-                message = response["choices"][0]["message"]["content"]
-                if isinstance(message, list):
-                    assistant_response = _flatten_openai_content(message)
-                else:
-                    assistant_response = str(message or "").strip()
-                prompt_blob = []
-                for msg in chat_messages:
-                    prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
-                prompt_tokens = len("\n".join(prompt_blob).split())
-            else:
-                response = llm(
-                    full_prompt,
-                    max_tokens=request.max_tokens or 2048,
-                    temperature=request.temperature or 0.7,
-                    top_p=request.top_p or 0.9,
-                    echo=False
-                )
-                assistant_response = response["choices"][0]["text"].strip()
-                prompt_tokens = len((full_prompt or "").split())
-
+            response = llm(
+                full_prompt,
+                max_tokens=request.max_tokens or 2048,
+                temperature=request.temperature or 0.7,
+                top_p=request.top_p or 0.9,
+                echo=False
+            )
+        
+        assistant_response = response["choices"][0]["text"].strip()
+        
+        # Approximate token counts
+        prompt_tokens = len(full_prompt.split())
         completion_tokens = len(assistant_response.split())
-
+        
+        # Format response in OpenAI format
         return OpenAIChatCompletionResponse(
             id=completion_id,
             created=created_time,
@@ -6585,11 +5700,9 @@ async def openai_non_stream_completions(
                 total_tokens=prompt_tokens + completion_tokens
             )
         )
-
+    
     except Exception as e:
         logger.error(f"OpenAI completion error: {e}")
-        if is_vision_chat and request.stream:
-            raise HTTPException(status_code=400, detail="vision streaming not supported yet")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search", response_model=SearchResponse)
@@ -11072,163 +10185,6 @@ async def sandbox_browser_screenshot(request: dict):
     return result
 
 
-def _browser_error_to_http(exc: Exception) -> HTTPException:
-    if isinstance(exc, BrowserSessionError):
-        return HTTPException(status_code=getattr(exc, "status_code", 400), detail=str(exc))
-    if isinstance(exc, KeyError):
-        return HTTPException(status_code=404, detail=str(exc))
-    return HTTPException(status_code=400, detail=str(exc))
-
-
-@app.post("/sandbox/browser/session/create")
-async def sandbox_browser_session_create(request: dict):
-    """Create a persistent sandbox browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        _allow_any, _hosts, ttl = _sandbox_host_config()
-        await asyncio.to_thread(mgr.cleanup_expired_sessions, ttl)
-        data = await asyncio.to_thread(
-            mgr.create_session,
-            request.get("url", ""),
-            int(request.get("width") or 1280),
-            int(request.get("height") or 800),
-            request.get("allowed_hosts"),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/navigate")
-async def sandbox_browser_session_navigate(request: dict):
-    """Navigate an existing browser session to a new URL."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(mgr.navigate, request.get("session_id", ""), request.get("url", ""))
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/click")
-async def sandbox_browser_session_click(request: dict):
-    """Click at viewport coordinates in a persistent browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(
-            mgr.click,
-            request.get("session_id", ""),
-            int(request.get("x") or 0),
-            int(request.get("y") or 0),
-            request.get("button", "left"),
-            int(request.get("click_count") or 1),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/type")
-async def sandbox_browser_session_type(request: dict):
-    """Type text into the active focused element in a browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(
-            mgr.type,
-            request.get("session_id", ""),
-            request.get("text", ""),
-            int(request.get("delay_ms") or 10),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/key")
-async def sandbox_browser_session_key(request: dict):
-    """Press a keyboard key in the active browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(
-            mgr.keypress,
-            request.get("session_id", ""),
-            request.get("key", "Enter"),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/scroll")
-async def sandbox_browser_session_scroll(request: dict):
-    """Scroll the current page in a browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(
-            mgr.scroll,
-            request.get("session_id", ""),
-            int(request.get("dx") or request.get("delta_x") or 0),
-            int(request.get("dy") or request.get("delta_y") or 0),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/move")
-async def sandbox_browser_session_move(request: dict):
-    """Move mouse cursor in a browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(
-            mgr.move_mouse,
-            request.get("session_id", ""),
-            int(request.get("x") or 0),
-            int(request.get("y") or 0),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/viewport")
-async def sandbox_browser_session_viewport(request: dict):
-    """Update session viewport dimensions."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(
-            mgr.set_viewport,
-            request.get("session_id", ""),
-            int(request.get("width") or 1280),
-            int(request.get("height") or 800),
-        )
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/screenshot")
-async def sandbox_browser_session_screenshot(request: dict):
-    """Capture current screenshot from an existing browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(mgr.screenshot, request.get("session_id", ""))
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
-@app.post("/sandbox/browser/session/close")
-async def sandbox_browser_session_close(request: dict):
-    """Close a persistent browser session."""
-    try:
-        mgr = _get_browser_session_manager()
-        data = await asyncio.to_thread(mgr.close_session, request.get("session_id", ""))
-        return {"ok": True, **data}
-    except Exception as e:
-        raise _browser_error_to_http(e)
-
-
 @app.get("/integrations/connectors")
 async def list_connectors():
     """List configured external API connectors."""
@@ -11444,6 +10400,170 @@ async def delete_printer(printer_id: str):
     return {"ok": True, "deleted": pid}
 
 
+@app.post("/printers/{printer_id}/test")
+@app.post("/printing/printers/{printer_id}/test")
+async def test_printer_connection(printer_id: str):
+    """Test connectivity to a configured 3D printer.
+
+    Attempts to reach the printer's API endpoint and reports whether it's online.
+    Supports OctoPrint (via /api/version) and Bambu printers.
+    """
+    import httpx
+    pid = (printer_id or "").strip()
+    if not pid:
+        raise HTTPException(status_code=400, detail="printer id is required")
+
+    db = _load_printers()
+    printer = next((p for p in db.get("printers", []) if p.get("id") == pid), None)
+    if not printer:
+        raise HTTPException(status_code=404, detail="Printer not found")
+
+    ptype = (printer.get("type") or "generic").lower()
+    host = (printer.get("host") or "").strip()
+    endpoint = (printer.get("endpoint") or "").strip()
+    api_key = printer.get("api_key", "")
+
+    if not host and not endpoint:
+        return {"ok": False, "reachable": False, "error": "No host or endpoint configured"}
+
+    try:
+        async with httpx.AsyncClient(timeout=8) as client:
+            if ptype == "octoprint":
+                url = f"{endpoint.rstrip('/')}/api/version" if endpoint else f"http://{host}/api/version"
+                headers = {"X-Api-Key": api_key} if api_key else {}
+                resp = await client.get(url, headers=headers)
+                if resp.status_code == 200:
+                    data = resp.json()
+                    return {"ok": True, "reachable": True, "printer_type": "octoprint",
+                            "version": data.get("text", "unknown"), "api": data.get("api", "unknown")}
+                return {"ok": False, "reachable": True, "error": f"OctoPrint responded with HTTP {resp.status_code}"}
+            elif ptype == "bambu":
+                # Bambu printers use MQTT, so we just ping the host
+                url = f"http://{host}" if host else endpoint
+                resp = await client.get(url)
+                return {"ok": True, "reachable": True, "printer_type": "bambu",
+                        "note": "Host is reachable (Bambu uses MQTT for printing)"}
+            else:
+                url = endpoint or f"http://{host}"
+                resp = await client.get(url)
+                return {"ok": True, "reachable": resp.status_code < 500, "printer_type": "generic",
+                        "status_code": resp.status_code}
+    except httpx.ConnectError:
+        return {"ok": False, "reachable": False, "error": f"Cannot reach printer at {host or endpoint}"}
+    except httpx.TimeoutException:
+        return {"ok": False, "reachable": False, "error": "Connection timed out"}
+    except Exception as e:
+        return {"ok": False, "reachable": False, "error": str(e)}
+
+
+@app.post("/printing/upload", tags=["3d_printing"])
+async def upload_3d_model(file: UploadFile = File(...)):
+    """Upload a 3D model file (STL, 3MF, OBJ) for slicing and printing.
+
+    Returns the saved file path which can be used with /printing/slice-and-send.
+    """
+    if not file.filename:
+        raise HTTPException(status_code=400, detail="Filename is required")
+
+    allowed_extensions = {".stl", ".3mf", ".obj", ".step", ".stp"}
+    ext = Path(file.filename).suffix.lower()
+    if ext not in allowed_extensions:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(allowed_extensions))}"
+        )
+
+    # Save to outputs/3d_models/
+    models_dir = REPO_ROOT / "outputs" / "3d_models"
+    models_dir.mkdir(parents=True, exist_ok=True)
+
+    # Sanitize filename
+    safe_name = re.sub(r'[^\w\-.]', '_', file.filename)
+    dest = models_dir / safe_name
+    # Avoid overwrites
+    if dest.exists():
+        stem = dest.stem
+        suffix = dest.suffix
+        counter = 1
+        while dest.exists():
+            dest = models_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+
+    data = await file.read()
+    if len(data) > 200 * 1024 * 1024:  # 200MB limit
+        raise HTTPException(status_code=413, detail="File too large (max 200MB)")
+
+    dest.write_bytes(data)
+
+    return {
+        "ok": True,
+        "filename": dest.name,
+        "path": str(dest.relative_to(REPO_ROOT)),
+        "size_mb": round(len(data) / (1024 * 1024), 2),
+        "hint": f"Use this path with POST /printing/slice-and-send: {{\"model_path\": \"{dest.relative_to(REPO_ROOT)}\", \"printer_id\": \"YOUR_PRINTER_ID\"}}"
+    }
+
+
+@app.get("/printing/setup-guide", tags=["3d_printing"])
+async def printing_setup_guide():
+    """Step-by-step guide for connecting and using 3D printers with EDISON."""
+    slicer_bin = shutil.which("prusa-slicer") or shutil.which("orca-slicer")
+    return {
+        "title": "3D Printer Setup Guide",
+        "slicer_installed": slicer_bin is not None,
+        "slicer_path": slicer_bin,
+        "steps": [
+            {
+                "step": 1,
+                "title": "Register Your Printer",
+                "description": "Add your 3D printer's network details",
+                "method": "POST /printers",
+                "example": {
+                    "name": "My Printer",
+                    "type": "octoprint",
+                    "host": "192.168.1.100",
+                    "endpoint": "http://192.168.1.100",
+                    "api_key": "YOUR_OCTOPRINT_API_KEY"
+                },
+                "notes": [
+                    "For OctoPrint: Find API key in OctoPrint Settings → API → Global API Key",
+                    "For Bambu Lab: Use the printer's IP address, type='bambu'",
+                    "For generic WiFi printers: Use type='generic'"
+                ]
+            },
+            {
+                "step": 2,
+                "title": "Test Connection",
+                "description": "Verify the printer is reachable",
+                "method": "POST /printers/{printer_id}/test",
+            },
+            {
+                "step": 3,
+                "title": "Upload a 3D Model",
+                "description": "Upload STL/3MF/OBJ file",
+                "method": "POST /printing/upload",
+                "supported_formats": [".stl", ".3mf", ".obj", ".step"],
+                "max_size": "200MB"
+            },
+            {
+                "step": 4,
+                "title": "Slice and Print",
+                "description": "Slice the model and send G-code to your printer",
+                "method": "POST /printing/slice-and-send",
+                "example": {
+                    "model_path": "outputs/3d_models/my_model.stl",
+                    "printer_id": "printer_abc123",
+                    "profile": "0.2mm"
+                },
+                "notes": [
+                    f"Slicer: {'✅ ' + slicer_bin if slicer_bin else '❌ Not installed — install prusa-slicer or orca-slicer'}",
+                    "Profiles: 0.1mm (fine), 0.2mm (standard), 0.3mm (draft)"
+                ]
+            }
+        ]
+    }
+
+
 _SLICE_STATUS: Dict[str, dict] = {}
 
 
@@ -11581,7 +10701,6 @@ async def swarm_direct_message(request: dict):
             get_lock_for_model=get_lock_for_model,
             search_tool=search_tool,
             config=config,
-            execute_tool=_execute_tool,
         )
 
         result = await engine.handle_direct_message(session, agent_name, message)
@@ -11633,7 +10752,6 @@ async def swarm_user_feedback(request: dict):
             get_lock_for_model=get_lock_for_model,
             search_tool=search_tool,
             config=config,
-            execute_tool=_execute_tool,
         )
 
         responses = await engine.handle_user_intervention(session, message)

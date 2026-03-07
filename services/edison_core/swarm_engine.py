@@ -157,8 +157,8 @@ class SwarmSession:
     vote_counts: Dict[str, int] = field(default_factory=dict)
     vote_summary: str = ""
     rounds_completed: int = 0
-    max_rounds: int = 7
-    target_rounds: int = 2                    # Boss will override this (1-7)
+    max_rounds: int = 3
+    target_rounds: int = 2                    # Boss will override this (1-3)
     status: str = "initializing"              # initializing | running | paused | voting | synthesizing | done
     user_interventions: List[Dict[str, Any]] = field(default_factory=list)  # user messages injected mid-swarm
     direct_messages: List[Dict[str, Any]] = field(default_factory=list)     # @agent DMs from user
@@ -217,10 +217,23 @@ class SwarmSession:
             return "- (no tasks)"
         return "\n".join(f"- [{t['status']}] {t['id']}: {t['title']} (owner: {t.get('owner_agent', '?')})" for t in self.tasks)
 
-    def discussion_text(self) -> str:
-        return "\n".join(
+    def discussion_text(self, max_chars: int = 3000) -> str:
+        """Return discussion history, truncated to fit in prompt context."""
+        lines = [
             f"{c['icon']} {c['agent']}: {c['response']}" for c in self.conversation
-        )
+        ]
+        text = "\n".join(lines)
+        if len(text) <= max_chars:
+            return text
+        # Keep most recent entries that fit
+        result_lines = []
+        total = 0
+        for line in reversed(lines):
+            if total + len(line) + 1 > max_chars:
+                break
+            result_lines.insert(0, line)
+            total += len(line) + 1
+        return "\n".join(result_lines)
 
     def agent_names(self) -> List[str]:
         return [a["name"] for a in self.agents]
@@ -502,20 +515,33 @@ Your response:"""
         return None, "No Model"
 
     def _apply_memory_safety(self, session: SwarmSession):
-        """Check VRAM and downgrade if needed."""
+        """Check VRAM and use shared single model for swarm to prevent OOM."""
         try:
             from services.edison_core.swarm_safety import (
-                get_swarm_memory_policy, apply_degraded_mode,
+                get_swarm_memory_policy, apply_degraded_mode, _flush_gpu,
             )
+            # Always flush before swarm starts
+            _flush_gpu()
+
             policy = get_swarm_memory_policy()
             available = self._available_models()
             loaded_map = {tag: True for tag, _, _ in available}
             decision = policy.assess(session.agents, loaded_map)
             logger.info(f"🐝 Memory safety: {decision}")
 
-            if decision == "degraded":
-                fb = available[0] if available else (None, "fallback")
-                apply_degraded_mode(session.agents, fb[1] if len(fb) > 1 else None, fb[2] if len(fb) > 2 else "Fallback")
+            # For swarm, always use a single shared model to avoid multi-model OOM.
+            # Pick the fastest available model (lowest VRAM) for all agents.
+            priority_order = ["fast", "medium", "deep"]
+            chosen = available[0] if available else (None, None, "fallback")
+            for pref in priority_order:
+                for tag, model, name in available:
+                    if tag == pref:
+                        chosen = (tag, model, name)
+                        break
+                if chosen[0] == pref:
+                    break
+            apply_degraded_mode(session.agents, chosen[1], chosen[2])
+            logger.info(f"🐝 Swarm using shared model: {chosen[2]} (prevents multi-model OOM)")
         except Exception as e:
             logger.debug(f"Swarm safety check skipped: {e}")
 
@@ -534,11 +560,10 @@ Your response:"""
 
 Your job:
 1. Restate the goal clearly in 1-2 sentences.
-2. Decide how many discussion rounds the team needs (1-7).
-   - 1 round: trivial / simple factual question
-   - 2 rounds: standard task, moderate complexity
-   - 3-4 rounds: complex multi-part task, needs iteration
-   - 5-7 rounds: very complex, research-heavy, or creative task needing deep refinement
+2. Decide how many discussion rounds the team needs (1-3).
+   - 1 round: simple task, factual question, or straightforward request
+   - 2 rounds: moderate complexity, needs iteration
+   - 3 rounds: complex multi-part task needing deep refinement
 3. Break the task into 2-5 sub-tasks.
 4. Assign each sub-task to one or more of your team members.
 5. If the task requires creating files or code, include a TASKS_JSON block.
@@ -550,7 +575,7 @@ User Request: {session.user_request}
 
 Rules:
 - Respond only in English.
-- You MUST include **Rounds**: <number> (a single integer 1-7).
+- You MUST include **Rounds**: <number> (a single integer 1-3).
 - Use this format:
   **Goal**: <restated goal>
   **Rounds**: <number>
@@ -578,7 +603,7 @@ Your plan:"""
             rounds_match = re.search(r"[Rr]ounds\s*[:：]\s*(\d+)", session.boss_plan)
         if rounds_match:
             boss_rounds = int(rounds_match.group(1))
-            boss_rounds = max(1, min(boss_rounds, session.max_rounds))  # clamp 1-7
+            boss_rounds = max(1, min(boss_rounds, session.max_rounds))  # clamp 1-3
             session.target_rounds = boss_rounds
             logger.info(f"👔 Boss decided {boss_rounds} round(s)")
         else:
@@ -608,7 +633,8 @@ Your plan:"""
         search_results: List[dict] = None,
         chat_id: str = None,
     ):
-        """Execute multi-round agent discussion."""
+        """Execute multi-round agent discussion with VRAM-safe inter-round flushing."""
+        from services.edison_core.swarm_safety import _flush_gpu, _get_free_vram_mb
         user_msg_truncated = _truncate(session.user_request, 2500)
         wants_search = bool(re.search(
             r"search|web|internet|latest|current|news|today|research|sources",
@@ -656,6 +682,8 @@ Your initial perspective:"""
             self._emit(title=f"{result['icon']} {result['agent']}: {result['response'][:100]}", status="done")
 
         session.rounds_completed = 1
+        # Flush GPU after round 1
+        _flush_gpu()
 
         # ── Auto-round adjustment (Jaccard similarity) ───────────────────
         # If round 1 responses are too similar and Boss chose few rounds, nudge up by 1
@@ -666,6 +694,13 @@ Your initial perspective:"""
 
         # ── Rounds 2+ ───────────────────────────────────────────────────
         for round_idx in range(2, session.target_rounds + 1):
+            # Flush GPU cache between rounds to prevent OOM accumulation
+            _flush_gpu()
+            free_mb = _get_free_vram_mb()
+            if free_mb > 0 and free_mb < 2000:
+                logger.warning(f"🐝 Low VRAM ({free_mb:.0f}MB free) — stopping early at round {round_idx - 1}")
+                break
+
             self._emit(title=f"🐝 Round {round_idx} — refining", status="running")
             round_prompts = []
 
@@ -718,6 +753,12 @@ Your refined contribution:"""
 
     async def _voting_round(self, session: SwarmSession):
         """Each agent votes for top 2 contributions."""
+        # Flush GPU before voting round
+        try:
+            from services.edison_core.swarm_safety import _flush_gpu
+            _flush_gpu()
+        except Exception:
+            pass
         self._emit(title="🗳️ Voting round", status="running")
 
         # Get latest response per agent
@@ -922,7 +963,7 @@ Instructions:
         temperature: float,
         max_tokens: int = 300,
     ) -> Dict[str, Any]:
-        """Run a single agent prompt with CJK retry."""
+        """Run a single agent prompt with CJK retry and OOM recovery."""
         def _invoke(p: str, t: float) -> str:
             model = agent["model"]
             if model is None:
@@ -940,7 +981,26 @@ Instructions:
                 )
                 return stream["choices"][0]["message"]["content"]
 
-        response = await asyncio.to_thread(_invoke, prompt, temperature)
+        try:
+            response = await asyncio.to_thread(_invoke, prompt, temperature)
+        except Exception as e:
+            err_str = str(e).lower()
+            if "out of memory" in err_str or "cuda" in err_str or "oom" in err_str:
+                logger.warning(f"🐝 CUDA OOM in {agent['name']}, flushing and retrying with shorter prompt")
+                try:
+                    from services.edison_core.swarm_safety import _flush_gpu
+                    _flush_gpu()
+                except Exception:
+                    pass
+                # Retry with truncated prompt
+                short_prompt = prompt[:2000] if len(prompt) > 2000 else prompt
+                try:
+                    response = await asyncio.to_thread(_invoke, short_prompt, temperature)
+                except Exception:
+                    response = f"(Agent {agent['name']} skipped due to memory constraints)"
+            else:
+                logger.error(f"🐝 Agent {agent['name']} error: {e}")
+                response = f"(Agent {agent['name']} encountered an error)"
 
         # CJK retry
         if _contains_cjk(response):

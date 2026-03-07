@@ -64,6 +64,3 @@ shap-e @ git+https://github.com/openai/shap-e.git
 Pillow>=10.0.0
 
 # Note: Silero VAD is loaded via torch.hub, no pip package needed
-
-# Headless browser for agent sandbox browser (inline chat screenshots)
-playwright>=1.40.0

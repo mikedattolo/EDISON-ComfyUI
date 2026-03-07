@@ -2585,18 +2585,21 @@ console.log('🧊 app_new_features.js v1 loading...');
         const status = event.status || 'loading';
         const errMsg = event.error || '';
 
-        // Reuse the existing card if same session (same host or loading state)
+        // Reuse the existing card if one exists in the current conversation
+        // This prevents multiple screenshots from appearing as separate cards
         const sameSession = _browserCardEl &&
             (_browserCardSessionUrl === url ||
-             (status === 'done' && _tryMatchHost(_browserCardSessionUrl, url)));
+             status === 'loading' ||
+             status === 'done' ||
+             _tryMatchHost(_browserCardSessionUrl, url));
 
         if (!sameSession) {
             // Create a new browser card element
             _browserCardEl = _createBrowserCard();
             container.appendChild(_browserCardEl);
-            _browserCardSessionUrl = url;
             container.scrollTop = container.scrollHeight;
         }
+        _browserCardSessionUrl = url;
 
         // Update the card content
         _updateBrowserCard(_browserCardEl, { url, title, screenshot, status, errMsg });
