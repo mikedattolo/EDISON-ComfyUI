@@ -30,6 +30,10 @@ edison:
     reasoning_n_gpu_layers: 24
     vision_n_gpu_layers: 20
     vision_code_n_gpu_layers: 16
+    # Safety guard: block vision inference if GPU0 free VRAM is below this threshold.
+    # Helps avoid native CLIP loader crashes when memory is tight.
+    vision_min_free_vram_mb: 1024
+    vision_skip_vram_guard: false
     use_flash_attn: false
     flash_attn_recompute: false
 

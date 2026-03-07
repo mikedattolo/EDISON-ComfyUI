@@ -104,11 +104,18 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
             page.goto(url, timeout=20000, wait_until="domcontentloaded")
             page.wait_for_timeout(800)
             title = page.title() or url
+            readable_text = ""
+            try:
+                body_text = page.locator("body").inner_text(timeout=2500) or ""
+                # Keep the payload bounded for tool-loop prompts.
+                readable_text = re.sub(r"\s+", " ", body_text).strip()[:4000]
+            except Exception:
+                readable_text = ""
             png_bytes = page.screenshot(type="jpeg", quality=82,
                                         full_page=False, clip=None)
             b64 = base64.b64encode(png_bytes).decode()
             return {"ok": True, "url": page.url, "title": title, "screenshot_b64": b64,
-                    "width": width, "height": height}
+                    "width": width, "height": height, "readable_text": readable_text}
         except Exception as e:
             return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
         finally:
@@ -1004,6 +1011,38 @@ def _flush_gpu_memory():
         pass
     gc.collect()
 
+
+def _vision_vram_preflight(model_label: str = "vision") -> tuple[bool, str]:
+    """Block vision inference when GPU0 VRAM is too low for stable CLIP loading."""
+    core_config = {}
+    try:
+        if isinstance(config, dict):
+            core_config = config.get("edison", {}).get("core", {})
+    except Exception:
+        core_config = {}
+    if bool(core_config.get("vision_skip_vram_guard", False)):
+        return True, ""
+
+    min_free_mb = int(core_config.get("vision_min_free_vram_mb", 1024))
+    try:
+        import torch
+        if not torch.cuda.is_available():
+            return True, ""
+    except Exception:
+        # If torch probing fails, avoid false negatives and continue as before.
+        return True, ""
+
+    free_mb = _get_gpu_free_vram_mb(0)
+    if free_mb >= min_free_mb:
+        return True, ""
+
+    reason = (
+        f"Insufficient free GPU memory for {model_label} on GPU 0: "
+        f"{free_mb:.0f} MiB available, requires >= {min_free_mb} MiB."
+    )
+    logger.warning("Vision preflight blocked request: %s", reason)
+    return False, reason
+
 def unload_all_llm_models():
     """Unload all LLM models to free GPU VRAM for image generation"""
     global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
@@ -1618,6 +1657,55 @@ def _validate_and_normalize_tool_call(payload: dict):
     return True, None, tool_name, normalized
 
 
+def _extract_tool_payload_from_text(raw_output: str) -> Optional[dict]:
+    """Extract a JSON object for tool calls from noisy LLM output.
+
+    Handles pure JSON, markdown code fences, and prose-wrapped JSON.
+    Returns the first parsed dict payload or None.
+    """
+    if not isinstance(raw_output, str):
+        return None
+    text = raw_output.strip()
+    if not text:
+        return None
+
+    # 1) Direct parse first.
+    try:
+        obj = json.loads(text)
+        return obj if isinstance(obj, dict) else None
+    except Exception:
+        pass
+
+    # 2) Try fenced code block content first.
+    fenced_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
+    if fenced_match:
+        candidate = fenced_match.group(1)
+        try:
+            obj = json.loads(candidate)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+
+    # 3) Scan for balanced JSON objects and parse the first valid one.
+    for start in (i for i, ch in enumerate(text) if ch == "{"):
+        depth = 0
+        for i in range(start, len(text)):
+            ch = text[i]
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    candidate = text[start:i + 1]
+                    try:
+                        obj = json.loads(candidate)
+                        if isinstance(obj, dict):
+                            return obj
+                    except Exception:
+                        break
+    return None
+
+
 def _summarize_tool_result(tool_name: str, result: dict) -> str:
     """Create a concise summary string for model consumption."""
     if not result.get("ok"):
@@ -1693,7 +1781,11 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         title = data.get('title', '')
         url = data.get('url', '')
         desc = data.get('description', '')
-        return f"Browser loaded: {title} ({url}). {desc}" if title else f"Sandbox browser opened: {url}"
+        text_preview = (data.get("readable_text") or "")[:260].replace("\n", " ").strip()
+        if title:
+            base = f"Browser loaded: {title} ({url}). {desc}"
+            return f"{base} Page text: {text_preview}" if text_preview else base
+        return f"Sandbox browser opened: {url}"
 
     if tool_name.startswith("browser.") and isinstance(data, dict):
         url = data.get("url", "")
@@ -1964,7 +2056,8 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                         "url": result.get("url", url),
                         "title": result.get("title", url),
                         "sandbox": True,
-                        "description": f"Successfully loaded page: {result.get('title', url)} at {result.get('url', url)}"
+                        "description": f"Successfully loaded page: {result.get('title', url)} at {result.get('url', url)}",
+                        "readable_text": result.get("readable_text", ""),
                     }}
                 else:
                     return {"ok": False, "error": f"Browser failed: {result.get('error', 'unknown error')}"}
@@ -2384,29 +2477,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         raw_output = await call_llm(prompt)
         raw_output = raw_output.strip()
 
-        # Attempt to parse JSON — robust extraction handles LLM adding text after JSON
-        parsed = None
-        try:
-            parsed = json.loads(raw_output)
-        except Exception:
-            # Try to extract the first JSON object from the output
-            try:
-                brace_start = raw_output.index('{')
-                depth = 0
-                brace_end = brace_start
-                for i in range(brace_start, len(raw_output)):
-                    if raw_output[i] == '{':
-                        depth += 1
-                    elif raw_output[i] == '}':
-                        depth -= 1
-                        if depth == 0:
-                            brace_end = i + 1
-                            break
-                if brace_end > brace_start:
-                    json_candidate = raw_output[brace_start:brace_end]
-                    parsed = json.loads(json_candidate)
-            except (ValueError, json.JSONDecodeError):
-                parsed = None
+        # Attempt to parse JSON tool payload from noisy model output.
+        parsed = _extract_tool_payload_from_text(raw_output)
 
         if parsed:
             valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
@@ -2419,12 +2491,11 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
                     f"Previous tool JSON was invalid ({error}). Return ONLY valid JSON with keys tool and args conforming to schema."
                 )
                 raw_output = await call_llm(correction_prompt)
-                try:
-                    parsed = json.loads(raw_output)
-                    valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
-                except Exception:
-                    final_answer = f"Tool call failed to validate: {raw_output}"
+                parsed = _extract_tool_payload_from_text(raw_output)
+                if parsed is None:
+                    final_answer = "Tool call failed to validate after retry."
                     break
+                valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
                 if not valid:
                     final_answer = f"Tool call rejected: {error}."
                     break
@@ -5465,6 +5536,16 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
 
                 logger.info(f"Vision stream: {image_count} images, question: {vision_question[:120]}")
 
+                ok_vram, vram_reason = _vision_vram_preflight("vision")
+                if not ok_vram:
+                    assistant_response = (
+                        "Vision is temporarily unavailable due to low GPU memory. "
+                        f"{vram_reason}"
+                    )
+                    for token_chunk in _chunk_text(assistant_response, chunk_size=12):
+                        yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
+                    return
+
                 try:
                     lock = get_lock_for_model(llm)
                     with lock:
@@ -5782,6 +5863,13 @@ async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
     if not code_model:
         raise HTTPException(status_code=503, detail="No text model available for code generation.")
 
+    ok_vram, vram_reason = _vision_vram_preflight("vision-to-code")
+    if not ok_vram:
+        raise HTTPException(
+            status_code=503,
+            detail={"success": False, "error": "Vision temporarily unavailable", "hint": vram_reason},
+        )
+
     img_data = await image.read()
     img_b64 = base64.b64encode(img_data).decode("ascii")
     normalized_img = _preprocess_vision_image(img_b64)
@@ -5841,6 +5929,13 @@ async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe thi
                     "hint": "Verify vision_model and vision_clip files in config/edison.yaml and models/llm",
                 },
             )
+
+    ok_vram, vram_reason = _vision_vram_preflight("vision")
+    if not ok_vram:
+        raise HTTPException(
+            status_code=503,
+            detail={"success": False, "error": "Vision temporarily unavailable", "hint": vram_reason},
+        )
 
     img_data = await image.read()
     img_b64 = base64.b64encode(img_data).decode("ascii")
@@ -5953,6 +6048,10 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
 
         if vision_model is None:
             raise HTTPException(status_code=503, detail="No suitable vision model available")
+
+        ok_vram, vram_reason = _vision_vram_preflight(model_name)
+        if not ok_vram:
+            raise HTTPException(status_code=503, detail=f"Vision temporarily unavailable: {vram_reason}")
 
         chat_messages: List[Dict[str, Any]] = []
         for msg in request.messages:
