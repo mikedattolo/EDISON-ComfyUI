@@ -91,7 +91,7 @@ def _pw_run(func, *args, timeout=25):
     return value
 
 def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
-    """Navigate to a URL with Playwright and return a screenshot + page text + metadata dict (thread-safe)."""
+    """Navigate to a URL with Playwright and return a screenshot + metadata dict (thread-safe)."""
     def _do_screenshot(url, width, height):
         ctx = _pw_browser.new_context(
             viewport={"width": width, "height": height},
@@ -107,27 +107,7 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
             png_bytes = page.screenshot(type="jpeg", quality=82,
                                         full_page=False, clip=None)
             b64 = base64.b64encode(png_bytes).decode()
-            # Extract visible text content for the LLM to process
-            page_text = ""
-            try:
-                page_text = page.evaluate("""() => {
-                    const sel = 'main, article, [role="main"], .content, #content, body';
-                    const el = document.querySelector('main') ||
-                               document.querySelector('article') ||
-                               document.querySelector('[role="main"]') ||
-                               document.querySelector('.content') ||
-                               document.querySelector('#content') ||
-                               document.body;
-                    if (!el) return '';
-                    // Remove script/style/nav/footer noise
-                    const clone = el.cloneNode(true);
-                    clone.querySelectorAll('script, style, nav, footer, header, [aria-hidden="true"]').forEach(e => e.remove());
-                    return clone.innerText.replace(/\\s+/g, ' ').trim().substring(0, 3000);
-                }""")
-            except Exception:
-                pass
             return {"ok": True, "url": page.url, "title": title, "screenshot_b64": b64,
-                    "page_text": page_text[:3000] if page_text else "",
                     "width": width, "height": height}
         except Exception as e:
             return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
@@ -140,20 +120,52 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
         return {"ok": False, "url": url, "error": str(e), "screenshot_b64": None}
 
 def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = None,
-                       status: str = "done", error: str | None = None):
+                       status: str = "done", error: str | None = None,
+                       session_id: str = "default", width: int | None = None,
+                       height: int | None = None, cursor_x: int | None = None,
+                       cursor_y: int | None = None):
     """Emit a browser_view SSE event so the frontend can show an inline browser card."""
     try:
         from .routes.agent_live import get_event_bus
-        get_event_bus().emit({
+        evt = {
             "type": "browser_view",
             "url": url,
             "title": title or url,
             "screenshot_b64": screenshot_b64,
             "status": status,
             "error": error,
-        })
+        }
+        if width is not None:
+            evt["width"] = width
+        if height is not None:
+            evt["height"] = height
+        if cursor_x is not None:
+            evt["cursor_x"] = cursor_x
+        if cursor_y is not None:
+            evt["cursor_y"] = cursor_y
+        get_event_bus().emit(evt, session_id=session_id)
     except Exception:
         pass
+
+# ── Persistent Browser Session Manager (lazy-initialized) ────────────────
+_browser_mgr = None
+
+def _get_browser_mgr():
+    """Lazily initialize and return the BrowserSessionManager singleton."""
+    global _browser_mgr
+    if _browser_mgr is not None:
+        return _browser_mgr
+    try:
+        from .browser_session import BrowserSessionManager
+    except ImportError:
+        from browser_session import BrowserSessionManager
+    _browser_mgr = BrowserSessionManager(
+        pw_run=_pw_run,
+        get_browser=lambda: _pw_browser,
+        emit_browser_view=_emit_browser_view,
+        allow_any_host=True,
+    )
+    return _browser_mgr
 
 # Configure logging
 logging.basicConfig(
@@ -1368,6 +1380,57 @@ TOOL_REGISTRY = {
             "url": {"type": str, "required": True}
         }
     },
+    "browser_create_session": {
+        "args": {
+            "url": {"type": str, "required": True},
+            "width": {"type": int, "required": False, "default": 1280},
+            "height": {"type": int, "required": False, "default": 800},
+        }
+    },
+    "browser_navigate": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "url": {"type": str, "required": True},
+        }
+    },
+    "browser_click": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "x": {"type": int, "required": True},
+            "y": {"type": int, "required": True},
+            "button": {"type": str, "required": False, "default": "left"},
+            "click_count": {"type": int, "required": False, "default": 1},
+        }
+    },
+    "browser_type": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "text": {"type": str, "required": True},
+        }
+    },
+    "browser_press": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "key": {"type": str, "required": True},
+        }
+    },
+    "browser_scroll": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "delta_x": {"type": int, "required": False, "default": 0},
+            "delta_y": {"type": int, "required": False, "default": 300},
+        }
+    },
+    "browser_screenshot": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+        }
+    },
+    "browser_close": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+        }
+    },
     "list_printers": {
         "args": {}
     },
@@ -1379,7 +1442,7 @@ TOOL_REGISTRY = {
     }
 }
 
-TOOL_LOOP_MAX_STEPS = 5
+TOOL_LOOP_MAX_STEPS = 12
 TOOL_CALL_TIMEOUT_SEC = 30
 STREAM_MAX_SECONDS = 180
 STREAM_MAX_OUTPUT_CHARS = 24000
@@ -1506,11 +1569,20 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
     if tool_name == "open_sandbox_browser" and isinstance(data, dict):
         title = data.get('title', '')
         url = data.get('url', '')
-        page_text = data.get('page_text', '')
-        summary = f"Browser loaded: {title} ({url})."
-        if page_text:
-            summary += f" Page content: {page_text[:2000]}"
-        return summary
+        desc = data.get('description', '')
+        return f"Browser loaded: {title} ({url}). {desc}" if title else f"Sandbox browser opened: {url}"
+
+    if tool_name in ("browser_create_session", "browser_navigate", "browser_click",
+                      "browser_type", "browser_press", "browser_scroll",
+                      "browser_screenshot") and isinstance(data, dict):
+        sid = data.get("session_id", "")
+        title = data.get("title", "")
+        url = data.get("url", "")
+        action = tool_name.replace("browser_", "")
+        return f"Browser {action}: {title or url} (session={sid})"
+
+    if tool_name == "browser_close":
+        return f"Browser session closed: {data.get('session_id', '')}" if isinstance(data, dict) else "Browser session closed"
 
     if tool_name == "list_printers" and isinstance(data, dict):
         printers = data.get("printers", [])
@@ -1755,12 +1827,10 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                     error=result.get("error"),
                 )
                 if result.get("ok"):
-                    page_text = result.get("page_text", "")
                     return {"ok": True, "data": {
                         "url": result.get("url", url),
                         "title": result.get("title", url),
                         "sandbox": True,
-                        "page_text": page_text,
                         "description": f"Successfully loaded page: {result.get('title', url)} at {result.get('url', url)}"
                     }}
                 else:
@@ -1769,6 +1839,106 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 _emit_browser_view(url, title=url, screenshot_b64=None,
                                    status="error", error=str(exc))
                 return {"ok": False, "error": f"Browser error: {exc}"}
+
+        # ── Interactive browser session tools ──────────────────────────
+        if tool_name == "browser_create_session":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.create_session,
+                    start_url=args.get("url", ""),
+                    width=args.get("width", 1280),
+                    height=args.get("height", 800),
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_create_session: {exc}"}
+
+        if tool_name == "browser_navigate":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.navigate,
+                    session_id=args["session_id"],
+                    url=args["url"],
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_navigate: {exc}"}
+
+        if tool_name == "browser_click":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.click,
+                    session_id=args["session_id"],
+                    x=args["x"],
+                    y=args["y"],
+                    button=args.get("button", "left"),
+                    click_count=args.get("click_count", 1),
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_click: {exc}"}
+
+        if tool_name == "browser_type":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.type,
+                    session_id=args["session_id"],
+                    text=args["text"],
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_type: {exc}"}
+
+        if tool_name == "browser_press":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.keypress,
+                    session_id=args["session_id"],
+                    key=args["key"],
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_press: {exc}"}
+
+        if tool_name == "browser_scroll":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.scroll,
+                    session_id=args["session_id"],
+                    delta_x=args.get("delta_x", 0),
+                    delta_y=args.get("delta_y", 300),
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_scroll: {exc}"}
+
+        if tool_name == "browser_screenshot":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.screenshot,
+                    session_id=args["session_id"],
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_screenshot: {exc}"}
+
+        if tool_name == "browser_close":
+            try:
+                mgr = _get_browser_mgr()
+                payload = await asyncio.to_thread(
+                    mgr.close_session,
+                    session_id=args["session_id"],
+                )
+                return {"ok": True, "data": payload}
+            except Exception as exc:
+                return {"ok": False, "error": f"browser_close: {exc}"}
 
         if tool_name == "list_printers":
             db = _load_printers()
@@ -1982,15 +2152,11 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             with lock:
                 response = llm(
                     prompt,
-                    max_tokens=1024,
+                    max_tokens=512,
                     temperature=0.4,
                     top_p=0.9,
-                    repeat_penalty=1.3,
-                    frequency_penalty=0.5,
-                    presence_penalty=0.4,
                     echo=False,
-                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n",
-                          "Would you like", "Let me know if", "Do let me know"]
+                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n"]
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
@@ -1999,11 +2165,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "You can call structured tools before answering. "
         "Reply with either a final answer in plain text (include citations like [source:web_search]) "
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
-        "IMPORTANT: After calling a tool, you MUST provide a final answer summarizing what you found. "
-        "When using open_sandbox_browser, the page content will be returned to you — use it to answer the user's question. "
-        "Do NOT just browse and stop — always synthesize the results into a helpful response.\n"
-        "Tools: web_search(query:str,max_results:int) — search the web for information on a topic, "
-        "rag_search(query:str,limit:int,global:bool), "
+        "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
         "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
@@ -2013,67 +2175,23 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str) — open a URL in the sandbox browser with live screenshot (use this when asked to open/visit/browse/go to a website or URL), "
-        "browser.create_session(url:str,width:int,height:int), "
-        "browser.observe(session_id:str), browser.navigate(session_id:str,url:str), "
-        "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
-        "browser.type(session_id:str,text:str,delay_ms:int), "
-        "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
-        "list_printers(), send_3d_print(printer_id:str,file_path:str), "
-        "workspace.init(project_id:str), fs.read(path:str), fs.write(path:str,contents:str,mode:str), "
-        "fs.list(dir:str), fs.mkdir(dir:str), fs.delete(path:str,confirm:bool), "
-        "fs.diff(path:str,new_contents:str), fs.apply_patch(path:str,unified_diff:str,confirm:bool), "
-        "pm.create_task(project_id:str,title:str,description:str,owner:str), "
-        "pm.list_tasks(project_id:str), pm.update_task(project_id:str,task_id:str,status:str,notes:str), "
-        "code.apply_unified_diff(path:str,diff:str), code.search(pattern:str,dir:str), "
-        "dev.run_server(command:str,cwd:str,port:int), dev.stop_server(handle:str,confirm:bool). "
-        "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
-        "Only use web_search when the user wants to SEARCH for information (no specific URL given). "
-        "For file/code tasks: use fs.read to read, code.search to find references, fs.diff to preview changes, fs.write to save. "
-        "CODING WORKFLOW: 1) code.search to locate relevant code, 2) fs.read to understand context, "
-        "3) fs.diff to preview proposed changes, 4) code.apply_unified_diff or fs.write to apply, "
-        "5) codespace_exec to test (e.g. run linter/tests), 6) summarize what changed. "
-        "Always use workspace.init before fs.* tools to get a workspace root."
+        "open_sandbox_browser(url:str), list_printers(), send_3d_print(printer_id:str,file_path:str). "
+        "INTERACTIVE BROWSER: To browse websites interactively (click, type, scroll, navigate), "
+        "use these tools in sequence: "
+        "1) browser_create_session(url:str,width:int,height:int) — opens a persistent browser session, returns session_id. "
+        "2) browser_click(session_id:str,x:int,y:int,button:str,click_count:int) — click at pixel coordinates. "
+        "3) browser_type(session_id:str,text:str) — type text into the focused element. "
+        "4) browser_press(session_id:str,key:str) — press a key (Enter, Tab, Escape, etc.). "
+        "5) browser_scroll(session_id:str,delta_x:int,delta_y:int) — scroll the page. "
+        "6) browser_navigate(session_id:str,url:str) — navigate to a new URL in the same session. "
+        "7) browser_screenshot(session_id:str) — take a screenshot to see the current page state. "
+        "8) browser_close(session_id:str) — close the session when done. "
+        "Each browser tool returns a screenshot so you can see what happened. "
+        "Use browser_create_session first, then interact with click/type/scroll based on the screenshot. "
+        "Look at the screenshot to find clickable elements and their approximate x,y coordinates."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
-
-    # Auto-route: detect explicit URL opening intent and inject browser tool call
-    _url_open_match = re.search(
-        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
-        r'(https?://\S+|(?:www\.)\S+)',
-        user_message, re.IGNORECASE
-    )
-    if not _url_open_match:
-        # Also detect bare domains when user intent is clearly "open"
-        _url_open_match = re.search(
-            r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
-            r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
-            user_message, re.IGNORECASE
-        )
-    if _url_open_match:
-        browser_url = _url_open_match.group(1).strip()
-        if not browser_url.startswith("http"):
-            browser_url = f"https://{browser_url}"
-        logger.info(f"⚙️ Auto-routing to open_sandbox_browser for URL: {browser_url}")
-        try:
-            tool_result = await asyncio.wait_for(
-                _execute_tool("open_sandbox_browser", {"url": browser_url}, chat_id),
-                timeout=TOOL_CALL_TIMEOUT_SEC
-            )
-            summary = _summarize_tool_result("open_sandbox_browser", tool_result)
-            tool_events.append({
-                "tool": "open_sandbox_browser",
-                "args": {"url": browser_url},
-                "result": tool_result,
-                "summary": summary
-            })
-            emit_agent_step(
-                title=f"Tool: open_sandbox_browser(url={browser_url!r})",
-                status="done",
-            )
-        except Exception as e:
-            logger.error(f"Auto browser tool failed: {e}")
 
     step = 0
     while step < TOOL_LOOP_MAX_STEPS and not final_answer:
@@ -2091,7 +2209,6 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             f"{base_instructions}\n\n"
             f"Step {step} of {TOOL_LOOP_MAX_STEPS}. Provide JSON to call a tool or final answer now.\n"
             + "\n".join(history_lines)
-            + "\nAssistant:"
         )
 
         raw_output = await call_llm(prompt)
@@ -2167,10 +2284,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         for idx, event in enumerate(tool_events, 1):
             history_lines.append(f"Tool {idx} [{event['tool']}]: {event['summary']}")
         prompt = (
-            "You MUST now provide a complete, helpful answer to the user based on all tool results above. "
-            "Summarize the key information you found. Cite sources as [source:TOOLNAME]. "
-            "If you browsed a website, include the relevant information from the page content.\n\n"
-            + "\n".join(history_lines)
+            f"Use the gathered tool evidence to answer. Cite sources as [source:TOOLNAME].\n" + "\n".join(history_lines)
         )
         final_answer = await call_llm(prompt)
 
@@ -2765,63 +2879,10 @@ def _register_models_with_v2():
 
 # Initialize FastAPI app
 app = FastAPI(
-    title="EDISON Core API",
-    description="""
-# EDISON Core AI Service
-
-Local LLM service with RAG, multi-agent swarm, browser automation, image/video/music generation, and 3D printing.
-
-## Quick Start
-
-### Chat (Simple)
-```bash
-curl -X POST http://localhost:8811/v1/chat/completions \\
-  -H "Content-Type: application/json" \\
-  -d '{"model": "fast", "messages": [{"role": "user", "content": "Hello!"}]}'
-```
-
-### Chat (Streaming with modes)
-```bash
-curl -X POST http://localhost:8811/chat/stream \\
-  -H "Content-Type: application/json" \\
-  -d '{"message": "Research AI trends", "mode": "swarm"}'
-```
-
-### Available Modes
-- **fast** — Quick responses (14B model)
-- **medium** — Balanced (32B model)
-- **deep** — Most capable (72B model)
-- **agent** — Tool-using assistant (browser, search, code execution)
-- **swarm** — Multi-agent collaboration (Boss + specialists)
-- **thinking** — Deep reasoning mode
-
-### Image Generation
-```bash
-curl -X POST http://localhost:8811/generate-image \\
-  -H "Content-Type: application/json" \\
-  -d '{"prompt": "a sunset over mountains"}'
-```
-
-### 3D Printing
-```bash
-# List printers
-curl http://localhost:8811/printers
-
-# Register a printer
-curl -X POST http://localhost:8811/printers \\
-  -H "Content-Type: application/json" \\
-  -d '{"name": "My Printer", "type": "octoprint", "host": "192.168.1.100", "endpoint": "http://192.168.1.100", "api_key": "YOUR_KEY"}'
-
-# Slice and send
-curl -X POST http://localhost:8811/printing/slice-and-send \\
-  -H "Content-Type: application/json" \\
-  -d '{"model_path": "path/to/model.stl", "printer_id": "printer_abc123"}'
-```
-""",
-    version="2.0.0",
-    lifespan=lifespan,
-    docs_url="/docs",
-    redoc_url="/redoc",
+    title="EDISON Core Service",
+    description="Local LLM service with RAG capabilities",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 # Add CORS middleware for web UI
@@ -2957,132 +3018,6 @@ async def health():
         "vision_enabled": llm_vision is not None,
         "qdrant_ready": rag_system is not None,
         "repo_root": str(REPO_ROOT)
-    }
-
-
-@app.get("/api/guide", tags=["docs"])
-async def api_guide():
-    """Interactive API quick-reference with curl examples for every major endpoint."""
-    return {
-        "title": "EDISON API Quick Reference",
-        "base_url": "http://localhost:8811",
-        "docs_url": "/docs",
-        "endpoints": {
-            "chat": {
-                "openai_compatible": {
-                    "method": "POST",
-                    "path": "/v1/chat/completions",
-                    "description": "OpenAI-compatible chat completions (easiest to use from code)",
-                    "example": {
-                        "model": "fast",
-                        "messages": [{"role": "user", "content": "Hello!"}],
-                        "stream": False,
-                        "temperature": 0.7,
-                        "max_tokens": 2048
-                    },
-                    "models": ["fast (14B)", "medium (32B)", "deep (72B)"],
-                },
-                "streaming": {
-                    "method": "POST",
-                    "path": "/chat/stream",
-                    "description": "SSE streaming chat with mode selection, tools, and swarm",
-                    "example": {
-                        "message": "Research AI trends",
-                        "mode": "agent",
-                        "chat_id": "optional-session-id"
-                    },
-                    "modes": ["fast", "medium", "deep", "thinking", "agent", "swarm", "work"],
-                },
-                "cancel": {
-                    "method": "POST",
-                    "path": "/chat/cancel",
-                    "description": "Cancel an in-progress streaming request",
-                    "example": {"request_id": "uuid-from-init-event"}
-                },
-            },
-            "generation": {
-                "image": {
-                    "method": "POST",
-                    "path": "/generate-image",
-                    "description": "Generate images via ComfyUI/FLUX",
-                    "example": {"prompt": "a sunset over mountains", "width": 1024, "height": 1024}
-                },
-                "video": {
-                    "method": "POST",
-                    "path": "/generate-video",
-                    "description": "Generate videos via CogVideoX",
-                    "example": {"prompt": "a cat playing piano", "duration": 6}
-                },
-                "music": {
-                    "method": "POST",
-                    "path": "/generate-music",
-                    "description": "Generate music via MusicGen",
-                    "example": {"prompt": "upbeat electronic", "duration": 15}
-                },
-            },
-            "printing_3d": {
-                "list_printers": {
-                    "method": "GET",
-                    "path": "/printers",
-                    "description": "List all configured 3D printers"
-                },
-                "add_printer": {
-                    "method": "POST",
-                    "path": "/printers",
-                    "description": "Register a new 3D printer (OctoPrint, Bambu Lab, or generic)",
-                    "example": {
-                        "name": "My Bambu X1C",
-                        "type": "bambu",
-                        "host": "192.168.1.100",
-                        "api_key": "optional"
-                    },
-                    "supported_types": ["octoprint", "bambu", "generic"],
-                },
-                "upload_and_slice": {
-                    "method": "POST",
-                    "path": "/printing/slice-and-send",
-                    "description": "Upload STL/3MF, slice it, and send G-code to printer",
-                    "example": {
-                        "model_path": "outputs/model.stl",
-                        "printer_id": "printer_abc123",
-                        "profile": "0.2mm"
-                    },
-                },
-                "upload_file": {
-                    "method": "POST",
-                    "path": "/files/upload",
-                    "description": "Upload an STL/3MF file first, then use slice-and-send",
-                },
-            },
-            "browser": {
-                "open": {
-                    "method": "POST",
-                    "path": "/sandbox/browser/open",
-                    "description": "Open a URL and get a screenshot",
-                    "example": {"url": "https://example.com"}
-                },
-                "screenshot": {
-                    "method": "POST",
-                    "path": "/sandbox/browser/screenshot",
-                    "description": "Take a screenshot of a URL",
-                    "example": {"url": "https://example.com", "width": 1280, "height": 800}
-                },
-            },
-            "memory": {
-                "search": {
-                    "method": "POST",
-                    "path": "/rag/search",
-                    "description": "Search long-term memory/knowledge base",
-                    "example": {"query": "user preferences", "limit": 5}
-                },
-            },
-            "system": {
-                "health": {"method": "GET", "path": "/health"},
-                "models": {"method": "GET", "path": "/models/list"},
-                "tools": {"method": "GET", "path": "/tools/list"},
-                "stats": {"method": "GET", "path": "/system/stats"},
-            },
-        }
     }
 
 @app.get("/models/list")
@@ -10248,6 +10183,147 @@ async def sandbox_browser_screenshot(request: dict):
     return result
 
 
+# ==================== INTERACTIVE BROWSER SESSION ROUTES ====================
+
+@app.post("/sandbox/browser/session/create")
+async def sandbox_browser_session_create(request: dict):
+    """Create a persistent browser session for interactive browsing."""
+    url = (request.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+    width = int(request.get("width") or 1280)
+    height = int(request.get("height") or 800)
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.create_session, url, width, height)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/navigate")
+async def sandbox_browser_session_navigate(request: dict):
+    """Navigate to a new URL in an existing browser session."""
+    session_id = (request.get("session_id") or "").strip()
+    url = (request.get("url") or "").strip()
+    if not session_id or not url:
+        raise HTTPException(status_code=400, detail="session_id and url are required")
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.navigate, session_id, url)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/click")
+async def sandbox_browser_session_click(request: dict):
+    """Click at x,y coordinates in the browser session."""
+    session_id = (request.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    x = int(request.get("x", 0))
+    y = int(request.get("y", 0))
+    button = request.get("button", "left")
+    click_count = int(request.get("click_count", 1))
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.click, session_id, x, y, button, click_count)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/type")
+async def sandbox_browser_session_type(request: dict):
+    """Type text into the focused element in the browser session."""
+    session_id = (request.get("session_id") or "").strip()
+    text = request.get("text", "")
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.type, session_id, text)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/key")
+async def sandbox_browser_session_key(request: dict):
+    """Press a keyboard key in the browser session (Enter, Tab, Escape, etc.)."""
+    session_id = (request.get("session_id") or "").strip()
+    key = (request.get("key") or "").strip()
+    if not session_id or not key:
+        raise HTTPException(status_code=400, detail="session_id and key are required")
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.keypress, session_id, key)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/scroll")
+async def sandbox_browser_session_scroll(request: dict):
+    """Scroll the page in the browser session."""
+    session_id = (request.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    delta_x = int(request.get("delta_x", 0))
+    delta_y = int(request.get("delta_y", 300))
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.scroll, session_id, delta_x, delta_y)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/move")
+async def sandbox_browser_session_move(request: dict):
+    """Move the mouse to x,y coordinates (emits cursor position in SSE)."""
+    session_id = (request.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    x = int(request.get("x", 0))
+    y = int(request.get("y", 0))
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.move_mouse, session_id, x, y)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/screenshot")
+async def sandbox_browser_session_screenshot(request: dict):
+    """Take a screenshot of the current browser session state."""
+    session_id = (request.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.screenshot, session_id)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/sandbox/browser/session/close")
+async def sandbox_browser_session_close(request: dict):
+    """Close a browser session and release resources."""
+    session_id = (request.get("session_id") or "").strip()
+    if not session_id:
+        raise HTTPException(status_code=400, detail="session_id is required")
+    try:
+        mgr = _get_browser_mgr()
+        payload = await asyncio.to_thread(mgr.close_session, session_id)
+        return {"ok": True, **payload}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/integrations/connectors")
 async def list_connectors():
     """List configured external API connectors."""
@@ -10461,170 +10537,6 @@ async def delete_printer(printer_id: str):
     db["printers"] = kept
     _save_printers(db)
     return {"ok": True, "deleted": pid}
-
-
-@app.post("/printers/{printer_id}/test")
-@app.post("/printing/printers/{printer_id}/test")
-async def test_printer_connection(printer_id: str):
-    """Test connectivity to a configured 3D printer.
-
-    Attempts to reach the printer's API endpoint and reports whether it's online.
-    Supports OctoPrint (via /api/version) and Bambu printers.
-    """
-    import httpx
-    pid = (printer_id or "").strip()
-    if not pid:
-        raise HTTPException(status_code=400, detail="printer id is required")
-
-    db = _load_printers()
-    printer = next((p for p in db.get("printers", []) if p.get("id") == pid), None)
-    if not printer:
-        raise HTTPException(status_code=404, detail="Printer not found")
-
-    ptype = (printer.get("type") or "generic").lower()
-    host = (printer.get("host") or "").strip()
-    endpoint = (printer.get("endpoint") or "").strip()
-    api_key = printer.get("api_key", "")
-
-    if not host and not endpoint:
-        return {"ok": False, "reachable": False, "error": "No host or endpoint configured"}
-
-    try:
-        async with httpx.AsyncClient(timeout=8) as client:
-            if ptype == "octoprint":
-                url = f"{endpoint.rstrip('/')}/api/version" if endpoint else f"http://{host}/api/version"
-                headers = {"X-Api-Key": api_key} if api_key else {}
-                resp = await client.get(url, headers=headers)
-                if resp.status_code == 200:
-                    data = resp.json()
-                    return {"ok": True, "reachable": True, "printer_type": "octoprint",
-                            "version": data.get("text", "unknown"), "api": data.get("api", "unknown")}
-                return {"ok": False, "reachable": True, "error": f"OctoPrint responded with HTTP {resp.status_code}"}
-            elif ptype == "bambu":
-                # Bambu printers use MQTT, so we just ping the host
-                url = f"http://{host}" if host else endpoint
-                resp = await client.get(url)
-                return {"ok": True, "reachable": True, "printer_type": "bambu",
-                        "note": "Host is reachable (Bambu uses MQTT for printing)"}
-            else:
-                url = endpoint or f"http://{host}"
-                resp = await client.get(url)
-                return {"ok": True, "reachable": resp.status_code < 500, "printer_type": "generic",
-                        "status_code": resp.status_code}
-    except httpx.ConnectError:
-        return {"ok": False, "reachable": False, "error": f"Cannot reach printer at {host or endpoint}"}
-    except httpx.TimeoutException:
-        return {"ok": False, "reachable": False, "error": "Connection timed out"}
-    except Exception as e:
-        return {"ok": False, "reachable": False, "error": str(e)}
-
-
-@app.post("/printing/upload", tags=["3d_printing"])
-async def upload_3d_model(file: UploadFile = File(...)):
-    """Upload a 3D model file (STL, 3MF, OBJ) for slicing and printing.
-
-    Returns the saved file path which can be used with /printing/slice-and-send.
-    """
-    if not file.filename:
-        raise HTTPException(status_code=400, detail="Filename is required")
-
-    allowed_extensions = {".stl", ".3mf", ".obj", ".step", ".stp"}
-    ext = Path(file.filename).suffix.lower()
-    if ext not in allowed_extensions:
-        raise HTTPException(
-            status_code=400,
-            detail=f"Unsupported file type '{ext}'. Allowed: {', '.join(sorted(allowed_extensions))}"
-        )
-
-    # Save to outputs/3d_models/
-    models_dir = REPO_ROOT / "outputs" / "3d_models"
-    models_dir.mkdir(parents=True, exist_ok=True)
-
-    # Sanitize filename
-    safe_name = re.sub(r'[^\w\-.]', '_', file.filename)
-    dest = models_dir / safe_name
-    # Avoid overwrites
-    if dest.exists():
-        stem = dest.stem
-        suffix = dest.suffix
-        counter = 1
-        while dest.exists():
-            dest = models_dir / f"{stem}_{counter}{suffix}"
-            counter += 1
-
-    data = await file.read()
-    if len(data) > 200 * 1024 * 1024:  # 200MB limit
-        raise HTTPException(status_code=413, detail="File too large (max 200MB)")
-
-    dest.write_bytes(data)
-
-    return {
-        "ok": True,
-        "filename": dest.name,
-        "path": str(dest.relative_to(REPO_ROOT)),
-        "size_mb": round(len(data) / (1024 * 1024), 2),
-        "hint": f"Use this path with POST /printing/slice-and-send: {{\"model_path\": \"{dest.relative_to(REPO_ROOT)}\", \"printer_id\": \"YOUR_PRINTER_ID\"}}"
-    }
-
-
-@app.get("/printing/setup-guide", tags=["3d_printing"])
-async def printing_setup_guide():
-    """Step-by-step guide for connecting and using 3D printers with EDISON."""
-    slicer_bin = shutil.which("prusa-slicer") or shutil.which("orca-slicer")
-    return {
-        "title": "3D Printer Setup Guide",
-        "slicer_installed": slicer_bin is not None,
-        "slicer_path": slicer_bin,
-        "steps": [
-            {
-                "step": 1,
-                "title": "Register Your Printer",
-                "description": "Add your 3D printer's network details",
-                "method": "POST /printers",
-                "example": {
-                    "name": "My Printer",
-                    "type": "octoprint",
-                    "host": "192.168.1.100",
-                    "endpoint": "http://192.168.1.100",
-                    "api_key": "YOUR_OCTOPRINT_API_KEY"
-                },
-                "notes": [
-                    "For OctoPrint: Find API key in OctoPrint Settings → API → Global API Key",
-                    "For Bambu Lab: Use the printer's IP address, type='bambu'",
-                    "For generic WiFi printers: Use type='generic'"
-                ]
-            },
-            {
-                "step": 2,
-                "title": "Test Connection",
-                "description": "Verify the printer is reachable",
-                "method": "POST /printers/{printer_id}/test",
-            },
-            {
-                "step": 3,
-                "title": "Upload a 3D Model",
-                "description": "Upload STL/3MF/OBJ file",
-                "method": "POST /printing/upload",
-                "supported_formats": [".stl", ".3mf", ".obj", ".step"],
-                "max_size": "200MB"
-            },
-            {
-                "step": 4,
-                "title": "Slice and Print",
-                "description": "Slice the model and send G-code to your printer",
-                "method": "POST /printing/slice-and-send",
-                "example": {
-                    "model_path": "outputs/3d_models/my_model.stl",
-                    "printer_id": "printer_abc123",
-                    "profile": "0.2mm"
-                },
-                "notes": [
-                    f"Slicer: {'✅ ' + slicer_bin if slicer_bin else '❌ Not installed — install prusa-slicer or orca-slicer'}",
-                    "Profiles: 0.1mm (fine), 0.2mm (standard), 0.3mm (draft)"
-                ]
-            }
-        ]
-    }
 
 
 _SLICE_STATUS: Dict[str, dict] = {}

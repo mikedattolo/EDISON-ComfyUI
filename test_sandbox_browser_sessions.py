@@ -41,13 +41,14 @@ def test_browser_tools_registered():
     from services.edison_core.app import TOOL_REGISTRY
 
     expected_tools = {
-        "browser.create_session",
-        "browser.observe",
-        "browser.navigate",
-        "browser.click",
-        "browser.type",
-        "browser.press",
-        "browser.scroll",
+        "browser_create_session",
+        "browser_screenshot",
+        "browser_navigate",
+        "browser_click",
+        "browser_type",
+        "browser_press",
+        "browser_scroll",
+        "browser_close",
     }
     missing = expected_tools - set(TOOL_REGISTRY.keys())
     assert not missing, f"Missing browser tools: {missing}"

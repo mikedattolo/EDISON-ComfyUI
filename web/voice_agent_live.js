@@ -1080,15 +1080,21 @@ class EdisonAgentLiveView {
                 <span class="agent-step-title">🌐 Navigating to ${url}…</span>
             `;
         } else if (status === 'done' && screenshot) {
+            const cursorHtml = (typeof event.cursor_x === 'number' && typeof event.cursor_y === 'number')
+                ? `<div class="agent-browser-cursor" style="position:absolute;left:${event.cursor_x}px;top:${event.cursor_y}px;width:12px;height:12px;border-radius:50%;background:red;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,0.5);pointer-events:none;transform:translate(-50%,-50%);z-index:10;"></div>`
+                : '';
             viewEl.innerHTML = `
                 <span class="agent-step-icon done">✓</span>
                 <span class="agent-step-title">🌐 ${title}</span>
-                <img src="data:image/jpeg;base64,${screenshot}" 
-                     class="agent-screenshot-img" 
-                     alt="${title}"
-                     loading="lazy"
-                     style="max-width:100%;margin-top:4px;border-radius:6px;cursor:pointer"
-                     onclick="window.open('${url}','_blank')" />
+                <div style="position:relative;display:inline-block;max-width:100%;">
+                    <img src="data:image/jpeg;base64,${screenshot}" 
+                         class="agent-screenshot-img" 
+                         alt="${title}"
+                         loading="lazy"
+                         style="max-width:100%;margin-top:4px;border-radius:6px;cursor:pointer"
+                         onclick="window.open('${url}','_blank')" />
+                    ${cursorHtml}
+                </div>
             `;
         } else if (status === 'error') {
             viewEl.innerHTML = `

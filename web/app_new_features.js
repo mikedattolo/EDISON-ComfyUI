@@ -2584,6 +2584,10 @@ console.log('🧊 app_new_features.js v1 loading...');
         const screenshot = event.screenshot_b64 || null;
         const status = event.status || 'loading';
         const errMsg = event.error || '';
+        const cursor_x = (typeof event.cursor_x === 'number') ? event.cursor_x : undefined;
+        const cursor_y = (typeof event.cursor_y === 'number') ? event.cursor_y : undefined;
+        const width = event.width || undefined;
+        const height = event.height || undefined;
 
         // Reuse the existing card if one exists in the current conversation
         // This prevents multiple screenshots from appearing as separate cards
@@ -2602,7 +2606,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         _browserCardSessionUrl = url;
 
         // Update the card content
-        _updateBrowserCard(_browserCardEl, { url, title, screenshot, status, errMsg });
+        _updateBrowserCard(_browserCardEl, { url, title, screenshot, status, errMsg, cursor_x, cursor_y, width, height });
         container.scrollTop = container.scrollHeight;
     };
 
@@ -2630,9 +2634,10 @@ console.log('🧊 app_new_features.js v1 loading...');
                     <button class="cbc-close-btn" onclick="this.closest('.chat-browser-card').remove(); window._browserCardEl=null;">✕</button>
                 </div>
             </div>
-            <div class="cbc-screen">
+            <div class="cbc-screen" style="position:relative;overflow:hidden;">
                 <div class="cbc-loading"></div>
                 <img class="cbc-screenshot" src="" alt="" style="display:none">
+                <div class="cbc-cursor" style="display:none;position:absolute;width:12px;height:12px;border-radius:50%;background:red;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,0.5);pointer-events:none;transform:translate(-50%,-50%);z-index:10;transition:left 0.15s ease,top 0.15s ease;"></div>
                 <div class="cbc-error" style="display:none"></div>
             </div>
             <div class="cbc-footer">
@@ -2642,7 +2647,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         return card;
     }
 
-    function _updateBrowserCard(card, { url, title, screenshot, status, errMsg }) {
+    function _updateBrowserCard(card, { url, title, screenshot, status, errMsg, cursor_x, cursor_y, width, height }) {
         const urlText = card.querySelector('.cbc-url-text');
         const lockIcon = card.querySelector('.cbc-lock-icon');
         const openLink = card.querySelector('.cbc-open-link');
@@ -2651,6 +2656,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         const errorEl = card.querySelector('.cbc-error');
         const dot = card.querySelector('.cbc-status-dot');
         const footerText = card.querySelector('.cbc-footer-text');
+        const cursor = card.querySelector('.cbc-cursor');
 
         if (urlText) urlText.textContent = url;
         if (lockIcon) lockIcon.textContent = url.startsWith('https://') ? '🔒' : '🌐';
@@ -2660,6 +2666,7 @@ console.log('🧊 app_new_features.js v1 loading...');
             if (loading) loading.style.display = 'flex';
             if (img) img.style.display = 'none';
             if (errorEl) errorEl.style.display = 'none';
+            if (cursor) cursor.style.display = 'none';
             if (dot) { dot.className = 'cbc-status-dot cbc-dot-loading'; }
             if (footerText) footerText.textContent = `Navigating to ${url}…`;
         } else if (status === 'done' && screenshot) {
@@ -2674,11 +2681,25 @@ console.log('🧊 app_new_features.js v1 loading...');
             if (errorEl) errorEl.style.display = 'none';
             if (dot) dot.className = 'cbc-status-dot cbc-dot-done';
             if (footerText) footerText.textContent = title || url;
+
+            // Show cursor overlay if position provided
+            if (cursor && typeof cursor_x === 'number' && typeof cursor_y === 'number' && img) {
+                const vpW = width || 1280;
+                const vpH = height || 800;
+                const imgRect = img.getBoundingClientRect();
+                const scaleX = imgRect.width / vpW;
+                const scaleY = imgRect.height / vpH;
+                cursor.style.left = (cursor_x * scaleX) + 'px';
+                cursor.style.top = (cursor_y * scaleY) + 'px';
+                cursor.style.display = 'block';
+            } else if (cursor) {
+                cursor.style.display = 'none';
+            }
         } else if (status === 'done' && !screenshot) {
-            // Done but no screenshot (e.g., sent via main SSE without image data)
             if (loading) loading.style.display = 'none';
             if (img) img.style.display = 'none';
             if (errorEl) errorEl.style.display = 'none';
+            if (cursor) cursor.style.display = 'none';
             if (dot) dot.className = 'cbc-status-dot cbc-dot-done';
             if (footerText) footerText.textContent = title || url;
         } else if (status === 'error') {
@@ -2688,8 +2709,16 @@ console.log('🧊 app_new_features.js v1 loading...');
                 errorEl.style.display = 'flex';
                 errorEl.textContent = `Could not load page: ${errMsg || url}`;
             }
+            if (cursor) cursor.style.display = 'none';
             if (dot) dot.className = 'cbc-status-dot cbc-dot-error';
             if (footerText) footerText.textContent = `Error loading ${url}`;
+        } else if (status === 'closed') {
+            if (loading) loading.style.display = 'none';
+            if (img) img.style.display = 'none';
+            if (errorEl) errorEl.style.display = 'none';
+            if (cursor) cursor.style.display = 'none';
+            if (dot) dot.className = 'cbc-status-dot cbc-dot-done';
+            if (footerText) footerText.textContent = 'Browser session closed';
         }
     }
 
