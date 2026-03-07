@@ -1982,23 +1982,28 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             with lock:
                 response = llm(
                     prompt,
-                    max_tokens=512,
+                    max_tokens=1024,
                     temperature=0.4,
                     top_p=0.9,
+                    repeat_penalty=1.3,
+                    frequency_penalty=0.5,
+                    presence_penalty=0.4,
                     echo=False,
-                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n"]
+                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n",
+                          "Would you like", "Let me know if", "Do let me know"]
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
 
     base_instructions = (
-        "You are an AI agent that can call tools to help answer the user's request. "
+        "You can call structured tools before answering. "
         "Reply with either a final answer in plain text (include citations like [source:web_search]) "
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
         "IMPORTANT: After calling a tool, you MUST provide a final answer summarizing what you found. "
         "When using open_sandbox_browser, the page content will be returned to you — use it to answer the user's question. "
         "Do NOT just browse and stop — always synthesize the results into a helpful response.\n"
-        "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
+        "Tools: web_search(query:str,max_results:int) — search the web for information on a topic, "
+        "rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
         "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
@@ -2008,10 +2013,67 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str), list_printers(), send_3d_print(printer_id:str,file_path:str)."
+        "open_sandbox_browser(url:str) — open a URL in the sandbox browser with live screenshot (use this when asked to open/visit/browse/go to a website or URL), "
+        "browser.create_session(url:str,width:int,height:int), "
+        "browser.observe(session_id:str), browser.navigate(session_id:str,url:str), "
+        "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
+        "browser.type(session_id:str,text:str,delay_ms:int), "
+        "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
+        "list_printers(), send_3d_print(printer_id:str,file_path:str), "
+        "workspace.init(project_id:str), fs.read(path:str), fs.write(path:str,contents:str,mode:str), "
+        "fs.list(dir:str), fs.mkdir(dir:str), fs.delete(path:str,confirm:bool), "
+        "fs.diff(path:str,new_contents:str), fs.apply_patch(path:str,unified_diff:str,confirm:bool), "
+        "pm.create_task(project_id:str,title:str,description:str,owner:str), "
+        "pm.list_tasks(project_id:str), pm.update_task(project_id:str,task_id:str,status:str,notes:str), "
+        "code.apply_unified_diff(path:str,diff:str), code.search(pattern:str,dir:str), "
+        "dev.run_server(command:str,cwd:str,port:int), dev.stop_server(handle:str,confirm:bool). "
+        "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
+        "Only use web_search when the user wants to SEARCH for information (no specific URL given). "
+        "For file/code tasks: use fs.read to read, code.search to find references, fs.diff to preview changes, fs.write to save. "
+        "CODING WORKFLOW: 1) code.search to locate relevant code, 2) fs.read to understand context, "
+        "3) fs.diff to preview proposed changes, 4) code.apply_unified_diff or fs.write to apply, "
+        "5) codespace_exec to test (e.g. run linter/tests), 6) summarize what changed. "
+        "Always use workspace.init before fs.* tools to get a workspace root."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
+
+    # Auto-route: detect explicit URL opening intent and inject browser tool call
+    _url_open_match = re.search(
+        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+        r'(https?://\S+|(?:www\.)\S+)',
+        user_message, re.IGNORECASE
+    )
+    if not _url_open_match:
+        # Also detect bare domains when user intent is clearly "open"
+        _url_open_match = re.search(
+            r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+            r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
+            user_message, re.IGNORECASE
+        )
+    if _url_open_match:
+        browser_url = _url_open_match.group(1).strip()
+        if not browser_url.startswith("http"):
+            browser_url = f"https://{browser_url}"
+        logger.info(f"⚙️ Auto-routing to open_sandbox_browser for URL: {browser_url}")
+        try:
+            tool_result = await asyncio.wait_for(
+                _execute_tool("open_sandbox_browser", {"url": browser_url}, chat_id),
+                timeout=TOOL_CALL_TIMEOUT_SEC
+            )
+            summary = _summarize_tool_result("open_sandbox_browser", tool_result)
+            tool_events.append({
+                "tool": "open_sandbox_browser",
+                "args": {"url": browser_url},
+                "result": tool_result,
+                "summary": summary
+            })
+            emit_agent_step(
+                title=f"Tool: open_sandbox_browser(url={browser_url!r})",
+                status="done",
+            )
+        except Exception as e:
+            logger.error(f"Auto browser tool failed: {e}")
 
     step = 0
     while step < TOOL_LOOP_MAX_STEPS and not final_answer:
@@ -2029,6 +2091,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             f"{base_instructions}\n\n"
             f"Step {step} of {TOOL_LOOP_MAX_STEPS}. Provide JSON to call a tool or final answer now.\n"
             + "\n".join(history_lines)
+            + "\nAssistant:"
         )
 
         raw_output = await call_llm(prompt)
