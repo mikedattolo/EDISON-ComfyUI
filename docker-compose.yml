@@ -1,0 +1,32 @@
+version: "3.9"
+
+services:
+  edison-core:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: edison-core
+    restart: unless-stopped
+    environment:
+      EDISON_ENV: docker
+      FIREWALL_MODE: ${FIREWALL_MODE:-allowlist}
+      ALLOWED_EGRESS_CIDRS: ${ALLOWED_EGRESS_CIDRS:-0.0.0.0/0}
+    ports:
+      - "8811:8811"
+      - "8080:8080"
+      - "8188:8188"
+    volumes:
+      - ./models:/opt/edison/models
+      - ./data:/opt/edison/data
+      - ./outputs:/opt/edison/outputs
+      - ./config:/opt/edison/config
+      - ./:/opt/edison
+    command: >-
+      uvicorn services.edison_core.app:app
+      --host 0.0.0.0
+      --port 8811
+
+volumes:
+  edison-models:
+  edison-data:
+  edison-outputs:

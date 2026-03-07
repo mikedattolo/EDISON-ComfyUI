@@ -128,6 +128,12 @@ class EdisonApp {
         this.chatAddUserBtn = document.getElementById('chatAddUserBtn');
         this.chatDeleteUserBtn = document.getElementById('chatDeleteUserBtn');
         this.chatCleanUsersBtn = document.getElementById('chatCleanUsersBtn');
+        this.sandboxAllowAnyHostInput = document.getElementById('sandboxAllowAnyHost');
+        this.sandboxAllowedHostsInput = document.getElementById('sandboxAllowedHosts');
+        this.discordWebhookInput = document.getElementById('discordWebhook');
+        this.slackWebhookInput = document.getElementById('slackWebhook');
+        this.defaultPrinterIdInput = document.getElementById('defaultPrinterId');
+        this.installedSkillsInput = document.getElementById('installedSkills');
         
         // Theme controls (in settings modal)
         this.themeButtons = document.querySelectorAll('.theme-btn');
@@ -945,6 +951,8 @@ class EdisonApp {
                         <path d="M8 4.466V.534a.25.25 0 0 1 .41-.192l2.36 1.966c.12.1.12.284 0 .384L8.41 4.658A.25.25 0 0 1 8 4.466z"/>
                     </svg>
                 </button>
+                <button class="action-btn like-btn" title="Like response">👍</button>
+                <button class="action-btn dislike-btn" title="Dislike response">👎</button>
             </div>
         `;
         
@@ -966,12 +974,16 @@ class EdisonApp {
             const copyBtn = messageEl.querySelector('.copy-btn');
             const speakBtn = messageEl.querySelector('.speak-btn');
             const regenerateBtn = messageEl.querySelector('.regenerate-btn');
+            const likeBtn = messageEl.querySelector('.like-btn');
+            const dislikeBtn = messageEl.querySelector('.dislike-btn');
             
             copyBtn.addEventListener('click', () => this.copyToClipboard(content));
             if (speakBtn) {
                 speakBtn.addEventListener('click', () => this.playTtsForMessage(messageEl));
             }
             regenerateBtn.addEventListener('click', () => this.regenerateResponse(messageEl));
+            if (likeBtn) likeBtn.addEventListener('click', () => this.rateMessage(messageEl, true));
+            if (dislikeBtn) dislikeBtn.addEventListener('click', () => this.rateMessage(messageEl, false));
         }
         
         this.messagesContainer.appendChild(messageEl);
@@ -2098,6 +2110,12 @@ class EdisonApp {
             this.userIdInput.value = this.userId;
         }
         this.loadUsers();
+        if (this.discordWebhookInput) this.discordWebhookInput.value = this.settings.discordWebhook || '';
+        if (this.slackWebhookInput) this.slackWebhookInput.value = this.settings.slackWebhook || '';
+        if (this.defaultPrinterIdInput) this.defaultPrinterIdInput.value = this.settings.defaultPrinterId || '';
+        if (this.sandboxAllowedHostsInput) this.sandboxAllowedHostsInput.value = (this.settings.sandboxAllowedHosts || []).join(', ');
+        if (this.sandboxAllowAnyHostInput) this.sandboxAllowAnyHostInput.checked = !!this.settings.sandboxAllowAnyHost;
+        this.loadRuntimeSettings();
         
         this.settingsModal.classList.add('open');
         this.checkSystemStatus();
@@ -2312,13 +2330,36 @@ class EdisonApp {
         }
     }
 
-    saveSettings() {
+    async saveSettings() {
         this.settings.apiEndpoint = this.apiEndpointInput.value.trim();
         this.settings.comfyuiEndpoint = this.comfyuiEndpointInput.value.trim();
         if (this.voiceEndpointInput) {
             this.settings.voiceEndpoint = this.voiceEndpointInput.value.trim();
         }
+        if (this.discordWebhookInput) this.settings.discordWebhook = this.discordWebhookInput.value.trim();
+        if (this.slackWebhookInput) this.settings.slackWebhook = this.slackWebhookInput.value.trim();
+        if (this.defaultPrinterIdInput) this.settings.defaultPrinterId = this.defaultPrinterIdInput.value.trim();
+        if (this.sandboxAllowAnyHostInput) this.settings.sandboxAllowAnyHost = !!this.sandboxAllowAnyHostInput.checked;
+        if (this.sandboxAllowedHostsInput) {
+            this.settings.sandboxAllowedHosts = this.sandboxAllowedHostsInput.value
+                .split(',')
+                .map(v => v.trim())
+                .filter(Boolean);
+        }
         this.settings.defaultMode = this.defaultModeSelect.value;
+
+        try {
+            await fetch(`${this.settings.apiEndpoint}/sandbox/config`, {
+                method: 'PUT',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    sandbox_allow_any_host: !!this.settings.sandboxAllowAnyHost,
+                    sandbox_allowed_hosts: this.settings.sandboxAllowedHosts || [],
+                }),
+            });
+        } catch (e) {
+            console.warn('Failed to update sandbox config:', e);
+        }
         
         localStorage.setItem('edison_settings', JSON.stringify(this.settings));
         
@@ -2327,6 +2368,67 @@ class EdisonApp {
         this.loadAvailableModels();
         
         this.closeSettings();
+    }
+
+    async loadRuntimeSettings() {
+        try {
+            const [sandboxRes, skillsRes, printersRes] = await Promise.all([
+                fetch(`${this.settings.apiEndpoint}/sandbox/config`).catch(() => null),
+                fetch(`${this.settings.apiEndpoint}/skills`).catch(() => null),
+                fetch(`${this.settings.apiEndpoint}/printing/printers`).catch(() => null),
+            ]);
+
+            if (sandboxRes && sandboxRes.ok) {
+                const sandbox = await sandboxRes.json();
+                this.settings.sandboxAllowAnyHost = !!sandbox.sandbox_allow_any_host;
+                this.settings.sandboxAllowedHosts = sandbox.sandbox_allowed_hosts || [];
+                if (this.sandboxAllowAnyHostInput) this.sandboxAllowAnyHostInput.checked = this.settings.sandboxAllowAnyHost;
+                if (this.sandboxAllowedHostsInput) this.sandboxAllowedHostsInput.value = this.settings.sandboxAllowedHosts.join(', ');
+            }
+
+            if (skillsRes && skillsRes.ok) {
+                const data = await skillsRes.json();
+                const names = (data.skills || []).map(s => s.name || s.module);
+                if (this.installedSkillsInput) this.installedSkillsInput.value = names.join(', ');
+            }
+
+            if (printersRes && printersRes.ok) {
+                const data = await printersRes.json();
+                const first = (data.printers || [])[0];
+                if (!this.settings.defaultPrinterId && first) this.settings.defaultPrinterId = first.id;
+                if (this.defaultPrinterIdInput) this.defaultPrinterIdInput.value = this.settings.defaultPrinterId || '';
+            }
+        } catch (e) {
+            console.warn('Failed to load runtime settings:', e);
+        }
+    }
+
+    async rateMessage(messageEl, liked) {
+        if (!messageEl) return;
+        const content = messageEl.querySelector('.message-content')?.textContent || '';
+        this.showNotification(liked ? 'Thanks for the feedback' : 'Feedback recorded');
+        await this.sendWebhookFeedback({
+            type: liked ? 'like' : 'dislike',
+            content,
+            mode: this.currentMode,
+            chatId: this.currentChatId,
+        });
+    }
+
+    async sendWebhookFeedback(payload) {
+        const targets = [this.settings.discordWebhook, this.settings.slackWebhook].filter(Boolean);
+        if (targets.length === 0) return;
+        for (const url of targets) {
+            try {
+                await fetch(url, {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ text: `[EDISON] ${payload.type}: ${payload.content.slice(0, 300)}` }),
+                });
+            } catch (e) {
+                console.warn('Webhook delivery failed:', e);
+            }
+        }
     }
 
     async checkSystemStatus() {
@@ -2669,7 +2771,12 @@ class EdisonApp {
             ...this.getDefaultEndpoints(),
             defaultMode: 'auto',
             streamResponses: true,
-            syntaxHighlight: true
+            syntaxHighlight: true,
+            sandboxAllowAnyHost: false,
+            sandboxAllowedHosts: [],
+            discordWebhook: '',
+            slackWebhook: '',
+            defaultPrinterId: '',
         };
 
         const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;

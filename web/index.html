@@ -504,6 +504,39 @@
                             Stream responses (when available)
                         </label>
                     </div>
+
+                    <div class="setting-group">
+                        <label>
+                            <input type="checkbox" id="sandboxAllowAnyHost">
+                            Sandbox: allow any host
+                        </label>
+                        <p class="setting-description">Disable this to enforce host allowlist restrictions for browser tools.</p>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="sandboxAllowedHosts">Sandbox Allowed Hosts (comma separated)</label>
+                        <input type="text" id="sandboxAllowedHosts" placeholder="wikipedia.org, github.com">
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="installedSkills">Installed Skills</label>
+                        <input type="text" id="installedSkills" readonly placeholder="Loaded at runtime">
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="defaultPrinterId">Default Printer ID</label>
+                        <input type="text" id="defaultPrinterId" placeholder="printer_01">
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="discordWebhook">Discord Webhook</label>
+                        <input type="text" id="discordWebhook" placeholder="https://discord.com/api/webhooks/...">
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="slackWebhook">Slack Webhook</label>
+                        <input type="text" id="slackWebhook" placeholder="https://hooks.slack.com/services/...">
+                    </div>
                     
                     <div class="setting-group">
                         <label>

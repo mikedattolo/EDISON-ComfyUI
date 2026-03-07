@@ -26,6 +26,7 @@ logger = logging.getLogger(__name__)
 # Re-export helpers so callers can ``from model_manager_v2 import get_memory_snapshot``
 __all__ = [
     "ModelManager",
+    "ModelPool",
     "MemoryGate",
     "MemorySnapshot",
     "LoadedModel",
@@ -85,6 +86,31 @@ FAST_KEY = "fast"
 # Fallback ladder: try progressively lighter configurations
 FALLBACK_GPU_LAYERS = [None, 32, 20, 12, 4, 0]  # None = use config default
 FALLBACK_CTX_SIZES = [None, 4096, 2048, 1024]     # None = use config default
+
+
+class ModelPool:
+    """Tracks heavy-model residency and ensures only one heavy model stays loaded."""
+
+    def __init__(self):
+        self.current_heavy_key: Optional[str] = None
+
+    def before_loading_heavy(self, manager: "ModelManager", new_key: str):
+        if self.current_heavy_key and self.current_heavy_key != new_key:
+            manager._unload_model_unsafe(self.current_heavy_key)
+            logger.info(
+                "ModelPool evicted heavy model '%s' before loading '%s'",
+                self.current_heavy_key,
+                new_key,
+            )
+            self.current_heavy_key = None
+
+    def mark_loaded(self, key: str, is_heavy: bool):
+        if is_heavy:
+            self.current_heavy_key = key
+
+    def clear(self, key: str):
+        if self.current_heavy_key == key:
+            self.current_heavy_key = None
 
 
 # ── Memory Probing ───────────────────────────────────────────────────────
@@ -202,6 +228,7 @@ class ModelManager:
         self._models: Dict[str, LoadedModel] = {}
         self._lock = threading.Lock()
         self._heavy_slot: Optional[str] = None  # current heavy model key
+        self._pool = ModelPool()
         self._model_configs: Dict[str, dict] = {}  # key → {path, n_ctx, n_gpu_layers, ...}
         self._fallback_order: List[str] = ["deep", "medium", "fast"]
 
@@ -248,7 +275,7 @@ class ModelManager:
 
             # Evict current heavy-slot occupant
             if is_heavy and self._heavy_slot and self._heavy_slot != key:
-                self._unload_model_unsafe(self._heavy_slot)
+                self._pool.before_loading_heavy(self, key)
 
             # Try loading with fallback ladder
             model = self._load_with_fallback(key, cfg)
@@ -267,6 +294,7 @@ class ModelManager:
                 )
                 if is_heavy:
                     self._heavy_slot = key
+                    self._pool.mark_loaded(key, is_heavy=True)
                 logger.info(f"✓ Model '{key}' loaded successfully")
             else:
                 logger.error(f"✗ Failed to load model '{key}' after all fallback attempts")
@@ -288,6 +316,7 @@ class ModelManager:
         with self._lock:
             if self._heavy_slot:
                 self._unload_model_unsafe(self._heavy_slot)
+                self._pool.clear(self._heavy_slot)
                 self._heavy_slot = None
 
     def unload_all_except_fast(self):
@@ -296,6 +325,7 @@ class ModelManager:
             keys = [k for k in list(self._models.keys()) if k != FAST_KEY]
             for k in keys:
                 self._unload_model_unsafe(k)
+                self._pool.clear(k)
             self._heavy_slot = None
 
     def unload_all(self):
@@ -303,6 +333,7 @@ class ModelManager:
         with self._lock:
             for k in list(self._models.keys()):
                 self._unload_model_unsafe(k)
+                self._pool.clear(k)
             self._heavy_slot = None
 
     # ── Unified resolve ──────────────────────────────────────────────
@@ -429,6 +460,7 @@ class ModelManager:
                 pass
             lm.model = None
         _flush_gpu()
+        self._pool.clear(key)
         # Brief pause to let CUDA release memory
         time.sleep(0.3)
 

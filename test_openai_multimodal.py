@@ -158,15 +158,6 @@ def test_openai_chat_completion_stream_routes_to_vision_stream():
         app_mod.openai_stream_completions = old_stream_handler
 
 
-if __name__ == "__main__":
-    test_openai_message_accepts_multimodal_user_content()
-    test_openai_request_rejects_multimodal_assistant_role()
-    test_openai_chat_completion_preserves_multimodal_blocks_for_vision()
-    test_openai_chat_completion_stream_routes_to_vision_stream()
-    test_vision_chat_handler_selection()
-    print("✓ test_openai_multimodal passed")
-
-
 def test_vision_chat_handler_selection():
     """Verify _create_vision_chat_handler picks the correct handler class."""
     from services.edison_core.app import _create_vision_chat_handler
@@ -192,3 +183,12 @@ def test_vision_chat_handler_selection():
         "clip_model_path should NOT be in Llama.__init__ for 0.3.x — chat_handler is required"
     assert "chat_handler" in sig.parameters, \
         "chat_handler should be in Llama.__init__ params"
+
+
+if __name__ == "__main__":
+    test_openai_message_accepts_multimodal_user_content()
+    test_openai_request_rejects_multimodal_assistant_role()
+    test_openai_chat_completion_preserves_multimodal_blocks_for_vision()
+    test_openai_chat_completion_stream_routes_to_vision_stream()
+    test_vision_chat_handler_selection()
+    print("✓ test_openai_multimodal passed")

@@ -167,6 +167,8 @@ class SwarmSession:
     tasks: List[Dict[str, Any]] = field(default_factory=list)
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
     _task_counter: int = 0
+    memory_mode: str = "normal"               # normal | time_slice | degraded
+    max_parallel_agents: int = 1
 
     # ── helpers ───────────────────────────────────────────────────────────
 
@@ -292,6 +294,11 @@ class SwarmEngine:
         self._config = config or {}
         self._emit = emit_fn or (lambda *a, **kw: None)
         self._execute_tool = execute_tool
+        self._max_parallel_agents = int(
+            ((self._config.get("edison", {}).get("orchestration", {}) or {}).get("max_parallel_agents", 2))
+        )
+        if self._max_parallel_agents < 1:
+            self._max_parallel_agents = 1
 
     # ── Public API ────────────────────────────────────────────────────────
 
@@ -515,7 +522,7 @@ Your response:"""
         return None, "No Model"
 
     def _apply_memory_safety(self, session: SwarmSession):
-        """Check VRAM and use shared single model for swarm to prevent OOM."""
+        """Check VRAM policy and select normal/time-slice/degraded swarm execution mode."""
         try:
             from services.edison_core.swarm_safety import (
                 get_swarm_memory_policy, apply_degraded_mode, _flush_gpu,
@@ -528,20 +535,26 @@ Your response:"""
             loaded_map = {tag: True for tag, _, _ in available}
             decision = policy.assess(session.agents, loaded_map)
             logger.info(f"🐝 Memory safety: {decision}")
+            session.memory_mode = decision
+            session.max_parallel_agents = self._max_parallel_agents
 
-            # For swarm, always use a single shared model to avoid multi-model OOM.
-            # Pick the fastest available model (lowest VRAM) for all agents.
-            priority_order = ["fast", "medium", "deep"]
-            chosen = available[0] if available else (None, None, "fallback")
-            for pref in priority_order:
-                for tag, model, name in available:
-                    if tag == pref:
-                        chosen = (tag, model, name)
+            if decision == "degraded":
+                # Pick the lightest available model for all agents.
+                priority_order = ["fast", "medium", "deep"]
+                chosen = available[0] if available else (None, None, "fallback")
+                for pref in priority_order:
+                    for tag, model, name in available:
+                        if tag == pref:
+                            chosen = (tag, model, name)
+                            break
+                    if chosen[0] == pref:
                         break
-                if chosen[0] == pref:
-                    break
-            apply_degraded_mode(session.agents, chosen[1], chosen[2])
-            logger.info(f"🐝 Swarm using shared model: {chosen[2]} (prevents multi-model OOM)")
+                apply_degraded_mode(session.agents, chosen[1], chosen[2])
+                logger.info(f"🐝 Degraded swarm mode enabled, shared model: {chosen[2]}")
+            elif decision == "time_slice":
+                logger.info("🐝 Time-slice swarm mode enabled (agents grouped by model)")
+            else:
+                logger.info("🐝 Normal swarm memory mode")
         except Exception as e:
             logger.debug(f"Swarm safety check skipped: {e}")
 
@@ -950,7 +963,43 @@ Instructions:
             return await self._run_agent_prompt(agent, prompt, temperature)
 
         if parallel:
-            return list(await asyncio.gather(*[_run_one(a, p) for a, p in prompts]))
+            effective_parallel = max(1, int(getattr(session, "max_parallel_agents", self._max_parallel_agents)))
+
+            # Time-slice mode: execute per model-tag batches sequentially, each batch parallel-limited.
+            if session is not None and getattr(session, "memory_mode", "normal") == "time_slice":
+                grouped: Dict[str, List[Tuple[Dict, str]]] = {}
+                for agent, prompt in prompts:
+                    model_name = (agent.get("model_name") or "").lower()
+                    tag = "fast"
+                    if "deep" in model_name:
+                        tag = "deep"
+                    elif "medium" in model_name:
+                        tag = "medium"
+                    grouped.setdefault(tag, []).append((agent, prompt))
+
+                ordered_tags = [t for t in ["deep", "medium", "fast"] if t in grouped]
+                results: List[Dict[str, Any]] = []
+
+                for tag in ordered_tags:
+                    logger.info("🐝 Running time-slice batch: tag=%s agents=%d", tag, len(grouped[tag]))
+                    sem = asyncio.Semaphore(effective_parallel)
+
+                    async def _limited_run(item):
+                        a, p = item
+                        async with sem:
+                            return await _run_one(a, p)
+
+                    batch = await asyncio.gather(*[_limited_run(item) for item in grouped[tag]])
+                    results.extend(batch)
+                return results
+
+            sem = asyncio.Semaphore(effective_parallel)
+
+            async def _limited_run(agent, prompt):
+                async with sem:
+                    return await _run_one(agent, prompt)
+
+            return list(await asyncio.gather(*[_limited_run(a, p) for a, p in prompts]))
         results = []
         for agent, prompt in prompts:
             results.append(await _run_one(agent, prompt))

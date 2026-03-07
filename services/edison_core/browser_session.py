@@ -10,8 +10,11 @@ from dataclasses import dataclass
 from typing import Any, Callable, Dict, Optional, Set
 from urllib.parse import urlparse
 import base64
+import re
 import time
 import uuid
+
+from bs4 import BeautifulSoup
 
 
 class BrowserSessionError(Exception):
@@ -30,6 +33,7 @@ class BrowserSession:
     last_used_ts: float
     viewport: Dict[str, int]
     allowed_hosts: Set[str]
+    readable_text: str = ""
 
 
 class BrowserSessionManager:
@@ -119,16 +123,40 @@ class BrowserSessionManager:
                 raise BrowserSessionError(f"Redirected to disallowed host '{hostname}'", status_code=403)
 
     @staticmethod
-    def _snapshot(page: Any, width: int, height: int) -> Dict[str, Any]:
+    def _extract_readable_text(html: str, max_chars: int = 5000) -> str:
+        if not html:
+            return ""
+
+        try:
+            soup = BeautifulSoup(html, "html.parser")
+            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
+                tag.decompose()
+            # Prefer main-content containers when present.
+            candidate = soup.select_one("main, article, [role='main']")
+            text = (candidate.get_text("\n", strip=True) if candidate else soup.get_text("\n", strip=True)) or ""
+        except Exception:
+            text = re.sub(r"<[^>]+>", " ", html)
+
+        lines = [re.sub(r"\s+", " ", line).strip() for line in text.splitlines()]
+        compact = "\n".join(line for line in lines if line)
+        return compact[:max_chars]
+
+    def _snapshot(self, page: Any, width: int, height: int) -> Dict[str, Any]:
         title = page.title() or page.url
         img_bytes = page.screenshot(type="jpeg", quality=82, full_page=False, clip=None)
         b64 = base64.b64encode(img_bytes).decode("ascii")
+        readable_text = ""
+        try:
+            readable_text = self._extract_readable_text(page.content() or "")
+        except Exception:
+            readable_text = ""
         return {
             "url": page.url,
             "title": title,
             "screenshot_b64": b64,
             "width": int(width),
             "height": int(height),
+            "readable_text": readable_text,
             "status": "done",
         }
 
@@ -148,8 +176,6 @@ class BrowserSessionManager:
             session_id=session_id,
             width=payload.get("width"),
             height=payload.get("height"),
-            cursor_x=payload.get("cursor_x"),
-            cursor_y=payload.get("cursor_y"),
         )
 
     def create_session(
@@ -195,6 +221,7 @@ class BrowserSessionManager:
             )
             snap = self._snapshot(page, w, h)
             snap["session_id"] = session_id
+            self._sessions[session_id].readable_text = snap.get("readable_text", "")
             return snap
 
         payload = self._pw_run(_create, start_url, width, height, session_allowed_hosts, timeout=30)
@@ -209,7 +236,9 @@ class BrowserSessionManager:
             session.page.wait_for_timeout(500)
             self._ensure_redirect_allowed(session.page.url, session.allowed_hosts)
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         self._emit_browser_view(url, title="Loading...", screenshot_b64=None, status="loading", session_id=session_id)
         payload = self._pw_run(_navigate, session_id, url, timeout=30)
@@ -223,7 +252,9 @@ class BrowserSessionManager:
             session.page.mouse.click(int(px), int(py), button=btn, click_count=max(1, int(cc)))
             session.page.wait_for_timeout(250)
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         payload = self._pw_run(_click, session_id, x, y, button, click_count, timeout=25)
         payload["session_id"] = session_id
@@ -236,7 +267,9 @@ class BrowserSessionManager:
             session.page.keyboard.type(value or "", delay=max(0, int(delay)))
             session.page.wait_for_timeout(200)
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         payload = self._pw_run(_type, session_id, text, delay_ms, timeout=25)
         payload["session_id"] = session_id
@@ -249,7 +282,9 @@ class BrowserSessionManager:
             session.page.keyboard.press(k)
             session.page.wait_for_timeout(250)
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         payload = self._pw_run(_key, session_id, key, timeout=25)
         payload["session_id"] = session_id
@@ -262,7 +297,9 @@ class BrowserSessionManager:
             session.page.mouse.wheel(int(dx), int(dy))
             session.page.wait_for_timeout(200)
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         payload = self._pw_run(_scroll, session_id, delta_x, delta_y, timeout=25)
         payload["session_id"] = session_id
@@ -275,8 +312,7 @@ class BrowserSessionManager:
             session.page.mouse.move(int(px), int(py))
             session.last_used_ts = time.time()
             snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
-            snap["cursor_x"] = int(px)
-            snap["cursor_y"] = int(py)
+            session.readable_text = snap.get("readable_text", "")
             return snap
 
         payload = self._pw_run(_move, session_id, x, y, timeout=25)
@@ -293,7 +329,9 @@ class BrowserSessionManager:
             session.page.set_viewport_size({"width": w, "height": h})
             session.viewport = {"width": w, "height": h}
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, w, h)
+            snap = self._snapshot(session.page, w, h)
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         payload = self._pw_run(_set_viewport, session_id, width, height, timeout=25)
         payload["session_id"] = session_id
@@ -304,7 +342,9 @@ class BrowserSessionManager:
         def _screenshot(sid: str):
             session = self._get_session(sid)
             session.last_used_ts = time.time()
-            return self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return snap
 
         payload = self._pw_run(_screenshot, session_id, timeout=25)
         payload["session_id"] = session_id
@@ -313,6 +353,107 @@ class BrowserSessionManager:
 
     def observe(self, session_id: str) -> Dict[str, Any]:
         return self.screenshot(session_id)
+
+    def get_text(self, session_id: str) -> Dict[str, Any]:
+        def _get_text(sid: str):
+            session = self._get_session(sid)
+            html = session.page.content() or ""
+            readable_text = self._extract_readable_text(html)
+            session.readable_text = readable_text
+            session.last_used_ts = time.time()
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            return {
+                **snap,
+                "session_id": sid,
+                "readable_text": readable_text,
+                "text_length": len(readable_text),
+            }
+
+        payload = self._pw_run(_get_text, session_id, timeout=25)
+        self._emit_result(session_id, payload)
+        return payload
+
+    def find_element(self, session_id: str, selector: str) -> Dict[str, Any]:
+        def _find(sid: str, css_selector: str):
+            session = self._get_session(sid)
+            loc = session.page.locator(css_selector).first
+            count = session.page.locator(css_selector).count()
+            found = count > 0
+            visible = bool(loc.is_visible()) if found else False
+            text = (loc.inner_text(timeout=1500).strip() if found else "")
+            if len(text) > 200:
+                text = text[:200]
+            session.last_used_ts = time.time()
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return {
+                **snap,
+                "session_id": sid,
+                "selector": css_selector,
+                "found": found,
+                "count": int(count),
+                "visible": visible,
+                "text": text,
+            }
+
+        if not (selector or "").strip():
+            raise BrowserSessionError("selector is required", status_code=400)
+        payload = self._pw_run(_find, session_id, selector, timeout=25)
+        self._emit_result(session_id, payload)
+        return payload
+
+    def click_by_text(self, session_id: str, text: str) -> Dict[str, Any]:
+        def _click_by_text(sid: str, target_text: str):
+            session = self._get_session(sid)
+            loc = session.page.locator(f"text={target_text}").first
+            if loc.count() <= 0:
+                raise BrowserSessionError(f"No element found with text '{target_text}'", status_code=404)
+            loc.click(timeout=5000)
+            session.page.wait_for_timeout(250)
+            session.last_used_ts = time.time()
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return {
+                **snap,
+                "session_id": sid,
+                "clicked_text": target_text,
+            }
+
+        value = (text or "").strip()
+        if not value:
+            raise BrowserSessionError("text is required", status_code=400)
+        payload = self._pw_run(_click_by_text, session_id, value, timeout=25)
+        self._emit_result(session_id, payload)
+        return payload
+
+    def fill_form(self, session_id: str, fields: Dict[str, str]) -> Dict[str, Any]:
+        def _fill_form(sid: str, form_fields: Dict[str, str]):
+            session = self._get_session(sid)
+            filled = []
+            for selector, value in (form_fields or {}).items():
+                if not isinstance(selector, str) or not selector.strip():
+                    continue
+                loc = session.page.locator(selector).first
+                if loc.count() <= 0:
+                    continue
+                loc.fill(str(value or ""), timeout=5000)
+                filled.append(selector)
+            session.page.wait_for_timeout(250)
+            session.last_used_ts = time.time()
+            snap = self._snapshot(session.page, session.viewport["width"], session.viewport["height"])
+            session.readable_text = snap.get("readable_text", "")
+            return {
+                **snap,
+                "session_id": sid,
+                "filled_fields": filled,
+                "requested_fields": list((form_fields or {}).keys()),
+            }
+
+        if not isinstance(fields, dict) or not fields:
+            raise BrowserSessionError("fields must be a non-empty object", status_code=400)
+        payload = self._pw_run(_fill_form, session_id, fields, timeout=30)
+        self._emit_result(session_id, payload)
+        return payload
 
     def close_session(self, session_id: str) -> Dict[str, Any]:
         def _close(sid: str):

@@ -6,8 +6,8 @@ FastAPI server with llama-cpp-python for local LLM inference
 from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconnect, Response, Cookie, UploadFile, File
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, Field
-from typing import Optional, Literal, Iterator, List, Dict, Any
+from pydantic import BaseModel, Field, validator
+from typing import Optional, Literal, Iterator, List, Dict, Any, Union
 import logging
 from pathlib import Path
 import yaml
@@ -122,11 +122,15 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
 def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = None,
                        status: str = "done", error: str | None = None,
                        session_id: str = "default", width: int | None = None,
-                       height: int | None = None, cursor_x: int | None = None,
-                       cursor_y: int | None = None):
+                       height: int | None = None):
     """Emit a browser_view SSE event so the frontend can show an inline browser card."""
+    _logger = logging.getLogger(__name__)
     try:
-        from .routes.agent_live import get_event_bus
+        try:
+            from .routes.agent_live import get_event_bus
+        except ImportError:
+            from routes.agent_live import get_event_bus
+        bus = get_event_bus()
         evt = {
             "type": "browser_view",
             "url": url,
@@ -134,38 +138,27 @@ def _emit_browser_view(url: str, title: str = "", screenshot_b64: str | None = N
             "screenshot_b64": screenshot_b64,
             "status": status,
             "error": error,
+            "width": width,
+            "height": height,
         }
-        if width is not None:
-            evt["width"] = width
-        if height is not None:
-            evt["height"] = height
-        if cursor_x is not None:
-            evt["cursor_x"] = cursor_x
-        if cursor_y is not None:
-            evt["cursor_y"] = cursor_y
-        get_event_bus().emit(evt, session_id=session_id)
-    except Exception:
-        pass
+        bus.emit(evt, session_id=session_id)
+        _logger.info(f"Browser view event emitted: status={status}, url={url[:80]}")
+    except Exception as exc:
+        _logger.warning(f"Failed to emit browser_view event: {exc}")
 
-# ── Persistent Browser Session Manager (lazy-initialized) ────────────────
-_browser_mgr = None
 
-def _get_browser_mgr():
-    """Lazily initialize and return the BrowserSessionManager singleton."""
-    global _browser_mgr
-    if _browser_mgr is not None:
-        return _browser_mgr
+try:
+    from .browser_session import BrowserSessionManager, BrowserSessionError
+except Exception:
     try:
-        from .browser_session import BrowserSessionManager
-    except ImportError:
-        from browser_session import BrowserSessionManager
-    _browser_mgr = BrowserSessionManager(
-        pw_run=_pw_run,
-        get_browser=lambda: _pw_browser,
-        emit_browser_view=_emit_browser_view,
-        allow_any_host=True,
-    )
-    return _browser_mgr
+        from browser_session import BrowserSessionManager, BrowserSessionError
+    except Exception:
+        BrowserSessionManager = None
+
+        class BrowserSessionError(Exception):
+            def __init__(self, message: str, status_code: int = 400):
+                super().__init__(message)
+                self.status_code = status_code
 
 # Configure logging
 logging.basicConfig(
@@ -286,15 +279,14 @@ except ImportError:
         _mc_utils_available = False
         logger.warning("⚠ Minecraft utils not available")
 
-# Force GPU usage - verify CUDA is available
+# GPU probe for dynamic GPU/CPU model loading.
 def verify_cuda():
-    """Verify CUDA is available before loading models"""
+    """Verify whether CUDA is available; returns False when CPU fallback is needed."""
     try:
         import torch
         if not torch.cuda.is_available():
-            logger.error("❌ CUDA not available! Cannot load models on GPU.")
-            logger.error("Please ensure NVIDIA drivers are installed and GPUs are visible.")
-            raise RuntimeError("CUDA not available - GPU required for EDISON")
+            logger.warning("CUDA not available. Falling back to CPU model loading where supported.")
+            return False
         
         gpu_count = torch.cuda.device_count()
         logger.info(f"✓ CUDA available with {gpu_count} GPU(s)")
@@ -304,10 +296,10 @@ def verify_cuda():
             logger.info(f"  GPU {i}: {gpu_name} ({gpu_mem:.1f} GB)")
         return True
     except ImportError:
-        logger.error("❌ PyTorch not installed - cannot verify CUDA")
+        logger.warning("PyTorch not installed - CUDA probe unavailable, using CPU fallback")
         return False
     except Exception as e:
-        logger.error(f"❌ CUDA verification failed: {e}")
+        logger.warning(f"CUDA verification failed ({e}) - using CPU fallback")
         return False
 
 # Get repo root - works regardless of CWD
@@ -629,6 +621,8 @@ llm_deep = None
 llm_reasoning = None
 llm_vision = None  # VLM for image understanding
 llm_vision_code = None
+vision_enabled = False
+vision_unavailable_reason = "Vision models are not configured"
 model_manager = None
 vllm_enabled = False
 vllm_url = None
@@ -665,6 +659,8 @@ file_editor_instance = None
 provenance_tracker_instance = None
 memory_gate_instance = None
 model_manager_v2_instance = None
+printer_manager_instance = None
+skill_loader_instance = None
 
 # Integration stores
 INTEGRATIONS_DIR = REPO_ROOT / "config" / "integrations"
@@ -940,6 +936,41 @@ _models_unloaded_for_image_gen = False
 _image_gen_lock = threading.Lock()
 _reload_lock = threading.Lock()
 _reload_in_progress = False
+browser_session_manager = None
+_browser_cleanup_task = None
+
+
+def _sandbox_host_config() -> tuple[bool, list[str], int]:
+    ed = config.get("edison", {}) if isinstance(config, dict) else {}
+    allow_any = bool(ed.get("sandbox_allow_any_host", False))
+    hosts = ed.get("sandbox_allowed_hosts") or []
+    if not isinstance(hosts, list):
+        hosts = []
+    ttl_seconds = int(ed.get("sandbox_session_ttl_seconds", 900))
+    return allow_any, hosts, max(60, ttl_seconds)
+
+
+def _get_browser_session_manager() -> BrowserSessionManager:
+    global browser_session_manager
+    if browser_session_manager is not None:
+        return browser_session_manager
+    if BrowserSessionManager is None:
+        raise RuntimeError("BrowserSessionManager is unavailable")
+
+    allow_any, hosts, _ttl = _sandbox_host_config()
+    browser_session_manager = BrowserSessionManager(
+        pw_run=_pw_run,
+        get_browser=lambda: _pw_browser,
+        emit_browser_view=_emit_browser_view,
+        default_allowed_hosts=hosts,
+        allow_any_host=allow_any,
+    )
+    logger.info(
+        "✓ Browser session manager initialized (allow_any=%s, allowed_hosts=%s)",
+        allow_any,
+        hosts,
+    )
+    return browser_session_manager
 
 def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
     """Get free VRAM in MiB for a specific GPU"""
@@ -1004,19 +1035,52 @@ def unload_all_llm_models():
     return unloaded
 
 
+def _create_vision_chat_handler(clip_model_path: str, model_name: str = ""):
+    """Create the correct llama-cpp-python chat handler for a vision model.
+
+    In llama-cpp-python >= 0.3.x, `clip_model_path` is no longer a Llama()
+    constructor parameter.  The CLIP projector must be wrapped in an explicit
+    chat handler and passed via `chat_handler=`.
+
+    This helper auto-detects the right handler class:
+      - Qwen2-VL  → Qwen25VLChatHandler
+      - LLaVA 1.6 → Llava16ChatHandler
+      - fallback  → Llava15ChatHandler
+    """
+    model_lower = model_name.lower()
+    try:
+        if "qwen2-vl" in model_lower or "qwen2_vl" in model_lower or "qwen25vl" in model_lower:
+            from llama_cpp.llama_chat_format import Qwen25VLChatHandler
+            logger.info(f"Using Qwen25VLChatHandler for {model_name}")
+            return Qwen25VLChatHandler(clip_model_path=clip_model_path)
+        if "llava" in model_lower and ("1.6" in model_lower or "v1.6" in model_lower or "16" in model_lower):
+            from llama_cpp.llama_chat_format import Llava16ChatHandler
+            logger.info(f"Using Llava16ChatHandler for {model_name}")
+            return Llava16ChatHandler(clip_model_path=clip_model_path)
+        # Default fallback to LLaVA 1.5
+        from llama_cpp.llama_chat_format import Llava15ChatHandler
+        logger.info(f"Using Llava15ChatHandler (fallback) for {model_name}")
+        return Llava15ChatHandler(clip_model_path=clip_model_path)
+    except Exception as e:
+        logger.error(f"Failed to create vision chat handler: {e}")
+        raise
+
+
 def _try_load_vision_on_demand() -> bool:
     """
     On-demand vision model loader.
 
     When a vision request arrives but llm_vision is None (VRAM was too tight at
     startup), this helper:
-      1. Unloads the medium model to free VRAM.
-      2. Attempts to load the vision model.
-      3. Returns True if vision is now available, False otherwise.
+      1. Unloads ALL non-vision models to free VRAM.
+      2. Attempts to load the vision model with the correct chat_handler.
+      3. If CUDA OOM, retries with n_gpu_layers=0 (CPU-only fallback).
+      4. Returns True if vision is now available, False otherwise.
 
-    The medium model is reloaded later by reload_llm_models_background().
+    Other models are reloaded later by reload_llm_models_background().
     """
-    global llm_vision, llm_medium
+    global llm_vision, llm_fast, llm_medium, llm_deep, llm_reasoning
+    global vision_enabled, vision_unavailable_reason
 
     # Already loaded?
     if llm_vision is not None:
@@ -1029,6 +1093,8 @@ def _try_load_vision_on_demand() -> bool:
 
     if not vision_model_name or not vision_clip_name:
         logger.warning("Vision model not configured in edison.yaml")
+        vision_enabled = False
+        vision_unavailable_reason = "Vision model is not configured in config/edison.yaml"
         return False
 
     vision_model_path = models_path / vision_model_name
@@ -1036,14 +1102,27 @@ def _try_load_vision_on_demand() -> bool:
 
     if not vision_model_path.exists() or not vision_clip_path.exists():
         logger.warning(f"Vision model files not found: {vision_model_path}")
+        vision_enabled = False
+        vision_unavailable_reason = (
+            "Vision model files are missing. Please download both vision_model and vision_clip into models/llm."
+        )
         return False
 
-    # Free VRAM by unloading the medium model
-    if llm_medium is not None:
-        logger.info("⏳ Unloading medium model to make room for vision model...")
+    # Free VRAM by unloading ALL non-vision models (GPU 0 is often shared)
+    unloaded = []
+    for name, ref in [("fast", llm_fast), ("medium", llm_medium),
+                       ("deep", llm_deep), ("reasoning", llm_reasoning)]:
+        if ref is not None:
+            unloaded.append(name)
+    if unloaded:
+        logger.info(f"⏳ Unloading models to make room for vision: {', '.join(unloaded)}")
+        llm_fast = None
         llm_medium = None
+        llm_deep = None
+        llm_reasoning = None
         _flush_gpu_memory()
-        time.sleep(0.5)
+        time.sleep(1)
+        _flush_gpu_memory()
 
     vision_n_ctx = core_config.get("vision_n_ctx", 4096)
     default_n_gpu_layers = int(core_config.get("n_gpu_layers", -1))
@@ -1056,21 +1135,36 @@ def _try_load_vision_on_demand() -> bool:
         common_kwargs["use_flash_attn"] = True
         common_kwargs["flash_attn_recompute"] = bool(core_config.get("flash_attn_recompute", False))
 
-    try:
-        logger.info(f"⏳ Loading vision model on-demand: {vision_model_name}")
-        llm_vision = Llama(
-            model_path=str(vision_model_path),
-            clip_model_path=str(vision_clip_path),
-            n_ctx=vision_n_ctx,
-            n_gpu_layers=vision_n_gpu_layers,
-            **common_kwargs,
-        )
-        logger.info("✓ Vision model loaded on-demand")
-        return True
-    except Exception as e:
-        llm_vision = None
-        logger.error(f"❌ Failed to load vision model on-demand: {e}")
-        return False
+    # Try loading with configured GPU layers first, fall back to CPU-only on OOM
+    for attempt, gpu_layers in enumerate([vision_n_gpu_layers, 0]):
+        try:
+            label = "GPU" if gpu_layers > 0 else "CPU-only"
+            logger.info(f"⏳ Loading vision model on-demand ({label}): {vision_model_name}")
+            vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
+            llm_vision = Llama(
+                model_path=str(vision_model_path),
+                chat_handler=vision_handler,
+                n_ctx=vision_n_ctx,
+                n_gpu_layers=gpu_layers,
+                **common_kwargs,
+            )
+            logger.info(f"✓ Vision model loaded on-demand ({label}, with explicit chat_handler)")
+            vision_enabled = True
+            vision_unavailable_reason = ""
+            return True
+        except Exception as e:
+            llm_vision = None
+            err_str = str(e).lower()
+            if attempt == 0 and ("out of memory" in err_str or "cudamalloc" in err_str or "alloc" in err_str):
+                logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying with CPU-only: {e}")
+                _flush_gpu_memory()
+                time.sleep(0.5)
+                continue
+            logger.error(f"❌ Failed to load vision model on-demand: {e}")
+            vision_enabled = False
+            vision_unavailable_reason = f"Failed to load vision model on-demand: {e}"
+            return False
+    return False
 
 
 def reload_llm_models_background():
@@ -1276,6 +1370,7 @@ class HealthResponse(BaseModel):
     qdrant_ready: bool
     repo_root: str
     vision_enabled: bool = False
+    vision_error: Optional[str] = None
 
 # Structured tool registry for agent/work modes
 TOOL_REGISTRY = {
@@ -1380,55 +1475,74 @@ TOOL_REGISTRY = {
             "url": {"type": str, "required": True}
         }
     },
-    "browser_create_session": {
+    "browser.observe": {
         "args": {
-            "url": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 1280},
-            "height": {"type": int, "required": False, "default": 800},
+            "session_id": {"type": str, "required": True}
         }
     },
-    "browser_navigate": {
+    "browser.get_text": {
+        "args": {
+            "session_id": {"type": str, "required": True}
+        }
+    },
+    "browser.navigate": {
         "args": {
             "session_id": {"type": str, "required": True},
-            "url": {"type": str, "required": True},
+            "url": {"type": str, "required": True}
         }
     },
-    "browser_click": {
+    "browser.click": {
         "args": {
             "session_id": {"type": str, "required": True},
             "x": {"type": int, "required": True},
             "y": {"type": int, "required": True},
             "button": {"type": str, "required": False, "default": "left"},
-            "click_count": {"type": int, "required": False, "default": 1},
+            "click_count": {"type": int, "required": False, "default": 1}
         }
     },
-    "browser_type": {
+    "browser.type": {
         "args": {
             "session_id": {"type": str, "required": True},
             "text": {"type": str, "required": True},
+            "delay_ms": {"type": int, "required": False, "default": 10}
         }
     },
-    "browser_press": {
+    "browser.find_element": {
         "args": {
             "session_id": {"type": str, "required": True},
-            "key": {"type": str, "required": True},
+            "selector": {"type": str, "required": True}
         }
     },
-    "browser_scroll": {
+    "browser.click_by_text": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "text": {"type": str, "required": True}
+        }
+    },
+    "browser.fill_form": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "fields": {"type": dict, "required": True}
+        }
+    },
+    "browser.press": {
+        "args": {
+            "session_id": {"type": str, "required": True},
+            "key": {"type": str, "required": True}
+        }
+    },
+    "browser.scroll": {
         "args": {
             "session_id": {"type": str, "required": True},
             "delta_x": {"type": int, "required": False, "default": 0},
-            "delta_y": {"type": int, "required": False, "default": 300},
+            "delta_y": {"type": int, "required": True}
         }
     },
-    "browser_screenshot": {
+    "browser.create_session": {
         "args": {
-            "session_id": {"type": str, "required": True},
-        }
-    },
-    "browser_close": {
-        "args": {
-            "session_id": {"type": str, "required": True},
+            "url": {"type": str, "required": True},
+            "width": {"type": int, "required": False, "default": 1280},
+            "height": {"type": int, "required": False, "default": 800}
         }
     },
     "list_printers": {
@@ -1439,10 +1553,15 @@ TOOL_REGISTRY = {
             "printer_id": {"type": str, "required": True},
             "file_path": {"type": str, "required": True}
         }
+    },
+    "get_printer_status": {
+        "args": {
+            "printer_id": {"type": str, "required": True}
+        }
     }
 }
 
-TOOL_LOOP_MAX_STEPS = 12
+TOOL_LOOP_MAX_STEPS = 5
 TOOL_CALL_TIMEOUT_SEC = 30
 STREAM_MAX_SECONDS = 180
 STREAM_MAX_OUTPUT_CHARS = 24000
@@ -1484,6 +1603,10 @@ def _validate_and_normalize_tool_call(payload: dict):
                 return False, f"{arg_name} must be bool", tool_name, None
             if expected_type is str and not isinstance(value, str):
                 return False, f"{arg_name} must be string", tool_name, None
+            if expected_type is dict and not isinstance(value, dict):
+                return False, f"{arg_name} must be object", tool_name, None
+            if expected_type is list and not isinstance(value, list):
+                return False, f"{arg_name} must be array", tool_name, None
             normalized[arg_name] = value
         else:
             if meta.get("required"):
@@ -1572,17 +1695,24 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         desc = data.get('description', '')
         return f"Browser loaded: {title} ({url}). {desc}" if title else f"Sandbox browser opened: {url}"
 
-    if tool_name in ("browser_create_session", "browser_navigate", "browser_click",
-                      "browser_type", "browser_press", "browser_scroll",
-                      "browser_screenshot") and isinstance(data, dict):
-        sid = data.get("session_id", "")
-        title = data.get("title", "")
+    if tool_name.startswith("browser.") and isinstance(data, dict):
         url = data.get("url", "")
-        action = tool_name.replace("browser_", "")
-        return f"Browser {action}: {title or url} (session={sid})"
-
-    if tool_name == "browser_close":
-        return f"Browser session closed: {data.get('session_id', '')}" if isinstance(data, dict) else "Browser session closed"
+        title = data.get("title", "")
+        sid = data.get("session_id", "")
+        text_preview = (data.get("readable_text") or "")[:220].replace("\n", " ").strip()
+        if tool_name == "browser.create_session":
+            return f"Browser session created: {sid} at {url} ({title}). Page text: {text_preview}" if text_preview else f"Browser session created: {sid} at {url} ({title})"
+        if tool_name == "browser.observe":
+            return f"Observed browser session {sid}: {title} ({url})"
+        if tool_name == "browser.get_text":
+            return f"Extracted readable page text from {sid}: {text_preview}" if text_preview else f"No readable text extracted for {sid}"
+        if tool_name == "browser.find_element":
+            return f"Selector {data.get('selector', '')}: found={data.get('found', False)} count={data.get('count', 0)}"
+        if tool_name == "browser.fill_form":
+            return f"Filled {len(data.get('filled_fields', []))} form field(s) in {sid}"
+        if tool_name == "browser.click_by_text":
+            return f"Clicked text '{data.get('clicked_text', '')}' in {sid}"
+        return f"Browser action complete for {sid}: {title} ({url})"
 
     if tool_name == "list_printers" and isinstance(data, dict):
         printers = data.get("printers", [])
@@ -1590,6 +1720,9 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "send_3d_print":
         return result.get("message", "3D print job submitted")
+
+    if tool_name == "get_printer_status" and isinstance(data, dict):
+        return f"Printer {data.get('printer_id', '?')} status: {data.get('state', 'unknown')}"
 
     return f"{tool_name} completed"
 
@@ -1840,115 +1973,114 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                                    status="error", error=str(exc))
                 return {"ok": False, "error": f"Browser error: {exc}"}
 
-        # ── Interactive browser session tools ──────────────────────────
-        if tool_name == "browser_create_session":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.create_session,
-                    start_url=args.get("url", ""),
-                    width=args.get("width", 1280),
-                    height=args.get("height", 800),
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_create_session: {exc}"}
+        if tool_name == "browser.create_session":
+            manager = _get_browser_session_manager()
+            data = manager.create_session(
+                start_url=args.get("url", ""),
+                width=args.get("width", 1280),
+                height=args.get("height", 800),
+            )
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_navigate":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.navigate,
-                    session_id=args["session_id"],
-                    url=args["url"],
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_navigate: {exc}"}
+        if tool_name == "browser.observe":
+            manager = _get_browser_session_manager()
+            data = manager.observe(session_id=args.get("session_id", ""))
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_click":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.click,
-                    session_id=args["session_id"],
-                    x=args["x"],
-                    y=args["y"],
-                    button=args.get("button", "left"),
-                    click_count=args.get("click_count", 1),
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_click: {exc}"}
+        if tool_name == "browser.get_text":
+            manager = _get_browser_session_manager()
+            data = manager.get_text(session_id=args.get("session_id", ""))
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_type":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.type,
-                    session_id=args["session_id"],
-                    text=args["text"],
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_type: {exc}"}
+        if tool_name == "browser.navigate":
+            manager = _get_browser_session_manager()
+            data = manager.navigate(session_id=args.get("session_id", ""), url=args.get("url", ""))
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_press":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.keypress,
-                    session_id=args["session_id"],
-                    key=args["key"],
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_press: {exc}"}
+        if tool_name == "browser.click":
+            manager = _get_browser_session_manager()
+            data = manager.click(
+                session_id=args.get("session_id", ""),
+                x=args.get("x", 0),
+                y=args.get("y", 0),
+                button=args.get("button", "left"),
+                click_count=args.get("click_count", 1),
+            )
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_scroll":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.scroll,
-                    session_id=args["session_id"],
-                    delta_x=args.get("delta_x", 0),
-                    delta_y=args.get("delta_y", 300),
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_scroll: {exc}"}
+        if tool_name == "browser.find_element":
+            manager = _get_browser_session_manager()
+            data = manager.find_element(
+                session_id=args.get("session_id", ""),
+                selector=args.get("selector", ""),
+            )
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_screenshot":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.screenshot,
-                    session_id=args["session_id"],
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_screenshot: {exc}"}
+        if tool_name == "browser.click_by_text":
+            manager = _get_browser_session_manager()
+            data = manager.click_by_text(
+                session_id=args.get("session_id", ""),
+                text=args.get("text", ""),
+            )
+            return {"ok": True, "data": data}
 
-        if tool_name == "browser_close":
-            try:
-                mgr = _get_browser_mgr()
-                payload = await asyncio.to_thread(
-                    mgr.close_session,
-                    session_id=args["session_id"],
-                )
-                return {"ok": True, "data": payload}
-            except Exception as exc:
-                return {"ok": False, "error": f"browser_close: {exc}"}
+        if tool_name == "browser.type":
+            manager = _get_browser_session_manager()
+            data = manager.type(
+                session_id=args.get("session_id", ""),
+                text=args.get("text", ""),
+                delay_ms=args.get("delay_ms", 10),
+            )
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.fill_form":
+            manager = _get_browser_session_manager()
+            data = manager.fill_form(
+                session_id=args.get("session_id", ""),
+                fields=args.get("fields", {}),
+            )
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.press":
+            manager = _get_browser_session_manager()
+            data = manager.keypress(session_id=args.get("session_id", ""), key=args.get("key", "Enter"))
+            return {"ok": True, "data": data}
+
+        if tool_name == "browser.scroll":
+            manager = _get_browser_session_manager()
+            data = manager.scroll(
+                session_id=args.get("session_id", ""),
+                delta_x=args.get("delta_x", 0),
+                delta_y=args.get("delta_y", 0),
+            )
+            return {"ok": True, "data": data}
 
         if tool_name == "list_printers":
+            if printer_manager_instance is not None:
+                return {"ok": True, "data": printer_manager_instance.list_printers()}
             db = _load_printers()
             return {"ok": True, "data": {"printers": db.get("printers", [])}}
+
+        if tool_name == "get_printer_status":
+            if printer_manager_instance is None:
+                return {"ok": False, "error": "Printer manager is not available"}
+            printer_id = args.get("printer_id", "").strip()
+            if not printer_id:
+                return {"ok": False, "error": "printer_id is required"}
+            return {"ok": True, "data": printer_manager_instance.get_printer_status(printer_id)}
 
         if tool_name == "send_3d_print":
             printer_id = args.get("printer_id", "").strip()
             file_path = args.get("file_path", "").strip()
             if not printer_id or not file_path:
                 return {"ok": False, "error": "printer_id and file_path are required"}
+
+            if printer_manager_instance is not None:
+                try:
+                    result = printer_manager_instance.send_3d_print(printer_id, file_path)
+                    return {"ok": bool(result.get("success", False)), "data": result, "message": result.get("message")}
+                except Exception as e:
+                    return {"ok": False, "error": str(e)}
 
             db = _load_printers()
             printer = next((p for p in db.get("printers", []) if p.get("id") == printer_id), None)
@@ -2152,11 +2284,15 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             with lock:
                 response = llm(
                     prompt,
-                    max_tokens=512,
+                    max_tokens=1024,
                     temperature=0.4,
                     top_p=0.9,
+                    repeat_penalty=1.3,
+                    frequency_penalty=0.5,
+                    presence_penalty=0.4,
                     echo=False,
-                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n"]
+                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n",
+                          "Would you like", "Let me know if", "Do let me know"]
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
@@ -2165,7 +2301,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "You can call structured tools before answering. "
         "Reply with either a final answer in plain text (include citations like [source:web_search]) "
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
-        "Tools: web_search(query:str,max_results:int), rag_search(query:str,limit:int,global:bool), "
+        "Tools: web_search(query:str,max_results:int) — search the web for information on a topic, "
+        "rag_search(query:str,limit:int,global:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
         "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
@@ -2175,23 +2312,56 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str), list_printers(), send_3d_print(printer_id:str,file_path:str). "
-        "INTERACTIVE BROWSER: To browse websites interactively (click, type, scroll, navigate), "
-        "use these tools in sequence: "
-        "1) browser_create_session(url:str,width:int,height:int) — opens a persistent browser session, returns session_id. "
-        "2) browser_click(session_id:str,x:int,y:int,button:str,click_count:int) — click at pixel coordinates. "
-        "3) browser_type(session_id:str,text:str) — type text into the focused element. "
-        "4) browser_press(session_id:str,key:str) — press a key (Enter, Tab, Escape, etc.). "
-        "5) browser_scroll(session_id:str,delta_x:int,delta_y:int) — scroll the page. "
-        "6) browser_navigate(session_id:str,url:str) — navigate to a new URL in the same session. "
-        "7) browser_screenshot(session_id:str) — take a screenshot to see the current page state. "
-        "8) browser_close(session_id:str) — close the session when done. "
-        "Each browser tool returns a screenshot so you can see what happened. "
-        "Use browser_create_session first, then interact with click/type/scroll based on the screenshot. "
-        "Look at the screenshot to find clickable elements and their approximate x,y coordinates."
+        "open_sandbox_browser(url:str) — open a URL in the sandbox browser with live screenshot (use this when asked to open/visit/browse/go to a website or URL), "
+        "browser.create_session(url:str,width:int,height:int), "
+        "browser.observe(session_id:str), browser.get_text(session_id:str), browser.navigate(session_id:str,url:str), "
+        "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
+        "browser.find_element(session_id:str,selector:str), browser.click_by_text(session_id:str,text:str), browser.fill_form(session_id:str,fields:object), "
+        "browser.type(session_id:str,text:str,delay_ms:int), "
+        "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
+        "list_printers(), get_printer_status(printer_id:str), send_3d_print(printer_id:str,file_path:str). "
+        "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
+        "Only use web_search when the user wants to SEARCH for information (no specific URL given)."
     )
 
     context_snippet = context_note[:2000] if context_note else ""
+
+    # Auto-route: detect explicit URL opening intent and inject browser tool call
+    _url_open_match = re.search(
+        r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+        r'(https?://\S+|(?:www\.)\S+)',
+        user_message, re.IGNORECASE
+    )
+    if not _url_open_match:
+        # Also detect bare URLs when user intent is clearly "open"
+        _url_open_match = re.search(
+            r'(?:open|visit|browse(?:\s+to)?|go\s+to|navigate\s+to|show\s+me|load|pull\s+up)\s+'
+            r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
+            user_message, re.IGNORECASE
+        )
+    if _url_open_match:
+        browser_url = _url_open_match.group(1).strip()
+        if not browser_url.startswith("http"):
+            browser_url = f"https://{browser_url}"
+        logger.info(f"⚙️ Auto-routing to open_sandbox_browser for URL: {browser_url}")
+        try:
+            tool_result = await asyncio.wait_for(
+                _execute_tool("open_sandbox_browser", {"url": browser_url}, chat_id),
+                timeout=TOOL_CALL_TIMEOUT_SEC
+            )
+            summary = _summarize_tool_result("open_sandbox_browser", tool_result)
+            tool_events.append({
+                "tool": "open_sandbox_browser",
+                "args": {"url": browser_url},
+                "result": tool_result,
+                "summary": summary
+            })
+            emit_agent_step(
+                title=f"Tool: open_sandbox_browser(url={browser_url!r})",
+                status="done",
+            )
+        except Exception as e:
+            logger.error(f"Auto browser tool failed: {e}")
 
     step = 0
     while step < TOOL_LOOP_MAX_STEPS and not final_answer:
@@ -2298,8 +2468,29 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
 # OpenAI-Compatible Models for /v1/chat/completions endpoint
 class OpenAIMessage(BaseModel):
     role: str = Field(..., description="Role: user, assistant, or system")
-    content: str = Field(..., description="Message content")
+    content: Union[str, List[Dict[str, Any]]] = Field(..., description="Message content")
     name: Optional[str] = Field(default=None, description="Optional name for the message author")
+
+    @validator("content")
+    def validate_content_blocks(cls, value):
+        if isinstance(value, str):
+            return value
+        if not isinstance(value, list):
+            raise ValueError("content must be a string or list of content blocks")
+        for block in value:
+            if not isinstance(block, dict):
+                raise ValueError("multimodal content blocks must be objects")
+            block_type = block.get("type")
+            if block_type == "text":
+                if not isinstance(block.get("text"), str):
+                    raise ValueError("text blocks require a string 'text' field")
+            elif block_type == "image_url":
+                image_url = block.get("image_url")
+                if not isinstance(image_url, dict) or not isinstance(image_url.get("url"), str):
+                    raise ValueError("image_url blocks require image_url.url string")
+            else:
+                raise ValueError("only 'text' and 'image_url' blocks are supported")
+        return value
 
 class OpenAITool(BaseModel):
     type: str = Field(default="function", description="Tool type")
@@ -2314,6 +2505,59 @@ class OpenAIChatCompletionRequest(BaseModel):
     stream: Optional[bool] = Field(default=False, description="Stream response tokens")
     tools: Optional[List[OpenAITool]] = Field(default=None, description="Optional tools/functions")
     tool_choice: Optional[str] = Field(default=None, description="Tool selection strategy")
+
+    @validator("messages")
+    def validate_multimodal_roles(cls, messages):
+        for message in messages:
+            if isinstance(message.content, list) and message.role not in {"user", "system"}:
+                raise ValueError("multimodal content blocks are only allowed for user/system roles")
+        return messages
+
+
+def _flatten_openai_content(content: Union[str, List[Dict[str, Any]]]) -> str:
+    if isinstance(content, str):
+        return content
+    parts: List[str] = []
+    for block in content or []:
+        if not isinstance(block, dict):
+            continue
+        if block.get("type") == "text" and isinstance(block.get("text"), str):
+            parts.append(block["text"])
+    return "\n".join(p for p in parts if p).strip()
+
+
+def _normalize_openai_multimodal_content(content: Union[str, List[Dict[str, Any]]]) -> Union[str, List[Dict[str, Any]]]:
+    if isinstance(content, str):
+        return content
+    normalized: List[Dict[str, Any]] = []
+    for block in content:
+        block_type = block.get("type")
+        if block_type == "text":
+            normalized.append({"type": "text", "text": block.get("text", "")})
+            continue
+        if block_type == "image_url":
+            image_url = block.get("image_url") or {}
+            raw_url = image_url.get("url", "")
+            if isinstance(raw_url, str) and raw_url.startswith("data:image/"):
+                raw_url = _preprocess_vision_image(raw_url) or raw_url
+            normalized.append({"type": "image_url", "image_url": {"url": raw_url}})
+    return normalized
+
+
+def _openai_messages_have_images(messages: List[OpenAIMessage]) -> bool:
+    for message in messages:
+        if not isinstance(message.content, list):
+            continue
+        for block in message.content:
+            if not isinstance(block, dict):
+                continue
+            if block.get("type") != "image_url":
+                continue
+            image_url = block.get("image_url") or {}
+            url = image_url.get("url", "")
+            if isinstance(url, str) and (url.startswith("data:image/") or url.startswith("http://") or url.startswith("https://")):
+                return True
+    return False
 
 class OpenAIChoice(BaseModel):
     index: int = Field(description="Choice index")
@@ -2454,6 +2698,7 @@ def check_gpu_availability():
 def load_llm_models():
     """Load GGUF models using llama-cpp-python with absolute paths"""
     global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
+    global vision_enabled, vision_unavailable_reason
     
     try:
         from llama_cpp import Llama
@@ -2461,14 +2706,7 @@ def load_llm_models():
         logger.error("llama-cpp-python not installed. Install with: pip install llama-cpp-python")
         return
     
-    # Verify CUDA before loading models
-    if not verify_cuda():
-        logger.error("❌ Cannot load models without GPU acceleration.")
-        logger.error("Run: nvidia-smi to verify GPUs are visible")
-        # Only exit during initial startup, not during reload
-        if not _models_unloaded_for_image_gen:
-            sys.exit(1)
-        return
+    gpu_available = verify_cuda()
     
     # Get model paths relative to repo root
     models_rel_path = config.get("edison", {}).get("core", {}).get("models_path", "models/llm")
@@ -2497,6 +2735,15 @@ def load_llm_models():
     reasoning_n_gpu_layers = int(core_config.get("reasoning_n_gpu_layers", default_n_gpu_layers))
     vision_n_gpu_layers = int(core_config.get("vision_n_gpu_layers", default_n_gpu_layers))
     vision_code_n_gpu_layers = int(core_config.get("vision_code_n_gpu_layers", default_n_gpu_layers))
+
+    # CPU fallback for machines without available CUDA devices.
+    if not gpu_available:
+        fast_n_gpu_layers = 0
+        medium_n_gpu_layers = 0
+        deep_n_gpu_layers = 0
+        reasoning_n_gpu_layers = 0
+        vision_n_gpu_layers = 0
+        vision_code_n_gpu_layers = 0
 
     use_flash_attn = bool(core_config.get("use_flash_attn", False))
     flash_attn_recompute = bool(core_config.get("flash_attn_recompute", False))
@@ -2617,47 +2864,84 @@ def load_llm_models():
         vision_clip_path = models_path / vision_clip_name
         
         if vision_model_path.exists() and vision_clip_path.exists():
-            try:
-                logger.info(f"Loading vision model: {vision_model_path}")
-                logger.info(f"Loading CLIP projector: {vision_clip_path}")
-                
-                llm_vision = Llama(
-                    model_path=str(vision_model_path),
-                    clip_model_path=str(vision_clip_path),
-                    n_ctx=vision_n_ctx,
-                    n_gpu_layers=vision_n_gpu_layers,
-                    **common_kwargs
-                )
-                logger.info("✓ Vision model loaded successfully")
-            except Exception as e:
-                llm_vision = None
-                logger.warning(f"Failed to load vision model: {e}")
+            _vision_loaded = False
+            for _vattempt, _vgpu_layers in enumerate([vision_n_gpu_layers, 0]):
+                try:
+                    _vlabel = "GPU" if _vgpu_layers > 0 else "CPU-only"
+                    logger.info(f"Loading vision model ({_vlabel}): {vision_model_path}")
+                    logger.info(f"Loading CLIP projector: {vision_clip_path}")
+                    
+                    vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
+                    llm_vision = Llama(
+                        model_path=str(vision_model_path),
+                        chat_handler=vision_handler,
+                        n_ctx=vision_n_ctx,
+                        n_gpu_layers=_vgpu_layers,
+                        **common_kwargs
+                    )
+                    logger.info(f"✓ Vision model loaded successfully ({_vlabel}, with explicit chat_handler)")
+                    vision_enabled = True
+                    vision_unavailable_reason = ""
+                    _vision_loaded = True
+                    break
+                except Exception as e:
+                    llm_vision = None
+                    _err = str(e).lower()
+                    if _vattempt == 0 and ("out of memory" in _err or "cudamalloc" in _err or "alloc" in _err):
+                        logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying CPU-only: {e}")
+                        _flush_gpu_memory()
+                        time.sleep(0.5)
+                        continue
+                    logger.warning(f"Failed to load vision model: {e}")
+                    vision_unavailable_reason = f"Failed to load vision model: {e}"
+                    break
         else:
             logger.info("Vision model or CLIP projector not found (optional - image understanding disabled)")
+            vision_enabled = False
+            vision_unavailable_reason = (
+                "Vision model files are missing. Please download both vision_model and vision_clip into models/llm."
+            )
     else:
         logger.info("Vision model not configured (image understanding disabled)")
+        vision_enabled = False
+        vision_unavailable_reason = "Vision model is not configured in config/edison.yaml"
     
     # Try to load vision-to-code model (optional)
     if vision_code_model_name and vision_code_clip_name:
         vision_code_model_path = models_path / vision_code_model_name
         vision_code_clip_path = models_path / vision_code_clip_name
         if vision_code_model_path.exists() and vision_code_clip_path.exists():
-            try:
-                logger.info(f"Loading vision-to-code model: {vision_code_model_path}")
-                logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
-                llm_vision_code = Llama(
-                    model_path=str(vision_code_model_path),
-                    clip_model_path=str(vision_code_clip_path),
-                    n_ctx=vision_code_n_ctx,
-                    n_gpu_layers=vision_code_n_gpu_layers,
-                    **common_kwargs
-                )
-                logger.info("✓ Vision-to-code model loaded successfully")
-            except Exception as e:
-                llm_vision_code = None
-                logger.warning(f"Failed to load vision-to-code model: {e}")
+            for _vcattempt, _vcgpu_layers in enumerate([vision_code_n_gpu_layers, 0]):
+                try:
+                    _vclabel = "GPU" if _vcgpu_layers > 0 else "CPU-only"
+                    logger.info(f"Loading vision-to-code model ({_vclabel}): {vision_code_model_path}")
+                    logger.info(f"Loading vision-to-code CLIP projector: {vision_code_clip_path}")
+                    vision_code_handler = _create_vision_chat_handler(str(vision_code_clip_path), vision_code_model_name)
+                    llm_vision_code = Llama(
+                        model_path=str(vision_code_model_path),
+                        chat_handler=vision_code_handler,
+                        n_ctx=vision_code_n_ctx,
+                        n_gpu_layers=_vcgpu_layers,
+                        **common_kwargs
+                    )
+                    logger.info(f"✓ Vision-to-code model loaded successfully ({_vclabel}, with explicit chat_handler)")
+                    break
+                except Exception as e:
+                    llm_vision_code = None
+                    _vcerr = str(e).lower()
+                    if _vcattempt == 0 and ("out of memory" in _vcerr or "cudamalloc" in _vcerr or "alloc" in _vcerr):
+                        logger.warning(f"⚠️ Vision-to-code GPU load failed (OOM), retrying CPU-only: {e}")
+                        _flush_gpu_memory()
+                        time.sleep(0.5)
+                        continue
+                    logger.warning(f"Failed to load vision-to-code model: {e}")
+                    break
         else:
             logger.info("Vision-to-code model or CLIP projector not found (optional)")
+
+    if llm_vision is None and not vision_unavailable_reason:
+        vision_unavailable_reason = "Vision model did not load"
+    vision_enabled = bool(llm_vision is not None)
 
     if not llm_fast and not llm_medium and not llm_deep and not llm_reasoning:
         logger.error("⚠ No models loaded. Please place GGUF models in the models/llm/ directory.")
@@ -2769,7 +3053,7 @@ def get_intent_from_coral(message: str) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global _detected_gpus, _normalized_tensor_split
+    global _detected_gpus, _normalized_tensor_split, _browser_cleanup_task
 
     # Startup
     logger.info("=" * 50)
@@ -2799,6 +3083,25 @@ async def lifespan(app: FastAPI):
     # ── Register all models with ModelManager v2 (new) ───────────────
     _register_models_with_v2()
 
+    # Initialize persistent sandbox browser sessions and periodic cleanup.
+    try:
+        _get_browser_session_manager()
+    except Exception as e:
+        logger.warning(f"⚠ Browser session manager unavailable at startup: {e}")
+
+    async def _browser_cleanup_loop():
+        while True:
+            await asyncio.sleep(60)
+            try:
+                mgr = _get_browser_session_manager()
+                _allow_any, _hosts, ttl = _sandbox_host_config()
+                await asyncio.to_thread(mgr.cleanup_expired_sessions, ttl)
+            except Exception:
+                # Best-effort cleanup only.
+                pass
+
+    _browser_cleanup_task = asyncio.create_task(_browser_cleanup_loop())
+
     # Optional model manager v1 for hot-swap (legacy)
     global model_manager
     try:
@@ -2815,6 +3118,17 @@ async def lifespan(app: FastAPI):
     
     # Shutdown
     logger.info("Shutting down EDISON Core Service...")
+    if skill_loader_instance is not None:
+        try:
+            skill_loader_instance.stop_watcher()
+        except Exception:
+            pass
+    if _browser_cleanup_task:
+        _browser_cleanup_task.cancel()
+        try:
+            await _browser_cleanup_task
+        except BaseException:
+            pass
     if model_manager_v2_instance:
         model_manager_v2_instance.unload_all()
 
@@ -3016,6 +3330,7 @@ async def health():
             "vision_code_model": llm_vision_code is not None
         },
         "vision_enabled": llm_vision is not None,
+        "vision_error": None if llm_vision is not None else vision_unavailable_reason,
         "qdrant_ready": rag_system is not None,
         "repo_root": str(REPO_ROOT)
     }
@@ -4971,8 +5286,26 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                         status="running" if idx < total_steps else "done",
                     )
 
+            # Emit browser_view events from tool results on the main stream
+            # so the frontend can render browser cards even without /agent/stream
+            for evt in agent_tool_events:
+                if evt.get("tool") == "open_sandbox_browser":
+                    result = evt.get("result", {})
+                    data = result.get("data", {}) if isinstance(result, dict) else {}
+                    if isinstance(data, dict) and data.get("url"):
+                        bv_evt = {
+                            "type": "browser_view",
+                            "url": data.get("url", ""),
+                            "title": data.get("title", data.get("url", "")),
+                            "status": "done" if result.get("ok") else "error",
+                            "error": result.get("error"),
+                        }
+                        yield f"event: browser_view\ndata: {json.dumps(bv_evt)}\n\n"
+
             # Stream the pre-computed answer token by token
             assistant_response = agent_tool_answer.strip()
+            # Clean up repetitive output from tool loop
+            assistant_response = _dedupe_repeated_lines(assistant_response)
             for token_chunk in _chunk_text(assistant_response, chunk_size=12):
                 yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
 
@@ -5114,6 +5447,7 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                     "fabricate or guess details that are not present in the image."
                 )
                 content = []
+                image_count = 0
                 if request.images:
                     for img_b64 in request.images:
                         if isinstance(img_b64, str):
@@ -5121,56 +5455,86 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             normalized = _preprocess_vision_image(img_b64)
                             if normalized:
                                 content.append({"type": "image_url", "image_url": {"url": normalized}})
+                                image_count += 1
+                            else:
+                                logger.warning(f"Vision image preprocessing returned None (input length: {len(img_b64)})")
                 content.append({"type": "text", "text": vision_question})
-                lock = get_lock_for_model(llm)
-                with lock:
-                    stream = llm.create_chat_completion(
-                        messages=[
-                            {"role": "system", "content": vision_sys},
-                            {"role": "user", "content": content}
-                        ],
-                        max_tokens=2048,
-                        temperature=0.1,
-                        stream=True
-                    )
-                    for chunk in stream:
-                        if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
-                            logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
-                            break
 
-                        # Check for cancellation
-                        with active_requests_lock:
-                            if request_id in active_requests and active_requests[request_id]["cancelled"]:
-                                logger.info(f"Request {request_id} cancelled by user")
+                if image_count == 0:
+                    logger.error("No valid images after preprocessing — all images dropped")
+
+                logger.info(f"Vision stream: {image_count} images, question: {vision_question[:120]}")
+
+                try:
+                    lock = get_lock_for_model(llm)
+                    with lock:
+                        stream = llm.create_chat_completion(
+                            messages=[
+                                {"role": "system", "content": vision_sys},
+                                {"role": "user", "content": content}
+                            ],
+                            max_tokens=2048,
+                            temperature=0.1,
+                            stream=True
+                        )
+                        for chunk in stream:
+                            if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
+                                logger.warning(f"Vision stream exceeded {STREAM_MAX_SECONDS}s; stopping generation")
+                                break
+
+                            # Check for cancellation
+                            with active_requests_lock:
+                                if request_id in active_requests and active_requests[request_id]["cancelled"]:
+                                    logger.info(f"Request {request_id} cancelled by user")
+                                    client_disconnected = True
+                                    break
+
+                            if await raw_request.is_disconnected():
+                                logger.info(f"Client disconnected for request {request_id}")
+                                with active_requests_lock:
+                                    if request_id in active_requests:
+                                        active_requests[request_id]["cancelled"] = True
                                 client_disconnected = True
                                 break
-                        
-                        if await raw_request.is_disconnected():
-                            logger.info(f"Client disconnected for request {request_id}")
-                            with active_requests_lock:
-                                if request_id in active_requests:
-                                    active_requests[request_id]["cancelled"] = True
-                            client_disconnected = True
-                            break
-                        token, finished = _extract_stream_token_and_finished(chunk, vision=True)
-                        if token:
-                            assistant_response += token
-                            empty_chunks = 0
-                            if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
-                                logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                            token, finished = _extract_stream_token_and_finished(chunk, vision=True)
+                            if token:
+                                assistant_response += token
+                                empty_chunks = 0
+                                if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
+                                    logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
+                                    yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                    break
+                                # Check for repetition loop in vision output
+                                if _detect_repetition(assistant_response):
+                                    logger.warning("Repetition detected in vision output, stopping generation")
+                                    break
                                 yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                            else:
+                                empty_chunks += 1
+
+                            if finished:
+                                logger.debug("Vision stream finished (reason signaled by model)")
                                 break
-                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
-                        else:
-                            empty_chunks += 1
 
-                        if finished:
-                            logger.debug("Vision stream finished (reason signaled by model)")
-                            break
-
-                        if empty_chunks >= max_empty_chunks:
-                            logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
-                            break
+                            if empty_chunks >= max_empty_chunks:
+                                logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
+                                break
+                except Exception as vision_exc:
+                    logger.error(f"Vision streaming failed: {vision_exc}")
+                    logger.error(f"Falling back to text-only vision prompt")
+                    # Fallback: text-only description request
+                    fallback_lock = get_lock_for_model(llm)
+                    with fallback_lock:
+                        fb_resp = llm(
+                            f"[Image provided but could not be processed] {vision_question}",
+                            max_tokens=2048,
+                            temperature=0.1,
+                            echo=False
+                        )
+                    fallback_text = fb_resp["choices"][0]["text"].strip()
+                    assistant_response = f"⚠️ Vision processing failed — the image could not be analyzed.\n\n{fallback_text}"
+                    for token_chunk in _chunk_text(assistant_response, chunk_size=12):
+                        yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
             else:
                 # Detect file generation requests for higher token limit
                 _is_file_gen = bool(re.search(
@@ -5367,6 +5731,13 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
         artifact = detect_artifact(cleaned_response)
+
+        # If vision was used and other models were unloaded, reload them in background
+        if has_images and model_name == "vision":
+            try:
+                reload_llm_models_background()
+            except Exception:
+                pass
         
         done_payload = {
             "ok": True,
@@ -5453,6 +5824,67 @@ async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
 
     return {"layout": layout_text, "code": code_text}
 
+
+@app.post("/vision")
+async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe this image"):
+    """Analyze an image with the configured vision model and stream response via SSE."""
+    global vision_enabled, vision_unavailable_reason
+
+    if not vision_enabled or llm_vision is None:
+        if not _try_load_vision_on_demand():
+            message = vision_unavailable_reason or "Vision is currently unavailable"
+            raise HTTPException(
+                status_code=503,
+                detail={
+                    "success": False,
+                    "error": message,
+                    "hint": "Verify vision_model and vision_clip files in config/edison.yaml and models/llm",
+                },
+            )
+
+    img_data = await image.read()
+    img_b64 = base64.b64encode(img_data).decode("ascii")
+    normalized_img = _preprocess_vision_image(img_b64)
+    if not normalized_img:
+        raise HTTPException(status_code=400, detail={"success": False, "error": "Invalid image payload"})
+
+    chat_messages = [{
+        "role": "user",
+        "content": [
+            {"type": "image_url", "image_url": {"url": normalized_img}},
+            {"type": "text", "text": prompt or "Describe this image"},
+        ],
+    }]
+
+    async def _sse():
+        yield "event: start\ndata: {\"success\": true, \"mode\": \"vision\"}\n\n"
+        lock = get_lock_for_model(llm_vision)
+        acc = ""
+        try:
+            with lock:
+                stream = llm_vision.create_chat_completion(
+                    messages=chat_messages,
+                    max_tokens=700,
+                    temperature=0.2,
+                    stream=True,
+                )
+                for chunk in stream:
+                    delta = chunk.get("choices", [{}])[0].get("delta", {}).get("content", "")
+                    if not delta:
+                        continue
+                    acc += delta
+                    yield f"event: token\ndata: {json.dumps({'success': True, 'token': delta})}\n\n"
+            yield f"event: done\ndata: {json.dumps({'success': True, 'response': acc.strip()})}\n\n"
+        except Exception as e:
+            logger.error(f"Vision streaming failed: {e}")
+            yield f"event: error\ndata: {json.dumps({'success': False, 'error': str(e)})}\n\n"
+
+    return StreamingResponse(
+        _sse(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
+
 @app.post("/chat/cancel")
 async def cancel_chat(request: dict):
     """Cancel an active streaming chat request."""
@@ -5503,7 +5935,56 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
         elif llm_deep:
             model_target = "deep"
     
-    # Select model
+    has_images = _openai_messages_have_images(request.messages)
+
+    # Vision path for true multimodal requests
+    if has_images:
+        model_text = (request.model or "").lower()
+        prefer_vision_code = "code" in model_text
+
+        vision_model = llm_vision_code if prefer_vision_code and llm_vision_code is not None else llm_vision
+        model_name = "vision_code" if vision_model is llm_vision_code else "vision"
+
+        if vision_model is None:
+            if not _try_load_vision_on_demand():
+                raise HTTPException(status_code=503, detail="Vision model not loaded")
+            vision_model = llm_vision
+            model_name = "vision"
+
+        if vision_model is None:
+            raise HTTPException(status_code=503, detail="No suitable vision model available")
+
+        chat_messages: List[Dict[str, Any]] = []
+        for msg in request.messages:
+            if isinstance(msg.content, list):
+                content = _normalize_openai_multimodal_content(msg.content)
+                # Keep multimodal blocks on user/system messages only.
+                if msg.role not in {"user", "system"}:
+                    content = _flatten_openai_content(content)
+            else:
+                content = msg.content
+            chat_messages.append({"role": msg.role, "content": content})
+
+        if request.stream:
+            return await openai_stream_completions(
+                raw_request,
+                vision_model,
+                model_name,
+                full_prompt=None,
+                request=request,
+                chat_messages=chat_messages,
+                is_vision_chat=True,
+            )
+        return await openai_non_stream_completions(
+            vision_model,
+            model_name,
+            full_prompt=None,
+            request=request,
+            chat_messages=chat_messages,
+            is_vision_chat=True,
+        )
+
+    # Select text model (legacy behavior)
     if model_target == "deep" and llm_deep:
         llm = llm_deep
         model_name = "deep"
@@ -5513,32 +5994,35 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
     else:
         llm = llm_fast
         model_name = "fast"
-    
+
     if not llm:
         raise HTTPException(status_code=503, detail="No suitable model available")
-    
+
     # Convert OpenAI messages to internal prompt format
     system_prompt = "You are a helpful assistant."
     user_message = ""
-    
+
     for msg in request.messages:
         if msg.role == "system":
-            system_prompt = msg.content
+            system_prompt = _flatten_openai_content(msg.content)
         elif msg.role == "user":
-            user_message = msg.content
-        # Assistant messages are used for context but not regenerated
-    
-    # Build prompt
-    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
-    
-    if request.stream:
-        # Streaming response
-        return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
-    else:
-        # Non-streaming response
-        return await openai_non_stream_completions(llm, model_name, full_prompt, request)
+            user_message = _flatten_openai_content(msg.content)
 
-async def openai_stream_completions(raw_request: Request, llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
+    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
+
+    if request.stream:
+        return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
+    return await openai_non_stream_completions(llm, model_name, full_prompt, request)
+
+async def openai_stream_completions(
+    raw_request: Request,
+    llm,
+    model_name: str,
+    full_prompt: Optional[str],
+    request: OpenAIChatCompletionRequest,
+    chat_messages: Optional[List[Dict[str, Any]]] = None,
+    is_vision_chat: bool = False,
+):
     """Generate OpenAI-compatible streaming response."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
@@ -5549,7 +6033,13 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         active_requests[request_id] = {"cancelled": False, "timestamp": created_time}
     
     async def stream_generator():
-        prompt_tokens = len(full_prompt.split())  # Approximate
+        if chat_messages is not None:
+            prompt_blob = []
+            for msg in chat_messages:
+                prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
+            prompt_tokens = len("\n".join(prompt_blob).split())
+        else:
+            prompt_tokens = len((full_prompt or "").split())
         completion_tokens = 0
         assistant_response = ""
         empty_chunks = 0
@@ -5559,14 +6049,23 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         try:
             lock = get_lock_for_model(llm)
             with lock:
-                stream = llm(
-                    full_prompt,
-                    max_tokens=request.max_tokens or 2048,
-                    temperature=request.temperature or 0.7,
-                    top_p=request.top_p or 0.9,
-                    echo=False,
-                    stream=True
-                )
+                if chat_messages is not None:
+                    stream = llm.create_chat_completion(
+                        messages=chat_messages,
+                        max_tokens=request.max_tokens or 2048,
+                        temperature=request.temperature if request.temperature is not None else 0.2,
+                        top_p=request.top_p if request.top_p is not None else 0.9,
+                        stream=True,
+                    )
+                else:
+                    stream = llm(
+                        full_prompt,
+                        max_tokens=request.max_tokens or 2048,
+                        temperature=request.temperature or 0.7,
+                        top_p=request.top_p or 0.9,
+                        echo=False,
+                        stream=True
+                    )
                 
                 for chunk in stream:
                     if time.monotonic() - stream_started_at > STREAM_MAX_SECONDS:
@@ -5587,7 +6086,7 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
                                 active_requests[request_id]["cancelled"] = True
                         break
                     
-                    token, finished = _extract_stream_token_and_finished(chunk)
+                    token, finished = _extract_stream_token_and_finished(chunk, vision=is_vision_chat)
                     if token:
                         assistant_response += token
                         completion_tokens += 1
@@ -5660,29 +6159,51 @@ async def openai_stream_completions(raw_request: Request, llm, model_name: str, 
         }
     )
 
-async def openai_non_stream_completions(llm, model_name: str, full_prompt: str, request: OpenAIChatCompletionRequest):
+async def openai_non_stream_completions(
+    llm,
+    model_name: str,
+    full_prompt: Optional[str],
+    request: OpenAIChatCompletionRequest,
+    chat_messages: Optional[List[Dict[str, Any]]] = None,
+    is_vision_chat: bool = False,
+):
     """Generate OpenAI-compatible non-streaming response."""
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created_time = int(time.time())
-    
+
     try:
         lock = get_lock_for_model(llm)
         with lock:
-            response = llm(
-                full_prompt,
-                max_tokens=request.max_tokens or 2048,
-                temperature=request.temperature or 0.7,
-                top_p=request.top_p or 0.9,
-                echo=False
-            )
-        
-        assistant_response = response["choices"][0]["text"].strip()
-        
-        # Approximate token counts
-        prompt_tokens = len(full_prompt.split())
+            if chat_messages is not None:
+                response = llm.create_chat_completion(
+                    messages=chat_messages,
+                    max_tokens=request.max_tokens or 2048,
+                    temperature=request.temperature if request.temperature is not None else 0.2,
+                    top_p=request.top_p if request.top_p is not None else 0.9,
+                    stream=False,
+                )
+                message = response["choices"][0]["message"]["content"]
+                if isinstance(message, list):
+                    assistant_response = _flatten_openai_content(message)
+                else:
+                    assistant_response = str(message or "").strip()
+                prompt_blob = []
+                for msg in chat_messages:
+                    prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
+                prompt_tokens = len("\n".join(prompt_blob).split())
+            else:
+                response = llm(
+                    full_prompt,
+                    max_tokens=request.max_tokens or 2048,
+                    temperature=request.temperature or 0.7,
+                    top_p=request.top_p or 0.9,
+                    echo=False
+                )
+                assistant_response = response["choices"][0]["text"].strip()
+                prompt_tokens = len((full_prompt or "").split())
+
         completion_tokens = len(assistant_response.split())
-        
-        # Format response in OpenAI format
+
         return OpenAIChatCompletionResponse(
             id=completion_id,
             created=created_time,
@@ -5698,9 +6219,11 @@ async def openai_non_stream_completions(llm, model_name: str, full_prompt: str, 
                 total_tokens=prompt_tokens + completion_tokens
             )
         )
-    
+
     except Exception as e:
         logger.error(f"OpenAI completion error: {e}")
+        if is_vision_chat and request.stream:
+            raise HTTPException(status_code=400, detail="vision streaming not supported yet")
         raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/search", response_model=SearchResponse)
@@ -8456,6 +8979,7 @@ def _init_new_subsystems():
     global planner_instance, self_evaluator, coral_plugin_registry
     global file_store_instance, image_editor_instance, file_editor_instance
     global provenance_tracker_instance, memory_gate_instance, model_manager_v2_instance
+    global printer_manager_instance, skill_loader_instance
 
     # Unified job store
     try:
@@ -8514,10 +9038,41 @@ def _init_new_subsystems():
     # Tool registry
     try:
         from .tool_framework import get_tool_registry
-        get_tool_registry()
+        tool_registry = get_tool_registry()
         logger.info("✓ Tool registry initialized")
     except Exception as e:
+        tool_registry = None
         logger.warning(f"⚠ Tool registry init failed: {e}")
+
+    # Printer manager
+    try:
+        from .printer import PrinterManager
+        printer_manager_instance = PrinterManager(PRINTERS_DB, workspace_root=REPO_ROOT)
+        logger.info("✓ Printer manager initialized")
+    except Exception as e:
+        printer_manager_instance = None
+        logger.warning(f"⚠ Printer manager init failed: {e}")
+
+    # Dynamic skill/plugin loader
+    if tool_registry is not None:
+        try:
+            from .skill_loader import SkillLoader
+
+            skill_loader_instance = SkillLoader(
+                tool_registry=tool_registry,
+                skills_dir=REPO_ROOT / "services" / "edison_core" / "skills",
+                config_getter=lambda: config or {},
+            )
+            load_result = skill_loader_instance.load_all()
+            skill_loader_instance.start_watcher()
+            logger.info(
+                "✓ Skill loader initialized (%d loaded, %d skipped)",
+                len(load_result.get("loaded", [])),
+                len(load_result.get("skipped", [])),
+            )
+        except Exception as e:
+            skill_loader_instance = None
+            logger.warning(f"⚠ Skill loader init failed: {e}")
 
     # ── Awareness subsystems ─────────────────────────────────────────────
     try:
@@ -9024,6 +9579,23 @@ async def tool_call_log(limit: int = 50):
         return {"calls": get_tool_registry().get_call_log(limit=limit)}
     except Exception as e:
         return {"calls": [], "error": str(e)}
+
+
+@app.get("/skills")
+async def list_skills():
+    """List dynamically loaded skill modules and their registered tools."""
+    if skill_loader_instance is None:
+        return {"success": False, "skills": [], "error": "Skill loader is not initialized"}
+    return {"success": True, "skills": skill_loader_instance.list_skills()}
+
+
+@app.post("/skills/reload")
+async def reload_skills():
+    """Reload all skills and return load/skip summary."""
+    if skill_loader_instance is None:
+        return {"success": False, "loaded": [], "skipped": [], "error": "Skill loader is not initialized"}
+    result = skill_loader_instance.load_all()
+    return {"success": True, **result}
 
 
 # ── Style Profiles API ──────────────────────────────────────────────────
@@ -10183,145 +10755,259 @@ async def sandbox_browser_screenshot(request: dict):
     return result
 
 
-# ==================== INTERACTIVE BROWSER SESSION ROUTES ====================
+def _browser_error_to_http(exc: Exception) -> HTTPException:
+    detail = str(exc)
+    _emit_browser_view(
+        "",
+        title="Browser sandbox error",
+        screenshot_b64=None,
+        status="error",
+        error=detail,
+        session_id="default",
+    )
+    if isinstance(exc, BrowserSessionError):
+        return HTTPException(status_code=getattr(exc, "status_code", 400), detail={"success": False, "error": detail})
+    if isinstance(exc, KeyError):
+        return HTTPException(status_code=404, detail={"success": False, "error": detail})
+    return HTTPException(status_code=400, detail={"success": False, "error": detail})
+
 
 @app.post("/sandbox/browser/session/create")
 async def sandbox_browser_session_create(request: dict):
-    """Create a persistent browser session for interactive browsing."""
-    url = (request.get("url") or "").strip()
-    if not url:
-        raise HTTPException(status_code=400, detail="url is required")
-    width = int(request.get("width") or 1280)
-    height = int(request.get("height") or 800)
+    """Create a persistent sandbox browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.create_session, url, width, height)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        _allow_any, _hosts, ttl = _sandbox_host_config()
+        await asyncio.to_thread(mgr.cleanup_expired_sessions, ttl)
+        data = await asyncio.to_thread(
+            mgr.create_session,
+            request.get("url", ""),
+            int(request.get("width") or 1280),
+            int(request.get("height") or 800),
+            request.get("allowed_hosts"),
+        )
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
+
+
+@app.get("/sandbox/config")
+async def get_sandbox_config():
+    """Return current sandbox host policy settings."""
+    allow_any, hosts, ttl = _sandbox_host_config()
+    return {
+        "success": True,
+        "sandbox_allow_any_host": allow_any,
+        "sandbox_allowed_hosts": hosts,
+        "sandbox_session_ttl_seconds": ttl,
+    }
+
+
+@app.put("/sandbox/config")
+async def update_sandbox_config(request: dict):
+    """Update in-memory sandbox host policy settings used by browser sessions."""
+    ed = config.setdefault("edison", {})
+    if "sandbox_allow_any_host" in request:
+        ed["sandbox_allow_any_host"] = bool(request.get("sandbox_allow_any_host"))
+    if "sandbox_allowed_hosts" in request:
+        hosts = request.get("sandbox_allowed_hosts")
+        if not isinstance(hosts, list):
+            raise HTTPException(status_code=400, detail="sandbox_allowed_hosts must be a list")
+        ed["sandbox_allowed_hosts"] = [str(h).strip() for h in hosts if str(h).strip()]
+    if "sandbox_session_ttl_seconds" in request:
+        ed["sandbox_session_ttl_seconds"] = max(60, int(request.get("sandbox_session_ttl_seconds") or 900))
+
+    # Recreate manager so updated host policy takes effect immediately.
+    global browser_session_manager
+    browser_session_manager = None
+    _get_browser_session_manager()
+    return await get_sandbox_config()
 
 
 @app.post("/sandbox/browser/session/navigate")
 async def sandbox_browser_session_navigate(request: dict):
-    """Navigate to a new URL in an existing browser session."""
-    session_id = (request.get("session_id") or "").strip()
-    url = (request.get("url") or "").strip()
-    if not session_id or not url:
-        raise HTTPException(status_code=400, detail="session_id and url are required")
+    """Navigate an existing browser session to a new URL."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.navigate, session_id, url)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.navigate, request.get("session_id", ""), request.get("url", ""))
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/click")
 async def sandbox_browser_session_click(request: dict):
-    """Click at x,y coordinates in the browser session."""
-    session_id = (request.get("session_id") or "").strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
-    x = int(request.get("x", 0))
-    y = int(request.get("y", 0))
-    button = request.get("button", "left")
-    click_count = int(request.get("click_count", 1))
+    """Click at viewport coordinates in a persistent browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.click, session_id, x, y, button, click_count)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.click,
+            request.get("session_id", ""),
+            int(request.get("x") or 0),
+            int(request.get("y") or 0),
+            request.get("button", "left"),
+            int(request.get("click_count") or 1),
+        )
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/type")
 async def sandbox_browser_session_type(request: dict):
-    """Type text into the focused element in the browser session."""
-    session_id = (request.get("session_id") or "").strip()
-    text = request.get("text", "")
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
+    """Type text into the active focused element in a browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.type, session_id, text)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.type,
+            request.get("session_id", ""),
+            request.get("text", ""),
+            int(request.get("delay_ms") or 10),
+        )
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/key")
 async def sandbox_browser_session_key(request: dict):
-    """Press a keyboard key in the browser session (Enter, Tab, Escape, etc.)."""
-    session_id = (request.get("session_id") or "").strip()
-    key = (request.get("key") or "").strip()
-    if not session_id or not key:
-        raise HTTPException(status_code=400, detail="session_id and key are required")
+    """Press a keyboard key in the active browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.keypress, session_id, key)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.keypress,
+            request.get("session_id", ""),
+            request.get("key", "Enter"),
+        )
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/scroll")
 async def sandbox_browser_session_scroll(request: dict):
-    """Scroll the page in the browser session."""
-    session_id = (request.get("session_id") or "").strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
-    delta_x = int(request.get("delta_x", 0))
-    delta_y = int(request.get("delta_y", 300))
+    """Scroll the current page in a browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.scroll, session_id, delta_x, delta_y)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.scroll,
+            request.get("session_id", ""),
+            int(request.get("dx") or request.get("delta_x") or 0),
+            int(request.get("dy") or request.get("delta_y") or 0),
+        )
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/move")
 async def sandbox_browser_session_move(request: dict):
-    """Move the mouse to x,y coordinates (emits cursor position in SSE)."""
-    session_id = (request.get("session_id") or "").strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
-    x = int(request.get("x", 0))
-    y = int(request.get("y", 0))
+    """Move mouse cursor in a browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.move_mouse, session_id, x, y)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.move_mouse,
+            request.get("session_id", ""),
+            int(request.get("x") or 0),
+            int(request.get("y") or 0),
+        )
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/viewport")
+async def sandbox_browser_session_viewport(request: dict):
+    """Update session viewport dimensions."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.set_viewport,
+            request.get("session_id", ""),
+            int(request.get("width") or 1280),
+            int(request.get("height") or 800),
+        )
+        return {"success": True, "ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/screenshot")
 async def sandbox_browser_session_screenshot(request: dict):
-    """Take a screenshot of the current browser session state."""
-    session_id = (request.get("session_id") or "").strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
+    """Capture current screenshot from an existing browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.screenshot, session_id)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.screenshot, request.get("session_id", ""))
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/get_text")
+async def sandbox_browser_session_get_text(request: dict):
+    """Extract visible/readable text from the current page in a browser session."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.get_text, request.get("session_id", ""))
+        return {"success": True, "ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/find")
+async def sandbox_browser_session_find(request: dict):
+    """Find an element with Playwright locator syntax and return metadata + screenshot."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.find_element,
+            request.get("session_id", ""),
+            request.get("selector", ""),
+        )
+        return {"success": True, "ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/click_by_text")
+async def sandbox_browser_session_click_by_text(request: dict):
+    """Click the first visible element whose text matches the given value."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.click_by_text,
+            request.get("session_id", ""),
+            request.get("text", ""),
+        )
+        return {"success": True, "ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
+
+
+@app.post("/sandbox/browser/session/fill_form")
+async def sandbox_browser_session_fill_form(request: dict):
+    """Fill multiple form fields by CSS selector in a single browser-thread action."""
+    try:
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(
+            mgr.fill_form,
+            request.get("session_id", ""),
+            request.get("fields", {}),
+        )
+        return {"success": True, "ok": True, **data}
+    except Exception as e:
+        raise _browser_error_to_http(e)
 
 
 @app.post("/sandbox/browser/session/close")
 async def sandbox_browser_session_close(request: dict):
-    """Close a browser session and release resources."""
-    session_id = (request.get("session_id") or "").strip()
-    if not session_id:
-        raise HTTPException(status_code=400, detail="session_id is required")
+    """Close a persistent browser session."""
     try:
-        mgr = _get_browser_mgr()
-        payload = await asyncio.to_thread(mgr.close_session, session_id)
-        return {"ok": True, **payload}
+        mgr = _get_browser_session_manager()
+        data = await asyncio.to_thread(mgr.close_session, request.get("session_id", ""))
+        return {"success": True, "ok": True, **data}
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        raise _browser_error_to_http(e)
 
 
 @app.get("/integrations/connectors")
@@ -10455,14 +11141,20 @@ async def call_connector(request: dict):
 @app.get("/printing/printers")
 async def list_printers():
     """List configured 3D printers."""
+    if printer_manager_instance is not None:
+        return {"success": True, **printer_manager_instance.list_printers()}
     db = _load_printers()
-    return {"printers": db.get("printers", [])}
+    return {"success": True, "printers": db.get("printers", [])}
 
 
 @app.post("/printers")
 @app.post("/printing/printers")
 async def upsert_printer(request: dict):
     """Register or update a Wi-Fi 3D printer profile (OctoPrint/Bambu/generic)."""
+    if printer_manager_instance is not None:
+        printer = printer_manager_instance.upsert_printer(request or {})
+        return {"success": True, "ok": True, "printer": printer}
+
     printer_id = (request.get("id") or "").strip() or f"printer_{uuid.uuid4().hex[:8]}"
     printer = {
         "id": printer_id,
@@ -10482,7 +11174,37 @@ async def upsert_printer(request: dict):
         items.append(printer)
     db["printers"] = items
     _save_printers(db)
-    return {"ok": True, "printer": {k: v for k, v in printer.items() if k != "api_key"}}
+    return {"success": True, "ok": True, "printer": {k: v for k, v in printer.items() if k != "api_key"}}
+
+
+@app.get("/printers/{printer_id}/status")
+@app.get("/printing/printers/{printer_id}/status")
+async def printer_status(printer_id: str):
+    """Get live status from a configured printer."""
+    if printer_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Printer manager is not available")
+    try:
+        status = printer_manager_instance.get_printer_status(printer_id)
+        return {"success": True, **status}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail={"success": False, "error": str(e)})
+
+
+@app.post("/printers/send")
+@app.post("/printing/printers/send")
+async def send_print_job(request: dict):
+    """Send a prepared .gcode file to a configured printer."""
+    if printer_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Printer manager is not available")
+    printer_id = (request.get("printer_id") or "").strip()
+    file_path = (request.get("file_path") or "").strip()
+    if not printer_id or not file_path:
+        raise HTTPException(status_code=400, detail="printer_id and file_path are required")
+    try:
+        result = printer_manager_instance.send_3d_print(printer_id, file_path)
+        return {"success": bool(result.get("success", False)), **result}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail={"success": False, "error": str(e)})
 
 
 @app.patch("/printers/{printer_id}")
