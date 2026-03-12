@@ -1050,6 +1050,8 @@ def _try_load_vision_on_demand() -> bool:
 
     Other models are reloaded later by reload_llm_models_background().
     """
+    from llama_cpp import Llama
+    
     global llm_vision, llm_fast, llm_medium, llm_deep, llm_reasoning
     global vision_enabled, vision_unavailable_reason
 
