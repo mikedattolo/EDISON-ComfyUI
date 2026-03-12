@@ -86,7 +86,9 @@ class KnowledgeManager:
         max_results: int = 6,
         include_web_search: bool = False,
         search_if_needed: bool = True,
-        min_relevance: float = 0.30
+        min_relevance: float = 0.30,
+        skip_memory: bool = False,
+        skip_knowledge: bool = False
     ) -> List[RetrievedContext]:
         """
         Multi-source context retrieval pipeline.
@@ -105,6 +107,8 @@ class KnowledgeManager:
             include_web_search: Force web search even if we have cached results
             search_if_needed: Auto-trigger web search if knowledge is insufficient
             min_relevance: Minimum relevance score to include
+            skip_memory: Skip RAG memory retrieval (for memory-constrained scenarios)
+            skip_knowledge: Skip KB retrieval (for memory-constrained scenarios)
             
         Returns:
             List of RetrievedContext objects, sorted by relevance
@@ -117,18 +121,26 @@ class KnowledgeManager:
         logger.info(f"Query classification: {query_type} for: {query[:80]}")
 
         # 1. Conversation memory (RAG) — personal facts, prior conversations
-        if self.rag and self.rag.is_ready():
-            memory_contexts = self._retrieve_from_memory(query, chat_id, max_results=4)
-            all_contexts.extend(memory_contexts)
-            if memory_contexts:
-                self.stats["memory_hits"] += 1
+        if not skip_memory and self.rag and self.rag.is_ready():
+            try:
+                memory_contexts = self._retrieve_from_memory(query, chat_id, max_results=3)
+                all_contexts.extend(memory_contexts)
+                if memory_contexts:
+                    self.stats["memory_hits"] += 1
+            except Exception as e:
+                logger.debug(f"Memory retrieval failed (likely OOM): {e}")
+                # Continue to next source
 
         # 2. Knowledge base — Wikipedia, uploaded docs, cached knowledge
-        if self.kb and self.kb.is_ready():
-            kb_contexts = self._retrieve_from_knowledge(query, max_results=4)
-            all_contexts.extend(kb_contexts)
-            if kb_contexts:
-                self.stats["knowledge_hits"] += 1
+        if not skip_knowledge and self.kb and self.kb.is_ready():
+            try:
+                kb_contexts = self._retrieve_from_knowledge(query, max_results=2)
+                all_contexts.extend(kb_contexts)
+                if kb_contexts:
+                    self.stats["knowledge_hits"] += 1
+            except Exception as e:
+                logger.debug(f"Knowledge retrieval failed (likely OOM): {e}")
+                # Continue to next source
 
         # 3. Determine if web search is needed
         needs_search = include_web_search or (
@@ -136,12 +148,18 @@ class KnowledgeManager:
         )
 
         if needs_search and self.search:
-            web_contexts = self._retrieve_from_web(query, max_results=5)
-            all_contexts.extend(web_contexts)
-            self.stats["web_search_count"] += 1
+            try:
+                web_contexts = self._retrieve_from_web(query, max_results=3)
+                all_contexts.extend(web_contexts)
+                self.stats["web_search_count"] += 1
+            except Exception as e:
+                logger.debug(f"Web search failed: {e}")
 
         # 4. Merge, deduplicate, and rank
-        merged = self._merge_and_rank(all_contexts, min_relevance)
+        if all_contexts:
+            merged = self._merge_and_rank(all_contexts, min_relevance)
+        else:
+            merged = []
 
         logger.info(
             f"Knowledge retrieval: {len(merged)} results "
@@ -428,7 +446,8 @@ class KnowledgeManager:
         assistant_response: str,
         search_results: Optional[List[Dict]] = None,
         retrieved_contexts: Optional[List] = None,
-        chat_id: Optional[str] = None
+        chat_id: Optional[str] = None,
+        skip_learning: bool = False
     ):
         """
         Extract and store knowledge from a conversation exchange.
@@ -446,83 +465,101 @@ class KnowledgeManager:
             search_results: Web search results used (cached for reuse)
             retrieved_contexts: Knowledge contexts retrieved from KB/Wikipedia/memory used in response
             chat_id: Conversation ID for scoped learning
+            skip_learning: Skip learning (e.g., during GPU memory pressure)
         """
+        if skip_learning:
+            logger.debug("Knowledge learning skipped (memory-light mode)")
+            return
+            
         try:
             # Extract richer facts using enhanced extraction
             facts = self._extract_enhanced_facts(user_message, assistant_response)
 
             if facts and self.rag and self.rag.is_ready():
                 for fact in facts:
-                    # Check for conflicting existing facts
-                    self._resolve_fact_conflict(fact, chat_id)
+                    try:
+                        # Check for conflicting existing facts
+                        self._resolve_fact_conflict(fact, chat_id)
 
-                    # Store the fact
-                    self.rag.add_documents(
-                        documents=[fact["text"]],
-                        metadatas=[{
-                            "role": "fact",
-                            "fact_type": fact["type"],
-                            "confidence": fact["confidence"],
-                            "chat_id": chat_id or "",
-                            "timestamp": int(time.time()),
-                            "tags": ["fact", fact["type"], "enhanced"],
-                            "type": "fact",
-                            "source": fact.get("source", "conversation"),
-                            "original_text": fact.get("original", "")[:200]
-                        }]
-                    )
-                    self.stats["facts_learned"] += 1
+                        # Store the fact
+                        self.rag.add_documents(
+                            documents=[fact["text"]],
+                            metadatas=[{
+                                "role": "fact",
+                                "fact_type": fact["type"],
+                                "confidence": fact["confidence"],
+                                "chat_id": chat_id or "",
+                                "timestamp": int(time.time()),
+                                "tags": ["fact", fact["type"], "enhanced"],
+                                "type": "fact",
+                                "source": fact.get("source", "conversation"),
+                                "original_text": fact.get("original", "")[:200]
+                            }]
+                        )
+                        self.stats["facts_learned"] += 1
+                    except Exception as e:
+                        # If one fact fails (e.g., CUDA OOM), skip it and continue
+                        logger.debug(f"Failed to learn fact: {e}")
+                        continue
 
-                logger.info(f"Learned {len(facts)} enhanced facts from conversation")
+                logger.info(f"Learned {self.stats['facts_learned']} enhanced facts from conversation")
 
             # Learn from retrieved contexts (Wikipedia, cached docs, KB)
             # This reinforces knowledge that was actually used in the response
             if retrieved_contexts and self.rag and self.rag.is_ready():
                 for ctx in retrieved_contexts:
-                    if isinstance(ctx, RetrievedContext):
-                        # Store usage of this context with reinforcement metadata
-                        self.rag.add_documents(
-                            documents=[f"Used in response to: {user_message[:150]}. Context: {ctx.text[:300]}"],
-                            metadatas=[{
-                                "role": "usage",
-                                "source": ctx.source,
-                                "original_source": ctx.source,
-                                "original_title": ctx.title,
-                                "original_url": ctx.url,
-                                "chat_id": chat_id or "",
-                                "timestamp": int(time.time()),
-                                "tags": ["used_knowledge", ctx.source, "retrieval_feedback"],
-                                "type": "usage",
-                                "reinforcement": True,
-                                "relevance": ctx.score
-                            }]
-                        )
-                    elif isinstance(ctx, tuple):
-                        # Handle legacy tuple format (text, metadata)
-                        text, meta = ctx
-                        self.rag.add_documents(
-                            documents=[f"Used in response to: {user_message[:150]}. Context: {text[:300]}"],
-                            metadatas=[{
-                                "role": "usage",
-                                "source": meta.get("source", "unknown"),
-                                "original_title": meta.get("title", ""),
-                                "original_url": meta.get("url", ""),
-                                "chat_id": chat_id or "",
-                                "timestamp": int(time.time()),
-                                "tags": ["used_knowledge", meta.get("source", ""), "retrieval_feedback"],
-                                "type": "usage",
-                                "reinforcement": True,
-                                "relevance": meta.get("score", 0.5)
-                            }]
-                        )
+                    try:
+                        if isinstance(ctx, RetrievedContext):
+                            # Store usage of this context with reinforcement metadata
+                            self.rag.add_documents(
+                                documents=[f"Used in response to: {user_message[:150]}. Context: {ctx.text[:300]}"],
+                                metadatas=[{
+                                    "role": "usage",
+                                    "source": ctx.source,
+                                    "original_source": ctx.source,
+                                    "original_title": ctx.title,
+                                    "original_url": ctx.url,
+                                    "chat_id": chat_id or "",
+                                    "timestamp": int(time.time()),
+                                    "tags": ["used_knowledge", ctx.source, "retrieval_feedback"],
+                                    "type": "usage",
+                                    "reinforcement": True,
+                                    "relevance": ctx.score
+                                }]
+                            )
+                        elif isinstance(ctx, tuple):
+                            # Handle legacy tuple format (text, metadata)
+                            text, meta = ctx
+                            self.rag.add_documents(
+                                documents=[f"Used in response to: {user_message[:150]}. Context: {text[:300]}"],
+                                metadatas=[{
+                                    "role": "usage",
+                                    "source": meta.get("source", "unknown"),
+                                    "original_title": meta.get("title", ""),
+                                    "original_url": meta.get("url", ""),
+                                    "chat_id": chat_id or "",
+                                    "timestamp": int(time.time()),
+                                    "tags": ["used_knowledge", meta.get("source", ""), "retrieval_feedback"],
+                                    "type": "usage",
+                                    "reinforcement": True,
+                                    "relevance": meta.get("score", 0.5)
+                                }]
+                            )
+                    except Exception as e:
+                        # If context learning fails, skip and continue
+                        logger.debug(f"Failed to learn from context: {e}")
+                        continue
                 
                 logger.info(f"Learned from {len(retrieved_contexts)} retrieved knowledge contexts used in response")
 
             # Cache search results if provided
             if search_results and self.kb and self.kb.is_ready():
-                # Build a composite query from the user message
-                self.kb.add_search_results(user_message, search_results)
-                logger.info(f"Cached {len(search_results)} web search results for: {user_message[:80]}")
+                try:
+                    # Build a composite query from the user message
+                    self.kb.add_search_results(user_message, search_results)
+                    logger.info(f"Cached {len(search_results)} web search results for: {user_message[:80]}")
+                except Exception as e:
+                    logger.debug(f"Failed to cache search results: {e}")
 
         except Exception as e:
             logger.warning(f"Learning from exchange failed: {e}")

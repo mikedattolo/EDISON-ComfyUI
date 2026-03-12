@@ -4368,7 +4368,10 @@ async def chat(request: ChatRequest):
     
     # ── Knowledge retrieval (Wikipedia + cached web/docs/research) ─────
     wiki_chunks = []
-    if knowledge_manager_instance:
+    # Skip GPU-intensive knowledge retrieval in agent/tool modes (tool loop handles it via knowledge_search tool)
+    skip_gpu_retrieval = mode in ["agent", "work"] and tools_allowed
+    
+    if knowledge_manager_instance and not skip_gpu_retrieval:
         try:
             msg_lower = request.message.lower()
             # Skip knowledge retrieval for personal recall or trivial greetings.
@@ -4378,13 +4381,16 @@ async def chat(request: ChatRequest):
             ])
             is_greeting = msg_lower.strip() in ["hi", "hello", "hey", "thanks", "thank you", "ok", "bye"]
             if not is_personal and not is_greeting and len(request.message.split()) >= 2:
+                # Memory-light retrieval: reduce batch sizes to prevent OOM
                 km_contexts = knowledge_manager_instance.retrieve_context(
                     query=request.message,
                     chat_id=current_chat_id,
                     max_results=2,
                     include_web_search=False,
                     search_if_needed=False,
-                    min_relevance=0.32,
+                    min_relevance=0.35,
+                    skip_memory=False,
+                    skip_knowledge=False,
                 )
                 if km_contexts:
                     wiki_chunks = [
@@ -4450,8 +4456,9 @@ async def chat(request: ChatRequest):
         # Store response
         store_conversation_exchange(request, assistant_response, original_mode, remember)
         
-        # Learn from exchange (async background) - learns from conversation + retrieved knowledge
-        if remember and knowledge_manager_instance:
+        # Learn from exchange (async background) - skip in agent/tool mode to avoid CUDA OOM
+        skip_learning = tools_allowed  # Skip learning in tool-intensive modes for memory
+        if remember and knowledge_manager_instance and not skip_learning:
             def async_learn():
                 try:
                     knowledge_manager_instance.learn_from_exchange(
@@ -4459,7 +4466,8 @@ async def chat(request: ChatRequest):
                         assistant_response=assistant_response,
                         search_results=search_results if search_results else None,
                         retrieved_contexts=wiki_chunks if wiki_chunks else None,
-                        chat_id=getattr(request, 'chat_id', None)
+                        chat_id=getattr(request, 'chat_id', None),
+                        skip_learning=skip_learning
                     )
                 except Exception as e:
                     logger.debug(f"Knowledge learning failed: {e}")
@@ -4739,8 +4747,9 @@ async def chat(request: ChatRequest):
         # Store in memory if auto-detected or requested
         store_conversation_exchange(request, assistant_response, original_mode, remember)
         
-        # Learn from exchange (async background) — learns from conversation + retrieved knowledge + web searches
-        if remember and knowledge_manager_instance:
+        # Learn from exchange (async background) - skip in high-memory scenarios
+        skip_learning = has_images or original_mode in ["image", "video", "music"]  # Skip for intensive tasks
+        if remember and knowledge_manager_instance and not skip_learning:
             def async_learn():
                 try:
                     knowledge_manager_instance.learn_from_exchange(
@@ -4748,7 +4757,8 @@ async def chat(request: ChatRequest):
                         assistant_response=assistant_response,
                         search_results=search_results if search_results else None,
                         retrieved_contexts=wiki_chunks if wiki_chunks else None,
-                        chat_id=getattr(request, 'chat_id', None)
+                        chat_id=getattr(request, 'chat_id', None),
+                        skip_learning=skip_learning
                     )
                 except Exception as e:
                     logger.debug(f"Knowledge learning failed: {e}")
@@ -5499,8 +5509,9 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             # Store conversation
             store_conversation_exchange(request, assistant_response, original_mode, remember)
             
-            # Learn from exchange (async background) - learns from conversation + retrieved knowledge + web searches
-            if remember and knowledge_manager_instance:
+            # Learn from exchange (async background) - skip in agent/tool mode to avoid CUDA OOM
+            skip_learning = tools_allowed  # Skip in memory-intensive modes
+            if remember and knowledge_manager_instance and not skip_learning:
                 def async_learn():
                     try:
                         knowledge_manager_instance.learn_from_exchange(
@@ -5508,7 +5519,8 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             assistant_response=assistant_response,
                             search_results=search_results if search_results else None,
                             retrieved_contexts=wiki_chunks if wiki_chunks else None,
-                            chat_id=getattr(request, 'chat_id', None)
+                            chat_id=getattr(request, 'chat_id', None),
+                            skip_learning=skip_learning
                         )
                     except Exception as e:
                         logger.debug(f"Knowledge learning failed: {e}")
@@ -5907,8 +5919,9 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
-        # Learn from exchange (async background) - learns from conversation + retrieved knowledge + web searches
-        if remember and knowledge_manager_instance:
+        # Learn from exchange (async background) - skip in high-memory scenarios
+        skip_learning = has_images or original_mode in ['image', 'video', 'music', 'agent', 'work']
+        if remember and knowledge_manager_instance and not skip_learning:
             def async_learn():
                 try:
                     knowledge_manager_instance.learn_from_exchange(
@@ -5916,7 +5929,8 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                         assistant_response=cleaned_response,
                         search_results=search_results if search_results else None,
                         retrieved_contexts=wiki_chunks if wiki_chunks else None,
-                        chat_id=getattr(request, 'chat_id', None)
+                        chat_id=getattr(request, 'chat_id', None),
+                        skip_learning=skip_learning
                     )
                 except Exception as e:
                     logger.debug(f"Knowledge learning failed: {e}")
