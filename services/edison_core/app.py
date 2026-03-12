@@ -1358,6 +1358,17 @@ class SearchResponse(BaseModel):
     results: list
     query: str
 
+
+class SwarmDirectMessageRequest(BaseModel):
+    session_id: str = Field(..., description="Active swarm session ID")
+    agent_name: str = Field(..., description="Agent name (e.g. Designer, Coder)")
+    message: str = Field(..., description="Direct message to the target agent")
+
+
+class SwarmFeedbackRequest(BaseModel):
+    session_id: str = Field(..., description="Active swarm session ID")
+    message: str = Field(..., description="Feedback or direction for the swarm")
+
 class HealthResponse(BaseModel):
     status: str
     service: str
@@ -4055,28 +4066,7 @@ async def chat(request: ChatRequest):
     
     # Determine which mode to use - SINGLE ROUTING FUNCTION
     has_images = request.images and len(request.images) > 0
-    
-    # Get intent from coral service first
-    coral_intent = get_intent_from_coral(request.message)
-    
-    # Check for image generation intent and redirect (before routing)
-    if coral_intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
-        logger.info(f"Image generation intent detected via Coral, returning JSON response for frontend handling")
-        # Extract prompt from message
-        msg_lower = request.message.lower()
-        # Remove common prefixes
-        for prefix in ["generate", "create", "make", "draw", "an image of", "a picture of", "image of", "picture of", "a ", "an "]:
-            msg_lower = msg_lower.replace(prefix, "").strip()
-        
-        # Return a response that tells the frontend to generate an image
-        return {
-            "response": f"🎨 Generating image: \"{msg_lower}\"...",
-            "mode_used": "image",
-            "image_generation": {
-                "prompt": msg_lower,
-                "trigger": "coral_intent"
-            }
-        }
+    coral_intent = intent
     
     # Use consolidated routing function
     routing = route_mode(request.message, request.mode, has_images, coral_intent)
@@ -9933,10 +9923,10 @@ async def get_system_awareness():
         return {
             "gpu": [g.__dict__ for g in snapshot.gpus] if snapshot.gpus else [],
             "disk": [d.__dict__ for d in snapshot.disks] if snapshot.disks else [],
-            "comfyui_running": snapshot.comfyui_running,
-            "loaded_models": snapshot.loaded_models,
-            "active_jobs": snapshot.active_jobs,
-            "completed_jobs": snapshot.completed_jobs,
+            "comfyui_running": snapshot.comfyui_reachable,
+            "loaded_models": snapshot.models_loaded,
+            "active_jobs": snapshot.running_jobs,
+            "queued_jobs": snapshot.queued_jobs,
             "timestamp": snapshot.timestamp,
         }
     except Exception as e:
@@ -11635,7 +11625,7 @@ async def get_swarm_session(session_id: str):
 
 
 @app.post("/swarm/dm")
-async def swarm_direct_message(request: dict):
+async def swarm_direct_message(request: SwarmDirectMessageRequest):
     """Send a direct message to a specific agent in an active swarm session.
 
     Parameters:
@@ -11646,9 +11636,9 @@ async def swarm_direct_message(request: dict):
     try:
         from services.edison_core.swarm_engine import get_session, SwarmEngine
 
-        session_id = request.get("session_id", "")
-        agent_name = request.get("agent_name", "")
-        message = request.get("message", "")
+        session_id = request.session_id
+        agent_name = request.agent_name
+        message = request.message
 
         if not session_id or not agent_name or not message:
             raise HTTPException(status_code=400, detail="session_id, agent_name, and message are required")
@@ -11689,7 +11679,7 @@ async def swarm_direct_message(request: dict):
 
 
 @app.post("/swarm/feedback")
-async def swarm_user_feedback(request: dict):
+async def swarm_user_feedback(request: SwarmFeedbackRequest):
     """Inject user feedback into an active swarm session. All agents will respond.
 
     Parameters:
@@ -11699,8 +11689,8 @@ async def swarm_user_feedback(request: dict):
     try:
         from services.edison_core.swarm_engine import get_session, SwarmEngine
 
-        session_id = request.get("session_id", "")
-        message = request.get("message", "")
+        session_id = request.session_id
+        message = request.message
 
         if not session_id or not message:
             raise HTTPException(status_code=400, detail="session_id and message are required")

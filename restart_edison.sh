@@ -43,8 +43,8 @@ if [ -z "$PYTHON" ]; then
 fi
 
 echo "✅ Starting EDISON core..."
-cd "$SCRIPT_DIR/services/edison_core"
-$PYTHON -m uvicorn app:app --host 0.0.0.0 --port 8811 > /tmp/edison.log 2>&1 &
+cd "$SCRIPT_DIR"
+$PYTHON -m uvicorn services.edison_core.app:app --host 0.0.0.0 --port 8811 > /tmp/edison.log 2>&1 &
 
 echo "✅ EDISON restarted!"
 echo "📝 Logs: tail -f /tmp/edison.log"
