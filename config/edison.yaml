@@ -9,10 +9,18 @@ edison:
     medium_model: "qwen2.5-coder-32b-instruct-q4_k_m.gguf"
     deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
     reasoning_model: "qwen2.5-coder-32b-instruct-q4_k_m.gguf"
-    vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # Best available VLM (default)
-    vision_clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"  # CLIP projector for vision
+    # Primary VLM: Qwen2-VL-7B (best quality for image understanding + OCR)
+    # Fallback chain: Qwen2-VL → MiniCPM-V → LLaVA-1.6
+    vision_model: "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
+    vision_clip: "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
     vision_code_model: "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
     vision_code_clip: "mmproj-Qwen2-VL-7B-Instruct-f16.gguf"
+    # Fallback vision models (tried in order if primary fails)
+    vision_fallbacks:
+      - model: "MiniCPM-V-2_6-Q4_K_M.gguf"
+        clip: "mmproj-MiniCPM-V-2_6-f16.gguf"
+      - model: "llava-v1.6-mistral-7b-q4_k_m.gguf"
+        clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"
     # Context window settings
     n_ctx: 4096
     context_window: 131072

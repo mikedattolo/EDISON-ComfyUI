@@ -119,76 +119,228 @@ class EdisonApp {
             this.createNewChat();
         }
         
-        // Add user message to UI
-        this.addMessage('user', message);
+        // Collect attached files before clearing
+        const attachedFiles = (window.uploadedFiles || []).slice();
         
-        // Clear input
+        // Add user message to UI (with image thumbnails if present)
+        const userMsgEl = this.addMessage('user', message);
+        if (attachedFiles.length > 0) {
+            const contentEl = userMsgEl.querySelector('.message-content');
+            const thumbsHtml = attachedFiles
+                .filter(f => f.isImage)
+                .map(f => `<img src="${this.escapeAttr(f.content)}" class="msg-thumb" alt="${this.escapeHtml(f.name)}" />`)
+                .join('');
+            const fileNames = attachedFiles
+                .filter(f => !f.isImage)
+                .map(f => `<span class="msg-file-chip">📄 ${this.escapeHtml(f.name)}</span>`)
+                .join('');
+            if (thumbsHtml || fileNames) {
+                contentEl.innerHTML += `<div class="msg-attachments">${thumbsHtml}${fileNames}</div>`;
+            }
+        }
+        
+        // Clear input and files
         this.messageInput.value = '';
         this.handleInputChange();
+        window.uploadedFiles = [];
+        if (typeof updateAttachedFilesUI === 'function') updateAttachedFilesUI();
         
-        // Prepare request - remember is now auto-detected by backend
+        // Prepare request
         const mode = this.currentMode === 'auto' ? 'auto' : this.currentMode;
         
         // Add assistant message placeholder
         const assistantMessageEl = this.addMessage('assistant', '', true);
+        const contentEl = assistantMessageEl.querySelector('.message-content');
+        
+        // Show stop button
+        this.showStopButton();
         
         try {
             this.isStreaming = true;
             this.sendBtn.disabled = true;
+            this.currentAbortController = new AbortController();
             
-            const response = await this.callEdisonAPI(message, mode);
+            const response = await this.callEdisonStreamAPI(message, mode, attachedFiles, assistantMessageEl, contentEl);
             
-            // Update assistant message
+            // Update final message with proper formatting
             this.updateMessage(assistantMessageEl, response.response, response.mode_used);
             
-            // Handle work mode - display task steps
+            // Handle work mode
             if (response.mode_used === 'work' && response.work_steps) {
                 this.displayWorkSteps(response.work_steps, assistantMessageEl);
-                
-                // Update work desktop if visible
-                if (window.workModeActive) {
-                    window.updateWorkDesktop(
-                        message, 
-                        response.search_results || [], 
-                        [], 
-                        `Task broken into ${response.work_steps.length} steps`
-                    );
-                }
             }
             
             // Save to chat history
             this.saveMessageToChat(message, response.response, response.mode_used);
             
         } catch (error) {
-            console.error('Error sending message:', error);
-            this.updateMessage(
-                assistantMessageEl, 
-                `⚠️ Error: ${error.message}. Please check your connection and API endpoint in settings.`,
-                'error'
-            );
+            if (error.name === 'AbortError') {
+                this.updateMessage(assistantMessageEl, contentEl.textContent || '*(generation stopped)*', 'stopped');
+            } else {
+                console.error('Error sending message:', error);
+                this.updateMessage(
+                    assistantMessageEl, 
+                    `⚠️ Error: ${error.message}. Please check your connection and API endpoint in settings.`,
+                    'error'
+                );
+            }
         } finally {
             this.isStreaming = false;
             this.sendBtn.disabled = false;
+            this.currentAbortController = null;
+            this.hideStopButton();
         }
     }
 
-    async callEdisonAPI(message, mode) {
-        const endpoint = `${this.settings.apiEndpoint}/chat`;
-        
-        // Get recent conversation history for context
+    showStopButton() {
+        if (!this._stopBtn) {
+            this._stopBtn = document.createElement('button');
+            this._stopBtn.className = 'stop-btn';
+            this._stopBtn.textContent = '■ Stop';
+            this._stopBtn.title = 'Stop generation';
+            this._stopBtn.addEventListener('click', () => this.stopGeneration());
+        }
+        this.sendBtn.parentElement.insertBefore(this._stopBtn, this.sendBtn);
+        this._stopBtn.style.display = 'inline-flex';
+        this.sendBtn.style.display = 'none';
+    }
+
+    hideStopButton() {
+        if (this._stopBtn) this._stopBtn.style.display = 'none';
+        this.sendBtn.style.display = '';
+    }
+
+    stopGeneration() {
+        if (this.currentAbortController) {
+            this.currentAbortController.abort();
+        }
+    }
+
+    escapeAttr(text) {
+        return text.replace(/&/g, '&amp;').replace(/"/g, '&quot;').replace(/'/g, '&#39;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    }
+
+    async callEdisonStreamAPI(message, mode, attachedFiles, msgEl, contentEl) {
+        const endpoint = `${this.settings.apiEndpoint}/chat/stream`;
         const conversationHistory = this.getRecentMessages(5);
         
+        // Collect images and file contents from attachments
+        const images = [];
+        let fileContext = '';
+        for (const file of attachedFiles) {
+            if (file.isImage) {
+                images.push(file.content);
+            } else {
+                // Include text file content as context
+                const preview = typeof file.content === 'string' ? file.content.slice(0, 8000) : '';
+                fileContext += `\n\n[Attached file: ${file.name}]\n${preview}`;
+            }
+        }
+        
+        const fullMessage = fileContext ? `${message}\n${fileContext}` : message;
+
+        const body = {
+            message: fullMessage,
+            mode: mode,
+            remember: null,
+            conversation_history: conversationHistory,
+            chat_id: this.currentChatId,
+        };
+        if (images.length > 0) {
+            body.images = images;
+        }
+
         const response = await fetch(endpoint, {
             method: 'POST',
-            headers: {
-                'Content-Type': 'application/json',
-            },
-            body: JSON.stringify({
-                message: message,
-                mode: mode,
-                remember: null,  // Auto-detected by backend
-                conversation_history: conversationHistory
-            })
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+            signal: this.currentAbortController?.signal,
+        });
+
+        if (!response.ok) {
+            throw new Error(`API returned ${response.status}: ${response.statusText}`);
+        }
+
+        // Parse SSE stream
+        const reader = response.body.getReader();
+        const decoder = new TextDecoder();
+        let accumulated = '';
+        let finalPayload = null;
+        let buffer = '';
+
+        while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            
+            buffer += decoder.decode(value, { stream: true });
+            const lines = buffer.split('\n');
+            buffer = lines.pop() || ''; // Keep incomplete line in buffer
+
+            for (const line of lines) {
+                if (line.startsWith('event: ')) {
+                    this._sseEventType = line.slice(7).trim();
+                } else if (line.startsWith('data: ')) {
+                    const dataStr = line.slice(6);
+                    try {
+                        const data = JSON.parse(dataStr);
+                        if (this._sseEventType === 'token') {
+                            const token = data.t || data.token || '';
+                            accumulated += token;
+                            contentEl.innerHTML = this.formatMessage(accumulated);
+                            this.scrollToBottom();
+                        } else if (this._sseEventType === 'done') {
+                            finalPayload = data;
+                        } else if (this._sseEventType === 'status') {
+                            // Show status steps like "Searching web", "Using memory"
+                            if (data.steps) {
+                                const statusHtml = data.steps.map(s => 
+                                    `<span class="status-step">${s.stage}${s.detail ? ': ' + this.escapeHtml(s.detail) : ''}</span>`
+                                ).join(' → ');
+                                contentEl.innerHTML = `<div class="stream-status">${statusHtml}</div>` + this.formatMessage(accumulated);
+                            }
+                        } else if (this._sseEventType === 'error') {
+                            throw new Error(data.error || data.detail || 'Stream error');
+                        }
+                    } catch (parseErr) {
+                        if (parseErr.message && !parseErr.message.includes('JSON')) throw parseErr;
+                    }
+                }
+            }
+        }
+
+        // Use final payload response if available, otherwise accumulated text
+        return {
+            response: finalPayload?.response || accumulated,
+            mode_used: finalPayload?.mode_used || mode,
+            work_steps: finalPayload?.work_steps || [],
+            search_results: finalPayload?.search_results || [],
+            artifact: finalPayload?.artifact || null,
+        };
+    }
+
+    async callEdisonAPI(message, mode) {
+        // Fallback non-streaming endpoint
+        const endpoint = `${this.settings.apiEndpoint}/chat`;
+        const conversationHistory = this.getRecentMessages(5);
+        
+        // Include any attached images
+        const images = (window.uploadedFiles || [])
+            .filter(f => f.isImage)
+            .map(f => f.content);
+        
+        const body = {
+            message: message,
+            mode: mode,
+            remember: null,
+            conversation_history: conversationHistory,
+            chat_id: this.currentChatId,
+        };
+        if (images.length > 0) body.images = images;
+
+        const response = await fetch(endpoint, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
         });
         
         if (!response.ok) {
@@ -239,22 +391,101 @@ class EdisonApp {
     formatMessage(content) {
         if (!content) return '';
         
-        // Basic markdown-like formatting
-        let formatted = content
-            // Code blocks
-            .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-                return `<pre><code class="language-${lang || 'text'}">${this.escapeHtml(code.trim())}</code></pre>`;
-            })
-            // Inline code
-            .replace(/`([^`]+)`/g, '<code>$1</code>')
-            // Bold
-            .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
-            // Italic
-            .replace(/\*([^*]+)\*/g, '<em>$1</em>')
-            // Line breaks
-            .replace(/\n/g, '<br>');
-        
+        let formatted = content;
+
+        // Code blocks with copy button
+        formatted = formatted.replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
+            const langLabel = lang || 'text';
+            const escaped = this.escapeHtml(code.trim());
+            const copyId = 'code_' + Math.random().toString(36).slice(2, 8);
+            return `<div class="code-block-wrapper"><div class="code-block-header"><span class="code-lang">${langLabel}</span><button class="copy-code-btn" onclick="window.edisonApp.copyCode('${copyId}')">📋 Copy</button></div><pre id="${copyId}"><code class="language-${langLabel}">${escaped}</code></pre></div>`;
+        });
+
+        // Tables: detect markdown tables and render as HTML
+        formatted = formatted.replace(/((?:^\|.+\|$\n?)+)/gm, (tableBlock) => {
+            const rows = tableBlock.trim().split('\n').filter(r => r.trim());
+            if (rows.length < 2) return tableBlock;
+            const parseRow = (row) => row.split('|').slice(1, -1).map(c => c.trim());
+            const headerCells = parseRow(rows[0]);
+            // Check if row 2 is separator (---|----|---)
+            const isSep = /^\|[\s\-:|]+\|$/.test(rows[1]);
+            const dataStart = isSep ? 2 : 1;
+            let html = '<table class="md-table"><thead><tr>' + headerCells.map(c => `<th>${c}</th>`).join('') + '</tr></thead><tbody>';
+            for (let i = dataStart; i < rows.length; i++) {
+                const cells = parseRow(rows[i]);
+                html += '<tr>' + cells.map(c => `<td>${c}</td>`).join('') + '</tr>';
+            }
+            html += '</tbody></table>';
+            return html;
+        });
+
+        // Headers
+        formatted = formatted.replace(/^#### (.+)$/gm, '<h4>$1</h4>');
+        formatted = formatted.replace(/^### (.+)$/gm, '<h3>$1</h3>');
+        formatted = formatted.replace(/^## (.+)$/gm, '<h2>$1</h2>');
+        formatted = formatted.replace(/^# (.+)$/gm, '<h1>$1</h1>');
+
+        // Horizontal rules
+        formatted = formatted.replace(/^---+$/gm, '<hr>');
+
+        // Blockquotes
+        formatted = formatted.replace(/^> (.+)$/gm, '<blockquote>$1</blockquote>');
+
+        // Unordered lists
+        formatted = formatted.replace(/((?:^[\t ]*[-*] .+$\n?)+)/gm, (listBlock) => {
+            const items = listBlock.trim().split('\n')
+                .filter(l => l.trim())
+                .map(l => `<li>${l.replace(/^[\t ]*[-*] /, '').trim()}</li>`)
+                .join('');
+            return `<ul>${items}</ul>`;
+        });
+
+        // Ordered lists
+        formatted = formatted.replace(/((?:^[\t ]*\d+\. .+$\n?)+)/gm, (listBlock) => {
+            const items = listBlock.trim().split('\n')
+                .filter(l => l.trim())
+                .map(l => `<li>${l.replace(/^[\t ]*\d+\.\s*/, '').trim()}</li>`)
+                .join('');
+            return `<ol>${items}</ol>`;
+        });
+
+        // Links
+        formatted = formatted.replace(/\[([^\]]+)\]\(([^)]+)\)/g, '<a href="$2" target="_blank" rel="noopener">$1</a>');
+
+        // Inline code (after code blocks are handled)
+        formatted = formatted.replace(/`([^`]+)`/g, '<code>$1</code>');
+
+        // Bold
+        formatted = formatted.replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>');
+
+        // Italic
+        formatted = formatted.replace(/\*([^*]+)\*/g, '<em>$1</em>');
+
+        // Strikethrough
+        formatted = formatted.replace(/~~([^~]+)~~/g, '<del>$1</del>');
+
+        // Line breaks (but not inside pre/table blocks)
+        formatted = formatted.replace(/\n/g, '<br>');
+
+        // Clean up extra <br> after block elements
+        formatted = formatted.replace(/<\/(h[1-4]|ul|ol|table|blockquote|hr|pre|div)><br>/g, '</$1>');
+        formatted = formatted.replace(/<br><(h[1-4]|ul|ol|table|blockquote|hr)/g, '<$1');
+
         return formatted;
+    }
+
+    copyCode(id) {
+        const el = document.getElementById(id);
+        if (el) {
+            const text = el.textContent;
+            navigator.clipboard.writeText(text).then(() => {
+                const btn = el.parentElement.querySelector('.copy-code-btn');
+                if (btn) {
+                    btn.textContent = '✓ Copied';
+                    setTimeout(() => { btn.textContent = '📋 Copy'; }, 2000);
+                }
+            });
+        }
     }
 
     escapeHtml(text) {

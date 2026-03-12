@@ -107,8 +107,8 @@ def _pw_screenshot(url: str, width: int = 1280, height: int = 800) -> dict:
             readable_text = ""
             try:
                 body_text = page.locator("body").inner_text(timeout=2500) or ""
-                # Keep the payload bounded for tool-loop prompts.
-                readable_text = re.sub(r"\s+", " ", body_text).strip()[:4000]
+                # Keep more text for LLM context — was 4000, now 12000
+                readable_text = re.sub(r"\s+", " ", body_text).strip()[:12000]
             except Exception:
                 readable_text = ""
             png_bytes = page.screenshot(type="jpeg", quality=82,
@@ -252,39 +252,8 @@ except ImportError:
         logger.warning("⚠ File generators not available")
         logger.warning("⚠ Orchestration modules not available")
 
-# Import Minecraft texture utilities
-try:
-    from .minecraft_utils import (
-        build_minecraft_prompt,
-        create_minecraft_workflow,
-        process_minecraft_texture,
-        generate_procedural_texture,
-        generate_model_json,
-        generate_blockstate_json,
-        model_to_obj,
-        generate_mtl,
-        create_resource_pack_zip,
-    )
-    _mc_utils_available = True
-    logger.info("✓ Minecraft utils loaded")
-except ImportError:
-    try:
-        from minecraft_utils import (
-            build_minecraft_prompt,
-            create_minecraft_workflow,
-            process_minecraft_texture,
-            generate_procedural_texture,
-            generate_model_json,
-            generate_blockstate_json,
-            model_to_obj,
-            generate_mtl,
-            create_resource_pack_zip,
-        )
-        _mc_utils_available = True
-        logger.info("✓ Minecraft utils loaded (direct import)")
-    except ImportError:
-        _mc_utils_available = False
-        logger.warning("⚠ Minecraft utils not available")
+# Minecraft features removed
+_mc_utils_available = False
 
 # GPU probe for dynamic GPU/CPU model loading.
 def verify_cuda():
@@ -409,10 +378,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "medium"
             reasons.append("Agent mode → tool-using assistant with medium model")
-        elif mode == "printing":
-            tools_allowed = True
-            model_target = "medium"
-            reasons.append("Printing mode → 3D printer workflow tooling")
         elif mode == "thinking":
             mode = "reasoning"
             model_target = "reasoning"
@@ -427,10 +392,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "image"
                 model_target = "vision"
                 reasons.append(f"Coral intent '{coral_intent}' → image mode with vision model")
-            elif coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"]:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append(f"Coral intent '{coral_intent}' → agent mode for video generation")
             elif coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"]:
                 mode = "agent"
                 tools_allowed = True
@@ -478,14 +439,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                                 "news today", "headlines", "breaking news", "what's in the news",
                                 "news about"]
 
-            # Video generation patterns
-            video_patterns = ["make a video", "create a video", "generate a video",
-                             "make video", "create video", "generate video",
-                             "music video", "animate", "animation",
-                             "video of", "video about", "video from",
-                             "make me a video", "short video", "video clip",
-                             "text to video", "text-to-video"]
-
             # Music generation patterns
             music_patterns = ["make music", "create music", "generate music",
                              "make a song", "create a song", "generate a song",
@@ -498,16 +451,8 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "sing me", "beat for", "instrumental",
                              "background music", "soundtrack"]
 
-            # 3D/mesh generation patterns
-            mesh_patterns = ["3d model", "3d print", "generate mesh", "create mesh",
-                            "make a 3d", "generate 3d", "create 3d", "stl file",
-                            "glb file", "3d object", "3d asset", "sculpt",
-                            "make me a 3d", "design a 3d"]
-
             codespace_patterns = ["terminal", "command", "shell", "run tests", "fix this codebase",
                                   "rewrite file", "workspace", "repo", "codespace", "dev server"]
-
-            printing_patterns = ["slice", "gcode", "bambu", "3d printer", "send to printer", "print profile", "orca slicer"]
 
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
@@ -516,33 +461,18 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             # Check if agent patterns match (for enabling web search)
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
             has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
-            has_video = any(pattern in msg_lower for pattern in video_patterns)
             has_music = any(pattern in msg_lower for pattern in music_patterns)
-            has_mesh = any(pattern in msg_lower for pattern in mesh_patterns)
             has_codespaces = any(pattern in msg_lower for pattern in codespace_patterns)
-            has_printing = any(pattern in msg_lower for pattern in printing_patterns)
 
             # Real-time queries get tools enabled for instant data retrieval
             if has_realtime:
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Real-time data query detected → agent mode with tools")
-            elif has_video:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Video generation request detected → agent mode with tools")
             elif has_music:
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Music generation request detected → agent mode with tools")
-            elif has_printing:
-                mode = "printing"
-                tools_allowed = True
-                reasons.append("3D printing workflow detected → printing mode")
-            elif has_mesh:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("3D mesh generation request detected → agent mode with tools")
             elif has_codespaces:
                 mode = "codespaces"
                 tools_allowed = True
@@ -597,7 +527,7 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             if model_target != "deep":
                 model_target = "deep"
                 reasons.append(f"Mode '{mode}' requires deep model")
-        elif mode in ["code", "agent", "printing"]:
+        elif mode in ["code", "agent"]:
             if model_target != "medium":
                 model_target = "medium"
                 reasons.append(f"Mode '{mode}' requires medium model")
@@ -635,6 +565,8 @@ vllm_enabled = False
 vllm_url = None
 rag_system = None
 search_tool = None
+knowledge_base_instance = None
+knowledge_manager_instance = None
 realtime_service = None
 video_service = None
 music_service = None
@@ -1136,14 +1068,36 @@ def _try_load_vision_on_demand() -> bool:
         vision_unavailable_reason = "Vision model is not configured in config/edison.yaml"
         return False
 
-    vision_model_path = models_path / vision_model_name
-    vision_clip_path = models_path / vision_clip_name
+    # Build model candidates list: primary + fallbacks
+    vision_candidates = [(vision_model_name, vision_clip_name)]
+    fallbacks = core_config.get("vision_fallbacks", [])
+    if isinstance(fallbacks, list):
+        for fb in fallbacks:
+            if isinstance(fb, dict) and fb.get("model") and fb.get("clip"):
+                vision_candidates.append((fb["model"], fb["clip"]))
 
-    if not vision_model_path.exists() or not vision_clip_path.exists():
-        logger.warning(f"Vision model files not found: {vision_model_path}")
+    # Find first available model files
+    vision_model_path = None
+    vision_clip_path = None
+    chosen_model_name = None
+    for vm_name, vc_name in vision_candidates:
+        vm_path = models_path / vm_name
+        vc_path = models_path / vc_name
+        if vm_path.exists() and vc_path.exists():
+            vision_model_path = vm_path
+            vision_clip_path = vc_path
+            chosen_model_name = vm_name
+            logger.info(f"Vision model found: {vm_name}")
+            break
+        else:
+            logger.debug(f"Vision candidate not found: {vm_name}")
+
+    if not vision_model_path or not vision_clip_path:
+        logger.warning(f"No vision model files found in {models_path}")
         vision_enabled = False
         vision_unavailable_reason = (
-            "Vision model files are missing. Please download both vision_model and vision_clip into models/llm."
+            "Vision model files are missing. Please download a vision model "
+            "(Qwen2-VL-7B, MiniCPM-V, or LLaVA-1.6) into models/llm."
         )
         return False
 
@@ -1178,8 +1132,8 @@ def _try_load_vision_on_demand() -> bool:
     for attempt, gpu_layers in enumerate([vision_n_gpu_layers, 0]):
         try:
             label = "GPU" if gpu_layers > 0 else "CPU-only"
-            logger.info(f"⏳ Loading vision model on-demand ({label}): {vision_model_name}")
-            vision_handler = _create_vision_chat_handler(str(vision_clip_path), vision_model_name)
+            logger.info(f"⏳ Loading vision model on-demand ({label}): {chosen_model_name}")
+            vision_handler = _create_vision_chat_handler(str(vision_clip_path), chosen_model_name)
             llm_vision = Llama(
                 model_path=str(vision_model_path),
                 chat_handler=vision_handler,
@@ -1353,7 +1307,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant", "codespaces", "printing"] = Field(
+    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant", "codespaces"] = Field(
         default="auto", 
         description="Interaction mode"
     )
@@ -1426,6 +1380,13 @@ TOOL_REGISTRY = {
             "global": {"type": bool, "required": False, "default": False}
         }
     },
+    "knowledge_search": {
+        "args": {
+            "query": {"type": str, "required": True},
+            "limit": {"type": int, "required": False, "default": 4},
+            "include_web_search": {"type": bool, "required": False, "default": False}
+        }
+    },
     "generate_image": {
         "args": {
             "prompt": {"type": str, "required": True},
@@ -1475,15 +1436,6 @@ TOOL_REGISTRY = {
         "args": {
             "topic": {"type": str, "required": False, "default": "top news today"},
             "max_results": {"type": int, "required": False, "default": 8}
-        }
-    },
-    "generate_video": {
-        "args": {
-            "prompt": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 720},
-            "height": {"type": int, "required": False, "default": 480},
-            "frames": {"type": int, "required": False, "default": 49},
-            "fps": {"type": int, "required": False, "default": 8}
         }
     },
     "generate_music": {
@@ -1584,27 +1536,24 @@ TOOL_REGISTRY = {
             "height": {"type": int, "required": False, "default": 800}
         }
     },
-    "list_printers": {
-        "args": {}
-    },
-    "send_3d_print": {
+    "write_file": {
         "args": {
-            "printer_id": {"type": str, "required": True},
-            "file_path": {"type": str, "required": True}
+            "path": {"type": str, "required": True},
+            "content": {"type": str, "required": True}
         }
     },
-    "get_printer_status": {
+    "summarize_url": {
         "args": {
-            "printer_id": {"type": str, "required": True}
+            "url": {"type": str, "required": True}
         }
     }
 }
 
-TOOL_LOOP_MAX_STEPS = 5
-TOOL_CALL_TIMEOUT_SEC = 30
+TOOL_LOOP_MAX_STEPS = 8
+TOOL_CALL_TIMEOUT_SEC = 45
 STREAM_MAX_SECONDS = 180
 STREAM_MAX_OUTPUT_CHARS = 24000
-TOOL_RESULT_CHAR_LIMIT = 900
+TOOL_RESULT_CHAR_LIMIT = 2000
 
 
 def _coerce_int(val):
@@ -1660,7 +1609,8 @@ def _validate_and_normalize_tool_call(payload: dict):
 def _extract_tool_payload_from_text(raw_output: str) -> Optional[dict]:
     """Extract a JSON object for tool calls from noisy LLM output.
 
-    Handles pure JSON, markdown code fences, and prose-wrapped JSON.
+    Handles pure JSON, markdown code fences, prose-wrapped JSON,
+    trailing commas, and single-quoted JSON (common LLM output quirks).
     Returns the first parsed dict payload or None.
     """
     if not isinstance(raw_output, str):
@@ -1669,22 +1619,42 @@ def _extract_tool_payload_from_text(raw_output: str) -> Optional[dict]:
     if not text:
         return None
 
+    def _try_parse(s: str) -> Optional[dict]:
+        """Try parsing JSON with progressive tolerance for LLM quirks."""
+        # Strict parse first
+        try:
+            obj = json.loads(s)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+        # Fix trailing commas: ,} or ,]
+        cleaned = re.sub(r',\s*([}\]])', r'\1', s)
+        if cleaned != s:
+            try:
+                obj = json.loads(cleaned)
+                return obj if isinstance(obj, dict) else None
+            except Exception:
+                pass
+        # Fix single-quoted keys/values (common LLM mistake)
+        try:
+            import ast
+            obj = ast.literal_eval(s)
+            return obj if isinstance(obj, dict) else None
+        except Exception:
+            pass
+        return None
+
     # 1) Direct parse first.
-    try:
-        obj = json.loads(text)
-        return obj if isinstance(obj, dict) else None
-    except Exception:
-        pass
+    result = _try_parse(text)
+    if result:
+        return result
 
     # 2) Try fenced code block content first.
     fenced_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
     if fenced_match:
-        candidate = fenced_match.group(1)
-        try:
-            obj = json.loads(candidate)
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            pass
+        result = _try_parse(fenced_match.group(1))
+        if result:
+            return result
 
     # 3) Scan for balanced JSON objects and parse the first valid one.
     for start in (i for i, ch in enumerate(text) if ch == "{"):
@@ -1697,12 +1667,10 @@ def _extract_tool_payload_from_text(raw_output: str) -> Optional[dict]:
                 depth -= 1
                 if depth == 0:
                     candidate = text[start:i + 1]
-                    try:
-                        obj = json.loads(candidate)
-                        if isinstance(obj, dict):
-                            return obj
-                    except Exception:
-                        break
+                    result = _try_parse(candidate)
+                    if result:
+                        return result
+                    break  # This balanced block didn't parse; move to next opening brace
     return None
 
 
@@ -1742,6 +1710,26 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
             summaries.append(sanitized_text[:200])
         return "RAG search results (untrusted): " + " | ".join(summaries) if summaries else "RAG search returned no chunks"
 
+    if tool_name == "knowledge_search" and isinstance(data, list):
+        summaries = []
+        for item in data[:3]:
+            if isinstance(item, dict):
+                source = item.get("source", "knowledge")
+                title = item.get("title", "")
+                text = item.get("text", "")
+            else:
+                source = "knowledge"
+                title = ""
+                text = str(item)
+
+            text_lines = text.split("\n")
+            sanitized_lines = [line for line in text_lines if not _sanitize_search_result_line(line)]
+            sanitized_text = "\n".join(sanitized_lines).strip() or "(content filtered)"
+            lead = f"[{source}] {title}".strip()
+            summaries.append(f"{lead}: {sanitized_text[:180]}")
+
+        return "Knowledge search results: " + " | ".join(summaries) if summaries else "Knowledge search returned no chunks"
+
     if tool_name == "generate_image":
         return result.get("message", "Image generation handled")
 
@@ -1759,9 +1747,6 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         articles = data.get("articles", [])
         headlines = [f"{a['title']} ({a.get('source', 'unknown')})" for a in articles[:5]]
         return f"News on '{data.get('topic', '?')}': " + " | ".join(headlines) if headlines else "No news found"
-
-    if tool_name == "generate_video":
-        return data.get("message", "Video generation requested") if isinstance(data, dict) else result.get("message", "Video generation handled")
 
     if tool_name == "generate_music":
         if isinstance(data, dict):
@@ -1781,29 +1766,36 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
         title = data.get('title', '')
         url = data.get('url', '')
         desc = data.get('description', '')
-        text_preview = (data.get("readable_text") or "")[:260].replace("\n", " ").strip()
+        text_preview = (data.get("readable_text") or "")[:1500].replace("\n", " ").strip()
         if title:
-            base = f"Browser loaded: {title} ({url}). {desc}"
-            return f"{base} Page text: {text_preview}" if text_preview else base
+            base = f"Browser loaded: {title} ({url})."
+            return f"{base} Page content: {text_preview}" if text_preview else base
         return f"Sandbox browser opened: {url}"
 
     if tool_name.startswith("browser.") and isinstance(data, dict):
         url = data.get("url", "")
         title = data.get("title", "")
         sid = data.get("session_id", "")
-        text_preview = (data.get("readable_text") or "")[:220].replace("\n", " ").strip()
+        text_preview = (data.get("readable_text") or "")[:1500].replace("\n", " ").strip()
         if tool_name == "browser.create_session":
-            return f"Browser session created: {sid} at {url} ({title}). Page text: {text_preview}" if text_preview else f"Browser session created: {sid} at {url} ({title})"
+            return f"Browser session created: {sid} at {url} ({title}). Page content: {text_preview}" if text_preview else f"Browser session created: {sid} at {url} ({title})"
         if tool_name == "browser.observe":
-            return f"Observed browser session {sid}: {title} ({url})"
+            base = f"Observed browser session {sid}: {title} ({url})"
+            return f"{base}. Page content: {text_preview}" if text_preview else base
         if tool_name == "browser.get_text":
-            return f"Extracted readable page text from {sid}: {text_preview}" if text_preview else f"No readable text extracted for {sid}"
+            return f"Page text from {sid}: {text_preview}" if text_preview else f"No readable text extracted for {sid}"
+        if tool_name == "browser.navigate":
+            base = f"Navigated to {url} ({title}) in session {sid}"
+            return f"{base}. Page content: {text_preview}" if text_preview else base
         if tool_name == "browser.find_element":
             return f"Selector {data.get('selector', '')}: found={data.get('found', False)} count={data.get('count', 0)}"
         if tool_name == "browser.fill_form":
             return f"Filled {len(data.get('filled_fields', []))} form field(s) in {sid}"
         if tool_name == "browser.click_by_text":
             return f"Clicked text '{data.get('clicked_text', '')}' in {sid}"
+        if tool_name == "browser.click":
+            base = f"Clicked at ({data.get('x', 0)},{data.get('y', 0)}) in {sid}"
+            return f"{base}. Page content: {text_preview}" if text_preview else base
         return f"Browser action complete for {sid}: {title} ({url})"
 
     if tool_name == "list_printers" and isinstance(data, dict):
@@ -1815,6 +1807,15 @@ def _summarize_tool_result(tool_name: str, result: dict) -> str:
 
     if tool_name == "get_printer_status" and isinstance(data, dict):
         return f"Printer {data.get('printer_id', '?')} status: {data.get('state', 'unknown')}"
+
+    if tool_name == "write_file" and isinstance(data, dict):
+        return f"File written: {data.get('path', '?')} ({data.get('size', 0)} bytes)"
+
+    if tool_name == "summarize_url" and isinstance(data, dict):
+        title = data.get('title', '')
+        url = data.get('url', '')
+        text_preview = (data.get("readable_text") or "")[:2000].replace("\n", " ").strip()
+        return f"URL content from {title} ({url}): {text_preview}" if text_preview else f"URL loaded: {title} ({url})"
 
     return f"{tool_name} completed"
 
@@ -1848,6 +1849,35 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             )
             return {"ok": True, "data": chunks}
 
+        if tool_name == "knowledge_search":
+            if not knowledge_manager_instance:
+                return {"ok": False, "error": "Knowledge manager not available"}
+            query = args.get("query", "").strip()
+            limit = args.get("limit", 4)
+            include_web_search = args.get("include_web_search", False)
+
+            contexts = await asyncio.to_thread(
+                knowledge_manager_instance.retrieve_context,
+                query,
+                chat_id,
+                limit,
+                include_web_search,
+                True,
+                0.30,
+            )
+            payload = [
+                {
+                    "text": c.text,
+                    "source": c.source,
+                    "score": c.score,
+                    "title": c.title,
+                    "url": c.url,
+                    "is_fresh": c.is_fresh,
+                }
+                for c in contexts
+            ]
+            return {"ok": True, "data": payload}
+
         if tool_name == "generate_image":
             # Keep lightweight: return instruction for user/frontend
             return {
@@ -1877,31 +1907,6 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
             max_results = args.get("max_results", 8)
             result = realtime_service.get_news(topic, max_results)
             return result
-
-        if tool_name == "generate_video":
-            if not video_service:
-                return {"ok": False, "error": "Video generation service not available"}
-            try:
-                result = video_service.submit_video_generation(
-                    prompt=args.get("prompt", ""),
-                    negative_prompt=args.get("negative_prompt", ""),
-                    width=args.get("width"),
-                    height=args.get("height"),
-                    frames=args.get("frames"),
-                    fps=args.get("fps"),
-                    steps=args.get("steps"),
-                    guidance_scale=args.get("guidance_scale", 7.5),
-                )
-                if result.get("ok"):
-                    return {
-                        "ok": True,
-                        "trigger": "generate_video",
-                        "message": f"Video generation started (backend: {result['data'].get('backend', 'auto')}). The video will appear in chat when ready.",
-                        "data": {"prompt_id": result["data"]["prompt_id"], "backend": result["data"].get("backend"), "prompt": args.get("prompt", "")}
-                    }
-                return result
-            except Exception as e:
-                return {"ok": False, "error": f"Video generation failed: {str(e)}"}
 
         if tool_name == "generate_music":
             if not music_service:
@@ -2341,6 +2346,24 @@ plt.show()
             except Exception as e:
                 return {"ok": False, "error": f"CSV analysis failed: {str(e)}"}
 
+
+        if tool_name == "summarize_url":
+            url = args.get("url", "").strip()
+            if not url.startswith("http://") and not url.startswith("https://"):
+                url = f"https://{url}"
+            try:
+                result = _pw_screenshot(url)
+                if result.get("ok"):
+                    return {"ok": True, "data": {
+                        "url": result.get("url", url),
+                        "title": result.get("title", url),
+                        "readable_text": result.get("readable_text", ""),
+                    }}
+                else:
+                    return {"ok": False, "error": f"Failed to load URL: {result.get('error', 'unknown')}"}
+            except Exception as e:
+                return {"ok": False, "error": f"URL summarization failed: {str(e)}"}
+
         return {"ok": False, "error": f"Unhandled tool '{tool_name}'"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -2371,21 +2394,26 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         with active_requests_lock:
             return request_id in active_requests and active_requests[request_id].get("cancelled", False)
 
-    async def call_llm(prompt: str) -> str:
+    async def call_llm(prompt: str, is_tool_step: bool = False) -> str:
         lock = get_lock_for_model(llm)
         def _run():
+            # For tool steps, use fewer stop tokens to avoid truncating JSON
+            stop_tokens = ["\nUser:", "\nContext:"]
+            if not is_tool_step:
+                stop_tokens.extend([
+                    "Would you like", "Let me know if", "Do let me know"
+                ])
             with lock:
                 response = llm(
                     prompt,
-                    max_tokens=1024,
-                    temperature=0.4,
+                    max_tokens=1536,
+                    temperature=0.3,
                     top_p=0.9,
-                    repeat_penalty=1.3,
-                    frequency_penalty=0.5,
-                    presence_penalty=0.4,
+                    repeat_penalty=1.2,
+                    frequency_penalty=0.4,
+                    presence_penalty=0.3,
                     echo=False,
-                    stop=["\nUser:", "\nStep ", "\nTool", "\nContext:", "\n\n",
-                          "Would you like", "Let me know if", "Do let me know"]
+                    stop=stop_tokens,
                 )
             return response["choices"][0]["text"]
         return await asyncio.to_thread(_run)
@@ -2396,12 +2424,12 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "OR a JSON object exactly of the form {\"tool\":\"name\",\"args\":{...}} with no extra text. "
         "Tools: web_search(query:str,max_results:int) — search the web for information on a topic, "
         "rag_search(query:str,limit:int,global:bool), "
+        "knowledge_search(query:str,limit:int,include_web_search:bool), "
         "generate_image(prompt:str,width:int,height:int,steps:int,guidance_scale:float), system_stats(), "
         "execute_python(code:str,packages:str,description:str), read_file(path:str), "
         "list_files(directory:str), analyze_csv(file_path:str,operation:str), "
         "get_current_time(timezone:str), get_weather(location:str), "
         "get_news(topic:str,max_results:int), "
-        "generate_video(prompt:str,width:int,height:int,frames:int,fps:int), "
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
@@ -2412,8 +2440,10 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "browser.find_element(session_id:str,selector:str), browser.click_by_text(session_id:str,text:str), browser.fill_form(session_id:str,fields:object), "
         "browser.type(session_id:str,text:str,delay_ms:int), "
         "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
-        "list_printers(), get_printer_status(printer_id:str), send_3d_print(printer_id:str,file_path:str). "
+        "write_file(path:str,content:str) — write text content to a file in outputs/, "
+        "summarize_url(url:str) — fetch a URL and return its readable text content. "
         "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
+        "When the user asks you to read or summarize a website without needing to see it, use summarize_url. "
         "Only use web_search when the user wants to SEARCH for information (no specific URL given)."
     )
 
@@ -2474,7 +2504,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             + "\n".join(history_lines)
         )
 
-        raw_output = await call_llm(prompt)
+        raw_output = await call_llm(prompt, is_tool_step=True)
         raw_output = raw_output.strip()
 
         # Attempt to parse JSON tool payload from noisy model output.
@@ -2484,13 +2514,18 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             valid, error, tool_name, normalized_args = _validate_and_normalize_tool_call(parsed)
             if not valid:
                 if correction_attempted:
-                    final_answer = f"Tool call rejected: {error}." if not final_answer else final_answer
-                    break
+                    # On second failure, skip this step rather than aborting entire loop
+                    logger.warning(f"Tool validation failed after correction: {error}")
+                    emit_log(f"Tool validation failed: {error}", level="warning")
+                    correction_attempted = False  # Reset for next iteration
+                    continue
                 correction_attempted = True
                 correction_prompt = (
-                    f"Previous tool JSON was invalid ({error}). Return ONLY valid JSON with keys tool and args conforming to schema."
+                    f"Previous tool JSON was invalid ({error}). "
+                    f"Available tools: {', '.join(TOOL_REGISTRY.keys())}. "
+                    f"Return ONLY a valid JSON object: {{\"tool\":\"name\",\"args\":{{...}}}}"
                 )
-                raw_output = await call_llm(correction_prompt)
+                raw_output = await call_llm(correction_prompt, is_tool_step=True)
                 parsed = _extract_tool_payload_from_text(raw_output)
                 if parsed is None:
                     final_answer = "Tool call failed to validate after retry."
@@ -2527,7 +2562,7 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         prompt = (
             f"Use the gathered tool evidence to answer. Cite sources as [source:TOOLNAME].\n" + "\n".join(history_lines)
         )
-        final_answer = await call_llm(prompt)
+        final_answer = await call_llm(prompt, is_tool_step=False)
 
     if tool_events:
         sources = ", ".join([event["tool"] for event in tool_events])
@@ -3055,6 +3090,33 @@ def init_search_tool():
         logger.error(f"Failed to initialize search tool: {e}")
         search_tool = None
 
+def init_knowledge_intelligence():
+    """Initialize KnowledgeBase + KnowledgeManager (beyond raw Wikipedia lookup)."""
+    global knowledge_base_instance, knowledge_manager_instance
+
+    try:
+        from services.edison_core.knowledge_base import KnowledgeBase
+        from services.edison_core.knowledge_manager import KnowledgeManager
+
+        rag_cfg = config.get("edison", {}).get("rag", {}) if config else {}
+        kb_path = rag_cfg.get("knowledge_path", str(REPO_ROOT / "models" / "knowledge"))
+
+        knowledge_base_instance = KnowledgeBase(storage_path=str(kb_path))
+        knowledge_manager_instance = KnowledgeManager(
+            rag_system=rag_system,
+            knowledge_base=knowledge_base_instance,
+            search_tool=search_tool,
+        )
+
+        if knowledge_base_instance.is_ready():
+            logger.info(f"✓ Knowledge intelligence initialized (storage: {kb_path})")
+        else:
+            logger.warning("⚠ Knowledge base initialized in degraded mode (encoder/qdrant unavailable)")
+    except Exception as e:
+        logger.error(f"Failed to initialize knowledge intelligence: {e}")
+        knowledge_base_instance = None
+        knowledge_manager_instance = None
+
 def init_realtime_service():
     """Initialize real-time data service (time, weather, news)"""
     global realtime_service
@@ -3146,6 +3208,7 @@ async def lifespan(app: FastAPI):
     load_llm_models()
     init_rag_system()
     init_search_tool()
+    init_knowledge_intelligence()
     init_realtime_service()
     init_video_service()
     init_music_service()
@@ -4026,14 +4089,6 @@ async def chat(request: ChatRequest):
     if request.mode != "swarm":
         msg_lower_clean = request.message.lower()
 
-        # Video generation patterns
-        _video_patterns = ["make a video", "create a video", "generate a video",
-                          "make video", "create video", "generate video",
-                          "music video", "animate", "animation",
-                          "video of", "video about", "video from",
-                          "make me a video", "short video", "video clip",
-                          "text to video", "text-to-video"]
-
         # Music generation patterns
         _music_patterns = ["make music", "create music", "generate music",
                           "make a song", "create a song", "generate a song",
@@ -4047,22 +4102,10 @@ async def chat(request: ChatRequest):
                           "background music", "soundtrack",
                           "generate a lo", "make a lo", "create a lo"]
 
-        is_video = coral_intent in ["generate_video", "text_to_video", "create_video", "make_video"] or \
-                   any(p in msg_lower_clean for p in _video_patterns)
         is_music = coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] or \
                    any(p in msg_lower_clean for p in _music_patterns)
 
-        if is_video:
-            clean_prompt = msg_lower_clean
-            for prefix in ["generate", "create", "make", "a video of", "video of",
-                           "a video about", "video about", "a ", "an "]:
-                clean_prompt = clean_prompt.replace(prefix, "").strip()
-            return {
-                "response": f"🎬 Generating video: \"{clean_prompt}\"...",
-                "mode_used": "video",
-                "video_generation": {"prompt": clean_prompt, "trigger": "intent"}
-            }
-        elif is_music:
+        if is_music:
             clean_prompt = msg_lower_clean
             for prefix in ["generate", "create", "make", "compose", "a song about",
                            "song about", "music about", "some ", "a ", "an ", "me "]:
@@ -4323,12 +4366,47 @@ async def chat(request: ChatRequest):
         except Exception as e:
             logger.warning(f"RAG retrieval failed: {e}")
     
-    # ── Wikipedia knowledge search ──────────────────────────────────────
+    # ── Knowledge retrieval (Wikipedia + cached web/docs/research) ─────
     wiki_chunks = []
-    if rag_system and rag_system.is_ready():
+    if knowledge_manager_instance:
         try:
             msg_lower = request.message.lower()
-            # Skip Wikipedia for personal recall ("what's my name") or trivial greetings
+            # Skip knowledge retrieval for personal recall or trivial greetings.
+            is_personal = any(p in msg_lower for p in [
+                "my name", "who am i", "my favorite", "my age", "remember me",
+                "what did i", "what i said", "my ", "about me"
+            ])
+            is_greeting = msg_lower.strip() in ["hi", "hello", "hey", "thanks", "thank you", "ok", "bye"]
+            if not is_personal and not is_greeting and len(request.message.split()) >= 2:
+                km_contexts = knowledge_manager_instance.retrieve_context(
+                    query=request.message,
+                    chat_id=current_chat_id,
+                    max_results=2,
+                    include_web_search=False,
+                    search_if_needed=False,
+                    min_relevance=0.32,
+                )
+                if km_contexts:
+                    wiki_chunks = [
+                        (
+                            c.text,
+                            {
+                                "title": c.title,
+                                "source": c.source,
+                                "url": c.url,
+                                "score": c.score,
+                            },
+                        )
+                        for c in km_contexts
+                    ]
+                    logger.info(f"Knowledge manager: {len(wiki_chunks)} knowledge chunks added")
+        except Exception as e:
+            logger.debug(f"Knowledge manager retrieval skipped: {e}")
+
+    # Fallback to raw Wikipedia collection if advanced manager is unavailable.
+    if not wiki_chunks and rag_system and rag_system.is_ready():
+        try:
+            msg_lower = request.message.lower()
             is_personal = any(p in msg_lower for p in [
                 "my name", "who am i", "my favorite", "my age", "remember me",
                 "what did i", "what i said", "my ", "about me"
@@ -4338,9 +4416,9 @@ async def chat(request: ChatRequest):
                 wiki_results = rag_system.search_wikipedia(request.message, n_results=2)
                 if wiki_results:
                     wiki_chunks = wiki_results
-                    logger.info(f"Wikipedia: {len(wiki_chunks)} knowledge chunks added")
+                    logger.info(f"Wikipedia fallback: {len(wiki_chunks)} knowledge chunks added")
         except Exception as e:
-            logger.debug(f"Wikipedia search skipped: {e}")
+            logger.debug(f"Wikipedia fallback skipped: {e}")
 
     # Agent mode: Check if web search is requested
     search_results = []
@@ -4371,6 +4449,24 @@ async def chat(request: ChatRequest):
         
         # Store response
         store_conversation_exchange(request, assistant_response, original_mode, remember)
+        
+        # Learn from exchange (async background) - learns from conversation + retrieved knowledge
+        if remember and knowledge_manager_instance:
+            def async_learn():
+                try:
+                    knowledge_manager_instance.learn_from_exchange(
+                        user_message=request.message,
+                        assistant_response=assistant_response,
+                        search_results=search_results if search_results else None,
+                        retrieved_contexts=wiki_chunks if wiki_chunks else None,
+                        chat_id=getattr(request, 'chat_id', None)
+                    )
+                except Exception as e:
+                    logger.debug(f"Knowledge learning failed: {e}")
+            
+            import threading
+            learn_thread = threading.Thread(target=async_learn, daemon=True)
+            learn_thread.start()
         
         return {
             "response": assistant_response,
@@ -4579,34 +4675,34 @@ async def chat(request: ChatRequest):
 
             logger.info(f"Content structure: {len(content)} parts ({len(image_data_list)} images + 1 text)")
             
-            try:
-                # Acquire lock for vision model inference
-                vision_lock = get_lock_for_model(llm)
-                with vision_lock:
-                    response = llm.create_chat_completion(
-                        messages=[
-                            {"role": "system", "content": vision_sys},
-                            {"role": "user", "content": content}
-                        ],
-                        max_tokens=2048,
-                        temperature=0.1
+            if not image_data_list:
+                assistant_response = "⚠️ No valid image data received. Please try uploading the image again."
+            else:
+                try:
+                    # Acquire lock for vision model inference
+                    vision_lock = get_lock_for_model(llm)
+                    with vision_lock:
+                        response = llm.create_chat_completion(
+                            messages=[
+                                {"role": "system", "content": vision_sys},
+                                {"role": "user", "content": content}
+                            ],
+                            max_tokens=2048,
+                            temperature=0.1
+                        )
+                    assistant_response = response["choices"][0]["message"]["content"]
+                    logger.info(f"Vision response generated: {assistant_response[:100]}...")
+                except Exception as e:
+                    logger.error(f"Vision model inference error: {e}", exc_info=True)
+                    # Return an honest error — do NOT fall back to text-only mode which
+                    # cannot see the image and would fabricate a false description.
+                    assistant_response = (
+                        "⚠️ The vision model encountered an error processing your image. "
+                        "This may be due to an incompatible image format, corrupted data, "
+                        "or insufficient GPU memory. Please try again with a different image, "
+                        "or check the server logs for details.\n\n"
+                        f"Error: {str(e)[:200]}"
                     )
-                assistant_response = response["choices"][0]["message"]["content"]
-                logger.info(f"Vision response generated: {assistant_response[:100]}...")
-            except Exception as e:
-                logger.error(f"Vision model error: {e}")
-                logger.error(f"Trying fallback method...")
-                
-                # Fallback: text-only mode with bracketed image notice
-                fallback_lock = get_lock_for_model(llm)
-                with fallback_lock:
-                    response = llm(
-                        f"[Image provided — describe what you see] {full_prompt}",
-                        max_tokens=2048,
-                        temperature=0.1
-                    )
-                assistant_response = response["choices"][0]["text"].strip()
-                logger.warning("Vision model used in text-only mode - images not processed")
         else:
             # Text-only model
             max_tokens = 3072 if original_mode == "work" else 2048  # More tokens for work mode
@@ -4642,6 +4738,25 @@ async def chat(request: ChatRequest):
         
         # Store in memory if auto-detected or requested
         store_conversation_exchange(request, assistant_response, original_mode, remember)
+        
+        # Learn from exchange (async background) — learns from conversation + retrieved knowledge + web searches
+        if remember and knowledge_manager_instance:
+            def async_learn():
+                try:
+                    knowledge_manager_instance.learn_from_exchange(
+                        user_message=request.message,
+                        assistant_response=assistant_response,
+                        search_results=search_results if search_results else None,
+                        retrieved_contexts=wiki_chunks if wiki_chunks else None,
+                        chat_id=getattr(request, 'chat_id', None)
+                    )
+                except Exception as e:
+                    logger.debug(f"Knowledge learning failed: {e}")
+            
+            # Run learning in background thread
+            import threading
+            learn_thread = threading.Thread(target=async_learn, daemon=True)
+            learn_thread.start()
         
         # Build response with work mode metadata
         response_data = {
@@ -4779,17 +4894,6 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             "image_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
         }
 
-    elif intent in ["generate_video", "text_to_video", "create_video", "make_video"] and request.mode != "swarm":
-        msg_lower = request.message.lower()
-        for prefix in ["generate", "create", "make", "a video of", "video of", "a video about", "video about", "a ", "an "]:
-            msg_lower = msg_lower.replace(prefix, "").strip()
-        video_intent_payload = {
-            "ok": True,
-            "response": f"🎬 Generating video: \"{msg_lower}\"...",
-            "mode_used": "video",
-            "video_generation": {"prompt": msg_lower, "trigger": "coral_intent"}
-        }
-
     elif intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"] and request.mode != "swarm":
         msg_lower = request.message.lower()
         for prefix in ["generate", "create", "make", "compose", "a song about", "song about", "music about", "a ", "an "]:
@@ -4851,14 +4955,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         msg_lower = request.message.lower()
 
         # Video generation patterns
-        video_patterns = ["make a video", "create a video", "generate a video",
-                         "make video", "create video", "generate video",
-                         "music video", "animate", "animation",
-                         "video of", "video about", "video from",
-                         "make me a video", "short video", "video clip",
-                         "text to video", "text-to-video"]
-
-        # Music generation patterns
+            # Music generation patterns
         music_patterns = ["make music", "create music", "generate music",
                          "make a song", "create a song", "generate a song",
                          "compose", "make a beat", "produce music",
@@ -4871,24 +4968,9 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                          "background music", "soundtrack",
                          "generate a lo", "make a lo", "create a lo"]
 
-        has_video = any(pattern in msg_lower for pattern in video_patterns)
         has_music = any(pattern in msg_lower for pattern in music_patterns)
 
-        if has_video:
-            clean_prompt = msg_lower
-            for prefix in ["generate", "create", "make", "a video of", "video of",
-                           "a video about", "video about", "a short video of",
-                           "short video of", "a ", "an "]:
-                clean_prompt = clean_prompt.replace(prefix, "").strip()
-            video_intent_payload = {
-                "ok": True,
-                "response": f"🎬 Generating video: \"{clean_prompt}\"...",
-                "mode_used": "video",
-                "video_generation": {"prompt": clean_prompt, "trigger": "heuristic"}
-            }
-            logger.info(f"Heuristic video intent detected: {clean_prompt}")
-
-        elif has_music:
+        if has_music:
             clean_prompt = msg_lower
             for prefix in ["generate", "create", "make", "compose", "a song about",
                            "song about", "music about", "some ", "a ", "an ", "me "]:
@@ -5067,9 +5149,43 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         except Exception as e:
             logger.warning(f"RAG retrieval failed: {e}")
 
-    # ── Wikipedia knowledge search (streaming) ──────────────────────────
+    # ── Knowledge retrieval (streaming) ─────────────────────────────────
     wiki_chunks = []
-    if rag_system and rag_system.is_ready():
+    if knowledge_manager_instance:
+        try:
+            msg_lower = request.message.lower()
+            is_personal = any(p in msg_lower for p in [
+                "my name", "who am i", "my favorite", "my age", "remember me",
+                "what did i", "what i said", "my ", "about me"
+            ])
+            is_greeting = msg_lower.strip() in ["hi", "hello", "hey", "thanks", "thank you", "ok", "bye"]
+            if not is_personal and not is_greeting and len(request.message.split()) >= 2:
+                km_contexts = knowledge_manager_instance.retrieve_context(
+                    query=request.message,
+                    chat_id=current_chat_id,
+                    max_results=2,
+                    include_web_search=False,
+                    search_if_needed=False,
+                    min_relevance=0.32,
+                )
+                if km_contexts:
+                    wiki_chunks = [
+                        (
+                            c.text,
+                            {
+                                "title": c.title,
+                                "source": c.source,
+                                "url": c.url,
+                                "score": c.score,
+                            },
+                        )
+                        for c in km_contexts
+                    ]
+                    logger.info(f"Knowledge manager (stream): {len(wiki_chunks)} chunks added")
+        except Exception as e:
+            logger.debug(f"Knowledge manager (stream) skipped: {e}")
+
+    if not wiki_chunks and rag_system and rag_system.is_ready():
         try:
             msg_lower = request.message.lower()
             is_personal = any(p in msg_lower for p in [
@@ -5081,9 +5197,9 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 wiki_results = rag_system.search_wikipedia(request.message, n_results=2)
                 if wiki_results:
                     wiki_chunks = wiki_results
-                    logger.info(f"Wikipedia (stream): {len(wiki_chunks)} knowledge chunks added")
+                    logger.info(f"Wikipedia fallback (stream): {len(wiki_chunks)} chunks added")
         except Exception as e:
-            logger.debug(f"Wikipedia search skipped: {e}")
+            logger.debug(f"Wikipedia fallback (stream) skipped: {e}")
 
     search_results = []
     if mode in ["agent", "work"] and search_tool:
@@ -5382,6 +5498,24 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
 
             # Store conversation
             store_conversation_exchange(request, assistant_response, original_mode, remember)
+            
+            # Learn from exchange (async background) - learns from conversation + retrieved knowledge + web searches
+            if remember and knowledge_manager_instance:
+                def async_learn():
+                    try:
+                        knowledge_manager_instance.learn_from_exchange(
+                            user_message=request.message,
+                            assistant_response=assistant_response,
+                            search_results=search_results if search_results else None,
+                            retrieved_contexts=wiki_chunks if wiki_chunks else None,
+                            chat_id=getattr(request, 'chat_id', None)
+                        )
+                    except Exception as e:
+                        logger.debug(f"Knowledge learning failed: {e}")
+                
+                import threading
+                learn_thread = threading.Thread(target=async_learn, daemon=True)
+                learn_thread.start()
 
             # Detect artifacts
             artifact = detect_artifact(assistant_response)
@@ -5601,19 +5735,16 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                 logger.warning(f"Vision stream exceeded empty chunk threshold ({max_empty_chunks}); stopping generation")
                                 break
                 except Exception as vision_exc:
-                    logger.error(f"Vision streaming failed: {vision_exc}")
-                    logger.error(f"Falling back to text-only vision prompt")
-                    # Fallback: text-only description request
-                    fallback_lock = get_lock_for_model(llm)
-                    with fallback_lock:
-                        fb_resp = llm(
-                            f"[Image provided but could not be processed] {vision_question}",
-                            max_tokens=2048,
-                            temperature=0.1,
-                            echo=False
-                        )
-                    fallback_text = fb_resp["choices"][0]["text"].strip()
-                    assistant_response = f"⚠️ Vision processing failed — the image could not be analyzed.\n\n{fallback_text}"
+                    logger.error(f"Vision streaming failed: {vision_exc}", exc_info=True)
+                    # Return an honest error — do NOT fall back to text-only mode which
+                    # cannot see the image and would fabricate a false description.
+                    error_msg = (
+                        "⚠️ The vision model encountered an error processing your image. "
+                        "This may be due to an incompatible image format, corrupted data, "
+                        "or insufficient GPU memory. Please try again with a different image.\n\n"
+                        f"Error: {str(vision_exc)[:200]}"
+                    )
+                    assistant_response = error_msg
                     for token_chunk in _chunk_text(assistant_response, chunk_size=12):
                         yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
             else:
@@ -5775,6 +5906,24 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         cleaned_response = _dedupe_repeated_lines(cleaned_response)
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
+        
+        # Learn from exchange (async background) - learns from conversation + retrieved knowledge + web searches
+        if remember and knowledge_manager_instance:
+            def async_learn():
+                try:
+                    knowledge_manager_instance.learn_from_exchange(
+                        user_message=request.message,
+                        assistant_response=cleaned_response,
+                        search_results=search_results if search_results else None,
+                        retrieved_contexts=wiki_chunks if wiki_chunks else None,
+                        chat_id=getattr(request, 'chat_id', None)
+                    )
+                except Exception as e:
+                    logger.debug(f"Knowledge learning failed: {e}")
+            
+            import threading
+            learn_thread = threading.Thread(target=async_learn, daemon=True)
+            learn_thread.start()
 
         # ── Awareness: post-response state update + self-eval ────────
         try:
@@ -6671,184 +6820,28 @@ async def realtime_news(topic: str = "top news today", max_results: int = 8):
 
 @app.post("/generate-video")
 async def generate_video(request: dict):
-    """Generate a video from a text prompt using CogVideoX diffusers pipeline.
-
-    Parameters:
-        - prompt (str): Video description prompt (required)
-        - width (int): Frame width (default: 720)
-        - height (int): Frame height (default: 480)
-        - frames (int): Number of frames per segment (default: 49)
-        - fps (int): Frames per second (default: 8)
-        - steps (int): Inference steps (default: 30)
-        - guidance_scale (float): CFG scale (default: 6.0)
-        - negative_prompt (str): Negative prompt (optional)
-        - audio_path (str): Path to audio file for music video (optional)
-        - duration (float): Desired video length in seconds (default: 6, max: 30)
-    """
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    prompt = request.get("prompt", "")
-    if not prompt:
-        raise HTTPException(status_code=400, detail="Prompt is required")
-
-    # MemoryGate: free VRAM for video generation
-    global _models_unloaded_for_image_gen
-    with _image_gen_lock:
-        if memory_gate_instance:
-            gate_result = memory_gate_instance.pre_heavy_task(
-                required_vram_mb=6000,
-                required_ram_mb=0,
-                reason="video generation (CogVideoX)",
-                allow_cpu_fallback=False,
-            )
-            if not gate_result["ok"]:
-                raise HTTPException(
-                    status_code=507,
-                    detail=gate_result.get("error", {
-                        "message": "Not enough VRAM for video generation",
-                        "action": "unload_and_retry",
-                    }),
-                )
-            _models_unloaded_for_image_gen = True
-        elif not _models_unloaded_for_image_gen:
-            unload_all_llm_models()
-            _models_unloaded_for_image_gen = True
-
-    try:
-        result = video_service.submit_video_generation(
-            prompt=prompt,
-            negative_prompt=request.get("negative_prompt", ""),
-            width=request.get("width"),
-            height=request.get("height"),
-            frames=request.get("frames"),
-            fps=request.get("fps"),
-            steps=request.get("steps"),
-            guidance_scale=request.get("guidance_scale", 6.0),
-            audio_path=request.get("audio_path"),
-            duration=request.get("duration"),
-        )
-
-        if not result.get("ok"):
-            if _models_unloaded_for_image_gen:
-                reload_llm_models_background()
-            raise HTTPException(status_code=500, detail=result.get("error", "Video generation failed"))
-
-        return {
-            "status": "generating",
-            "prompt_id": result["data"]["prompt_id"],
-            "backend": result["data"]["backend"],
-            "message": result["data"]["message"],
-        }
-    except HTTPException:
-        raise
-    except Exception as e:
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
-        raise HTTPException(status_code=500, detail=str(e))
+    """Video generation is disabled in this deployment."""
+    raise HTTPException(status_code=410, detail="Video generation is disabled")
 
 @app.get("/video-status/{prompt_id}")
 async def video_status(prompt_id: str):
-    """Check video generation status"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    result = video_service.check_video_status(prompt_id)
-    status = result.get("data", {}).get("status", "unknown")
-
-    # Auto-save completed video to gallery
-    if status == "complete":
-        try:
-            videos = result.get("data", {}).get("videos", [])
-            if videos:
-                vid = videos[0]
-                video_id = str(uuid.uuid4())[:8]
-                video_filename = vid.get("filename", "")
-
-                db = load_gallery_db()
-                gallery_entry = {
-                    "id": video_id,
-                    "type": "video",
-                    "prompt": vid.get("prompt", prompt_id),
-                    "url": f"/video/{video_filename}",
-                    "filename": video_filename,
-                    "timestamp": int(time.time()),
-                    "model": result.get("data", {}).get("backend", "ComfyUI"),
-                    "settings": {},
-                }
-                items = db.get("images", [])
-                # Avoid duplicating if already saved (check filename)
-                if not any(i.get("filename") == video_filename for i in items):
-                    items.insert(0, gallery_entry)
-                    db["images"] = items
-                    save_gallery_db(db)
-                    result["saved_to_gallery"] = True
-                    logger.info(f"✓ Auto-saved video to gallery: {video_filename}")
-        except Exception as ge:
-            logger.error(f"Failed to auto-save video to gallery: {ge}")
-
-    # Reload LLMs once generation is complete or failed
-    if status in ("complete", "complete_frames", "error") and _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-    # Also reload if result itself indicates failure
-    if not result.get("ok") and _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-
-    return result
+    """Video status is disabled because video generation is disabled."""
+    raise HTTPException(status_code=410, detail="Video generation is disabled")
 
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
-    """Upload an audio file (MP3/WAV/etc.) for music video generation"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    allowed_extensions = {".mp3", ".wav", ".ogg", ".flac", ".aac", ".m4a", ".wma"}
-    ext = Path(file.filename).suffix.lower()
-    if ext not in allowed_extensions:
-        raise HTTPException(status_code=400, detail=f"Unsupported audio format: {ext}. Allowed: {', '.join(allowed_extensions)}")
-
-    contents = await file.read()
-    if len(contents) > 100 * 1024 * 1024:  # 100MB limit
-        raise HTTPException(status_code=400, detail="Audio file too large (max 100MB)")
-
-    audio_path = video_service.save_uploaded_audio(contents, file.filename)
-    return {"ok": True, "audio_path": audio_path, "filename": file.filename}
+    """Video/audio mux helper is disabled because video generation is disabled."""
+    raise HTTPException(status_code=410, detail="Video generation is disabled")
 
 @app.post("/stitch-frames")
 async def stitch_frames(request: dict):
-    """Stitch generated frames into a video, optionally with audio"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    prompt_id = request.get("prompt_id", "")
-    fps = request.get("fps", 8)
-    audio_path = request.get("audio_path")
-
-    result = video_service.stitch_frames_to_video(prompt_id, fps, audio_path)
-    if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("error"))
-
-    # Reload LLMs
-    if _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-
-    return result
+    """Video stitching is disabled because video generation is disabled."""
+    raise HTTPException(status_code=410, detail="Video generation is disabled")
 
 @app.post("/mux-video-audio")
 async def mux_video_audio(request: dict):
-    """Combine a video with an audio file"""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-
-    video_path = request.get("video_path", "")
-    audio_path = request.get("audio_path", "")
-    if not video_path or not audio_path:
-        raise HTTPException(status_code=400, detail="Both video_path and audio_path are required")
-
-    result = video_service.mux_audio_to_video(video_path, audio_path)
-    if not result.get("ok"):
-        raise HTTPException(status_code=500, detail=result.get("error"))
-    return result
+    """Video/audio muxing is disabled because video generation is disabled."""
+    raise HTTPException(status_code=410, detail="Video generation is disabled")
 
 
 # ==================== MUSIC GENERATION ENDPOINTS ====================
@@ -7663,7 +7656,7 @@ async def cleanup_auto_users(request: dict = None):
         uid = u.get("id", "")
         name = u.get("name", "")
         # Keep if: explicitly in keep list, or name was customized (not auto-generated pattern)
-        is_auto_name = bool(_re.match(r'^User-[a-f0-9\-]{4,}$', name))
+        is_auto_name = bool(_re.match(r'^User-[a-f0-9\-]{4,}$', name) or _re.match(r'^User-user_', name))
         if uid in keep_ids or not is_auto_name:
             remaining.append(u)
         else:
@@ -7722,8 +7715,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
 
     # Add media generation awareness
     base += (
-        " You can generate videos from text prompts (use the generate_video tool or /generate-video endpoint). "
-        "You can generate music from text descriptions including genre, mood, instruments, and lyrics "
+        " You can generate music from text descriptions including genre, mood, instruments, and lyrics "
         "(use the generate_music tool or /generate-music endpoint). "
         "You can get real-time data like current time, weather, and news using get_current_time, get_weather, and get_news tools."
     )
@@ -7738,11 +7730,10 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     prompts = {
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
-        "agent": base + " You can search the web for current information. You can generate videos, music, and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
+        "agent": base + " You can search the web for current information. You can generate music and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
         "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
         "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented.",
-        "codespaces": base + " You are in Codespaces mode: prioritize safe command execution, concrete file rewrites, and runnable developer workflows.",
-        "printing": base + " You are in 3D Printing mode: help prepare models, slicing settings, and safe printer dispatch steps."
+        "codespaces": base + " You are in Codespaces mode: prioritize safe command execution, concrete file rewrites, and runnable developer workflows."
     }
     
     return prompts.get(mode, base)
@@ -7840,7 +7831,7 @@ def truncate_text(text: str, max_chars: int = 3000, label: str = "text") -> str:
 
 
 def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None, wiki_chunks: list = None) -> str:
-    """Build the complete prompt with context, search results, Wikipedia knowledge, and conversation history"""
+    """Build the complete prompt with context, search results, knowledge chunks, and conversation history"""
     parts = [system_prompt, ""]
     
     # Add recent conversation history for context
@@ -7903,19 +7894,20 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 parts.append(f"- {fact}")
             parts.append("")
     
-    # Add Wikipedia knowledge if available
+    # Add knowledge chunks if available (Wikipedia + external knowledge connectors)
     if wiki_chunks:
-        parts.append("RELEVANT KNOWLEDGE (from Wikipedia):")
+        parts.append("RELEVANT KNOWLEDGE:")
         for item in wiki_chunks[:2]:
             if isinstance(item, tuple):
                 text, meta = item
                 title = meta.get("title", "")
+                source = meta.get("source", "knowledge")
                 # Truncate long wiki chunks
                 text_clean = truncate_text(text, max_chars=600, label="wiki")
                 if title:
-                    parts.append(f"- [{title}] {text_clean}")
+                    parts.append(f"- [{source}] [{title}] {text_clean}")
                 else:
-                    parts.append(f"- {text_clean}")
+                    parts.append(f"- [{source}] {text_clean}")
             else:
                 parts.append(f"- {truncate_text(item, max_chars=600, label='wiki')}")
         parts.append("")
@@ -9512,6 +9504,174 @@ async def memory_stats():
 
 
 # ── Knowledge Packs API ─────────────────────────────────────────────────
+
+@app.get("/knowledge/status")
+async def knowledge_status():
+    """Get readiness and stats for advanced knowledge subsystems."""
+    kb_ready = bool(knowledge_base_instance and knowledge_base_instance.is_ready())
+    km_ready = bool(knowledge_manager_instance)
+    rag_ready = bool(rag_system and rag_system.is_ready())
+
+    result = {
+        "knowledge_base_ready": kb_ready,
+        "knowledge_manager_ready": km_ready,
+        "rag_ready": rag_ready,
+        "search_ready": bool(search_tool),
+    }
+
+    if rag_ready:
+        try:
+            result["rag_stats"] = rag_system.get_stats()
+        except Exception:
+            pass
+
+    if km_ready:
+        try:
+            result["knowledge_manager_stats"] = dict(getattr(knowledge_manager_instance, "stats", {}))
+        except Exception:
+            pass
+
+    if kb_ready:
+        try:
+            result["knowledge_base_stats"] = knowledge_base_instance.get_stats()
+        except Exception:
+            pass
+
+    return result
+
+
+@app.post("/knowledge/query")
+async def knowledge_query(request: dict):
+    """Query unified knowledge context (memory + KB + optional live web)."""
+    if not knowledge_manager_instance:
+        raise HTTPException(status_code=503, detail="Knowledge manager not available")
+
+    query = (request.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    chat_id = request.get("chat_id")
+    max_results = int(request.get("max_results", 6))
+    include_web_search = bool(request.get("include_web_search", False))
+    search_if_needed = bool(request.get("search_if_needed", True))
+    min_relevance = float(request.get("min_relevance", 0.30))
+
+    contexts = knowledge_manager_instance.retrieve_context(
+        query=query,
+        chat_id=chat_id,
+        max_results=max(1, min(max_results, 20)),
+        include_web_search=include_web_search,
+        search_if_needed=search_if_needed,
+        min_relevance=min_relevance,
+    )
+
+    return {
+        "query": query,
+        "count": len(contexts),
+        "results": [
+            {
+                "text": c.text,
+                "source": c.source,
+                "score": c.score,
+                "title": c.title,
+                "url": c.url,
+                "is_fresh": c.is_fresh,
+                "metadata": c.metadata,
+            }
+            for c in contexts
+        ],
+    }
+
+
+@app.post("/knowledge/ingest/url")
+async def knowledge_ingest_url(request: dict):
+    """Ingest a URL into the persistent knowledge base."""
+    if not knowledge_base_instance or not knowledge_base_instance.is_ready():
+        raise HTTPException(status_code=503, detail="Knowledge base not available")
+
+    url = (request.get("url") or "").strip()
+    if not url:
+        raise HTTPException(status_code=400, detail="url is required")
+
+    title = (request.get("title") or "").strip()
+    category = (request.get("category") or "web_doc").strip() or "web_doc"
+
+    try:
+        from services.edison_core.knowledge_connectors import ingest_url
+        result = await asyncio.to_thread(ingest_url, knowledge_base_instance, url, title, category)
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "URL ingestion failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/ingest/github")
+async def knowledge_ingest_github(request: dict):
+    """Ingest a GitHub repository into the persistent knowledge base."""
+    if not knowledge_base_instance or not knowledge_base_instance.is_ready():
+        raise HTTPException(status_code=503, detail="Knowledge base not available")
+
+    repo_url = (request.get("repo_url") or "").strip()
+    if not repo_url:
+        raise HTTPException(status_code=400, detail="repo_url is required")
+
+    branch = (request.get("branch") or "main").strip() or "main"
+    max_files = int(request.get("max_files", 160))
+    max_file_bytes = int(request.get("max_file_bytes", 250000))
+    include_globs = request.get("include_globs")
+    if include_globs is not None and not isinstance(include_globs, list):
+        raise HTTPException(status_code=400, detail="include_globs must be a list when provided")
+
+    try:
+        from services.edison_core.knowledge_connectors import ingest_github_repo
+        result = await asyncio.to_thread(
+            ingest_github_repo,
+            knowledge_base_instance,
+            repo_url,
+            branch,
+            max(1, min(max_files, 1000)),
+            max(50_000, min(max_file_bytes, 2_000_000)),
+            include_globs,
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "GitHub ingestion failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/knowledge/ingest/arxiv")
+async def knowledge_ingest_arxiv(request: dict):
+    """Ingest arXiv papers (abstracts) into the persistent knowledge base."""
+    if not knowledge_base_instance or not knowledge_base_instance.is_ready():
+        raise HTTPException(status_code=503, detail="Knowledge base not available")
+
+    query = (request.get("query") or "").strip()
+    if not query:
+        raise HTTPException(status_code=400, detail="query is required")
+
+    max_results = int(request.get("max_results", 6))
+
+    try:
+        from services.edison_core.knowledge_connectors import ingest_arxiv
+        result = await asyncio.to_thread(
+            ingest_arxiv,
+            knowledge_base_instance,
+            query,
+            max(1, min(max_results, 20)),
+        )
+        if not result.get("ok"):
+            raise HTTPException(status_code=500, detail=result.get("error", "arXiv ingestion failed"))
+        return result
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/knowledge-packs")
 async def list_knowledge_packs():

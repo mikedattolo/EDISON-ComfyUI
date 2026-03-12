@@ -427,6 +427,7 @@ class KnowledgeManager:
         user_message: str,
         assistant_response: str,
         search_results: Optional[List[Dict]] = None,
+        retrieved_contexts: Optional[List] = None,
         chat_id: Optional[str] = None
     ):
         """
@@ -435,8 +436,16 @@ class KnowledgeManager:
         This goes beyond the existing fact extraction by:
         1. Extracting facts from BOTH user message AND assistant response
         2. Storing search results that were used
-        3. Learning topic associations for better future retrieval
-        4. Detecting corrections/updates to existing facts
+        3. Learning from retrieved knowledge contexts (KB, Wikipedia, cached docs)
+        4. Learning topic associations for better future retrieval
+        5. Detecting corrections/updates to existing facts
+        
+        Args:
+            user_message: What the user asked
+            assistant_response: EDISON's reply
+            search_results: Web search results used (cached for reuse)
+            retrieved_contexts: Knowledge contexts retrieved from KB/Wikipedia/memory used in response
+            chat_id: Conversation ID for scoped learning
         """
         try:
             # Extract richer facts using enhanced extraction
@@ -466,10 +475,54 @@ class KnowledgeManager:
 
                 logger.info(f"Learned {len(facts)} enhanced facts from conversation")
 
+            # Learn from retrieved contexts (Wikipedia, cached docs, KB)
+            # This reinforces knowledge that was actually used in the response
+            if retrieved_contexts and self.rag and self.rag.is_ready():
+                for ctx in retrieved_contexts:
+                    if isinstance(ctx, RetrievedContext):
+                        # Store usage of this context with reinforcement metadata
+                        self.rag.add_documents(
+                            documents=[f"Used in response to: {user_message[:150]}. Context: {ctx.text[:300]}"],
+                            metadatas=[{
+                                "role": "usage",
+                                "source": ctx.source,
+                                "original_source": ctx.source,
+                                "original_title": ctx.title,
+                                "original_url": ctx.url,
+                                "chat_id": chat_id or "",
+                                "timestamp": int(time.time()),
+                                "tags": ["used_knowledge", ctx.source, "retrieval_feedback"],
+                                "type": "usage",
+                                "reinforcement": True,
+                                "relevance": ctx.score
+                            }]
+                        )
+                    elif isinstance(ctx, tuple):
+                        # Handle legacy tuple format (text, metadata)
+                        text, meta = ctx
+                        self.rag.add_documents(
+                            documents=[f"Used in response to: {user_message[:150]}. Context: {text[:300]}"],
+                            metadatas=[{
+                                "role": "usage",
+                                "source": meta.get("source", "unknown"),
+                                "original_title": meta.get("title", ""),
+                                "original_url": meta.get("url", ""),
+                                "chat_id": chat_id or "",
+                                "timestamp": int(time.time()),
+                                "tags": ["used_knowledge", meta.get("source", ""), "retrieval_feedback"],
+                                "type": "usage",
+                                "reinforcement": True,
+                                "relevance": meta.get("score", 0.5)
+                            }]
+                        )
+                
+                logger.info(f"Learned from {len(retrieved_contexts)} retrieved knowledge contexts used in response")
+
             # Cache search results if provided
             if search_results and self.kb and self.kb.is_ready():
                 # Build a composite query from the user message
                 self.kb.add_search_results(user_message, search_results)
+                logger.info(f"Cached {len(search_results)} web search results for: {user_message[:80]}")
 
         except Exception as e:
             logger.warning(f"Learning from exchange failed: {e}")

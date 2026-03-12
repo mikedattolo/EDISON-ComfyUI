@@ -19,6 +19,47 @@
 
 ---
 
+## 🔥 What's New (v1.5.0)
+
+### 🌐 **Live Virtual Browser with Cursor Overlay**
+- **Persistent browser sessions** now stream periodic screenshots to the Agent Live View panel
+- **Mouse cursor overlay**: Red dot tracks cursor position in real-time on browser previews
+- **Take-over button**: Pause agent browser control and interact directly
+- **Copy session ID**: One-click clipboard copy for session management
+- Configurable screenshot interval via `agent_live_view.screenshot_interval_s` in `config/edison.yaml`
+
+### 🛠️ **Workspace & File System Tools**
+- **15 new tools** available in the LLM tool loop and swarm agents:
+  - `workspace.init` — create/get a per-project workspace directory
+  - `fs.read`, `fs.write`, `fs.list`, `fs.mkdir`, `fs.delete` — full file system operations
+  - `fs.diff`, `fs.apply_patch` — preview and apply unified diffs
+  - `pm.create_task`, `pm.list_tasks`, `pm.update_task` — project task tracking
+  - `code.apply_unified_diff`, `code.search` — code editing and search (uses ripgrep)
+  - `dev.run_server`, `dev.stop_server` — start/stop dev servers with port management
+- **Path safety**: All file operations use `_safe_project_path()` with symlink-aware traversal protection
+- **Coding workflow prompt**: LLM guided through search → read → diff → apply → test cycle
+
+### 🐝 **Swarm Mode Tool Execution**
+- **Tool-capable agents**: ProjectManager 🗂️ and FileManager 📁 agents added to catalog
+- **Agent tool loop**: `_run_agent_with_tools()` enables agents to call fs/code/pm tools during swarm rounds
+- **Boss structured tasks**: Boss agent outputs `TASKS_JSON` blocks parsed into session task tracker
+- **Artifact tracking**: Files created by agents recorded with path, kind, and creator
+- **Synthesis includes tasks**: Final Boss synthesis prompt includes task status and artifact list
+- `execute_tool` callable wired into all SwarmEngine instantiations
+
+### 🎨 **UI Polish**
+- **Browser frame**: Rounded border, glass-effect background for browser previews
+- **Colored diffs**: Green `+` additions, red `-` deletions, blue `@@` hunk headers in file diff view
+- **Takeover notice**: Orange warning banner when browser control paused
+- **Copy/Takeover buttons**: Styled with hover effects
+
+### 🧪 **New Tests (E2E & Unit)**
+- `tests/test_workspace_path_safety.py` — 19 tests for path traversal, sanitization, symlink protection
+- `tests/test_codespace_exec_allowlist.py` — 25 tests for command allowlist, blocklist patterns, env safety
+- `tests/test_swarm_tool_execution.py` — 16 tests for SwarmSession tasks/artifacts, agent tool loop, catalog
+
+---
+
 ## 🔥 What's New (v1.4.0)
 
 ### 🔧 **Model Loading Unification (ModelManager v2)**
@@ -62,10 +103,6 @@
 - Session-based browser control via Playwright worker thread (no new context per action)
 - New endpoints:
   - `POST /sandbox/browser/session/create`
-  - `POST /sandbox/browser/session/get_text`
-  - `POST /sandbox/browser/session/find`
-  - `POST /sandbox/browser/session/click_by_text`
-  - `POST /sandbox/browser/session/fill_form`
   - `POST /sandbox/browser/session/navigate`
   - `POST /sandbox/browser/session/click`
   - `POST /sandbox/browser/session/type`
@@ -76,29 +113,8 @@
   - `POST /sandbox/browser/session/close`
 - Config options in `config/edison.yaml`:
   - `sandbox_allow_any_host: false`
-  - `sandbox_allowed_hosts: ["wikipedia.org", "developer.mozilla.org", "github.com"]`
+  - `sandbox_allowed_hosts: ["example.com", "google.com"]`
   - `sandbox_session_ttl_seconds: 900`
-
-### 👀 **Vision Robustness + SSE**
-- Startup checks for `vision_model` + `vision_clip` files with explicit `vision_enabled` and friendly failure reason.
-- CPU fallback supported via `n_gpu_layers=0` when GPUs are unavailable.
-- New streaming endpoint: `POST /vision` (SSE token stream).
-
-### 🧩 **Skills Plugin System**
-- Dynamic skill loader scans `services/edison_core/skills/*_skill.py` on startup.
-- Runtime file watching reloads skills automatically.
-- Metadata permissions are enforced from `edison.skills.allowed_permissions`.
-- API: `GET /skills`, `POST /skills/reload`.
-
-### 🖨️ **3D Printer Integration**
-- New manager/drivers in `services/edison_core/printer.py`.
-- API additions:
-  - `GET /printing/printers/{printer_id}/status`
-  - `POST /printing/printers/send`
-
-### 🐳 **Containerized Dev Environment**
-- Added `Dockerfile`, `docker-compose.yml`, and `scripts/edison_docker.py`.
-- See `DEV_ENVIRONMENT.md` for setup and profile installs.
 
 ### 🧪 **New Tests**
 - `tests/test_gpu_config.py` — 13 tests for tensor_split normalization + config validation

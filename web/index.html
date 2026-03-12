@@ -9,11 +9,6 @@
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
     <script src="theme-device.js?v=3"></script>
-    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/controls/OrbitControls.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/GLTFLoader.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/OBJLoader.js"></script>
-    <script src="https://cdn.jsdelivr.net/npm/three@0.128.0/examples/js/loaders/PLYLoader.js"></script>
 </head>
 <body>
     <div class="app-container">
@@ -123,28 +118,6 @@
                     Gallery
                 </button>
                 
-                <!-- 3D Model Generation Button -->
-                <button class="sidebar-feature-btn" id="threeDBtn" title="Generate 3D models" onclick="event.stopPropagation(); window.toggle3DPanel && window.toggle3DPanel();">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M10 2L18 7V13L10 18L2 13V7L10 2Z"/>
-                        <path d="M10 18V12"/>
-                        <path d="M18 7L10 12L2 7"/>
-                    </svg>
-                    3D Models
-                </button>
-
-                <!-- Minecraft Tools Button -->
-                <button class="sidebar-feature-btn" id="minecraftBtn" title="Minecraft 1.7.10 Tools" onclick="event.stopPropagation(); window.toggleMinecraftPanel && window.toggleMinecraftPanel();">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <rect x="3" y="3" width="14" height="14" rx="1"/>
-                        <rect x="6" y="6" width="3" height="3"/>
-                        <rect x="11" y="6" width="3" height="3"/>
-                        <rect x="6" y="11" width="3" height="3"/>
-                        <rect x="11" y="11" width="3" height="3"/>
-                    </svg>
-                    Minecraft
-                </button>
-
                 <!-- File Manager Button -->
                 <button class="sidebar-feature-btn" id="fileManagerBtn" title="Data Management Console" onclick="event.stopPropagation(); window.toggleFileManager && window.toggleFileManager();">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -159,15 +132,6 @@
                         <path d="M7 8l-2 2 2 2M13 8l2 2-2 2M10 7l-1 6"/>
                     </svg>
                     Codespaces
-                </button>
-
-                <button class="sidebar-feature-btn" id="printingBtn" title="3D printer control" onclick="event.stopPropagation(); window.togglePrintingPanel && window.togglePrintingPanel();">
-                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <rect x="4" y="3" width="12" height="5"/>
-                        <rect x="3" y="8" width="14" height="8" rx="1"/>
-                        <path d="M6 13h8M7 16h6"/>
-                    </svg>
-                    3D Printing
                 </button>
 
                 <button class="sidebar-feature-btn" id="connectorsBtn" title="API Connectors" onclick="event.stopPropagation(); window.toggleConnectorsPanel && window.toggleConnectorsPanel();">
@@ -290,11 +254,7 @@
                                 <h3>Image Generation</h3>
                                 <p>Create images from text prompts using FLUX models</p>
                             </div>
-                            <div class="capability-card">
-                                <div class="capability-icon">📐</div>
-                                <h3>3D Models</h3>
-                                <p>Generate 3D models from text descriptions</p>
-                            </div>
+
                             <div class="capability-card">
                                 <div class="capability-icon">🖼️</div>
                                 <h3>Gallery</h3>
@@ -366,10 +326,7 @@
                                 <span class="mode-icon">🧑‍💻</span>
                                 <span class="mode-label">Codespaces</span>
                             </button>
-                            <button class="mode-btn" data-mode="printing" title="3D slicing and printer workflows">
-                                <span class="mode-icon">🖨️</span>
-                                <span class="mode-label">3D Print</span>
-                            </button>
+
                         </div>
                         
                         <div class="input-area">
@@ -494,7 +451,7 @@
                             <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
                             <option value="codespaces">Codespaces (Dev Workspace)</option>
-                            <option value="printing">3D Printing</option>
+
                         </select>
                     </div>
                     
@@ -521,11 +478,6 @@
                     <div class="setting-group">
                         <label for="installedSkills">Installed Skills</label>
                         <input type="text" id="installedSkills" readonly placeholder="Loaded at runtime">
-                    </div>
-
-                    <div class="setting-group">
-                        <label for="defaultPrinterId">Default Printer ID</label>
-                        <input type="text" id="defaultPrinterId" placeholder="printer_01">
                     </div>
 
                     <div class="setting-group">
@@ -649,231 +601,9 @@
         </div>
     </div>
 
-    <!-- 3D Model Generation Panel -->
-    <div class="feature-panel" id="threeDPanel" style="transform: translateX(100%); visibility: hidden;">
-        <div class="feature-panel-header">
-            <h2>🧊 3D Model Generator</h2>
-            <button class="feature-panel-close" onclick="window.toggle3DPanel && window.toggle3DPanel();">×</button>
-        </div>
-        <div class="feature-panel-body">
-            <div class="feature-section">
-                <label class="feature-label">Input Method</label>
-                <div class="feature-toggle-row">
-                    <button class="feature-toggle active" data-3d-mode="text" onclick="window.set3DMode && window.set3DMode('text')">Text Prompt</button>
-                    <button class="feature-toggle" data-3d-mode="image" onclick="window.set3DMode && window.set3DMode('image')">From Image</button>
-                </div>
-            </div>
-            <div class="feature-section" id="threeDTextInput">
-                <label class="feature-label">Describe the 3D model</label>
-                <textarea id="threeDPrompt" class="feature-textarea" placeholder="e.g., A low-poly treasure chest with gold trim..." rows="3"></textarea>
-            </div>
-            <div class="feature-section" id="threeDImageInput" style="display: none;">
-                <label class="feature-label">Upload Reference Image</label>
-                <div class="feature-dropzone" id="threeDDropzone">
-                    <svg width="40" height="40" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M12 16V8m0 0l-4 4m4-4l4 4"/><rect x="3" y="3" width="18" height="18" rx="3"/></svg>
-                    <p>Drop image here or click to upload</p>
-                    <input type="file" id="threeDImageFile" accept="image/*" style="display:none;">
-                </div>
-                <div id="threeDImagePreview" style="display:none;" class="feature-img-preview"></div>
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">Output Format</label>
-                <select id="threeDFormat" class="feature-select">
-                    <option value="glb">GLB (recommended)</option>
-                    <option value="obj">OBJ</option>
-                    <option value="ply">PLY</option>
-                </select>
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">Quality Steps: <span id="threeDStepsVal">64</span></label>
-                <input type="range" id="threeDSteps" class="feature-range" min="16" max="128" value="64" oninput="document.getElementById('threeDStepsVal').textContent=this.value">
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">Guidance Scale: <span id="threeDGuidanceVal">15.0</span></label>
-                <input type="range" id="threeDGuidance" class="feature-range" min="1" max="20" step="0.5" value="15" oninput="document.getElementById('threeDGuidanceVal').textContent=parseFloat(this.value).toFixed(1)">
-            </div>
-            <button class="feature-generate-btn" id="threeDGenerateBtn" onclick="window.generate3DModel && window.generate3DModel();">
-                🧊 Generate 3D Model
-            </button>
-            <div class="feature-status" id="threeDStatus" style="display:none;"></div>
+    
 
-            <!-- Live 3D Viewport -->
-            <div class="viewer3d-container" id="threeDViewerContainer" style="display:none;">
-                <div class="viewer3d-header">
-                    <span class="viewer3d-title">🧊 3D Preview</span>
-                    <div class="viewer3d-controls">
-                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DResetCamera && window.viewer3DResetCamera()" title="Reset camera">🔄</button>
-                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DToggleWireframe && window.viewer3DToggleWireframe()" title="Toggle wireframe">🔲</button>
-                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DToggleAutoRotate && window.viewer3DToggleAutoRotate()" title="Toggle auto-rotate">🔁</button>
-                        <button class="viewer3d-ctrl-btn" onclick="window.viewer3DFullscreen && window.viewer3DFullscreen()" title="Fullscreen">⛶</button>
-                    </div>
-                </div>
-                <div class="viewer3d-canvas-wrap" id="threeDCanvasWrap">
-                    <canvas id="threeDCanvas"></canvas>
-                    <div class="viewer3d-overlay" id="threeDOverlay">
-                        <div class="viewer3d-progress">
-                            <div class="viewer3d-progress-ring">
-                                <svg viewBox="0 0 100 100">
-                                    <circle class="ring-bg" cx="50" cy="50" r="45"/>
-                                    <circle class="ring-fg" id="threeDProgressRing" cx="50" cy="50" r="45"/>
-                                </svg>
-                                <span class="ring-pct" id="threeDProgressPct">0%</span>
-                            </div>
-                            <p class="viewer3d-progress-text" id="threeDProgressText">Initializing...</p>
-                        </div>
-                    </div>
-                </div>
-                <div class="viewer3d-info">
-                    <span id="threeDViewerInfo">Drag to rotate · Scroll to zoom · Right-click to pan</span>
-                </div>
-            </div>
-
-            <div class="feature-results" id="threeDResults"></div>
-        </div>
-    </div>
-
-    <!-- Minecraft Tools Panel -->
-    <div class="feature-panel" id="minecraftPanel" style="transform: translateX(100%); visibility: hidden;">
-        <div class="feature-panel-header mc-header">
-            <h2>⛏️ Minecraft 1.7.10 Tools</h2>
-            <button class="feature-panel-close" onclick="window.toggleMinecraftPanel && window.toggleMinecraftPanel();">×</button>
-        </div>
-        <div class="feature-panel-body">
-            <!-- Tab Selector -->
-            <div class="mc-tabs">
-                <button class="mc-tab active" data-mc-tab="textures" onclick="window.switchMCTab && window.switchMCTab('textures')">🎨 Textures</button>
-                <button class="mc-tab" data-mc-tab="models" onclick="window.switchMCTab && window.switchMCTab('models')">🧱 Models</button>
-                <button class="mc-tab" data-mc-tab="gallery" onclick="window.switchMCTab && window.switchMCTab('gallery')">📦 Gallery</button>
-            </div>
-
-            <!-- Texture Generation Tab -->
-            <div class="mc-tab-content active" id="mcTexturesTab">
-                <div class="feature-section">
-                    <label class="feature-label">Texture Type</label>
-                    <select id="mcTextureType" class="feature-select">
-                        <option value="block">🧱 Block</option>
-                        <option value="item">🗡️ Item</option>
-                        <option value="crop">🌾 Crop</option>
-                        <option value="skin">👤 Skin</option>
-                        <option value="mob">🐺 Mob</option>
-                        <option value="armor">🛡️ Armor</option>
-                        <option value="gui">📋 GUI Element</option>
-                        <option value="particle">✨ Particle</option>
-                        <option value="environment">🌍 Environment</option>
-                    </select>
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Style</label>
-                    <select id="mcStyle" class="feature-select">
-                        <option value="pixel_art">Pixel Art (Classic)</option>
-                        <option value="faithful">Faithful (Detailed)</option>
-                        <option value="painterly">Painterly (Soft)</option>
-                    </select>
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Resolution</label>
-                    <select id="mcResolution" class="feature-select">
-                        <option value="16">16×16 (Default)</option>
-                        <option value="32">32×32 (HD)</option>
-                        <option value="64">64×64 (Ultra)</option>
-                        <option value="128">128×128 (Extreme)</option>
-                    </select>
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Describe
- your texture</label>
-                    <textarea id="mcPrompt" class="feature-textarea" placeholder="e.g., Ruby ore block with red crystals in stone..." rows="3"></textarea>
-                </div>
-                <!-- Enhanced Processing Options -->
-                <div class="feature-section mc-options-grid">
-                    <label class="feature-label">Processing Options</label>
-                    <div class="mc-toggle-row">
-                        <label class="mc-toggle"><input type="checkbox" id="mcPaletteQuantize" checked><span class="mc-toggle-label">🎨 Palette Quantize</span></label>
-                        <label class="mc-toggle"><input type="checkbox" id="mcDither" checked><span class="mc-toggle-label">🔳 Dithering</span></label>
-                    </div>
-                    <div class="mc-toggle-row">
-                        <label class="mc-toggle"><input type="checkbox" id="mcTileable" checked><span class="mc-toggle-label">🔁 Tileable</span></label>
-                        <label class="mc-toggle"><input type="checkbox" id="mcProcedural"><span class="mc-toggle-label">⚡ Procedural (No AI)</span></label>
-                    </div>
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Reference Image (optional)</label>
-                    <div class="feature-dropzone small" id="mcDropzone">
-                        <p>📎 Drop image or click</p>
-                        <input type="file" id="mcImageFile" accept="image/*" style="display:none;">
-                    </div>
-                    <div id="mcImagePreview" style="display:none;" class="feature-img-preview"></div>
-                </div>
-                <button class="feature-generate-btn mc-btn" id="mcGenerateBtn" onclick="window.generateMinecraftTexture && window.generateMinecraftTexture();">
-                    ⛏️ Generate Texture
-                </button>
-                <div class="feature-status" id="mcTextureStatus" style="display:none;"></div>
-            </div>
-
-            <!-- Model Generation Tab -->
-            <div class="mc-tab-content" id="mcModelsTab" style="display:none;">
-                <div class="feature-section">
-                    <label class="feature-label">Select a Generated Texture</label>
-                    <select id="mcModelTexture" class="feature-select">
-                        <option value="">-- Generate a texture first --</option>
-                    </select>
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Model Type</label>
-                    <select id="mcModelType" class="feature-select">
-                        <option value="block">🧱 Full Block</option>
-                        <option value="item">🗡️ Item</option>
-                        <option value="crop">🌾 Crop</option>
-                        <option value="slab">📐 Slab</option>
-                        <option value="stairs">🪜 Stairs</option>
-                        <option value="fence">🏗️ Fence</option>
-                        <option value="wall">🧱 Wall</option>
-                        <option value="cross">✖️ Cross (Flowers)</option>
-                        <option value="pane">🪟 Pane (Glass)</option>
-                    </select>
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Block/Item Name</label>
-                    <input type="text" id="mcModelName" class="feature-input" placeholder="e.g., ruby_ore">
-                </div>
-                <div class="feature-section">
-                    <label class="feature-label">Mod ID</label>
-                    <input type="text" id="mcModId" class="feature-input" placeholder="e.g., mymod (default: modid)" value="modid">
-                </div>
-                <button class="feature-generate-btn mc-btn" id="mcModelGenBtn" onclick="window.generateMinecraftModel && window.generateMinecraftModel();">
-                    🧱 Generate Model Package
-                </button>
-                <div class="feature-status" id="mcModelStatus" style="display:none;"></div>
-
-                <!-- Minecraft 3D Block Preview -->
-                <div class="mc-3d-preview" id="mc3DPreview" style="display:none;">
-                    <div class="viewer3d-header mc-viewer-header">
-                        <span class="viewer3d-title">🧱 Block Preview</span>
-                        <div class="viewer3d-controls">
-                            <button class="viewer3d-ctrl-btn" onclick="window.mcResetCamera && window.mcResetCamera()" title="Reset">🔄</button>
-                            <button class="viewer3d-ctrl-btn" onclick="window.mcToggleAutoRotate && window.mcToggleAutoRotate()" title="Auto-rotate">🔁</button>
-                        </div>
-                    </div>
-                    <div class="viewer3d-canvas-wrap mc-canvas-wrap" id="mcCanvasWrap">
-                        <canvas id="mcPreviewCanvas"></canvas>
-                    </div>
-                    <div class="viewer3d-info">
-                        <span>Drag to rotate · Scroll to zoom</span>
-                    </div>
-                </div>
-            </div>
-
-            <!-- Gallery Tab -->
-            <div class="mc-tab-content" id="mcGalleryTab" style="display:none;">
-                <div class="mc-gallery-grid" id="mcGalleryGrid">
-                    <p class="mc-empty">No Minecraft assets generated yet. Create some textures!</p>
-                </div>
-            </div>
-
-            <!-- Install Status -->
-            <div class="mc-install-status" id="mcInstallStatus"></div>
-        </div>
-    </div>
+    
 
     <div class="feature-panel cs-panel" id="codespacesPanel" style="transform: translateX(100%); visibility: hidden;">
         <div class="feature-panel-header cs-header">
@@ -998,25 +728,7 @@
         <div class="feature-status" id="codespacesStatus" style="display:none; margin:8px"></div>
     </div>
 
-    <div class="feature-panel" id="printingPanel" style="transform: translateX(100%); visibility: hidden;">
-        <div class="feature-panel-header">
-            <h2>🖨️ 3D Printing</h2>
-            <button class="feature-panel-close" onclick="window.togglePrintingPanel && window.togglePrintingPanel();">×</button>
-        </div>
-        <div class="feature-panel-body">
-            <div class="feature-section">
-                <label class="feature-label">Configured Printers</label>
-                <select id="printingPrinterSelect" class="feature-select"></select>
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">Model Path (.stl/.3mf)</label>
-                <input type="text" id="printingModelPath" class="feature-input" placeholder="outputs/models/part.stl">
-            </div>
-            <button class="feature-generate-btn" onclick="window.sliceAndSendPrint && window.sliceAndSendPrint();">🧩 Slice + Send</button>
-            <button class="feature-generate-btn" style="margin-top:8px;" onclick="window.refreshPrintersList && window.refreshPrintersList();">🔄 Refresh Printers</button>
-            <div class="feature-status" id="printingStatus" style="display:none;"></div>
-        </div>
-    </div>
+    
 
     <!-- API Connectors Panel -->
     <div class="feature-panel" id="connectorsPanel" style="transform: translateX(100%); visibility: hidden;">

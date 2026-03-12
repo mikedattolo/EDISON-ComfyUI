@@ -123,16 +123,16 @@ class BrowserSessionManager:
                 raise BrowserSessionError(f"Redirected to disallowed host '{hostname}'", status_code=403)
 
     @staticmethod
-    def _extract_readable_text(html: str, max_chars: int = 5000) -> str:
+    def _extract_readable_text(html: str, max_chars: int = 12000) -> str:
         if not html:
             return ""
 
         try:
             soup = BeautifulSoup(html, "html.parser")
-            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
+            for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe", "nav", "footer", "header"]):
                 tag.decompose()
             # Prefer main-content containers when present.
-            candidate = soup.select_one("main, article, [role='main']")
+            candidate = soup.select_one("main, article, [role='main'], .content, #content")
             text = (candidate.get_text("\n", strip=True) if candidate else soup.get_text("\n", strip=True)) or ""
         except Exception:
             text = re.sub(r"<[^>]+>", " ", html)

@@ -129,6 +129,80 @@ function removeFile(index) {
     updateAttachedFilesUI();
 }
 
+// ── Drag & Drop file support ────────────────────────────────────────────────
+function initDragAndDrop() {
+    const messagesContainer = document.getElementById('messagesContainer');
+    const chatArea = document.querySelector('.chat-area') || messagesContainer?.parentElement;
+    if (!chatArea) return;
+
+    let dragCounter = 0;
+
+    chatArea.addEventListener('dragenter', (e) => {
+        e.preventDefault();
+        dragCounter++;
+        chatArea.classList.add('drag-over');
+    });
+    chatArea.addEventListener('dragleave', (e) => {
+        e.preventDefault();
+        dragCounter--;
+        if (dragCounter <= 0) {
+            dragCounter = 0;
+            chatArea.classList.remove('drag-over');
+        }
+    });
+    chatArea.addEventListener('dragover', (e) => { e.preventDefault(); });
+    chatArea.addEventListener('drop', async (e) => {
+        e.preventDefault();
+        dragCounter = 0;
+        chatArea.classList.remove('drag-over');
+        
+        const files = Array.from(e.dataTransfer.files);
+        if (files.length === 0) return;
+
+        for (const file of files) {
+            if (file.size > 10 * 1024 * 1024) {
+                alert(`File too large: ${file.name} (max 10MB)`);
+                continue;
+            }
+            const fileData = await readFileContent(file);
+            window.uploadedFiles.push({
+                name: file.name,
+                type: file.type,
+                content: fileData,
+                isImage: file.type.startsWith('image/'),
+                isPdf: file.type === 'application/pdf'
+            });
+        }
+        updateAttachedFilesUI();
+    });
+}
+
+// ── Paste image from clipboard ──────────────────────────────────────────────
+function initClipboardPaste() {
+    const messageInput = document.getElementById('messageInput');
+    if (!messageInput) return;
+    
+    messageInput.addEventListener('paste', async (e) => {
+        const items = Array.from(e.clipboardData?.items || []);
+        for (const item of items) {
+            if (item.type.startsWith('image/')) {
+                e.preventDefault();
+                const file = item.getAsFile();
+                if (!file) continue;
+                const fileData = await readFileContent(file);
+                window.uploadedFiles.push({
+                    name: `pasted-image-${Date.now()}.png`,
+                    type: file.type,
+                    content: fileData,
+                    isImage: true,
+                    isPdf: false
+                });
+                updateAttachedFilesUI();
+            }
+        }
+    });
+}
+
 // Hardware Monitoring
 let hardwareInterval = null;
 
@@ -613,6 +687,12 @@ function initAllFeatures() {
     
     initFileUpload();
     console.log('  ✓ File upload ready');
+    
+    initDragAndDrop();
+    console.log('  ✓ Drag & drop ready');
+    
+    initClipboardPaste();
+    console.log('  ✓ Clipboard paste ready');
     
     initHardwareMonitor();
     console.log('  ✓ Hardware monitor ready');

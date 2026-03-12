@@ -35,17 +35,94 @@ class EdisonApp {
         this.loadUsers();  // Populate user dropdowns on startup
         this.handleViewportChange();
         window.addEventListener('resize', () => this.handleViewportChange());
+        // Re-sync chats when tab regains focus (cross-browser sync)
+        document.addEventListener('visibilitychange', () => {
+            if (!document.hidden) {
+                if (this._needsUserBootstrap) {
+                    this._checkAndRestoreNamedUser();
+                } else {
+                    this.syncChatsFromServer();
+                }
+            }
+        });
+        // Periodic sync every 45 seconds
+        this._syncInterval = setInterval(() => {
+            if (!document.hidden && !this.isStreaming) {
+                if (this._needsUserBootstrap) {
+                    this._checkAndRestoreNamedUser();
+                } else {
+                    this.syncChatsFromServer();
+                }
+            }
+        }, 45000);
+        // On startup, check if we should resume a known named user
+        this._checkAndRestoreNamedUser();
     }
 
     getOrCreateUserId() {
         // Use a persistent user ID stored in localStorage for cross-network access
         let userId = localStorage.getItem('edison_user_id');
         if (!userId) {
+            this._needsUserBootstrap = true;
             // Generate a simple ID based on timestamp and random string
             userId = 'user_' + Date.now().toString(36) + '_' + Math.random().toString(36).substr(2, 9);
             localStorage.setItem('edison_user_id', userId);
+        } else {
+            this._needsUserBootstrap = false;
         }
         return userId;
+    }
+
+    async _checkAndRestoreNamedUser() {
+        // If we already confirmed this browser identity and don't need bootstrap, skip this check
+        if (!this._needsUserBootstrap && localStorage.getItem('edison_user_id_confirmed')) return;
+
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/users`);
+            if (!response.ok) return;
+            const data = await response.json();
+            const users = (data.users || []).filter(u => {
+                const name = u.name || '';
+                // Only show users with custom (non-auto-generated) names
+                return !(/^User-[a-f0-9\-]{4,}$/.test(name) || /^User-user_/.test(name));
+            });
+
+            if (users.length === 0) {
+                // No named users yet — confirm current auto-generated one is fine
+                this._needsUserBootstrap = false;
+                localStorage.setItem('edison_user_id_confirmed', '1');
+                await this.syncChatsFromServer();
+                return;
+            }
+
+            // Check if current userId is already one of the named users
+            const alreadyNamed = users.find(u => u.id === this.userId);
+            if (alreadyNamed) {
+                this._needsUserBootstrap = false;
+                localStorage.setItem('edison_user_id_confirmed', '1');
+                await this.syncChatsFromServer();
+                return;
+            }
+
+            // We have named users but current session is auto-generated — offer a quick restore
+            const suggested = users[0];
+            const options = users.map(u => `- ${u.name}`).join('\n');
+            const choice = window.confirm(
+                `Welcome back! Found existing users:\n${options}\n\nClick OK to switch to "${suggested.name}" now, or Cancel to stay on a new user.`
+            );
+            if (choice) {
+                this.setActiveUser(suggested.id, true);
+                await this.syncChatsFromServer();
+                this.loadCurrentChat();
+            } else {
+                await this.syncChatsFromServer();
+            }
+            this._needsUserBootstrap = false;
+            // In either case, mark as confirmed so this doesn't prompt again
+            localStorage.setItem('edison_user_id_confirmed', '1');
+        } catch (e) {
+            // Server not available yet, skip
+        }
     }
 
     getChatsStorageKey(userId = null) {
@@ -493,10 +570,6 @@ class EdisonApp {
                 if (response.image_generation && response.image_generation.prompt) {
                     console.log('🎨 Backend triggered image generation via Coral');
                     await this.handleImageGeneration(response.image_generation.prompt, assistantMessageEl);
-                } else if (response.video_generation && response.video_generation.prompt) {
-                    console.log('🎬 Backend triggered video generation via Coral');
-                    this.updateMessage(assistantMessageEl, response.response || '🎬 Generating video...', 'video');
-                    await this.handleVideoGeneration(response.video_generation.prompt, assistantMessageEl);
                 } else if (response.music_generation && response.music_generation.prompt) {
                     console.log('🎵 Backend triggered music generation via Coral');
                     this.updateMessage(assistantMessageEl, response.response || '🎵 Generating music...', 'music');
@@ -812,14 +885,6 @@ class EdisonApp {
                                 streamCompleted = true;
                                 this.currentRequestId = null;  // Clear request ID
                                 if (data.ok) {
-                                    // Handle video generation trigger from backend
-                                    if (data.video_generation && data.video_generation.prompt) {
-                                        console.log('🎬 Backend triggered video generation');
-                                        this.updateMessage(assistantMessageEl, data.response || '🎬 Generating video...', data.mode_used || 'video');
-                                        this.saveMessageToChat(message, data.response || '🎬 Generating video...', 'video');
-                                        await this.handleVideoGeneration(data.video_generation.prompt, assistantMessageEl);
-                                        return;
-                                    }
                                     // Handle music generation trigger from backend
                                     if (data.music_generation && data.music_generation.prompt) {
                                         console.log('🎵 Backend triggered music generation');
@@ -1755,71 +1820,6 @@ class EdisonApp {
         return prompt;
     }
 
-    async handleVideoGeneration(prompt, assistantMessageEl) {
-        try {
-            this.updateMessage(assistantMessageEl, '🎬 Generating video, please wait... This may take a few minutes.', 'video');
-
-            const response = await fetch(`${this.settings.apiEndpoint}/generate-video`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ prompt, width: 720, height: 480, duration: 6 })
-            });
-
-            if (!response.ok) {
-                const err = await response.json().catch(() => ({}));
-                throw new Error(err.detail || `Video generation failed: ${response.statusText}`);
-            }
-
-            const result = await response.json();
-            const promptId = result.prompt_id;
-
-            if (!promptId) {
-                throw new Error('No prompt_id returned from video generation');
-            }
-
-            // Poll for completion
-            let attempts = 0;
-            const maxAttempts = 300; // 5 minutes
-            while (attempts < maxAttempts) {
-                await new Promise(r => setTimeout(r, 2000));
-                const statusResp = await fetch(`${this.settings.apiEndpoint}/video-status/${promptId}`);
-                const status = await statusResp.json();
-                const st = (status.data && status.data.status) || status.status || 'generating';
-
-                if (st === 'complete' || st === 'complete_frames') {
-                    const videos = (status.data && status.data.videos) || [];
-                    if (videos.length > 0) {
-                        const videoUrl = `${this.settings.apiEndpoint}${videos[0].url || '/video/' + videos[0].filename}`;
-                        const html = `
-                            <p>✅ Video generated successfully!</p>
-                            <video controls autoplay muted style="max-width:100%; border-radius:8px; margin-top:10px;">
-                                <source src="${videoUrl}" type="video/mp4">
-                            </video>
-                            <p style="color:#888; margin-top:8px;"><strong>Prompt:</strong> ${prompt}</p>`;
-                        this.updateMessage(assistantMessageEl, html, 'video');
-                        this.saveMessageToChat(prompt, html, 'video');
-                    } else {
-                        this.updateMessage(assistantMessageEl, '✅ Video generation complete but no video file returned.', 'video');
-                    }
-                    return;
-                } else if (st === 'error') {
-                    throw new Error(status.data?.error || status.detail || 'Video generation failed');
-                }
-
-                // Update progress
-                const progressText = attempts < 10 ? 'Loading video model...' :
-                    attempts < 60 ? `Generating frames... (${attempts * 2}s)` :
-                    `Still generating... (${attempts * 2}s)`;
-                this.updateMessage(assistantMessageEl, `🎬 ${progressText}`, 'video');
-                attempts++;
-            }
-            throw new Error('Video generation timed out');
-        } catch (error) {
-            console.error('Video generation error:', error);
-            this.updateMessage(assistantMessageEl, `⚠️ Error generating video: ${error.message}`, 'error');
-        }
-    }
-
     async handleMusicGeneration(prompt, assistantMessageEl) {
         try {
             this.updateMessage(assistantMessageEl, '🎵 Generating music, please wait...', 'music');
@@ -2150,6 +2150,7 @@ class EdisonApp {
         if (confirm(`This will replace your current User ID and sync chats from the imported account. Continue?`)) {
             // Save the new user ID
             this.setActiveUser(newUserId, true);
+            localStorage.setItem('edison_user_id_confirmed', '1');
             
             // Update display
             if (this.userIdInput) {
@@ -2306,12 +2307,21 @@ class EdisonApp {
     }
 
     async cleanupUsers() {
-        if (!confirm('Remove all auto-generated users? This cannot be undone.')) return;
+        if (!confirm('Remove all auto-generated users (User-user_*)? This cannot be undone.')) return;
         try {
             const response = await fetch(`${this.settings.apiEndpoint}/users/cleanup`, {
-                method: 'POST'
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ keep_ids: [this.userId] })
             });
             if (!response.ok) throw new Error('Failed to cleanup users');
+            const data = await response.json();
+            const removed = data.removed ?? 0;
+            if (removed > 0) {
+                alert(`Removed ${removed} auto-generated user(s).`);
+            } else {
+                alert('No auto-generated users found to remove.');
+            }
             await this.loadUsers();
         } catch (error) {
             alert(error.message);
@@ -2320,6 +2330,7 @@ class EdisonApp {
 
     setActiveUser(userId, resetChats) {
         this.userId = userId;
+        localStorage.setItem('edison_user_id_confirmed', '1');
         localStorage.setItem('edison_user_id', userId);
         if (this.userIdInput) this.userIdInput.value = userId;
         if (resetChats) {
@@ -2473,7 +2484,7 @@ class EdisonApp {
         const localChats = saved ? JSON.parse(saved) : [];
         
         // Then sync with server in background
-        if (sync) {
+        if (sync && !this._needsUserBootstrap) {
             this.syncChatsFromServer();
         }
         
