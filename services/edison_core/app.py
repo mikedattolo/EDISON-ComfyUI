@@ -2468,8 +2468,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "generate_music(prompt:str,genre:str,mood:str,duration:int), "
         "codespace_exec(command:str,cwd:str,timeout:int), "
         "call_external_api(connector:str,path:str,method:str,body:str), "
-        "open_sandbox_browser(url:str) — open a URL in the sandbox browser with live screenshot (use this when asked to open/visit/browse/go to a website or URL), "
-        "browser.create_session(url:str,width:int,height:int), "
+        "open_sandbox_browser(url:str) — open a single page in the sandbox browser with live screenshot, "
+        "browser.create_session(url:str,width:int,height:int) — start a persistent browser session for multi-step website navigation, "
         "browser.observe(session_id:str), browser.get_text(session_id:str), browser.navigate(session_id:str,url:str), "
         "browser.click(session_id:str,x:int,y:int,button:str,click_count:int), "
         "browser.find_element(session_id:str,selector:str), browser.click_by_text(session_id:str,text:str), browser.fill_form(session_id:str,fields:object), "
@@ -2477,7 +2477,8 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "browser.press(session_id:str,key:str), browser.scroll(session_id:str,delta_x:int,delta_y:int), "
         "write_file(path:str,content:str) — write text content to a file in outputs/, "
         "summarize_url(url:str) — fetch a URL and return its readable text content. "
-        "IMPORTANT: When the user asks to open, visit, browse, or go to a specific URL, ALWAYS use open_sandbox_browser. "
+        "IMPORTANT: When the user asks to navigate within a website, click through pages, open blog posts, or inspect multiple pages on the same site, use browser.create_session and the browser.* session tools. "
+        "Use open_sandbox_browser only for single-page inspection. "
         "When the user asks you to read or summarize a website without needing to see it, use summarize_url. "
         "Only use web_search when the user wants to SEARCH for information (no specific URL given)."
     )
@@ -2497,7 +2498,13 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
             user_message, re.IGNORECASE
         )
-    if _url_open_match:
+    if _url_open_match and _is_multi_step_browser_request(user_message):
+        browser_url = _url_open_match.group(1).strip()
+        if not browser_url.startswith("http"):
+            browser_url = f"https://{browser_url}"
+        logger.info(f"⚙️ Auto-routing to browser session workflow for URL: {browser_url}")
+        tool_events.extend(await _execute_browser_navigation_plan(user_message, browser_url))
+    elif _url_open_match:
         browser_url = _url_open_match.group(1).strip()
         if not browser_url.startswith("http"):
             browser_url = f"https://{browser_url}"
@@ -2599,9 +2606,20 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         )
         final_answer = await call_llm(prompt, is_tool_step=False)
 
+    browser_failure = _build_browser_failure_answer(tool_events)
+    if browser_failure and _looks_like_bad_browser_answer(final_answer):
+        final_answer = browser_failure
+
+    if _looks_like_bad_browser_answer(final_answer):
+        browser_fallback = _build_browser_fallback_answer(user_message, tool_events)
+        if browser_fallback:
+            logger.info("Using deterministic browser-summary fallback for low-quality tool-loop answer")
+            final_answer = browser_fallback
+
     if tool_events:
         sources = ", ".join([event["tool"] for event in tool_events])
-        final_answer = f"{final_answer}\n\nSources: {sources}"
+        if not final_answer.rstrip().endswith(f"Sources: {sources}"):
+            final_answer = f"{final_answer}\n\nSources: {sources}"
 
     emit_agent_step(title="Tool loop complete", status="done")
     return final_answer.strip(), tool_events
@@ -2811,6 +2829,295 @@ def _chunk_text(text: str, chunk_size: int = 12) -> list:
     if not text:
         return []
     return [text[i:i + chunk_size] for i in range(0, len(text), chunk_size)]
+
+
+def _looks_like_bad_browser_answer(answer: str) -> bool:
+    """Detect empty or URL-only browser answers that need deterministic fallback."""
+    text = (answer or "").strip()
+    if not text:
+        return True
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    content_lines = [line for line in lines if not line.lower().startswith("sources:")]
+    content = " ".join(content_lines).strip()
+    if not content:
+        return True
+
+    words = re.findall(r"[A-Za-z0-9]+", content)
+    if len(words) < 8:
+        return True
+
+    url_matches = re.findall(r"https?://\S+", content)
+    if url_matches and len(content) <= max(80, sum(len(url) for url in url_matches) + 12):
+        return True
+
+    return False
+
+
+def _build_browser_fallback_answer(user_message: str, tool_events: list) -> Optional[str]:
+    """Create a concise page summary from browser tool output when LLM synthesis fails."""
+    browser_event = None
+    for event in reversed(tool_events or []):
+        if event.get("tool") not in {
+            "open_sandbox_browser",
+            "browser.create_session",
+            "browser.navigate",
+            "browser.observe",
+            "browser.get_text",
+            "browser.click_by_text",
+            "browser.click",
+        }:
+            continue
+        result = event.get("result", {})
+        if isinstance(result, dict) and result.get("ok"):
+            browser_event = event
+            break
+
+    if not browser_event:
+        return None
+
+    data = browser_event.get("result", {}).get("data", {})
+    if not isinstance(data, dict):
+        return None
+
+    title = (data.get("title") or data.get("url") or "Website").strip()
+    url = (data.get("url") or "").strip()
+    readable_text = (data.get("readable_text") or "").strip()
+    if not readable_text:
+        return f"I opened {title} at {url}, but readable page text was not available."
+
+    normalized = re.sub(r"\s+", " ", readable_text)
+    sentences = re.split(r"(?<=[.!?])\s+", normalized)
+    bullets = []
+    seen = set()
+    title_lower = title.lower()
+    for sentence in sentences:
+        cleaned = sentence.strip(" -\n\t")
+        if len(cleaned) < 25:
+            continue
+        lowered = cleaned.lower()
+        if lowered in seen or lowered == title_lower:
+            continue
+        seen.add(lowered)
+        bullets.append(cleaned)
+        if len(bullets) == 3:
+            break
+
+    if not bullets:
+        chunks = [part.strip() for part in re.split(r"[\n.;]", readable_text) if len(part.strip()) >= 20]
+        bullets = chunks[:3]
+
+    if not bullets:
+        bullets = [readable_text[:220].strip()]
+
+    intro = f"I opened {title}"
+    if url:
+        intro += f" at {url}"
+    intro += ". Main points:"
+    bullet_lines = "\n".join(f"- {bullet}" for bullet in bullets)
+    return f"{intro}\n{bullet_lines}"
+
+
+def _build_browser_failure_answer(tool_events: list) -> Optional[str]:
+    """Return an explicit browser failure instead of allowing made-up navigation text."""
+    browser_tools = {
+        "open_sandbox_browser",
+        "browser.create_session",
+        "browser.navigate",
+        "browser.observe",
+        "browser.get_text",
+        "browser.find_element",
+        "browser.click_by_text",
+        "browser.click",
+    }
+    failures = []
+    successes = 0
+    for event in tool_events or []:
+        if event.get("tool") not in browser_tools:
+            continue
+        result = event.get("result", {})
+        if isinstance(result, dict) and result.get("ok"):
+            successes += 1
+        elif isinstance(result, dict):
+            failures.append((event.get("tool"), result.get("error", "unknown browser error")))
+
+    if successes == 0 and failures:
+        tool_name, error = failures[-1]
+        return f"I couldn't access or navigate the website because {tool_name} failed: {error}."
+    return None
+
+
+def _extract_navigation_labels(user_message: str) -> list[str]:
+    """Extract likely navigation targets from the user's request."""
+    labels = []
+    msg_lower = (user_message or "").lower()
+
+    matches = re.findall(
+        r"(?:navigate to|go to|open|click on|visit)\s+(?:the\s+)?([a-z0-9][a-z0-9\s&\-/]{1,40})",
+        msg_lower,
+    )
+    for match in matches:
+        cleaned = re.sub(r"\s+(?:and|then|to|for|from)\b.*$", "", match).strip(" .,!?:;-/")
+        if cleaned and not cleaned.startswith("http"):
+            labels.append(cleaned)
+
+    keyword_map = {
+        "blog": ["Blog", "Blogs", "Blog Posts", "Posts", "Articles", "News"],
+        "blog post": ["Blog", "Blog Posts", "Posts", "Articles"],
+        "blog posts": ["Blog", "Blog Posts", "Posts", "Articles"],
+        "posts": ["Posts", "Blog Posts", "Articles"],
+        "article": ["Articles", "Article", "Blog", "Posts"],
+        "articles": ["Articles", "Blog", "Posts"],
+        "news": ["News", "Articles", "Blog"],
+        "about": ["About", "About Us"],
+        "contact": ["Contact", "Contact Us"],
+        "shop": ["Shop", "Store"],
+    }
+    for keyword, variants in keyword_map.items():
+        if keyword in msg_lower:
+            labels.extend(variants)
+
+    deduped = []
+    seen = set()
+    for label in labels:
+        normalized = re.sub(r"\s+", " ", label).strip(" .,!?:;-/")
+        if not normalized:
+            continue
+        titled = " ".join(part.capitalize() for part in normalized.split())
+        key = titled.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(titled)
+    return deduped[:8]
+
+
+def _is_multi_step_browser_request(user_message: str) -> bool:
+    """Detect requests that require navigating within a site, not just opening one page."""
+    msg_lower = (user_message or "").lower()
+    navigation_cues = [
+        "navigate to",
+        "go to the",
+        "click",
+        "open a",
+        "open the",
+        "blog post",
+        "blog posts",
+        "article",
+        "articles",
+        "menu",
+        "then",
+    ]
+    has_url = bool(re.search(r"https?://\S+|(?:www\.)?[-a-zA-Z0-9]+\.[a-zA-Z]{2,}(?:/\S*)?", msg_lower))
+    return has_url and any(cue in msg_lower for cue in navigation_cues)
+
+
+async def _execute_browser_navigation_plan(user_message: str, browser_url: str) -> list[dict]:
+    """Run a best-effort multi-step browser workflow using persistent sessions."""
+    tool_events = []
+
+    def _record(tool_name: str, args: dict, result: dict):
+        tool_events.append({
+            "tool": tool_name,
+            "args": args,
+            "result": result,
+            "summary": _summarize_tool_result(tool_name, result),
+        })
+
+    try:
+        manager = _get_browser_session_manager()
+    except Exception as e:
+        _record("browser.create_session", {"url": browser_url}, {"ok": False, "error": str(e)})
+        return tool_events
+
+    try:
+        session_data = await asyncio.to_thread(manager.create_session, browser_url, 1280, 800)
+        session_id = session_data.get("session_id")
+        _record(
+            "browser.create_session",
+            {"url": browser_url, "width": 1280, "height": 800},
+            {"ok": True, "data": session_data},
+        )
+    except Exception as e:
+        _record(
+            "browser.create_session",
+            {"url": browser_url, "width": 1280, "height": 800},
+            {"ok": False, "error": str(e)},
+        )
+        return tool_events
+
+    labels = _extract_navigation_labels(user_message)
+    for label in labels:
+        try:
+            click_data = await asyncio.to_thread(manager.click_by_text, session_id, label)
+            _record(
+                "browser.click_by_text",
+                {"session_id": session_id, "text": label},
+                {"ok": True, "data": click_data},
+            )
+            break
+        except Exception as e:
+            _record(
+                "browser.click_by_text",
+                {"session_id": session_id, "text": label},
+                {"ok": False, "error": str(e)},
+            )
+
+    wants_post = any(term in (user_message or "").lower() for term in ["blog post", "blog posts", "open a post", "open a blog", "article", "articles"])
+    if wants_post:
+        post_selectors = [
+            "article a",
+            "main article a",
+            "h1 a",
+            "h2 a",
+            "h3 a",
+            ".post a",
+            ".entry-title a",
+            ".blog a",
+            "main a",
+        ]
+        excluded = {label.lower() for label in labels}
+        excluded.update({"home", "blog", "posts", "articles", "news", "about", "contact"})
+        for selector in post_selectors:
+            try:
+                found_data = await asyncio.to_thread(manager.find_element, session_id, selector)
+                _record(
+                    "browser.find_element",
+                    {"session_id": session_id, "selector": selector},
+                    {"ok": True, "data": found_data},
+                )
+                text = (found_data.get("text") or "").strip()
+                if not found_data.get("found") or not text or text.lower() in excluded or len(text) < 6:
+                    continue
+                click_data = await asyncio.to_thread(manager.click_by_text, session_id, text)
+                _record(
+                    "browser.click_by_text",
+                    {"session_id": session_id, "text": text},
+                    {"ok": True, "data": click_data},
+                )
+                break
+            except Exception as e:
+                _record(
+                    "browser.find_element",
+                    {"session_id": session_id, "selector": selector},
+                    {"ok": False, "error": str(e)},
+                )
+
+    try:
+        text_data = await asyncio.to_thread(manager.get_text, session_id)
+        _record(
+            "browser.get_text",
+            {"session_id": session_id},
+            {"ok": True, "data": text_data},
+        )
+    except Exception as e:
+        _record(
+            "browser.get_text",
+            {"session_id": session_id},
+            {"ok": False, "error": str(e)},
+        )
+
+    return tool_events
 
 def check_gpu_availability():
     """Verify GPU availability before loading models"""
@@ -3255,6 +3562,14 @@ async def lifespan(app: FastAPI):
         _get_browser_session_manager()
     except Exception as e:
         logger.warning(f"⚠ Browser session manager unavailable at startup: {e}")
+
+    def _prewarm_playwright():
+        try:
+            _pw_ensure_thread()
+        except Exception as exc:
+            logger.warning(f"⚠ Playwright prewarm failed: {exc}")
+
+    threading.Thread(target=_prewarm_playwright, daemon=True, name="playwright-prewarm").start()
 
     async def _browser_cleanup_loop():
         while True:
