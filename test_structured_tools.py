@@ -16,6 +16,8 @@ from services.edison_core.app import (
     TOOL_REGISTRY,
     _validate_and_normalize_tool_call,
     _summarize_tool_result,
+    _extract_site_lookup_url,
+    _build_browser_fallback_answer,
 )
 
 def test_tool_registry_structure():
@@ -295,6 +297,35 @@ def test_json_parsing_robustness():
     print("✓ Float rejected for int field")
 
 
+def test_site_lookup_blocked_page_handling():
+    """Domain-specific site lookups should extract a URL and fail cleanly on challenge pages."""
+    print("\n=== Test: Site Lookup Blocked Page Handling ===")
+
+    extracted = _extract_site_lookup_url("tell me the latest article on inkandcrayons.com")
+    assert extracted == "https://inkandcrayons.com"
+    print("✓ Site lookup URL extracted")
+
+    fallback = _build_browser_fallback_answer(
+        "tell me the latest article on inkandcrayons.com",
+        [{
+            "tool": "summarize_url",
+            "args": {"url": "https://inkandcrayons.com"},
+            "result": {
+                "ok": True,
+                "data": {
+                    "url": "https://inkandcrayons.com",
+                    "title": "Just a moment...",
+                    "readable_text": "Enable JavaScript and cookies to continue. Cloudflare challenge page.",
+                },
+            },
+            "summary": "URL content from Just a moment...",
+        }],
+    )
+    assert fallback is not None
+    assert "anti-bot" in fallback or "challenge" in fallback
+    print("✓ Blocked page converted into explicit failure message")
+
+
 def test_tool_registry_completeness():
     """Test that all tools meet spec requirements."""
     print("\n=== Test: Tool Registry Spec Compliance ===")
@@ -341,6 +372,7 @@ if __name__ == "__main__":
         test_json_validation_invalid_calls()
         test_tool_result_summarization()
         test_json_parsing_robustness()
+        test_site_lookup_blocked_page_handling()
         test_tool_registry_completeness()
         
         print("\n" + "="*50)

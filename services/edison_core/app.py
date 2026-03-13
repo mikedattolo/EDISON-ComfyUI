@@ -2498,6 +2498,28 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
             r'([a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)',
             user_message, re.IGNORECASE
         )
+    site_lookup_url = _extract_site_lookup_url(user_message)
+    if site_lookup_url:
+        logger.info(f"⚙️ Auto-routing site content lookup to summarize_url for URL: {site_lookup_url}")
+        try:
+            tool_result = await asyncio.wait_for(
+                _execute_tool("summarize_url", {"url": site_lookup_url}, chat_id),
+                timeout=TOOL_CALL_TIMEOUT_SEC
+            )
+            summary = _summarize_tool_result("summarize_url", tool_result)
+            tool_events.append({
+                "tool": "summarize_url",
+                "args": {"url": site_lookup_url},
+                "result": tool_result,
+                "summary": summary
+            })
+            emit_agent_step(
+                title=f"Tool: summarize_url(url={site_lookup_url!r})",
+                status="done" if tool_result.get("ok") else "error",
+            )
+        except Exception as e:
+            logger.error(f"Auto summarize_url tool failed: {e}")
+
     if _url_open_match and _is_multi_step_browser_request(user_message):
         browser_url = _url_open_match.group(1).strip()
         if not browser_url.startswith("http"):
@@ -2849,6 +2871,8 @@ def _looks_like_bad_browser_answer(answer: str) -> bool:
         "tool 3 [",
         "try running this command in a terminal",
         "returned no data or error code",
+        "enable javascript and cookies to continue",
+        "just a moment",
     ]
     if any(pattern in lowered for pattern in obvious_bad_patterns):
         return True
@@ -2880,6 +2904,7 @@ def _build_browser_fallback_answer(user_message: str, tool_events: list) -> Opti
         "browser.get_text",
         "browser.click_by_text",
         "browser.click",
+        "summarize_url",
     }
 
     candidates = []
@@ -2907,8 +2932,24 @@ def _build_browser_fallback_answer(user_message: str, tool_events: list) -> Opti
     title = (data.get("title") or data.get("url") or "Website").strip()
     url = (data.get("url") or "").strip()
     readable_text = (data.get("readable_text") or "").strip()
+    if _is_browser_block_page(title, readable_text, url):
+        site_label = url or title or "that website"
+        return (
+            f"I couldn't retrieve the latest content from {site_label} because the site is protected by "
+            f"an anti-bot or JavaScript challenge page."
+        )
     if not readable_text:
         return f"I opened {title} at {url}, but readable page text was not available."
+
+    latest_article = _extract_latest_article_from_text(user_message, readable_text)
+    if latest_article:
+        site_label = title or url or "the site"
+        answer = f"The latest article I found on {site_label} is \"{latest_article['title']}\"."
+        if latest_article.get("author"):
+            answer += f" It is credited to {latest_article['author']}."
+        if latest_article.get("excerpt"):
+            answer += f" Summary: {latest_article['excerpt']}"
+        return answer
 
     normalized = re.sub(r"\s+", " ", readable_text)
     sentences = re.split(r"(?<=[.!?])\s+", normalized)
@@ -2973,19 +3014,109 @@ def _build_browser_failure_answer(tool_events: list) -> Optional[str]:
 
 def _should_force_browser_fallback(user_message: str, tool_events: list, answer: str) -> bool:
     """Force deterministic summaries for browser-session workflows where synthesis often degrades."""
-    session_tools = {"browser.create_session", "browser.get_text", "browser.click_by_text", "browser.find_element"}
-    used_session_tools = any((event.get("tool") in session_tools) for event in (tool_events or []))
-    if not used_session_tools:
+    browser_tools = {
+        "browser.create_session",
+        "browser.get_text",
+        "browser.click_by_text",
+        "browser.find_element",
+        "open_sandbox_browser",
+        "summarize_url",
+    }
+    used_browser_tools = any((event.get("tool") in browser_tools) for event in (tool_events or []))
+    if not used_browser_tools:
         return False
 
-    # Any browser-session request that asks for summary-like output should prefer grounded fallback.
     msg_lower = (user_message or "").lower()
-    summary_cues = ["summarize", "summary", "main points", "bullets", "what you find", "what did you find"]
+    summary_cues = [
+        "summarize",
+        "summary",
+        "main points",
+        "bullets",
+        "what you find",
+        "what did you find",
+        "latest article",
+        "latest post",
+        "latest blog",
+        "latest news",
+    ]
     if any(cue in msg_lower for cue in summary_cues):
         return True
 
     # Also force fallback when output shape clearly looks synthetic/noisy.
     return _looks_like_bad_browser_answer(answer)
+
+
+def _is_browser_block_page(title: str, readable_text: str, url: str = "") -> bool:
+    """Detect anti-bot or interstitial pages that should never be treated as site content."""
+    blob = " ".join(part for part in [title or "", readable_text or "", url or ""] if part).lower()
+    block_markers = [
+        "just a moment",
+        "enable javascript and cookies to continue",
+        "cf_chl",
+        "cloudflare",
+        "attention required",
+        "cf-mitigated",
+        "challenge-platform",
+    ]
+    return any(marker in blob for marker in block_markers)
+
+
+def _extract_site_lookup_url(user_message: str) -> Optional[str]:
+    """Extract a site URL for requests like 'latest article on example.com'."""
+    msg = (user_message or "").strip()
+    msg_lower = msg.lower()
+    site_lookup_cues = [
+        "latest article",
+        "latest post",
+        "latest blog",
+        "latest news",
+        "newest article",
+        "newest post",
+        "recent article",
+        "recent post",
+        "blog post",
+        "article on",
+        "post on",
+    ]
+    if not any(cue in msg_lower for cue in site_lookup_cues):
+        return None
+
+    match = re.search(r"(https?://\S+|(?:www\.)?[a-zA-Z0-9][-a-zA-Z0-9]*\.[a-zA-Z]{2,}(?:/\S*)?)", msg)
+    if not match:
+        return None
+
+    site_url = match.group(1).strip().rstrip(").,!?:;")
+    if not site_url.startswith("http"):
+        site_url = f"https://{site_url}"
+    return site_url
+
+
+def _extract_latest_article_from_text(user_message: str, readable_text: str) -> Optional[dict]:
+    """Extract a latest-article summary from readable site text when the user asked for one."""
+    msg_lower = (user_message or "").lower()
+    if not any(cue in msg_lower for cue in ["latest article", "latest post", "newest article", "recent article"]):
+        return None
+
+    normalized = re.sub(r"\s+", " ", readable_text or "").strip()
+    patterns = [
+        r"Latest from the Blog\s+(?P<title>.+?)\s+BY\s+(?P<author>[A-Za-z0-9_ .-]+?)\s+(?P<excerpt>.+?)\s+Read More(?: on the Blog)?",
+        r"Latest(?: from the Blog)?\s+(?P<title>.+?)\s+By\s+(?P<author>[A-Za-z0-9_ .-]+?)\s+(?P<excerpt>.+?)\s+Read More",
+    ]
+    for pattern in patterns:
+        match = re.search(pattern, normalized, re.IGNORECASE)
+        if not match:
+            continue
+        title = match.group("title").strip(" .:-")
+        author = match.groupdict().get("author", "").strip(" .:-")
+        excerpt = match.groupdict().get("excerpt", "").strip(" .:-")
+        excerpt = re.sub(r"\s+", " ", excerpt)
+        if title:
+            return {
+                "title": title,
+                "author": author,
+                "excerpt": excerpt[:320],
+            }
+    return None
 
 
 def _extract_navigation_labels(user_message: str) -> list[str]:
