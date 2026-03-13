@@ -2607,14 +2607,15 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         final_answer = await call_llm(prompt, is_tool_step=False)
 
     browser_failure = _build_browser_failure_answer(tool_events)
+    browser_fallback = _build_browser_fallback_answer(user_message, tool_events)
     if browser_failure and _looks_like_bad_browser_answer(final_answer):
         final_answer = browser_failure
-
-    if _looks_like_bad_browser_answer(final_answer):
-        browser_fallback = _build_browser_fallback_answer(user_message, tool_events)
-        if browser_fallback:
-            logger.info("Using deterministic browser-summary fallback for low-quality tool-loop answer")
-            final_answer = browser_fallback
+    elif _should_force_browser_fallback(user_message, tool_events, final_answer) and browser_fallback:
+        logger.info("Using deterministic browser-summary fallback for browser-session workflow")
+        final_answer = browser_fallback
+    elif _looks_like_bad_browser_answer(final_answer) and browser_fallback:
+        logger.info("Using deterministic browser-summary fallback for low-quality tool-loop answer")
+        final_answer = browser_fallback
 
     if tool_events:
         sources = ", ".join([event["tool"] for event in tool_events])
@@ -2837,6 +2838,21 @@ def _looks_like_bad_browser_answer(answer: str) -> bool:
     if not text:
         return True
 
+    lowered = text.lower()
+    obvious_bad_patterns = [
+        "provide json to call a tool",
+        "step 2 of",
+        "step 3 of",
+        "step 4 of",
+        "tool 1 [",
+        "tool 2 [",
+        "tool 3 [",
+        "try running this command in a terminal",
+        "returned no data or error code",
+    ]
+    if any(pattern in lowered for pattern in obvious_bad_patterns):
+        return True
+
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     content_lines = [line for line in lines if not line.lower().startswith("sources:")]
     content = " ".join(content_lines).strip()
@@ -2856,23 +2872,31 @@ def _looks_like_bad_browser_answer(answer: str) -> bool:
 
 def _build_browser_fallback_answer(user_message: str, tool_events: list) -> Optional[str]:
     """Create a concise page summary from browser tool output when LLM synthesis fails."""
-    browser_event = None
+    browser_tools = {
+        "open_sandbox_browser",
+        "browser.create_session",
+        "browser.navigate",
+        "browser.observe",
+        "browser.get_text",
+        "browser.click_by_text",
+        "browser.click",
+    }
+
+    candidates = []
     for event in reversed(tool_events or []):
-        if event.get("tool") not in {
-            "open_sandbox_browser",
-            "browser.create_session",
-            "browser.navigate",
-            "browser.observe",
-            "browser.get_text",
-            "browser.click_by_text",
-            "browser.click",
-        }:
+        if event.get("tool") not in browser_tools:
             continue
         result = event.get("result", {})
-        if isinstance(result, dict) and result.get("ok"):
-            browser_event = event
-            break
+        if not (isinstance(result, dict) and result.get("ok")):
+            continue
+        data = result.get("data", {})
+        if not isinstance(data, dict):
+            continue
+        readable_text = (data.get("readable_text") or "").strip()
+        if readable_text:
+            candidates.append(event)
 
+    browser_event = candidates[0] if candidates else None
     if not browser_event:
         return None
 
@@ -2945,6 +2969,23 @@ def _build_browser_failure_answer(tool_events: list) -> Optional[str]:
         tool_name, error = failures[-1]
         return f"I couldn't access or navigate the website because {tool_name} failed: {error}."
     return None
+
+
+def _should_force_browser_fallback(user_message: str, tool_events: list, answer: str) -> bool:
+    """Force deterministic summaries for browser-session workflows where synthesis often degrades."""
+    session_tools = {"browser.create_session", "browser.get_text", "browser.click_by_text", "browser.find_element"}
+    used_session_tools = any((event.get("tool") in session_tools) for event in (tool_events or []))
+    if not used_session_tools:
+        return False
+
+    # Any browser-session request that asks for summary-like output should prefer grounded fallback.
+    msg_lower = (user_message or "").lower()
+    summary_cues = ["summarize", "summary", "main points", "bullets", "what you find", "what did you find"]
+    if any(cue in msg_lower for cue in summary_cues):
+        return True
+
+    # Also force fallback when output shape clearly looks synthetic/noisy.
+    return _looks_like_bad_browser_answer(answer)
 
 
 def _extract_navigation_labels(user_message: str) -> list[str]:
