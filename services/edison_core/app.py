@@ -1037,6 +1037,29 @@ def _create_vision_chat_handler(clip_model_path: str, model_name: str = ""):
         raise
 
 
+def _is_vision_context_creation_error(error: Exception) -> bool:
+    """Detect llama.cpp context creation failures that should trigger a CPU fallback."""
+    err = str(error).lower()
+    return (
+        "out of memory" in err
+        or "cudamalloc" in err
+        or "alloc" in err
+        or "failed to create llama_context" in err
+        or "llama_context" in err
+    )
+
+
+def _get_available_vision_model(prefer_code: bool = False):
+    """Return the best currently loaded vision-capable model."""
+    if prefer_code and llm_vision_code is not None:
+        return llm_vision_code, "vision_code"
+    if llm_vision is not None:
+        return llm_vision, "vision"
+    if llm_vision_code is not None:
+        return llm_vision_code, "vision_code"
+    return None, None
+
+
 def _try_load_vision_on_demand() -> bool:
     """
     On-demand vision model loader.
@@ -1149,8 +1172,7 @@ def _try_load_vision_on_demand() -> bool:
             return True
         except Exception as e:
             llm_vision = None
-            err_str = str(e).lower()
-            if attempt == 0 and ("out of memory" in err_str or "cudamalloc" in err_str or "alloc" in err_str):
+            if attempt == 0 and gpu_layers > 0 and _is_vision_context_creation_error(e):
                 logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying with CPU-only: {e}")
                 _flush_gpu_memory()
                 time.sleep(0.5)
@@ -3005,8 +3027,7 @@ def load_llm_models():
                     break
                 except Exception as e:
                     llm_vision = None
-                    _err = str(e).lower()
-                    if _vattempt == 0 and ("out of memory" in _err or "cudamalloc" in _err or "alloc" in _err):
+                    if _vattempt == 0 and _vgpu_layers > 0 and _is_vision_context_creation_error(e):
                         logger.warning(f"⚠️ Vision GPU load failed (OOM), retrying CPU-only: {e}")
                         _flush_gpu_memory()
                         time.sleep(0.5)
@@ -3047,8 +3068,7 @@ def load_llm_models():
                     break
                 except Exception as e:
                     llm_vision_code = None
-                    _vcerr = str(e).lower()
-                    if _vcattempt == 0 and ("out of memory" in _vcerr or "cudamalloc" in _vcerr or "alloc" in _vcerr):
+                    if _vcattempt == 0 and _vcgpu_layers > 0 and _is_vision_context_creation_error(e):
                         logger.warning(f"⚠️ Vision-to-code GPU load failed (OOM), retrying CPU-only: {e}")
                         _flush_gpu_memory()
                         time.sleep(0.5)
@@ -3476,8 +3496,8 @@ async def health():
             "vision_model": llm_vision is not None,
             "vision_code_model": llm_vision_code is not None
         },
-        "vision_enabled": llm_vision is not None,
-        "vision_error": None if llm_vision is not None else vision_unavailable_reason,
+        "vision_enabled": (llm_vision is not None or llm_vision_code is not None),
+        "vision_error": None if (llm_vision is not None or llm_vision_code is not None) else vision_unavailable_reason,
         "qdrant_ready": rag_system is not None,
         "repo_root": str(REPO_ROOT)
     }
@@ -6073,7 +6093,9 @@ async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe thi
     """Analyze an image with the configured vision model and stream response via SSE."""
     global vision_enabled, vision_unavailable_reason
 
-    if not vision_enabled or llm_vision is None:
+    vision_model, model_name = _get_available_vision_model()
+
+    if vision_model is None:
         if not _try_load_vision_on_demand():
             message = vision_unavailable_reason or "Vision is currently unavailable"
             raise HTTPException(
@@ -6084,8 +6106,15 @@ async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe thi
                     "hint": "Verify vision_model and vision_clip files in config/edison.yaml and models/llm",
                 },
             )
+        vision_model, model_name = _get_available_vision_model()
 
-    ok_vram, vram_reason = _vision_vram_preflight("vision")
+    if vision_model is None:
+        raise HTTPException(
+            status_code=503,
+            detail={"success": False, "error": "No vision-capable model is currently loaded"},
+        )
+
+    ok_vram, vram_reason = _vision_vram_preflight(model_name or "vision")
     if not ok_vram:
         raise HTTPException(
             status_code=503,
@@ -6108,11 +6137,11 @@ async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe thi
 
     async def _sse():
         yield "event: start\ndata: {\"success\": true, \"mode\": \"vision\"}\n\n"
-        lock = get_lock_for_model(llm_vision)
+        lock = get_lock_for_model(vision_model)
         acc = ""
         try:
             with lock:
-                stream = llm_vision.create_chat_completion(
+                stream = vision_model.create_chat_completion(
                     messages=chat_messages,
                     max_tokens=700,
                     temperature=0.2,
