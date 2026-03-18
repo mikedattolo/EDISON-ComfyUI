@@ -237,7 +237,14 @@ class ImageEditor:
     def img2img(self, source_path: str, prompt: str,
                 denoise: float = 0.65, steps: int = 20,
                 source_id: Optional[str] = None,
-                comfyui_url: str = "http://127.0.0.1:8188") -> EditRecord:
+                comfyui_url: str = "http://127.0.0.1:8188",
+                seed: Optional[int] = None,
+                sampler_name: str = "dpmpp_2m",
+                scheduler: str = "karras",
+                cfg: float = 6.0,
+                negative_prompt: str = "",
+                ckpt_name: str = "sd_xl_base_1.0.safetensors",
+                allow_fallback: bool = False) -> EditRecord:
         """
         Send image to ComfyUI for img2img transformation.
         Falls back to a simple overlay if ComfyUI is unavailable.
@@ -246,7 +253,18 @@ class ImageEditor:
 
         edit_id = str(uuid.uuid4())
         out = self._output_path(edit_id)
-        params = {"prompt": prompt, "denoise": denoise, "steps": steps}
+        params = {
+            "prompt": prompt,
+            "denoise": denoise,
+            "steps": steps,
+            "seed": seed,
+            "sampler_name": sampler_name,
+            "scheduler": scheduler,
+            "cfg": cfg,
+            "negative_prompt": negative_prompt,
+            "ckpt_name": ckpt_name,
+            "allow_fallback": allow_fallback,
+        }
 
         try:
             # Upload image to ComfyUI
@@ -268,6 +286,12 @@ class ImageEditor:
                 prompt=prompt,
                 denoise=denoise,
                 steps=steps,
+                seed=seed,
+                sampler_name=sampler_name,
+                scheduler=scheduler,
+                cfg=cfg,
+                negative_prompt=negative_prompt,
+                ckpt_name=ckpt_name,
             )
 
             # Queue the workflow
@@ -308,21 +332,30 @@ class ImageEditor:
             raise RuntimeError("ComfyUI img2img timed out or produced no output")
 
         except Exception as e:
-            logger.warning(f"ComfyUI img2img failed, falling back to local edit: {e}")
-            # Fallback: just copy the source and note the failure
+            if not allow_fallback:
+                raise RuntimeError(f"ComfyUI img2img failed: {e}")
+
+            logger.warning(f"ComfyUI img2img failed, falling back to local copy: {e}")
+            # Fallback: copy source to preserve user data and return explicit provenance.
             import shutil
             shutil.copy2(source_path, out)
             return self._record(
                 source_path, "img2img_fallback", out, source_id,
                 prompt=prompt,
-                params={**params, "fallback_reason": str(e)},
+                params={**params, "fallback_reason": str(e), "degraded": True},
             )
 
     def _build_img2img_workflow(self, image_name: str, prompt: str,
-                                denoise: float, steps: int) -> dict:
+                                denoise: float, steps: int,
+                                seed: Optional[int] = None,
+                                sampler_name: str = "dpmpp_2m",
+                                scheduler: str = "karras",
+                                cfg: float = 6.0,
+                                negative_prompt: str = "",
+                                ckpt_name: str = "sd_xl_base_1.0.safetensors") -> dict:
         """Build a simple ComfyUI img2img workflow."""
         import random
-        seed = random.randint(0, 2**32 - 1)
+        use_seed = seed if isinstance(seed, int) and seed >= 0 else random.randint(0, 2**32 - 1)
         return {
             "1": {
                 "class_type": "LoadImage",
@@ -330,7 +363,7 @@ class ImageEditor:
             },
             "2": {
                 "class_type": "CheckpointLoaderSimple",
-                "inputs": {"ckpt_name": "sd_xl_base_1.0.safetensors"},
+                "inputs": {"ckpt_name": ckpt_name},
             },
             "3": {
                 "class_type": "CLIPTextEncode",
@@ -338,7 +371,7 @@ class ImageEditor:
             },
             "4": {
                 "class_type": "CLIPTextEncode",
-                "inputs": {"text": "", "clip": ["2", 1]},
+                "inputs": {"text": negative_prompt, "clip": ["2", 1]},
             },
             "5": {
                 "class_type": "VAEEncode",
@@ -347,11 +380,11 @@ class ImageEditor:
             "6": {
                 "class_type": "KSampler",
                 "inputs": {
-                    "seed": seed,
+                    "seed": use_seed,
                     "steps": steps,
-                    "cfg": 7.0,
-                    "sampler_name": "euler",
-                    "scheduler": "normal",
+                    "cfg": cfg,
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
                     "denoise": denoise,
                     "model": ["2", 0],
                     "positive": ["3", 0],
@@ -367,6 +400,182 @@ class ImageEditor:
                 "class_type": "SaveImage",
                 "inputs": {"filename_prefix": "edison_edit", "images": ["7", 0]},
             },
+        }
+
+    def inpaint(self, source_path: str, prompt: str,
+                mask_path: str,
+                denoise: float = 0.72,
+                steps: int = 26,
+                source_id: Optional[str] = None,
+                comfyui_url: str = "http://127.0.0.1:8188",
+                seed: Optional[int] = None,
+                sampler_name: str = "dpmpp_2m",
+                scheduler: str = "karras",
+                cfg: float = 6.0,
+                negative_prompt: str = "",
+                ckpt_name: str = "sd_xl_base_1.0.safetensors",
+                allow_fallback: bool = False) -> EditRecord:
+        """Inpaint a masked region. Requires a mask image path."""
+        import requests
+
+        if not Path(mask_path).exists():
+            raise FileNotFoundError(f"Mask not found: {mask_path}")
+
+        edit_id = str(uuid.uuid4())
+        out = self._output_path(edit_id)
+        params = {
+            "prompt": prompt,
+            "mask_path": mask_path,
+            "denoise": denoise,
+            "steps": steps,
+            "seed": seed,
+            "sampler_name": sampler_name,
+            "scheduler": scheduler,
+            "cfg": cfg,
+            "negative_prompt": negative_prompt,
+            "ckpt_name": ckpt_name,
+            "allow_fallback": allow_fallback,
+        }
+
+        try:
+            with open(source_path, "rb") as f:
+                src_upload = requests.post(
+                    f"{comfyui_url}/upload/image",
+                    files={"image": (Path(source_path).name, f, "image/png")},
+                    timeout=10,
+                )
+            if src_upload.status_code != 200:
+                raise RuntimeError(f"ComfyUI source upload failed: {src_upload.status_code}")
+
+            with open(mask_path, "rb") as f:
+                mask_upload = requests.post(
+                    f"{comfyui_url}/upload/image",
+                    files={"image": (Path(mask_path).name, f, "image/png")},
+                    timeout=10,
+                )
+            if mask_upload.status_code != 200:
+                raise RuntimeError(f"ComfyUI mask upload failed: {mask_upload.status_code}")
+
+            src_name = src_upload.json().get("name", Path(source_path).name)
+            mask_name = mask_upload.json().get("name", Path(mask_path).name)
+
+            workflow = self._build_inpaint_workflow(
+                image_name=src_name,
+                mask_name=mask_name,
+                prompt=prompt,
+                denoise=denoise,
+                steps=steps,
+                seed=seed,
+                sampler_name=sampler_name,
+                scheduler=scheduler,
+                cfg=cfg,
+                negative_prompt=negative_prompt,
+                ckpt_name=ckpt_name,
+            )
+
+            queue_resp = requests.post(
+                f"{comfyui_url}/prompt",
+                json={"prompt": workflow},
+                timeout=10,
+            )
+            if queue_resp.status_code != 200:
+                raise RuntimeError(f"ComfyUI queue failed: {queue_resp.status_code}")
+
+            prompt_id = queue_resp.json().get("prompt_id")
+
+            for _ in range(120):
+                time.sleep(1)
+                hist_resp = requests.get(f"{comfyui_url}/history/{prompt_id}", timeout=5)
+                if hist_resp.status_code != 200:
+                    continue
+                hist = hist_resp.json()
+                if prompt_id not in hist:
+                    continue
+                outputs = hist[prompt_id].get("outputs", {})
+                for _node_id, node_out in outputs.items():
+                    images = node_out.get("images", [])
+                    if not images:
+                        continue
+                    img_info = images[0]
+                    img_url = (
+                        f"{comfyui_url}/view?filename={img_info['filename']}"
+                        f"&subfolder={img_info.get('subfolder', '')}&type={img_info.get('type', 'output')}"
+                    )
+                    img_resp = requests.get(img_url, timeout=10)
+                    if img_resp.status_code == 200:
+                        with open(out, "wb") as f:
+                            f.write(img_resp.content)
+                        return self._record(
+                            source_path,
+                            "inpaint",
+                            out,
+                            source_id,
+                            prompt=prompt,
+                            params=params,
+                            model="comfyui",
+                        )
+
+            raise RuntimeError("ComfyUI inpaint timed out or produced no output")
+        except Exception as e:
+            if not allow_fallback:
+                raise RuntimeError(f"ComfyUI inpaint failed: {e}")
+
+            logger.warning(f"ComfyUI inpaint failed, falling back to img2img: {e}")
+            return self.img2img(
+                source_path=source_path,
+                prompt=prompt,
+                denoise=denoise,
+                steps=steps,
+                source_id=source_id,
+                comfyui_url=comfyui_url,
+                seed=seed,
+                sampler_name=sampler_name,
+                scheduler=scheduler,
+                cfg=cfg,
+                negative_prompt=negative_prompt,
+                ckpt_name=ckpt_name,
+                allow_fallback=True,
+            )
+
+    def _build_inpaint_workflow(self, image_name: str, mask_name: str, prompt: str,
+                                denoise: float, steps: int,
+                                seed: Optional[int] = None,
+                                sampler_name: str = "dpmpp_2m",
+                                scheduler: str = "karras",
+                                cfg: float = 6.0,
+                                negative_prompt: str = "",
+                                ckpt_name: str = "sd_xl_base_1.0.safetensors") -> dict:
+        """Build a ComfyUI inpaint workflow with image + mask."""
+        import random
+
+        use_seed = seed if isinstance(seed, int) and seed >= 0 else random.randint(0, 2**32 - 1)
+        return {
+            "1": {"class_type": "LoadImage", "inputs": {"image": image_name}},
+            "2": {"class_type": "LoadImage", "inputs": {"image": mask_name}},
+            "3": {"class_type": "CheckpointLoaderSimple", "inputs": {"ckpt_name": ckpt_name}},
+            "4": {"class_type": "CLIPTextEncode", "inputs": {"text": prompt, "clip": ["3", 1]}},
+            "5": {"class_type": "CLIPTextEncode", "inputs": {"text": negative_prompt, "clip": ["3", 1]}},
+            "6": {
+                "class_type": "VAEEncodeForInpaint",
+                "inputs": {"pixels": ["1", 0], "mask": ["2", 1], "vae": ["3", 2]},
+            },
+            "7": {
+                "class_type": "KSampler",
+                "inputs": {
+                    "seed": use_seed,
+                    "steps": steps,
+                    "cfg": cfg,
+                    "sampler_name": sampler_name,
+                    "scheduler": scheduler,
+                    "denoise": denoise,
+                    "model": ["3", 0],
+                    "positive": ["4", 0],
+                    "negative": ["5", 0],
+                    "latent_image": ["6", 0],
+                },
+            },
+            "8": {"class_type": "VAEDecode", "inputs": {"samples": ["7", 0], "vae": ["3", 2]}},
+            "9": {"class_type": "SaveImage", "inputs": {"filename_prefix": "edison_inpaint", "images": ["8", 0]}},
         }
 
     # ── History ──────────────────────────────────────────────────────

@@ -19,6 +19,7 @@ class EdisonApp {
         this.modelSelector = null;
         this.modelSelect = null;
         this.bestVlm = null;
+        this.supportedModes = new Set(['auto', 'instant', 'thinking', 'chat', 'reasoning', 'code', 'agent', 'swarm', 'work']);
 
         // Swarm collaboration state
         this.swarmSessionId = null;
@@ -399,13 +400,14 @@ class EdisonApp {
     }
 
     setMode(mode) {
-        this.currentMode = mode;
+        const safeMode = this.supportedModes.has(mode) ? mode : 'auto';
+        this.currentMode = safeMode;
         this.modeButtons.forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.mode === mode);
+            btn.classList.toggle('active', btn.dataset.mode === safeMode);
         });
 
         if (this.modelSelector) {
-            this.modelSelector.style.display = mode === 'auto' ? 'none' : 'flex';
+            this.modelSelector.style.display = safeMode === 'auto' ? 'none' : 'flex';
         }
     }
 
@@ -2103,7 +2105,8 @@ class EdisonApp {
         if (this.voiceEndpointInput) {
             this.voiceEndpointInput.value = this.settings.voiceEndpoint || '';
         }
-        this.defaultModeSelect.value = this.settings.defaultMode;
+        const safeDefaultMode = this.supportedModes.has(this.settings.defaultMode) ? this.settings.defaultMode : 'auto';
+        this.defaultModeSelect.value = safeDefaultMode;
         
         // Populate user ID field
         if (this.userIdInput) {

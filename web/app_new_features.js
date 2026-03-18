@@ -1754,9 +1754,10 @@ console.log('🧊 app_new_features.js v1 loading...');
     }
 
     // ========================================
-    // FEATURE 4: Codespaces + 3D Printing
+    // FEATURE 4: Branding + Deep Search + 3D Printing
     // ========================================
-    let codespacesPanelOpen = false;
+    let brandingPanelOpen = false;
+    let deepSearchPanelOpen = false;
     let printingPanelOpen = false;
 
     function setPanelOpen(panelId, open) {
@@ -1771,9 +1772,27 @@ console.log('🧊 app_new_features.js v1 loading...');
         }
     }
 
-    window.toggleCodespacesPanel = function() {
-        codespacesPanelOpen = !codespacesPanelOpen;
-        setPanelOpen('codespacesPanel', codespacesPanelOpen);
+    window.toggleBrandingPanel = function() {
+        brandingPanelOpen = !brandingPanelOpen;
+        setPanelOpen('brandingPanel', brandingPanelOpen);
+        if (brandingPanelOpen) {
+            window.brandingRefreshClients && window.brandingRefreshClients();
+        }
+    };
+
+    window.toggleDeepSearchPanel = function() {
+        deepSearchPanelOpen = !deepSearchPanelOpen;
+        setPanelOpen('deepSearchPanel', deepSearchPanelOpen);
+    };
+
+    window.openDeepSearchPanel = function() {
+        deepSearchPanelOpen = true;
+        setPanelOpen('deepSearchPanel', true);
+        const q = document.getElementById('messageInput')?.value?.trim();
+        const queryEl = document.getElementById('deepSearchQuery');
+        if (q && queryEl && !queryEl.value.trim()) {
+            queryEl.value = q;
+        }
     };
 
     window.togglePrintingPanel = function() {
@@ -1784,377 +1803,223 @@ console.log('🧊 app_new_features.js v1 loading...');
         }
     };
 
-    // ========================================
-    // FEATURE 4: Advanced Codespaces IDE
-    // ========================================
-    let csCurrentTab = 'terminal';
-    let csTerminalHistory = []; // [{cmd, cwd, out, err, code, ts}]
-    let csCurrentFilePath = null;
-    let csLastAiEditResult = null;
-    let csPendingCommands = {}; // used to re-run on Enter
-
-    window.csShowTab = function(tab) {
-        csCurrentTab = tab;
-        document.querySelectorAll('.cs-tab').forEach(b => {
-            b.classList.toggle('active', b.dataset.tab === tab);
-        });
-        document.querySelectorAll('.cs-tab-content').forEach(el => {
-            el.style.display = el.id === `cs-tab-${tab}` ? 'flex' : 'none';
-        });
-        if (tab === 'git') window.csGitRefresh();
+    window.brandingRefreshClients = async function() {
+        const select = document.getElementById('brandingClientSelect');
+        const statusEl = document.getElementById('brandingStatus');
+        if (!select) return;
+        try {
+            const res = await fetch(`${API}/branding/clients`);
+            const data = await res.json();
+            const clients = data.clients || [];
+            select.innerHTML = '';
+            if (!clients.length) {
+                const opt = document.createElement('option');
+                opt.value = '';
+                opt.textContent = 'No clients yet';
+                select.appendChild(opt);
+                hideStatus(statusEl);
+                return;
+            }
+            clients.forEach(c => {
+                const opt = document.createElement('option');
+                opt.value = c.id;
+                opt.textContent = `${c.name} (${c.slug})`;
+                select.appendChild(opt);
+            });
+            select.onchange = () => window.brandingLoadAssets && window.brandingLoadAssets(select.value);
+            window.brandingLoadAssets && window.brandingLoadAssets(select.value);
+            hideStatus(statusEl);
+        } catch (e) {
+            showStatus(statusEl, `❌ Failed to load clients: ${e.message}`, 'error');
+        }
     };
 
-    window.csClearTerminal = function() {
-        csTerminalHistory = [];
-        const el = document.getElementById('csTerminalHistory');
-        if (el) el.innerHTML = '';
+    window.brandingCreateClient = async function() {
+        const input = document.getElementById('brandingClientName');
+        const statusEl = document.getElementById('brandingStatus');
+        const name = (input?.value || '').trim();
+        if (!name) {
+            showStatus(statusEl, '⚠️ Enter a client name.', 'warning');
+            return;
+        }
+        showStatus(statusEl, '⏳ Creating client folder...', 'loading');
+        try {
+            const res = await fetch(`${API}/branding/clients`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ name }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                showStatus(statusEl, `❌ ${data.detail || data.error || 'Creation failed'}`, 'error');
+                return;
+            }
+            if (input) input.value = '';
+            showStatus(statusEl, `✅ Client ready: ${data.client.name}`, 'success');
+            await window.brandingRefreshClients();
+        } catch (e) {
+            showStatus(statusEl, `❌ ${e.message}`, 'error');
+        }
     };
 
-    function _csAppendTerminalEntry(cmd, cwd, stdout, stderr, code) {
-        const container = document.getElementById('csTerminalHistory');
-        if (!container) return;
-        const ts = new Date().toLocaleTimeString();
-        const div = document.createElement('div');
-        div.className = `cs-terminal-entry ${code === 0 ? '' : 'cs-entry-error'}`;
-        const stdoutHtml = stdout ? `<div class="cs-stdout">${_escapeHtmlUtil(stdout)}</div>` : '';
-        const stderrHtml = stderr ? `<div class="cs-stderr">${_escapeHtmlUtil(stderr)}</div>` : '';
-        div.innerHTML = `
-            <div class="cs-entry-cmd"><span class="cs-prompt-symbol">$</span> ${_escapeHtmlUtil(cmd)}
-                <span class="cs-entry-meta">${_escapeHtmlUtil(cwd)} &nbsp;·&nbsp; ${ts} &nbsp;·&nbsp; exit&nbsp;${code}</span>
-            </div>
-            ${stdoutHtml}${stderrHtml}`;
-        container.appendChild(div);
-        container.scrollTop = container.scrollHeight;
-    }
+    window.brandingLoadAssets = async function(clientId) {
+        const listEl = document.getElementById('brandingAssetsList');
+        if (!listEl || !clientId) return;
+        listEl.innerHTML = 'Loading assets...';
+        try {
+            const res = await fetch(`${API}/branding/clients/${encodeURIComponent(clientId)}/assets`);
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                listEl.textContent = data.detail || data.error || 'Failed to load assets';
+                return;
+            }
+            const sections = ['images', 'videos', 'files'];
+            let html = '';
+            sections.forEach(sec => {
+                const arr = data.assets?.[sec] || [];
+                html += `<div style="margin-bottom:8px;"><strong>${sec.toUpperCase()} (${arr.length})</strong></div>`;
+                if (!arr.length) {
+                    html += `<div style="margin:0 0 10px 8px;opacity:.75;">No assets</div>`;
+                    return;
+                }
+                arr.slice(0, 20).forEach(item => {
+                    html += `<div style="margin:0 0 6px 8px;word-break:break-all;">• ${_escapeHtmlUtil(item.path)}</div>`;
+                });
+            });
+            listEl.innerHTML = html;
+        } catch (e) {
+            listEl.textContent = `Error: ${e.message}`;
+        }
+    };
 
-    window.runCodespacesCommand = async function() {
-        const cmdInput = document.getElementById('codespacesCommand');
-        const cwdInput = document.getElementById('csCwd');
-        const command = (cmdInput?.value || '').trim();
-        const cwd = (cwdInput?.value || '.').trim();
-        if (!command) return;
-        cmdInput.value = '';
+    window.brandingAttachAsset = async function() {
+        const clientId = document.getElementById('brandingClientSelect')?.value;
+        const sourcePath = (document.getElementById('brandingSourcePath')?.value || '').trim();
+        const assetType = (document.getElementById('brandingAssetType')?.value || '').trim();
+        const moveFile = !!document.getElementById('brandingMoveFile')?.checked;
+        const statusEl = document.getElementById('brandingStatus');
+        if (!clientId || !sourcePath) {
+            showStatus(statusEl, '⚠️ Choose a client and source path.', 'warning');
+            return;
+        }
+        showStatus(statusEl, '⏳ Attaching asset...', 'loading');
+        try {
+            const res = await fetch(`${API}/branding/clients/${encodeURIComponent(clientId)}/add-existing`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ source_path: sourcePath, asset_type: assetType, move: moveFile }),
+            });
+            const data = await res.json();
+            if (!res.ok || !data.ok) {
+                showStatus(statusEl, `❌ ${data.detail || data.error || 'Attach failed'}`, 'error');
+                return;
+            }
+            showStatus(statusEl, `✅ Stored: ${data.stored_path}`, 'success');
+            await window.brandingLoadAssets(clientId);
+        } catch (e) {
+            showStatus(statusEl, `❌ ${e.message}`, 'error');
+        }
+    };
 
-        // Update CWD if the command is `cd`
-        if (command.startsWith('cd ')) {
-            const target = command.slice(3).trim();
-            if (cwdInput) cwdInput.value = target || '.';
-            _csAppendTerminalEntry(command, cwd, `Changed directory to: ${target}`, '', 0);
+    window.runVideoEdit = async function() {
+        const statusEl = document.getElementById('brandingStatus');
+        const source_path = (document.getElementById('videoEditSourcePath')?.value || '').trim();
+        const operation = (document.getElementById('videoEditOperation')?.value || 'trim').trim();
+        if (!source_path) {
+            showStatus(statusEl, '⚠️ Provide video source path.', 'warning');
             return;
         }
 
-        _csAppendTerminalEntry(command, cwd, '⏳ running…', '', 0);
+        const payload = { source_path, operation };
+        const startVal = document.getElementById('videoEditStart')?.value;
+        const endVal = document.getElementById('videoEditEnd')?.value;
+        const widthVal = document.getElementById('videoEditWidth')?.value;
+        const heightVal = document.getElementById('videoEditHeight')?.value;
+        const fpsVal = document.getElementById('videoEditFps')?.value;
+        const audio_path = (document.getElementById('videoEditAudioPath')?.value || '').trim();
+
+        if (startVal) payload.start_seconds = Number(startVal);
+        if (endVal) payload.end_seconds = Number(endVal);
+        if (widthVal) payload.width = Number(widthVal);
+        if (heightVal) payload.height = Number(heightVal);
+        if (fpsVal) payload.fps = Number(fpsVal);
+        if (audio_path) payload.audio_path = audio_path;
+
+        showStatus(statusEl, '⏳ Editing video...', 'loading');
         try {
-            const res = await fetch(`${API}/codespaces/execute`, {
+            const res = await fetch(`${API}/video/edit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ command, cwd, timeout: 60 }),
+                body: JSON.stringify(payload),
             });
             const data = await res.json();
-            // Remove placeholder
-            const container = document.getElementById('csTerminalHistory');
-            if (container && container.lastChild) container.removeChild(container.lastChild);
-
-            const payload = data.data || {};
-            _csAppendTerminalEntry(
-                payload.command || command,
-                payload.cwd || cwd,
-                payload.stdout || '',
-                (data.ok === false ? (data.error || '') : '') + (payload.stderr || ''),
-                payload.returncode ?? (data.ok ? 0 : 1)
-            );
-        } catch (e) {
-            const container = document.getElementById('csTerminalHistory');
-            if (container && container.lastChild) container.removeChild(container.lastChild);
-            _csAppendTerminalEntry(command, cwd, '', `Error: ${e.message}`, 1);
-        }
-    };
-
-    // Terminal keyboard shortcut — Enter to run
-    document.addEventListener('DOMContentLoaded', () => {
-        const cmdInput = document.getElementById('codespacesCommand');
-        if (cmdInput) {
-            cmdInput.addEventListener('keydown', (e) => {
-                if (e.key === 'Enter') { e.preventDefault(); window.runCodespacesCommand(); }
-            });
-        }
-    });
-
-    // ---- Files tab ----
-    window.csBrowseDir = async function(path) {
-        const pathInput = document.getElementById('csFileBrowsePath');
-        const dirPath = path ?? (pathInput?.value || '.').trim();
-        if (pathInput && path !== undefined) pathInput.value = dirPath;
-        const treeEl = document.getElementById('csFileTree');
-        if (!treeEl) return;
-        treeEl.innerHTML = '<div class="cs-tree-hint">Loading…</div>';
-        try {
-            const res = await fetch(`${API}/codespaces/list-dir`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path: dirPath }),
-            });
-            const data = await res.json();
-            if (!res.ok) { treeEl.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">${_escapeHtmlUtil(data.detail || 'Error')}</div>`; return; }
-            const entries = data.entries || [];
-            if (entries.length === 0) { treeEl.innerHTML = '<div class="cs-tree-hint">Empty directory</div>'; return; }
-
-            let html = `<div class="cs-breadcrumb">${_escapeHtmlUtil(data.path)}</div>`;
-            const parentParts = dirPath.split('/').filter(Boolean);
-            if (parentParts.length > 0) {
-                const parentPath = parentParts.slice(0, -1).join('/') || '.';
-                html += `<div class="cs-tree-entry cs-tree-dir" onclick="window.csBrowseDir('${_escapeHtmlUtil(parentPath)}')"><span class="cs-tree-icon">↑</span> ..</div>`;
-            }
-            entries.forEach(e => {
-                if (e.type === 'dir') {
-                    const childPath = dirPath === '.' ? e.name : `${dirPath}/${e.name}`;
-                    html += `<div class="cs-tree-entry cs-tree-dir" onclick="window.csBrowseDir('${_escapeHtmlUtil(childPath)}')"><span class="cs-tree-icon">📁</span> ${_escapeHtmlUtil(e.name)}/</div>`;
-                } else {
-                    const filePath = dirPath === '.' ? e.name : `${dirPath}/${e.name}`;
-                    const sizeStr = e.size > 1024 ? `${(e.size/1024).toFixed(1)}k` : `${e.size}b`;
-                    html += `<div class="cs-tree-entry cs-tree-file" onclick="window.csViewFile('${_escapeHtmlUtil(filePath)}')"><span class="cs-tree-icon">${_csFileIcon(e.ext)}</span> ${_escapeHtmlUtil(e.name)}<span class="cs-tree-size">${sizeStr}</span></div>`;
-                }
-            });
-            treeEl.innerHTML = html;
-        } catch (e) {
-            treeEl.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">Error: ${e.message}</div>`;
-        }
-    };
-
-    function _csFileIcon(ext) {
-        const icons = { js: '📜', ts: '📘', py: '🐍', json: '📋', md: '📝', html: '🌐', css: '🎨', sh: '⚙️', txt: '📄', yaml: '⚙️', yml: '⚙️', rs: '🦀', go: '🔵', cpp: '⚙️', c: '⚙️' };
-        return icons[ext?.replace('.', '')] || '📄';
-    }
-
-    window.csViewFile = async function(path) {
-        const viewer = document.getElementById('csFileViewer');
-        const pathEl = document.getElementById('csFileViewerPath');
-        const contentEl = document.getElementById('csFileViewerContent');
-        if (!viewer || !contentEl) return;
-        contentEl.textContent = 'Loading…';
-        viewer.style.display = 'flex';
-        if (pathEl) pathEl.textContent = path;
-        csCurrentFilePath = path;
-        try {
-            const res = await fetch(`${API}/codespaces/read-file`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path }),
-            });
-            const data = await res.json();
-            if (!res.ok) { contentEl.textContent = `Error: ${data.detail || 'Could not read file'}`; return; }
-            contentEl.textContent = data.content;
-            if (data.truncated) {
-                contentEl.textContent += '\n\n[... file truncated at 64KB ...]';
-            }
-        } catch (e) {
-            contentEl.textContent = `Error: ${e.message}`;
-        }
-    };
-
-    window.csCloseFileViewer = function() {
-        const v = document.getElementById('csFileViewer');
-        if (v) v.style.display = 'none';
-        csCurrentFilePath = null;
-    };
-
-    window.csCopyFileContent = function() {
-        const el = document.getElementById('csFileViewerContent');
-        if (el) navigator.clipboard.writeText(el.textContent).catch(() => {});
-    };
-
-    window.csSendFileToChat = function() {
-        const el = document.getElementById('csFileViewerContent');
-        const msgInput = document.getElementById('messageInput');
-        if (!el || !msgInput) return;
-        msgInput.value = `\`\`\`\n${el.textContent.slice(0, 3000)}\n\`\`\``;
-        msgInput.dispatchEvent(new Event('input'));
-        msgInput.focus();
-    };
-
-    // ---- Git tab ----
-    window.csGitRefresh = async function() {
-        const el = document.getElementById('csGitStatus');
-        if (!el) return;
-        el.innerHTML = '<div class="cs-tree-hint">Loading git status…</div>';
-        try {
-            const res = await fetch(`${API}/codespaces/git-status`);
-            const data = await res.json();
-            const badge = document.getElementById('csBranchBadge');
-            if (badge) { badge.textContent = `⌥ ${data.branch || '?'}`; badge.style.display = 'inline'; }
-            if (data.clean) {
-                el.innerHTML = `<div class="cs-git-clean">✅ Working tree clean — branch <strong>${_escapeHtmlUtil(data.branch)}</strong></div>`;
+            if (!res.ok || !data.ok) {
+                showStatus(statusEl, `❌ ${data.detail || data.error || 'Video edit failed'}`, 'error');
                 return;
             }
-            let html = `<div class="cs-git-branch">Branch: <strong>${_escapeHtmlUtil(data.branch)}</strong>`;
-            if (data.ahead) html += ` <span class="cs-badge cs-badge-green">↑${data.ahead}</span>`;
-            if (data.behind) html += ` <span class="cs-badge cs-badge-red">↓${data.behind}</span>`;
-            html += '</div>';
-            (data.changed || []).forEach(f => {
-                const cls = f.status === 'M' ? 'cs-git-modified' : f.status === '??' ? 'cs-git-untracked' : f.status === 'A' ? 'cs-git-added' : f.status.startsWith('D') ? 'cs-git-deleted' : '';
-                html += `<div class="cs-git-file-row ${cls}"><span class="cs-git-status-code">${_escapeHtmlUtil(f.status)}</span> ${_escapeHtmlUtil(f.file)}</div>`;
-            });
-            el.innerHTML = html;
-        } catch (e) {
-            el.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">Error: ${e.message}</div>`;
-        }
-    };
-
-    window.csGitDiff = async function() {
-        const viewer = document.getElementById('csGitDiffViewer');
-        const content = document.getElementById('csGitDiffContent');
-        if (!viewer || !content) return;
-        content.textContent = 'Loading diff…';
-        viewer.style.display = 'flex';
-        try {
-            const res = await fetch(`${API}/codespaces/git-diff`);
-            const data = await res.json();
-            content.innerHTML = _renderDiff(data.diff || '(no diff)');
-        } catch (e) {
-            content.textContent = `Error: ${e.message}`;
-        }
-    };
-
-    window.csGitLog = async function() {
-        const el = document.getElementById('csGitLog');
-        if (!el) return;
-        el.style.display = 'block';
-        el.innerHTML = '<div class="cs-tree-hint">Loading log…</div>';
-        try {
-            const res = await fetch(`${API}/codespaces/git-log?limit=20`);
-            const data = await res.json();
-            const commits = data.commits || [];
-            if (!commits.length) { el.innerHTML = '<div class="cs-tree-hint">No commits found.</div>'; return; }
-            el.innerHTML = commits.map(c => `
-                <div class="cs-log-entry">
-                    <span class="cs-log-hash">${_escapeHtmlUtil(c.short)}</span>
-                    <span class="cs-log-msg">${_escapeHtmlUtil(c.message)}</span>
-                    <span class="cs-log-author">${_escapeHtmlUtil(c.author)}</span>
-                </div>`).join('');
-        } catch (e) {
-            el.innerHTML = `<div class="cs-tree-hint" style="color:#e74c3c">Error: ${e.message}</div>`;
-        }
-    };
-
-    window.csGitStageAll = async function() {
-        try {
-            const res = await fetch(`${API}/codespaces/git-stage`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ all: true }),
-            });
-            const data = await res.json();
-            if (data.ok) window.csGitRefresh();
-        } catch (e) { /* ignore */ }
-    };
-
-    window.csGitCommit = async function() {
-        const msgInput = document.getElementById('csGitCommitMsg');
-        const message = (msgInput?.value || '').trim();
-        if (!message) { showStatus(document.getElementById('codespacesStatus'), '⚠️ Enter a commit message', 'warning'); return; }
-        try {
-            const res = await fetch(`${API}/codespaces/git-commit`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ message }),
-            });
-            const data = await res.json();
-            if (msgInput) msgInput.value = '';
-            if (data.ok) {
-                showStatus(document.getElementById('codespacesStatus'), `✅ Committed: ${message}`, 'success');
-                window.csGitRefresh();
-            } else {
-                showStatus(document.getElementById('codespacesStatus'), `❌ ${data.stderr || 'Commit failed'}`, 'error');
+            showStatus(statusEl, `✅ Video ready: ${data.output_path}`, 'success');
+            if (data.output_path) {
+                const srcInput = document.getElementById('brandingSourcePath');
+                if (srcInput) srcInput.value = data.output_path;
             }
         } catch (e) {
-            showStatus(document.getElementById('codespacesStatus'), `❌ ${e.message}`, 'error');
-        }
-    };
-
-    // ---- AI Edit tab ----
-    window.csAiPreview = async function() {
-        const pathInput = document.getElementById('csAiEditPath');
-        const instrInput = document.getElementById('csAiEditInstruction');
-        const statusEl = document.getElementById('csAiEditStatus');
-        const diffViewer = document.getElementById('csAiDiffViewer');
-        const diffContent = document.getElementById('csAiDiffContent');
-        const applyBtn = document.getElementById('csAiApplyBtn');
-
-        const path = (pathInput?.value || '').trim();
-        const instruction = (instrInput?.value || '').trim();
-        if (!path || !instruction) { showStatus(statusEl, '⚠️ Provide a file path and instruction', 'warning'); return; }
-
-        showStatus(statusEl, '⏳ AI is analyzing your code…', 'loading');
-        if (applyBtn) applyBtn.disabled = true;
-        csLastAiEditResult = null;
-
-        try {
-            const res = await fetch(`${API}/codespaces/ai-edit`, {
-                method: 'POST',
-                headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({ path, instruction, apply: false }),
-            });
-            const data = await res.json();
-            if (!res.ok) { showStatus(statusEl, `❌ ${data.detail || 'AI edit failed'}`, 'error'); return; }
-
-            csLastAiEditResult = data;
-            if (diffContent) diffContent.innerHTML = _renderDiff(data.diff || '(no changes)');
-            if (diffViewer) diffViewer.style.display = 'flex';
-            if (applyBtn) applyBtn.disabled = false;
-            showStatus(statusEl, '✅ Preview ready — review the diff, then click Apply.', 'success');
-        } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
         }
     };
 
-    window.csAiApply = async function() {
-        if (!csLastAiEditResult) return;
-        const statusEl = document.getElementById('csAiEditStatus');
-        const applyBtn = document.getElementById('csAiApplyBtn');
-        showStatus(statusEl, '⏳ Applying changes…', 'loading');
-        if (applyBtn) applyBtn.disabled = true;
+    window.runDeepSearch = async function() {
+        const q = (document.getElementById('deepSearchQuery')?.value || '').trim();
+        const n = parseInt(document.getElementById('deepSearchLimit')?.value || '8', 10);
+        const resultEl = document.getElementById('deepSearchResults');
+        const statusEl = document.getElementById('deepSearchStatus');
+        if (!q) {
+            showStatus(statusEl, '⚠️ Enter a query.', 'warning');
+            return;
+        }
+        showStatus(statusEl, '⏳ Running deep search...', 'loading');
+        if (resultEl) resultEl.textContent = 'Searching...';
         try {
-            const res = await fetch(`${API}/codespaces/ai-edit`, {
+            const res = await fetch(`${API}/deep-search`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
-                body: JSON.stringify({
-                    path: csLastAiEditResult.path,
-                    instruction: document.getElementById('csAiEditInstruction')?.value || '',
-                    apply: true,
-                }),
+                body: JSON.stringify({ query: q, num_results: Number.isFinite(n) ? Math.max(1, Math.min(20, n)) : 8 }),
             });
             const data = await res.json();
-            if (!res.ok) { showStatus(statusEl, `❌ ${data.detail || 'Apply failed'}`, 'error'); return; }
-            showStatus(statusEl, `✅ Changes applied to ${data.path}`, 'success');
-            csLastAiEditResult = null;
+            if (!res.ok || !data.ok) {
+                showStatus(statusEl, `❌ ${data.detail || data.error || 'Search failed'}`, 'error');
+                if (resultEl) resultEl.textContent = data.detail || data.error || 'Search failed';
+                return;
+            }
+            const lines = [];
+            lines.push(`Mode: ${data.mode}`);
+            lines.push('');
+            (data.results || []).forEach((r, idx) => {
+                const title = r.title || r.name || r.url || `Result ${idx + 1}`;
+                const snippet = r.snippet || r.content || r.body || '';
+                const source = r.source || r.url || '';
+                lines.push(`${idx + 1}. ${title}`);
+                if (source) lines.push(`   ${source}`);
+                if (snippet) lines.push(`   ${String(snippet).slice(0, 240)}`);
+                lines.push('');
+            });
+            if (resultEl) resultEl.textContent = lines.join('\n') || 'No results.';
+            showStatus(statusEl, `✅ Found ${(data.results || []).length} results`, 'success');
         } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
+            if (resultEl) resultEl.textContent = `Error: ${e.message}`;
         }
     };
 
-    // Shared diff renderer
-    function _renderDiff(diffText) {
-        if (!diffText) return '<span style="color:var(--text-secondary)">No changes</span>';
-        return diffText.split('\n').map(line => {
-            const esc = _escapeHtmlUtil(line);
-            if (line.startsWith('+') && !line.startsWith('+++')) return `<span class="diff-add">${esc}</span>`;
-            if (line.startsWith('-') && !line.startsWith('---')) return `<span class="diff-del">${esc}</span>`;
-            if (line.startsWith('@@')) return `<span class="diff-hunk">${esc}</span>`;
-            if (line.startsWith('diff ') || line.startsWith('index ') || line.startsWith('---') || line.startsWith('+++')) return `<span class="diff-meta">${esc}</span>`;
-            return `<span>${esc}</span>`;
-        }).join('\n');
-    }
-
-    // Keyboard shortcuts for Codespaces tab
+    // Keyboard shortcuts for Branding and Deep Search
     document.addEventListener('DOMContentLoaded', () => {
         document.addEventListener('keydown', (e) => {
-            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'C') {
-                e.preventDefault(); window.toggleCodespacesPanel && window.toggleCodespacesPanel();
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'B') {
+                e.preventDefault();
+                window.toggleBrandingPanel && window.toggleBrandingPanel();
             }
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'G') {
                 e.preventDefault();
-                if (!codespacesPanelOpen) window.toggleCodespacesPanel && window.toggleCodespacesPanel();
-                window.csShowTab('git');
+                window.openDeepSearchPanel && window.openDeepSearchPanel();
             }
         });
     });
@@ -2723,7 +2588,7 @@ console.log('🧊 app_new_features.js v1 loading...');
         if (_browserCardEl) { _browserCardEl.remove(); _browserCardEl = null; }
     };
 
-    // Also expose a manual trigger for the type-in URL bar in codespaces
+    // Also expose a manual trigger for the URL browser card.
     window.browseTo = async function(url) {
         if (!url.startsWith('http')) url = `https://${url}`;
         window.injectBrowserCard({ url, title: 'Loading…', screenshot_b64: null, status: 'loading' });
@@ -2777,13 +2642,14 @@ console.log('🧊 app_new_features.js v1 loading...');
                 if (threeDPanelOpen) window.toggle3DPanel();
                 if (mcPanelOpen) window.toggleMinecraftPanel();
                 if (fmPanelOpen) window.toggleFileManager();
-                if (codespacesPanelOpen) window.toggleCodespacesPanel();
+                if (brandingPanelOpen) window.toggleBrandingPanel();
+                if (deepSearchPanelOpen) window.toggleDeepSearchPanel();
                 if (printingPanelOpen) window.togglePrintingPanel();
                 if (connectorsPanelOpen) window.toggleConnectorsPanel();
             }
         });
 
-        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Codespaces, 3D Printing, API Connectors, Sandbox Browser');
+        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Branding, Deep Search, 3D Printing, API Connectors, Sandbox Browser');
     }
 
     // Wait for DOM

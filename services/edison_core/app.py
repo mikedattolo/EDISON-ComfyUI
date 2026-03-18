@@ -370,10 +370,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Work mode → step-by-step execution with deep model and tools")
-        elif mode == "codespaces":
-            tools_allowed = True
-            model_target = "deep"
-            reasons.append("Codespaces mode → code execution and workspace tooling")
         elif mode == "agent":
             tools_allowed = True
             model_target = "medium"
@@ -451,9 +447,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "sing me", "beat for", "instrumental",
                              "background music", "soundtrack"]
 
-            codespace_patterns = ["terminal", "command", "shell", "run tests", "fix this codebase",
-                                  "rewrite file", "workspace", "repo", "codespace", "dev server"]
-
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
@@ -462,7 +455,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
             has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
             has_music = any(pattern in msg_lower for pattern in music_patterns)
-            has_codespaces = any(pattern in msg_lower for pattern in codespace_patterns)
 
             # Real-time queries get tools enabled for instant data retrieval
             if has_realtime:
@@ -473,10 +465,6 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Music generation request detected → agent mode with tools")
-            elif has_codespaces:
-                mode = "codespaces"
-                tools_allowed = True
-                reasons.append("Developer workspace request detected → codespaces mode")
             elif any(pattern in msg_lower for pattern in work_patterns):
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
@@ -523,7 +511,7 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             if model_target != "reasoning":
                 model_target = "reasoning"
                 reasons.append(f"Mode '{mode}' requires reasoning model")
-        elif mode in ["work", "swarm", "codespaces"]:
+        elif mode in ["work", "swarm"]:
             if model_target != "deep":
                 model_target = "deep"
                 reasons.append(f"Mode '{mode}' requires deep model")
@@ -606,6 +594,10 @@ INTEGRATIONS_DIR = REPO_ROOT / "config" / "integrations"
 CONNECTORS_DB = INTEGRATIONS_DIR / "connectors.json"
 PRINTERS_DB = INTEGRATIONS_DIR / "printers.json"
 PROMPTS_DB = INTEGRATIONS_DIR / "prompts.json"
+BRANDING_DB = INTEGRATIONS_DIR / "branding.json"
+BRANDING_ROOT = REPO_ROOT / "outputs" / "clients"
+SELF_EDIT_BACKUP_DIR = REPO_ROOT / "outputs" / "self_edit_backups"
+CODESPACES_ENABLED = False
 PERSONALITY_TRAITS = ("innovative", "thoughtful", "kind")
 
 def _is_file_request(text: str) -> bool:
@@ -808,6 +800,8 @@ def _ensure_integrations_dir():
         PRINTERS_DB.write_text(json.dumps({"printers": []}, indent=2))
     if not PROMPTS_DB.exists():
         PROMPTS_DB.write_text(json.dumps({"prompts": []}, indent=2))
+    if not BRANDING_DB.exists():
+        BRANDING_DB.write_text(json.dumps({"clients": []}, indent=2))
 
 
 def _load_prompts() -> dict:
@@ -847,6 +841,34 @@ def _load_printers() -> dict:
 def _save_printers(data: dict):
     _ensure_integrations_dir()
     PRINTERS_DB.write_text(json.dumps(data, indent=2))
+
+
+def _load_branding() -> dict:
+    _ensure_integrations_dir()
+    try:
+        return json.loads(BRANDING_DB.read_text())
+    except Exception:
+        return {"clients": []}
+
+
+def _save_branding(data: dict):
+    _ensure_integrations_dir()
+    BRANDING_DB.write_text(json.dumps(data, indent=2))
+
+
+def _slugify_client_name(name: str) -> str:
+    slug = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "").strip().lower()).strip("-")
+    return slug or f"client-{uuid.uuid4().hex[:8]}"
+
+
+def _client_asset_dirs(slug: str) -> dict:
+    base = BRANDING_ROOT / slug
+    return {
+        "base": base,
+        "images": base / "images",
+        "videos": base / "videos",
+        "files": base / "files",
+    }
 
 # Thread locks for concurrent model access safety
 lock_fast = threading.Lock()
@@ -1249,8 +1271,36 @@ def reload_llm_models_background():
     thread.start()
     return thread
 
-def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024, 
-                         steps: int = 20, guidance_scale: float = 3.5) -> dict:
+def _enhance_image_prompt(prompt: str, style_preset: str = "auto") -> str:
+    """Expand short prompts into a more stable, high-signal generation prompt."""
+    base = (prompt or "").strip()
+    if not base:
+        return base
+
+    style = (style_preset or "auto").strip().lower()
+    style_suffix = {
+        "photo": "photorealistic, detailed textures, natural lighting, high dynamic range",
+        "cinematic": "cinematic framing, dramatic lighting, filmic color grading, depth of field",
+        "illustration": "digital illustration, clean linework, cohesive color palette, polished shading",
+        "anime": "anime style, expressive details, clean cel shading, crisp outlines",
+        "concept_art": "concept art, production-ready composition, atmospheric depth",
+        "auto": "high detail, coherent composition, balanced lighting, sharp focus",
+    }
+    suffix = style_suffix.get(style, style_suffix["auto"])
+
+    if len(base.split()) < 8:
+        base = f"{base}, subject-centered composition"
+    return f"{base}, {suffix}"
+
+
+def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
+                         steps: int = 20, guidance_scale: float = 3.5,
+                         negative_prompt: str = "",
+                         seed: Optional[int] = None,
+                         sampler_name: str = "dpmpp_2m",
+                         scheduler: str = "karras",
+                         ckpt_name: str = "sd_xl_base_1.0.safetensors",
+                         style_preset: str = "auto") -> dict:
     """Create a simple SDXL workflow for image generation (FLUX fallback)
     
     Args:
@@ -1261,21 +1311,24 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
         guidance_scale: Classifier-free guidance scale (0-10, higher = more prompt adherence)
     """
     import random
-    seed = random.randint(0, 2**32 - 1)  # Generate valid random seed
+    use_seed = seed if isinstance(seed, int) and seed >= 0 else random.randint(0, 2**32 - 1)
     
     # Validate parameters
     steps = max(1, min(steps, 200))  # Clamp steps to 1-200
     guidance_scale = max(0, min(guidance_scale, 20))  # Clamp guidance to 0-20
     
-    # Simple SDXL workflow that works with base ComfyUI
+    safe_negative = (negative_prompt or "").strip() or "nsfw, nude, naked, worst quality, low quality, blurry, distorted"
+    enriched_prompt = _enhance_image_prompt(prompt, style_preset=style_preset)
+
+    # Configurable SDXL workflow for better consistency.
     return {
         "3": {
             "inputs": {
-                "seed": seed,
+                "seed": use_seed,
                 "steps": steps,
                 "cfg": guidance_scale,
-                "sampler_name": "euler",
-                "scheduler": "normal",
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
                 "denoise": 1,
                 "model": ["4", 0],
                 "positive": ["6", 0],
@@ -1286,7 +1339,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
         },
         "4": {
             "inputs": {
-                "ckpt_name": "sd_xl_base_1.0.safetensors"
+                "ckpt_name": ckpt_name
             },
             "class_type": "CheckpointLoaderSimple"
         },
@@ -1300,14 +1353,14 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
         },
         "6": {
             "inputs": {
-                "text": prompt,
+                "text": enriched_prompt,
                 "clip": ["4", 1]
             },
             "class_type": "CLIPTextEncode"
         },
         "7": {
             "inputs": {
-                "text": "nsfw, nude, naked, worst quality, low quality, blurry",
+                "text": safe_negative,
                 "clip": ["4", 1]
             },
             "class_type": "CLIPTextEncode"
@@ -1331,7 +1384,7 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant", "codespaces"] = Field(
+    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant"] = Field(
         default="auto", 
         description="Interaction mode"
     )
@@ -1479,13 +1532,6 @@ TOOL_REGISTRY = {
             "genre": {"type": str, "required": False, "default": ""},
             "mood": {"type": str, "required": False, "default": ""},
             "duration": {"type": int, "required": False, "default": 15}
-        }
-    },
-    "codespace_exec": {
-        "args": {
-            "command": {"type": str, "required": True},
-            "cwd": {"type": str, "required": False, "default": "."},
-            "timeout": {"type": int, "required": False, "default": 20}
         }
     },
     "call_external_api": {
@@ -2020,6 +2066,8 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 return {"ok": False, "error": f"Code execution failed: {str(e)}"}
 
         if tool_name == "codespace_exec":
+            if not CODESPACES_ENABLED:
+                return {"ok": False, "error": "Codespaces tooling has been removed"}
             return _run_codespaces_command(
                 command=args.get("command", ""),
                 cwd=args.get("cwd", "."),
@@ -6411,6 +6459,11 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
 
         # Parse and write file artifacts if requested in response
         file_entries = _parse_files_from_response(assistant_response)
+        if file_entries:
+            try:
+                file_entries = _refine_file_entries_with_quality_loop(file_entries, llm, request.message or "")
+            except Exception as e:
+                logger.warning(f"File quality refinement skipped: {e}")
         generated_files = _write_artifacts(file_entries) if file_entries else []
         cleaned_response = _strip_file_blocks(assistant_response)
         # Always deduplicate repeated lines (fixes looping output)
@@ -7028,6 +7081,12 @@ async def generate_image(request: dict):
         - height (int): Image height in pixels (default: 1024)
         - steps (int): Number of sampling steps, 1-200 (default: 20)
         - guidance_scale (float): Classifier-free guidance scale, 0-20 (default: 3.5)
+        - negative_prompt (str): Optional negative prompt
+        - seed (int): Optional deterministic seed
+        - sampler_name (str): ComfyUI sampler (default: dpmpp_2m)
+        - scheduler (str): ComfyUI scheduler (default: karras)
+        - ckpt_name (str): Checkpoint model filename
+        - style_preset (str): auto|photo|cinematic|illustration|anime|concept_art
         - comfyui_url (str): Optional ComfyUI server URL
     """
     try:
@@ -7036,6 +7095,12 @@ async def generate_image(request: dict):
         height = request.get('height', 1024)
         steps = request.get('steps', 20)
         guidance_scale = request.get('guidance_scale', 3.5)
+        negative_prompt = request.get('negative_prompt', '')
+        seed = request.get('seed', None)
+        sampler_name = request.get('sampler_name', 'dpmpp_2m')
+        scheduler = request.get('scheduler', 'karras')
+        ckpt_name = request.get('ckpt_name', 'sd_xl_base_1.0.safetensors')
+        style_preset = request.get('style_preset', 'auto')
         comfyui_url_override = request.get('comfyui_url')
         
         if not prompt:
@@ -7047,8 +7112,14 @@ async def generate_image(request: dict):
         
         if not isinstance(guidance_scale, (int, float)) or guidance_scale < 0 or guidance_scale > 20:
             raise HTTPException(status_code=400, detail="guidance_scale must be 0-20")
+
+        if seed is not None and (not isinstance(seed, int) or seed < 0):
+            raise HTTPException(status_code=400, detail="seed must be a non-negative integer")
         
-        logger.info(f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale})")
+        logger.info(
+            f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale}, "
+            f"seed={seed}, sampler={sampler_name}, scheduler={scheduler}, style={style_preset})"
+        )
         
         # === MemoryGate: ensure enough VRAM for ComfyUI ===
         global _models_unloaded_for_image_gen
@@ -7092,7 +7163,19 @@ async def generate_image(request: dict):
         logger.info(f"Connecting to ComfyUI at: {comfyui_url}")
         
         # Create workflow with user parameters
-        workflow = create_flux_workflow(prompt, width, height, steps, guidance_scale)
+        workflow = create_flux_workflow(
+            prompt,
+            width,
+            height,
+            steps,
+            guidance_scale,
+            negative_prompt=negative_prompt,
+            seed=seed,
+            sampler_name=sampler_name,
+            scheduler=scheduler,
+            ckpt_name=ckpt_name,
+            style_preset=style_preset,
+        )
         
         # Log the workflow parameters for debugging
         logger.debug(f"Workflow KSampler steps: {workflow['3']['inputs']['steps']}")
@@ -7120,7 +7203,16 @@ async def generate_image(request: dict):
             "status": "generating",
             "prompt_id": prompt_id,
             "message": "Image generation started. Check status with /image-status endpoint.",
-            "comfyui_url": comfyui_url
+            "comfyui_url": comfyui_url,
+            "settings": {
+                "seed": workflow["3"]["inputs"]["seed"],
+                "steps": steps,
+                "guidance_scale": guidance_scale,
+                "sampler_name": sampler_name,
+                "scheduler": scheduler,
+                "style_preset": style_preset,
+                "ckpt_name": ckpt_name,
+            }
         }
         
     except requests.RequestException as e:
@@ -7129,6 +7221,8 @@ async def generate_image(request: dict):
         if _models_unloaded_for_image_gen:
             reload_llm_models_background()
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
+    except HTTPException:
+        raise
     except Exception as e:
         logger.error(f"Error generating image: {e}")
         # Reload models since image gen failed
@@ -7342,28 +7436,91 @@ async def realtime_news(topic: str = "top news today", max_results: int = 8):
 
 @app.post("/generate-video")
 async def generate_video(request: dict):
-    """Video generation is disabled in this deployment."""
-    raise HTTPException(status_code=410, detail="Video generation is disabled")
+    """Generate video from a prompt with optional audio and generation params."""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+    prompt = (request.get("prompt") or "").strip()
+    if not prompt:
+        raise HTTPException(status_code=400, detail="prompt is required")
+    try:
+        result = video_service.generate_video(
+            prompt=prompt,
+            negative_prompt=(request.get("negative_prompt") or "").strip(),
+            width=request.get("width"),
+            height=request.get("height"),
+            frames=request.get("frames"),
+            fps=request.get("fps"),
+            steps=request.get("steps"),
+            guidance_scale=float(request.get("guidance_scale", 6.0) or 6.0),
+            audio_path=(request.get("audio_path") or None),
+            duration=request.get("duration"),
+        )
+        return result
+    except Exception as e:
+        logger.error(f"Video generation error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/video-status/{prompt_id}")
 async def video_status(prompt_id: str):
-    """Video status is disabled because video generation is disabled."""
-    raise HTTPException(status_code=410, detail="Video generation is disabled")
+    """Check status for an existing video generation job."""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+    try:
+        return video_service.check_video_status(prompt_id)
+    except Exception as e:
+        logger.error(f"Video status error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/upload-audio")
 async def upload_audio(file: UploadFile = File(...)):
-    """Video/audio mux helper is disabled because video generation is disabled."""
-    raise HTTPException(status_code=410, detail="Video generation is disabled")
+    """Upload audio file used for video generation or muxing."""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+    try:
+        raw = await file.read()
+        saved = video_service.save_uploaded_audio(raw, file.filename or "audio.mp3")
+        safe_saved = _safe_workspace_path(saved)
+        return {"ok": True, "audio_path": str(safe_saved.relative_to(REPO_ROOT))}
+    except Exception as e:
+        logger.error(f"Audio upload error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/stitch-frames")
 async def stitch_frames(request: dict):
-    """Video stitching is disabled because video generation is disabled."""
-    raise HTTPException(status_code=410, detail="Video generation is disabled")
+    """Legacy helper for stitching generated frames into mp4."""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+    prompt_id = (request.get("prompt_id") or "").strip()
+    if not prompt_id:
+        raise HTTPException(status_code=400, detail="prompt_id is required")
+    try:
+        return video_service.stitch_frames_to_video(
+            prompt_id=prompt_id,
+            fps=int(request.get("fps", 8) or 8),
+            audio_path=request.get("audio_path"),
+        )
+    except Exception as e:
+        logger.error(f"Stitch frames error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.post("/mux-video-audio")
 async def mux_video_audio(request: dict):
-    """Video/audio muxing is disabled because video generation is disabled."""
-    raise HTTPException(status_code=410, detail="Video generation is disabled")
+    """Mux an existing audio file onto a generated video."""
+    if not video_service:
+        raise HTTPException(status_code=503, detail="Video generation service not available")
+    video_path = (request.get("video_path") or "").strip()
+    audio_path = (request.get("audio_path") or "").strip()
+    if not video_path or not audio_path:
+        raise HTTPException(status_code=400, detail="video_path and audio_path are required")
+    try:
+        safe_video = _safe_workspace_path(video_path)
+        safe_audio = _safe_workspace_path(audio_path)
+        return video_service.mux_audio_to_video(str(safe_video), str(safe_audio))
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        logger.error(f"Mux video/audio error: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # ==================== MUSIC GENERATION ENDPOINTS ====================
@@ -8254,8 +8411,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
         "reasoning": base + " Think step-by-step and explain clearly.",
         "agent": base + " You can search the web for current information. You can generate music and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
         "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
-        "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented.",
-        "codespaces": base + " You are in Codespaces mode: prioritize safe command execution, concrete file rewrites, and runnable developer workflows."
+        "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented."
     }
     
     return prompts.get(mode, base)
@@ -8629,6 +8785,86 @@ def _extract_stream_token_and_finished(chunk: dict, vision: bool = False) -> tup
 
     token = choice.get("text", "")
     return (token or ""), finished
+
+
+def _file_entry_quality_issues(entry: dict) -> list:
+    """Detect common low-effort artifacts in generated file content."""
+    issues = []
+    filename = str(entry.get("filename", "")).lower()
+    content = str(entry.get("content", "") or "")
+    ext = os.path.splitext(filename)[1]
+
+    placeholder_patterns = [
+        r"\[add .*?\]",
+        r"\[insert .*?\]",
+        r"\b(todo|tbd|lorem ipsum)\b",
+        r"\.{3,}",
+    ]
+    if any(re.search(p, content, flags=re.IGNORECASE) for p in placeholder_patterns):
+        issues.append("contains placeholders")
+
+    min_len_for_docs = {".pdf", ".docx", ".md", ".txt", ".html"}
+    if ext in min_len_for_docs and len(content.strip()) < 500:
+        issues.append("document content is too short")
+
+    heading_count = len(re.findall(r"^#{1,3}\s+", content, flags=re.MULTILINE))
+    if ext in {".pdf", ".docx", ".md"} and heading_count < 2:
+        issues.append("missing structured sections")
+
+    if content.count("\n") < 4 and ext in {".pdf", ".docx", ".md", ".txt"}:
+        issues.append("not enough depth")
+
+    return issues
+
+
+def _refine_file_entries_with_quality_loop(file_entries: list, llm, user_request: str) -> list:
+    """Run a lightweight review+rewrite loop for generated file entries."""
+    if not file_entries or not llm:
+        return file_entries
+
+    refined = []
+    for entry in file_entries:
+        candidate = dict(entry)
+        # Skip non-text payloads where content may be dict/list or slideshow-only entries.
+        if isinstance(candidate.get("content"), (dict, list)) or candidate.get("type") == "slideshow":
+            refined.append(candidate)
+            continue
+
+        for _ in range(2):
+            issues = _file_entry_quality_issues(candidate)
+            if not issues:
+                break
+
+            content = str(candidate.get("content", "") or "")
+            filename = str(candidate.get("filename", "output.txt"))
+            rewrite_prompt = (
+                "You are upgrading a generated file to be complete and professional. "
+                "Return ONLY the improved file content text with no markdown fences.\n\n"
+                f"USER REQUEST: {user_request}\n"
+                f"FILENAME: {filename}\n"
+                f"QUALITY ISSUES: {', '.join(issues)}\n\n"
+                "REQUIREMENTS:\n"
+                "- Keep the same overall topic and intent\n"
+                "- Remove placeholders and unfinished fragments\n"
+                "- Add clear sections, detail, and concrete content\n"
+                "- Avoid repetition\n\n"
+                "CURRENT CONTENT:\n"
+                f"{content[:18000]}\n\n"
+                "IMPROVED CONTENT:"
+            )
+
+            lock = get_lock_for_model(llm)
+            with lock:
+                resp = llm(rewrite_prompt, max_tokens=3072, temperature=0.25)
+            rewritten = (resp.get("choices", [{}])[0].get("text") or "").strip()
+            if rewritten.startswith("```"):
+                rewritten = "\n".join(rewritten.splitlines()[1:]).rstrip("`").strip()
+            if rewritten:
+                candidate["content"] = rewritten
+
+        refined.append(candidate)
+
+    return refined
 
 def _parse_files_from_response(response: str) -> list:
     if not response:
@@ -10551,6 +10787,62 @@ async def get_file_content(file_id: str):
     return {"content": text, "file_id": file_id}
 
 
+def _route_image_edit(edit_type: str, prompt: str, has_mask: bool) -> str:
+    """Route editing requests to the most reliable edit primitive."""
+    normalized = (edit_type or "").strip().lower()
+    if normalized:
+        return normalized
+
+    p = (prompt or "").lower()
+    inpaint_hints = ["remove", "replace", "erase", "background", "object", "person", "mask", "clean up"]
+    if has_mask or any(h in p for h in inpaint_hints):
+        return "inpaint"
+    return "img2img"
+
+
+def _create_auto_inpaint_mask(source_path: str, prompt: str) -> str:
+    """Create a heuristic mask when users request inpaint without supplying one."""
+    try:
+        from PIL import Image, ImageDraw
+    except Exception as e:
+        raise RuntimeError(f"Auto-mask requires Pillow: {e}")
+
+    src = Image.open(source_path).convert("RGBA")
+    w, h = src.size
+    p = (prompt or "").lower()
+
+    # White = editable area, black = protected area.
+    mask = Image.new("L", (w, h), 0)
+    draw = ImageDraw.Draw(mask)
+
+    # Background edits: mask the outer area, preserve central subject region.
+    if "background" in p:
+        draw.rectangle((0, 0, w, h), fill=255)
+        cx, cy = w // 2, h // 2
+        rx, ry = int(w * 0.28), int(h * 0.32)
+        draw.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), fill=0)
+    else:
+        # Object edits: default to center region with directional hints.
+        cx, cy = w // 2, h // 2
+        if "left" in p:
+            cx = int(w * 0.3)
+        elif "right" in p:
+            cx = int(w * 0.7)
+        if "top" in p or "upper" in p:
+            cy = int(h * 0.3)
+        elif "bottom" in p or "lower" in p:
+            cy = int(h * 0.7)
+
+        rx, ry = int(w * 0.2), int(h * 0.2)
+        draw.ellipse((cx - rx, cy - ry, cx + rx, cy + ry), fill=255)
+
+    masks_dir = REPO_ROOT / "outputs" / "edits" / "masks"
+    masks_dir.mkdir(parents=True, exist_ok=True)
+    mask_path = masks_dir / f"auto_mask_{uuid.uuid4().hex[:10]}.png"
+    mask.save(mask_path)
+    return str(mask_path)
+
+
 # ── Image Editing API ────────────────────────────────────────────────────
 
 @app.post("/images/edit")
@@ -10561,8 +10853,15 @@ async def edit_image(request: Request):
     try:
         body = await request.json()
         source = body.get("source_path") or body.get("file_id")
+        prompt = body.get("prompt", "")
         edit_type = body.get("edit_type", "")
         params = body.get("parameters", {})
+        mask_path = body.get("mask_path") or params.get("mask_path")
+        allow_fallback = bool(params.get("allow_fallback", False))
+        auto_mask = bool(params.get("auto_mask", True))
+        auto_refine = bool(params.get("auto_refine", True))
+        comfyui_url = params.get("comfyui_url", "http://127.0.0.1:8188")
+        route = _route_image_edit(edit_type, prompt, bool(mask_path))
 
         # Resolve file_id to path
         source_id = None
@@ -10575,38 +10874,113 @@ async def edit_image(request: Request):
             else:
                 raise HTTPException(status_code=404, detail="Source image not found")
 
+        resolved_mask_path = mask_path
+        if mask_path and file_store_instance and not os.path.exists(str(mask_path)):
+            mask_candidate = file_store_instance.get_path(str(mask_path))
+            if mask_candidate:
+                resolved_mask_path = str(mask_candidate)
+
+        auto_mask_used = False
+        if route == "inpaint" and not resolved_mask_path and auto_mask:
+            try:
+                resolved_mask_path = _create_auto_inpaint_mask(source_path, prompt)
+                auto_mask_used = True
+            except Exception as e:
+                logger.warning(f"Auto-mask generation failed: {e}")
+
         # Dispatch to editor method
-        if edit_type == "crop":
+        if route == "crop":
             box = params.get("box")
             if not box or len(box) != 4:
                 raise HTTPException(status_code=400, detail="crop requires box=[left,top,right,bottom]")
             rec = image_editor_instance.crop(source_path, tuple(box), source_id)
-        elif edit_type == "resize":
+        elif route == "resize":
             rec = image_editor_instance.resize(source_path, params.get("width", 512), params.get("height", 512), source_id)
-        elif edit_type == "rotate":
+        elif route == "rotate":
             rec = image_editor_instance.rotate(source_path, params.get("angle", 90), source_id)
-        elif edit_type == "flip":
+        elif route == "flip":
             rec = image_editor_instance.flip(source_path, params.get("direction", "horizontal"), source_id)
-        elif edit_type == "brightness":
+        elif route == "brightness":
             rec = image_editor_instance.adjust_brightness(source_path, params.get("factor", 1.5), source_id)
-        elif edit_type == "contrast":
+        elif route == "contrast":
             rec = image_editor_instance.adjust_contrast(source_path, params.get("factor", 1.5), source_id)
-        elif edit_type == "saturation":
+        elif route == "saturation":
             rec = image_editor_instance.adjust_saturation(source_path, params.get("factor", 1.5), source_id)
-        elif edit_type == "blur":
+        elif route == "blur":
             rec = image_editor_instance.blur(source_path, params.get("radius", 2.0), source_id)
-        elif edit_type == "sharpen":
+        elif route == "sharpen":
             rec = image_editor_instance.sharpen(source_path, params.get("factor", 2.0), source_id)
-        elif edit_type == "img2img":
-            prompt = body.get("prompt", "")
-            rec = image_editor_instance.img2img(source_path, prompt,
-                                                denoise=params.get("denoise", 0.65),
-                                                steps=params.get("steps", 20),
-                                                source_id=source_id)
+        elif route == "inpaint":
+            if not resolved_mask_path:
+                raise HTTPException(status_code=400, detail="inpaint requires mask_path")
+            rec = image_editor_instance.inpaint(
+                source_path=source_path,
+                prompt=prompt,
+                mask_path=resolved_mask_path,
+                denoise=params.get("denoise", 0.72),
+                steps=params.get("steps", 26),
+                source_id=source_id,
+                comfyui_url=comfyui_url,
+                seed=params.get("seed"),
+                sampler_name=params.get("sampler_name", "dpmpp_2m"),
+                scheduler=params.get("scheduler", "karras"),
+                cfg=float(params.get("cfg", 6.0)),
+                negative_prompt=params.get("negative_prompt", ""),
+                ckpt_name=params.get("ckpt_name", "sd_xl_base_1.0.safetensors"),
+                allow_fallback=allow_fallback,
+            )
+        elif route in {"img2img", "smart_edit"}:
+            rec = image_editor_instance.img2img(
+                source_path=source_path,
+                prompt=prompt,
+                denoise=params.get("denoise", 0.65),
+                steps=params.get("steps", 22),
+                source_id=source_id,
+                comfyui_url=comfyui_url,
+                seed=params.get("seed"),
+                sampler_name=params.get("sampler_name", "dpmpp_2m"),
+                scheduler=params.get("scheduler", "karras"),
+                cfg=float(params.get("cfg", 6.0)),
+                negative_prompt=params.get("negative_prompt", ""),
+                ckpt_name=params.get("ckpt_name", "sd_xl_base_1.0.safetensors"),
+                allow_fallback=allow_fallback,
+            )
         else:
             raise HTTPException(status_code=400, detail=f"Unknown edit_type: {edit_type}")
 
-        return {"ok": True, "edit": rec.to_dict()}
+        refined = False
+        refined_edit_id = None
+        if auto_refine and route in {"inpaint", "img2img", "smart_edit"} and prompt:
+            try:
+                refined_rec = image_editor_instance.img2img(
+                    source_path=rec.output_path,
+                    prompt=f"{prompt}. Preserve composition and improve local detail realism.",
+                    denoise=max(0.25, min(0.55, float(params.get("denoise", 0.65)) * 0.55)),
+                    steps=max(14, min(40, int(params.get("steps", 22) * 0.7))),
+                    source_id=source_id,
+                    comfyui_url=comfyui_url,
+                    seed=params.get("seed"),
+                    sampler_name=params.get("sampler_name", "dpmpp_2m"),
+                    scheduler=params.get("scheduler", "karras"),
+                    cfg=float(params.get("cfg", 6.0)),
+                    negative_prompt=params.get("negative_prompt", ""),
+                    ckpt_name=params.get("ckpt_name", "sd_xl_base_1.0.safetensors"),
+                    allow_fallback=False,
+                )
+                rec = refined_rec
+                refined = True
+                refined_edit_id = refined_rec.edit_id
+            except Exception as e:
+                logger.warning(f"Image refinement pass skipped: {e}")
+
+        return {
+            "ok": True,
+            "edit": rec.to_dict(),
+            "routed_edit_type": route,
+            "auto_mask_used": auto_mask_used,
+            "auto_refined": refined,
+            "refined_edit_id": refined_edit_id,
+        }
     except HTTPException:
         raise
     except FileNotFoundError as e:
@@ -11076,9 +11450,189 @@ async def mc_serve_download(filename: str):
 
 # ==================== CODESPACES / CONNECTORS / PRINTING ====================
 
+def _ensure_codespaces_enabled() -> None:
+    if not CODESPACES_ENABLED:
+        raise HTTPException(
+            status_code=410,
+            detail="Codespaces feature has been removed. Use /self/* and /branding/* APIs instead.",
+        )
+
+
+def _extract_json_obj(text: str) -> dict:
+    if not text:
+        return {}
+    s = text.strip()
+    try:
+        parsed = json.loads(s)
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        pass
+    match = re.search(r"\{[\s\S]*\}", s)
+    if not match:
+        return {}
+    try:
+        parsed = json.loads(match.group(0))
+        return parsed if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
+
+
+def _run_ai_edit_pipeline(path: str, instruction: str, apply: bool = False, strict_syntax: bool = False) -> dict:
+    """Shared AI-edit pipeline used by deprecated codespaces and new self-edit APIs."""
+    llm = llm_medium or llm_fast or llm_deep
+    if not llm:
+        raise HTTPException(status_code=503, detail="No LLM available")
+
+    # Conservative context budgeting for smaller fallback models.
+    try:
+        raw_ctx = llm.n_ctx() if callable(getattr(llm, "n_ctx", None)) else getattr(llm, "n_ctx", 4096)
+        ctx_limit = int(raw_ctx or 4096)
+    except Exception:
+        ctx_limit = 4096
+
+    safe_ctx = max(2048, min(ctx_limit, 8192))
+    max_source_chars = min(12000, max(3000, int((safe_ctx - 900) * 2.6)))
+
+    try:
+        safe_path = _safe_workspace_path(path)
+        if not safe_path.is_file():
+            raise HTTPException(status_code=404, detail=f"File not found: {path}")
+        original = safe_path.read_text(encoding="utf-8", errors="replace")[:max_source_chars]
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+    fname = safe_path.name
+    lock = get_lock_for_model(llm)
+
+    # Pass 1: create concise edit plan.
+    plan_prompt = (
+        "You are a meticulous software editor. Create a concise JSON edit plan with keys: "
+        "strategy (array of steps), risks (array), constraints (array). Return JSON only.\n\n"
+        f"FILE: {fname}\n"
+        f"INSTRUCTION: {instruction}\n"
+    )
+    with lock:
+        plan_resp = llm(plan_prompt, max_tokens=700, temperature=0.1)
+    plan_text = (plan_resp.get("choices", [{}])[0].get("text") or "").strip()
+    plan_data = _extract_json_obj(plan_text)
+    strategy = plan_data.get("strategy") if isinstance(plan_data.get("strategy"), list) else []
+    risks = plan_data.get("risks") if isinstance(plan_data.get("risks"), list) else []
+
+    # Pass 2: generate updated file.
+    generation_prompt = (
+        "You are a code editor. Apply the requested change with minimal, precise modifications. "
+        "Preserve existing style and avoid unrelated refactors. Return ONLY the full updated file content "
+        "with no markdown fences or commentary.\n\n"
+        f"FILE: {fname}\n"
+        f"INSTRUCTION: {instruction}\n"
+        f"PLAN: {strategy[:8]}\n"
+        f"KNOWN RISKS: {risks[:6]}\n"
+        f"---\n{original}\n---\n\n"
+        "UPDATED FILE CONTENT:"
+    )
+
+    gen_prompt_tokens_est = max(1, len(generation_prompt) // 4)
+    gen_max_tokens = max(256, min(4096, safe_ctx - gen_prompt_tokens_est - 96))
+    with lock:
+        gen_resp = llm(generation_prompt, max_tokens=gen_max_tokens, temperature=0.15, stop=["---END---"])
+
+    new_content = (gen_resp.get("choices", [{}])[0].get("text") or "").strip()
+    if new_content.startswith("```"):
+        lines = new_content.splitlines()
+        new_content = "\n".join(lines[1:]).rstrip("`").strip()
+
+    # Pass 3: critique and optional refinement pass.
+    review_prompt = (
+        "Review the proposed edit against the instruction. Return JSON only with keys: "
+        "score (0-10), issues (array), must_fix (bool).\n\n"
+        f"INSTRUCTION: {instruction}\n"
+        f"ORIGINAL:\n{original[:16000]}\n\n"
+        f"PROPOSED:\n{new_content[:16000]}\n"
+    )
+    review_prompt_tokens_est = max(1, len(review_prompt) // 4)
+    review_max_tokens = max(128, min(900, safe_ctx - review_prompt_tokens_est - 80))
+    with lock:
+        review_resp = llm(review_prompt, max_tokens=review_max_tokens, temperature=0.1)
+    review_data = _extract_json_obj((review_resp.get("choices", [{}])[0].get("text") or "").strip())
+    score = int(review_data.get("score", 0) or 0)
+    issues = review_data.get("issues") if isinstance(review_data.get("issues"), list) else []
+    must_fix = bool(review_data.get("must_fix", False))
+
+    if (must_fix or score < 8) and issues:
+        refine_prompt = (
+            "Improve the edited file to resolve the review issues. "
+            "Return ONLY the full updated file content with no markdown fences.\n\n"
+            f"INSTRUCTION: {instruction}\n"
+            f"REVIEW ISSUES: {issues[:10]}\n"
+            f"CURRENT EDIT:\n{new_content[:22000]}\n\n"
+            "REFINED FILE CONTENT:"
+        )
+        refine_prompt_tokens_est = max(1, len(refine_prompt) // 4)
+        refine_max_tokens = max(256, min(4096, safe_ctx - refine_prompt_tokens_est - 96))
+        with lock:
+            refine_resp = llm(refine_prompt, max_tokens=refine_max_tokens, temperature=0.12)
+        refined = (refine_resp.get("choices", [{}])[0].get("text") or "").strip()
+        if refined.startswith("```"):
+            refined = "\n".join(refined.splitlines()[1:]).rstrip("`").strip()
+        if refined:
+            new_content = refined
+
+    syntax_ok = True
+    syntax_error = None
+    if strict_syntax and safe_path.suffix.lower() == ".py":
+        try:
+            compile(new_content, str(safe_path), "exec")
+        except Exception as e:
+            syntax_ok = False
+            syntax_error = str(e)
+
+    if apply:
+        if strict_syntax and not syntax_ok:
+            raise HTTPException(status_code=422, detail=f"Refusing to apply due to syntax error: {syntax_error}")
+        try:
+            if strict_syntax:
+                SELF_EDIT_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+                backup_name = f"{safe_path.name}.{int(time.time())}.{uuid.uuid4().hex[:6]}.bak"
+                (SELF_EDIT_BACKUP_DIR / backup_name).write_text(original, encoding="utf-8")
+            safe_path.write_text(new_content, encoding="utf-8")
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Could not write file: {e}")
+
+    import difflib
+    diff_lines = list(difflib.unified_diff(
+        original.splitlines(keepends=True),
+        new_content.splitlines(keepends=True),
+        fromfile=f"a/{fname}",
+        tofile=f"b/{fname}",
+        n=3,
+    ))
+    diff_text = "".join(diff_lines)
+
+    return {
+        "ok": True,
+        "path": str(safe_path.relative_to(REPO_ROOT)),
+        "original": original,
+        "new_content": new_content,
+        "diff": diff_text,
+        "applied": apply,
+        "quality": {
+            "score": score,
+            "issues": issues,
+            "plan_strategy": strategy,
+            "plan_risks": risks,
+        },
+        "syntax_ok": syntax_ok,
+        "syntax_error": syntax_error,
+    }
+
 @app.post("/codespaces/execute")
 async def codespaces_execute(request: dict):
     """Run a safe, sandboxed workspace command."""
+    _ensure_codespaces_enabled()
     return _run_codespaces_command(
         command=request.get("command", ""),
         cwd=request.get("cwd", "."),
@@ -11089,6 +11643,7 @@ async def codespaces_execute(request: dict):
 @app.post("/codespaces/rewrite-file")
 async def codespaces_rewrite_file(request: dict):
     """Rewrite a workspace file with new content (scoped to repo root)."""
+    _ensure_codespaces_enabled()
     path = request.get("path", "")
     content = request.get("content", "")
     if not path:
@@ -11108,6 +11663,7 @@ async def codespaces_rewrite_file(request: dict):
 @app.post("/codespaces/list-dir")
 async def codespaces_list_dir(request: dict = None, path: str = "."):
     """List directory contents inside the workspace (with file type, size)."""
+    _ensure_codespaces_enabled()
     body = request or {}
     dir_path = (body.get("path") or path or ".").strip()
     try:
@@ -11139,6 +11695,7 @@ async def codespaces_list_dir(request: dict = None, path: str = "."):
 @app.post("/codespaces/read-file")
 async def codespaces_read_file(request: dict):
     """Read a workspace file (capped at 64 KB)."""
+    _ensure_codespaces_enabled()
     path = request.get("path", "")
     if not path:
         raise HTTPException(status_code=400, detail="path is required")
@@ -11173,6 +11730,7 @@ async def codespaces_read_file(request: dict):
 @app.post("/codespaces/search-files")
 async def codespaces_search_files(request: dict):
     """Search for a text pattern across workspace files."""
+    _ensure_codespaces_enabled()
     query = (request.get("query") or "").strip()
     search_path = (request.get("path") or ".").strip()
     case_sensitive = bool(request.get("case_sensitive", False))
@@ -11217,6 +11775,7 @@ async def codespaces_search_files(request: dict):
 @app.get("/codespaces/git-status")
 async def codespaces_git_status():
     """Return current git status, branch, and ahead/behind counts."""
+    _ensure_codespaces_enabled()
     def _run(cmd: list, cwd: str = None) -> str:
         try:
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=10,
@@ -11255,6 +11814,7 @@ async def codespaces_git_status():
 @app.get("/codespaces/git-diff")
 async def codespaces_git_diff(file: str = "", staged: bool = False):
     """Return git diff for all or a specific file."""
+    _ensure_codespaces_enabled()
     try:
         cmd = ["git", "diff"]
         if staged:
@@ -11275,6 +11835,7 @@ async def codespaces_git_diff(file: str = "", staged: bool = False):
 @app.get("/codespaces/git-log")
 async def codespaces_git_log(limit: int = 20):
     """Return recent git log entries."""
+    _ensure_codespaces_enabled()
     try:
         limit = max(1, min(int(limit), 100))
         r = subprocess.run(
@@ -11301,6 +11862,7 @@ async def codespaces_git_log(limit: int = 20):
 @app.post("/codespaces/git-stage")
 async def codespaces_git_stage(request: dict):
     """Stage files for commit (git add)."""
+    _ensure_codespaces_enabled()
     files = request.get("files") or []
     all_files = bool(request.get("all", False))
     try:
@@ -11324,6 +11886,7 @@ async def codespaces_git_stage(request: dict):
 @app.post("/codespaces/git-commit")
 async def codespaces_git_commit(request: dict):
     """Create a git commit with the given message."""
+    _ensure_codespaces_enabled()
     message = (request.get("message") or "").strip()
     if not message:
         raise HTTPException(status_code=400, detail="Commit message is required")
@@ -11348,75 +11911,319 @@ async def codespaces_ai_edit(request: dict):
     Returns the original content, the new proposed content, and optionally
     applies the change if apply=true.
     """
+    _ensure_codespaces_enabled()
     path = (request.get("path") or "").strip()
     instruction = (request.get("instruction") or "").strip()
     apply = bool(request.get("apply", False))
 
     if not path or not instruction:
         raise HTTPException(status_code=400, detail="path and instruction are required")
+    return _run_ai_edit_pipeline(path=path, instruction=instruction, apply=apply, strict_syntax=False)
 
-    llm = llm_medium or llm_fast or llm_deep
-    if not llm:
-        raise HTTPException(status_code=503, detail="No LLM available")
 
-    try:
-        safe_path = _safe_workspace_path(path)
-        if not safe_path.is_file():
-            raise HTTPException(status_code=404, detail=f"File not found: {path}")
-        original = safe_path.read_text(encoding="utf-8", errors="replace")[:32000]
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except HTTPException:
-        raise
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# ==================== SELF-STATE / SAFE SELF-EDIT ====================
 
-    fname = safe_path.name
-    ext = safe_path.suffix.lstrip(".")
-    prompt = (
-        f"You are a code editor. I will give you a file and an instruction."
-        f" Return ONLY the complete updated file content with no extra commentary, "
-        f"no markdown fences, and no explanation.\n\n"
-        f"FILE: {fname}\n"
-        f"---\n{original}\n---\n\n"
-        f"INSTRUCTION: {instruction}\n\n"
-        f"Updated file content:"
+@app.get("/self/state")
+async def self_state():
+    """Expose current runtime/editor state so the assistant can inspect itself safely."""
+    models_loaded = {
+        "fast_model": llm_fast is not None,
+        "medium_model": llm_medium is not None,
+        "deep_model": llm_deep is not None,
+        "reasoning_model": llm_reasoning is not None,
+        "vision_model": llm_vision is not None,
+        "vision_code_model": llm_vision_code is not None,
+    }
+    status = subprocess.run(
+        ["git", "status", "--short"],
+        cwd=str(REPO_ROOT),
+        capture_output=True,
+        text=True,
+        timeout=8,
     )
+    changed = [ln for ln in (status.stdout or "").splitlines() if ln.strip()]
+    return {
+        "ok": True,
+        "repo_root": str(REPO_ROOT),
+        "service": "edison-core",
+        "codespaces_enabled": CODESPACES_ENABLED,
+        "models_loaded": models_loaded,
+        "qdrant_ready": bool(rag_system and rag_system.is_ready()),
+        "video_service_ready": video_service is not None,
+        "safe_edit_backups": str(SELF_EDIT_BACKUP_DIR.relative_to(REPO_ROOT)),
+        "changed_files_count": len(changed),
+        "changed_files": changed[:30],
+    }
 
-    lock = get_lock_for_model(llm)
-    with lock:
-        resp = llm(prompt, max_tokens=4096, temperature=0.2, stop=["---END---"])
 
-    new_content = resp["choices"][0]["text"].strip()
-    # Strip accidental markdown fences
-    if new_content.startswith("```"):
-        lines = new_content.splitlines()
-        new_content = "\n".join(lines[1:]).rstrip("`").rstrip()
+@app.post("/self/safe-edit")
+async def self_safe_edit(request: dict):
+    """Run AI edit with syntax guardrails and automatic backups."""
+    path = (request.get("path") or "").strip()
+    instruction = (request.get("instruction") or "").strip()
+    apply = bool(request.get("apply", False))
+    if not path or not instruction:
+        raise HTTPException(status_code=400, detail="path and instruction are required")
 
-    if apply:
-        try:
-            safe_path.write_text(new_content, encoding="utf-8")
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Could not write file: {e}")
+    # Restrict to core implementation areas.
+    allowed_prefixes = ("services/", "web/", "config/")
+    if not path.startswith(allowed_prefixes):
+        raise HTTPException(status_code=403, detail="safe-edit only allows files under services/, web/, or config/")
 
-    # Build simple unified diff
-    import difflib
-    diff_lines = list(difflib.unified_diff(
-        original.splitlines(keepends=True),
-        new_content.splitlines(keepends=True),
-        fromfile=f"a/{fname}",
-        tofile=f"b/{fname}",
-        n=3,
-    ))
-    diff_text = "".join(diff_lines)
+    return _run_ai_edit_pipeline(path=path, instruction=instruction, apply=apply, strict_syntax=True)
+
+
+# ==================== DEEP SEARCH ====================
+
+@app.post("/deep-search")
+async def deep_search(request: SearchRequest):
+    """Run deep search with fallback to normal web search if deep mode is unavailable."""
+    if not search_tool:
+        raise HTTPException(status_code=503, detail="Web search tool not available")
+    try:
+        if hasattr(search_tool, "deep_search"):
+            results, meta = search_tool.deep_search(request.query, num_results=request.num_results)
+            return {
+                "ok": True,
+                "query": request.query,
+                "mode": "deep",
+                "meta": meta or {},
+                "results": results,
+            }
+        results = search_tool.search(request.query, num_results=request.num_results)
+        return {
+            "ok": True,
+            "query": request.query,
+            "mode": "standard-fallback",
+            "meta": {"fallback": True, "reason": "deep_search_not_supported"},
+            "results": results,
+        }
+    except Exception as e:
+        logger.error(f"Deep search error: {e}")
+        raise HTTPException(status_code=500, detail=f"Deep search error: {str(e)}")
+
+
+# ==================== BRANDING / CLIENT FOLDERS ====================
+
+@app.get("/branding/clients")
+async def branding_list_clients():
+    db = _load_branding()
+    return {"ok": True, "clients": db.get("clients", [])}
+
+
+@app.post("/branding/clients")
+async def branding_create_client(request: dict):
+    name = (request.get("name") or "").strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name is required")
+
+    db = _load_branding()
+    clients = db.get("clients", [])
+    existing = next((c for c in clients if c.get("name", "").lower() == name.lower()), None)
+    if existing:
+        return {"ok": True, "client": existing, "created": False}
+
+    slug = _slugify_client_name(name)
+    dirs = _client_asset_dirs(slug)
+    for d in dirs.values():
+        d.mkdir(parents=True, exist_ok=True)
+
+    entry = {
+        "id": f"client_{uuid.uuid4().hex[:10]}",
+        "name": name,
+        "slug": slug,
+        "created_at": int(time.time()),
+        "paths": {
+            "base": str(dirs["base"].relative_to(REPO_ROOT)),
+            "images": str(dirs["images"].relative_to(REPO_ROOT)),
+            "videos": str(dirs["videos"].relative_to(REPO_ROOT)),
+            "files": str(dirs["files"].relative_to(REPO_ROOT)),
+        },
+    }
+    clients.append(entry)
+    db["clients"] = clients
+    _save_branding(db)
+    return {"ok": True, "client": entry, "created": True}
+
+
+@app.get("/branding/clients/{client_id}/assets")
+async def branding_list_assets(client_id: str):
+    db = _load_branding()
+    clients = db.get("clients", [])
+    client = next((c for c in clients if c.get("id") == client_id), None)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    slug = client.get("slug", "")
+    dirs = _client_asset_dirs(slug)
+
+    def _scan(folder: Path) -> list:
+        if not folder.exists():
+            return []
+        out = []
+        for fp in sorted(folder.rglob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+            if not fp.is_file():
+                continue
+            try:
+                rel = fp.relative_to(REPO_ROOT)
+                out.append({
+                    "name": fp.name,
+                    "path": str(rel),
+                    "size": fp.stat().st_size,
+                    "mtime": int(fp.stat().st_mtime),
+                })
+            except Exception:
+                continue
+        return out[:200]
 
     return {
         "ok": True,
-        "path": str(safe_path.relative_to(REPO_ROOT)),
-        "original": original,
-        "new_content": new_content,
-        "diff": diff_text,
-        "applied": apply,
+        "client": client,
+        "assets": {
+            "images": _scan(dirs["images"]),
+            "videos": _scan(dirs["videos"]),
+            "files": _scan(dirs["files"]),
+        },
+    }
+
+
+@app.post("/branding/clients/{client_id}/add-existing")
+async def branding_add_existing_asset(client_id: str, request: dict):
+    db = _load_branding()
+    clients = db.get("clients", [])
+    client = next((c for c in clients if c.get("id") == client_id), None)
+    if not client:
+        raise HTTPException(status_code=404, detail="Client not found")
+
+    source_path = (request.get("source_path") or "").strip()
+    asset_type = (request.get("asset_type") or "").strip().lower()
+    move_file = bool(request.get("move", False))
+    if not source_path:
+        raise HTTPException(status_code=400, detail="source_path is required")
+
+    try:
+        safe_src = _safe_workspace_path(source_path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not safe_src.is_file():
+        raise HTTPException(status_code=404, detail=f"File not found: {source_path}")
+
+    ext = safe_src.suffix.lower()
+    if not asset_type:
+        if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+            asset_type = "images"
+        elif ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
+            asset_type = "videos"
+        else:
+            asset_type = "files"
+    if asset_type not in {"images", "videos", "files"}:
+        raise HTTPException(status_code=400, detail="asset_type must be one of images, videos, files")
+
+    dirs = _client_asset_dirs(client.get("slug", ""))
+    target_dir = dirs[asset_type]
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / safe_src.name
+    if target.exists():
+        target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
+
+    if move_file:
+        shutil.move(str(safe_src), str(target))
+    else:
+        shutil.copy2(str(safe_src), str(target))
+
+    return {
+        "ok": True,
+        "client_id": client_id,
+        "asset_type": asset_type,
+        "stored_path": str(target.relative_to(REPO_ROOT)),
+        "moved": move_file,
+    }
+
+
+# ==================== VIDEO EDITING ====================
+
+@app.post("/video/edit")
+async def video_edit(request: dict):
+    """
+    Edit existing video files using ffmpeg operations.
+    Supported operations: trim, mute, resize, fps, mux_audio.
+    """
+    source_path = (request.get("source_path") or "").strip()
+    operation = (request.get("operation") or "trim").strip().lower()
+    if not source_path:
+        raise HTTPException(status_code=400, detail="source_path is required")
+
+    try:
+        src = _safe_workspace_path(source_path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not src.is_file():
+        raise HTTPException(status_code=404, detail=f"Video not found: {source_path}")
+
+    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+    outputs_dir = REPO_ROOT / "outputs" / "videos"
+    outputs_dir.mkdir(parents=True, exist_ok=True)
+
+    output_name = (request.get("output_name") or "").strip()
+    if output_name:
+        output_name = re.sub(r"[^a-zA-Z0-9._-]", "_", output_name)
+    else:
+        output_name = f"edited_{operation}_{uuid.uuid4().hex[:8]}.mp4"
+    if not output_name.endswith(".mp4"):
+        output_name += ".mp4"
+    out_path = outputs_dir / output_name
+
+    cmd = [ffmpeg_bin, "-y", "-i", str(src)]
+    if operation == "trim":
+        start = float(request.get("start_seconds", 0) or 0)
+        end = request.get("end_seconds")
+        duration = None
+        if end is not None:
+            end = float(end)
+            duration = max(0.1, end - start)
+        if start > 0:
+            cmd.extend(["-ss", str(start)])
+        if duration is not None:
+            cmd.extend(["-t", str(duration)])
+        cmd.extend(["-c:v", "libx264", "-c:a", "aac", str(out_path)])
+    elif operation == "mute":
+        cmd.extend(["-c:v", "copy", "-an", str(out_path)])
+    elif operation == "resize":
+        width = int(request.get("width") or 1280)
+        height = int(request.get("height") or 720)
+        cmd.extend(["-vf", f"scale={width}:{height}", "-c:v", "libx264", "-c:a", "aac", str(out_path)])
+    elif operation == "fps":
+        fps = int(request.get("fps") or 24)
+        cmd.extend(["-filter:v", f"fps={fps}", "-c:v", "libx264", "-c:a", "aac", str(out_path)])
+    elif operation == "mux_audio":
+        audio_path = (request.get("audio_path") or "").strip()
+        if not audio_path:
+            raise HTTPException(status_code=400, detail="audio_path is required for mux_audio")
+        try:
+            safe_audio = _safe_workspace_path(audio_path)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        if not safe_audio.is_file():
+            raise HTTPException(status_code=404, detail=f"Audio file not found: {audio_path}")
+        cmd.extend(["-i", str(safe_audio), "-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)])
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported operation")
+
+    try:
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"ffmpeg invocation failed: {e}")
+
+    if proc.returncode != 0 or not out_path.exists():
+        err = (proc.stderr or proc.stdout or "Unknown ffmpeg error")[:1200]
+        raise HTTPException(status_code=500, detail=f"Video edit failed: {err}")
+
+    return {
+        "ok": True,
+        "operation": operation,
+        "source_path": str(src.relative_to(REPO_ROOT)),
+        "output_path": str(out_path.relative_to(REPO_ROOT)),
+        "video_url": f"/video/{out_path.name}",
     }
 
 

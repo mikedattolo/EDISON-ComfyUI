@@ -126,12 +126,12 @@
                     Files
                 </button>
 
-                <button class="sidebar-feature-btn" id="codespacesBtn" title="Codespaces workspace" onclick="event.stopPropagation(); window.toggleCodespacesPanel && window.toggleCodespacesPanel();">
+                <button class="sidebar-feature-btn" id="brandingBtn" title="Branding and Marketing" onclick="event.stopPropagation(); window.toggleBrandingPanel && window.toggleBrandingPanel();">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
-                        <path d="M3 4h14v12H3z"/>
-                        <path d="M7 8l-2 2 2 2M13 8l2 2-2 2M10 7l-1 6"/>
+                        <rect x="2" y="3" width="16" height="12" rx="2"/>
+                        <path d="M5 8h10M5 11h7"/>
                     </svg>
-                    Codespaces
+                    Branding
                 </button>
 
                 <button class="sidebar-feature-btn" id="connectorsBtn" title="API Connectors" onclick="event.stopPropagation(); window.toggleConnectorsPanel && window.toggleConnectorsPanel();">
@@ -322,11 +322,6 @@
                                 <span class="mode-icon">🖥️</span>
                                 <span class="mode-label">Work</span>
                             </button>
-                            <button class="mode-btn" data-mode="codespaces" title="Developer command and code workspace">
-                                <span class="mode-icon">🧑‍💻</span>
-                                <span class="mode-label">Codespaces</span>
-                            </button>
-
                         </div>
                         
                         <div class="input-area">
@@ -372,6 +367,10 @@
                                 <span style="opacity: 0.6; font-size: 12px;">Auto memory enabled</span>
                             </div>
                             <div style="display:flex;gap:6px;align-items:center;">
+                                <button class="input-footer-btn" id="deepSearchBtn" title="Run Deep Search" onclick="window.openDeepSearchPanel && window.openDeepSearchPanel()">
+                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="6" cy="6" r="4"/><path d="M9 9l4 4"/></svg>
+                                    Deep Search
+                                </button>
                                 <button class="input-footer-btn" id="promptLibBtn" title="Prompt Library" onclick="window.togglePromptLibrary && window.togglePromptLibrary()">
                                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="8" height="9" rx="1"/><path d="M4 7h4M4 9h3"/><path d="M9 1h3a1 1 0 011 1v9a1 1 0 01-1 1"/></svg>
                                     Prompts
@@ -450,8 +449,6 @@
                             <option value="agent">Agent Mode</option>
                             <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
-                            <option value="codespaces">Codespaces (Dev Workspace)</option>
-
                         </select>
                     </div>
                     
@@ -605,127 +602,89 @@
 
     
 
-    <div class="feature-panel cs-panel" id="codespacesPanel" style="transform: translateX(100%); visibility: hidden;">
-        <div class="feature-panel-header cs-header">
-            <div class="cs-header-left">
-                <span class="cs-logo">⌨️</span>
-                <h2>Codespaces</h2>
-            </div>
-            <div class="cs-header-right">
-                <span id="csBranchBadge" class="cs-branch-badge" style="display:none;"></span>
-                <button class="feature-panel-close" onclick="window.toggleCodespacesPanel && window.toggleCodespacesPanel();">×</button>
-            </div>
+    <div class="feature-panel" id="brandingPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🏷️ Branding & Marketing</h2>
+            <button class="feature-panel-close" onclick="window.toggleBrandingPanel && window.toggleBrandingPanel();">×</button>
         </div>
-
-        <!-- Tab bar -->
-        <div class="cs-tabs">
-            <button class="cs-tab active" data-tab="terminal" onclick="window.csShowTab('terminal')">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M1 3h12v8H1zM4 6l2 2-2 2"/></svg>
-                Terminal
-            </button>
-            <button class="cs-tab" data-tab="files" onclick="window.csShowTab('files')">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 2h4l2 2h4v8H2z"/></svg>
-                Files
-            </button>
-            <button class="cs-tab" data-tab="git" onclick="window.csShowTab('git')">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><circle cx="4" cy="4" r="1.5"/><circle cx="10" cy="10" r="1.5"/><circle cx="10" cy="4" r="1.5"/><line x1="4" y1="5.5" x2="4" y2="10"/><line x1="4" y1="10" x2="8.5" y2="10"/><line x1="10" y1="5.5" x2="10" y2="8.5"/></svg>
-                Git
-            </button>
-            <button class="cs-tab" data-tab="aiedit" onclick="window.csShowTab('aiedit')">
-                <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M2 10l3-3 2 2 4-5"/><circle cx="11" cy="4" r="1.5"/></svg>
-                AI Edit
-            </button>
-        </div>
-
-        <!-- Terminal tab -->
-        <div class="cs-tab-content" id="cs-tab-terminal">
-            <div class="cs-toolbar">
-                <input type="text" id="csCwd" class="cs-cwd-input" value="." placeholder="Working dir">
-                <button class="cs-toolbar-btn" onclick="window.csClearTerminal()">Clear</button>
-            </div>
-            <div id="csTerminalHistory" class="cs-terminal-history"></div>
-            <div class="cs-terminal-input-row">
-                <span class="cs-prompt-symbol">$</span>
-                <input type="text" id="codespacesCommand" class="cs-cmd-input" placeholder="Enter command…" autocomplete="off" spellcheck="false">
-                <button class="cs-run-btn" onclick="window.runCodespacesCommand()">▶</button>
-            </div>
-        </div>
-
-        <!-- Files tab -->
-        <div class="cs-tab-content" id="cs-tab-files" style="display:none">
-            <div class="cs-toolbar">
-                <input type="text" id="csFileBrowsePath" class="cs-cwd-input" value="." placeholder="Path to browse">
-                <button class="cs-toolbar-btn" onclick="window.csBrowseDir()">Go</button>
-            </div>
-            <div id="csFileTree" class="cs-file-tree">
-                <div class="cs-tree-hint">Enter a path and press Go, or click below.</div>
-            </div>
-            <div id="csFileViewer" class="cs-file-viewer" style="display:none">
-                <div class="cs-file-viewer-header">
-                    <span id="csFileViewerPath" class="cs-file-viewer-path"></span>
-                    <div style="display:flex;gap:6px">
-                        <button class="cs-toolbar-btn" onclick="window.csCopyFileContent()">Copy</button>
-                        <button class="cs-toolbar-btn" onclick="window.csSendFileToChat()">→ Chat</button>
-                        <button class="cs-toolbar-btn" onclick="window.csCloseFileViewer()">×</button>
-                    </div>
-                </div>
-                <pre id="csFileViewerContent" class="cs-file-viewer-content"></pre>
-            </div>
-        </div>
-
-        <!-- Git tab -->
-        <div class="cs-tab-content" id="cs-tab-git" style="display:none">
-            <div class="cs-toolbar">
-                <button class="cs-toolbar-btn" onclick="window.csGitRefresh()" style="width:100%">🔄 Refresh Status</button>
-            </div>
-            <div id="csGitStatus" class="cs-git-status">
-                <div class="cs-tree-hint">Click Refresh Status to load.</div>
-            </div>
-            <div class="cs-git-actions">
-                <div style="display:flex;gap:6px;margin-bottom:8px">
-                    <button class="cs-run-btn" onclick="window.csGitStageAll()" style="flex:1">Stage All</button>
-                    <button class="cs-run-btn" onclick="window.csGitDiff()" style="flex:1">View Diff</button>
-                </div>
-                <input type="text" id="csGitCommitMsg" class="cs-cmd-input" placeholder="Commit message…">
-                <button class="cs-run-btn" onclick="window.csGitCommit()" style="width:100%;margin-top:6px">💾 Commit</button>
-            </div>
-            <div id="csGitDiffViewer" class="cs-diff-viewer" style="display:none">
-                <div class="cs-file-viewer-header">
-                    <span>Git Diff</span>
-                    <button class="cs-toolbar-btn" onclick="document.getElementById('csGitDiffViewer').style.display='none'">×</button>
-                </div>
-                <pre id="csGitDiffContent" class="cs-diff-content"></pre>
-            </div>
-            <div id="csGitLog" class="cs-git-log" style="display:none"></div>
-            <button class="cs-toolbar-btn" onclick="window.csGitLog()" style="width:100%;margin-top:8px">📜 View Log</button>
-        </div>
-
-        <!-- AI Edit tab -->
-        <div class="cs-tab-content" id="cs-tab-aiedit" style="display:none">
+        <div class="feature-panel-body">
             <div class="feature-section">
-                <label class="feature-label">File to Edit</label>
-                <input type="text" id="csAiEditPath" class="feature-input" placeholder="e.g. services/app.py">
+                <label class="feature-label">Create Client Folder</label>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <input type="text" id="brandingClientName" class="feature-input" placeholder="Company or business name">
+                    <button class="feature-generate-btn" onclick="window.brandingCreateClient && window.brandingCreateClient()">Create</button>
+                </div>
             </div>
             <div class="feature-section">
-                <label class="feature-label">Instruction</label>
-                <textarea id="csAiEditInstruction" class="feature-input feature-textarea" rows="4"
-                    placeholder="e.g. Add input validation to the login endpoint. Return a 422 if email is missing."></textarea>
-            </div>
-            <div style="display:flex;gap:8px;margin-bottom:8px">
-                <button class="feature-generate-btn" onclick="window.csAiPreview()" style="flex:1">🔍 Preview Changes</button>
-                <button class="feature-generate-btn" onclick="window.csAiApply()" style="flex:1" id="csAiApplyBtn" disabled>✅ Apply</button>
-            </div>
-            <div id="csAiEditStatus" class="feature-status" style="display:none"></div>
-            <div id="csAiDiffViewer" class="cs-diff-viewer" style="display:none">
-                <div class="cs-file-viewer-header">
-                    <span>Proposed Changes</span>
-                    <button class="cs-toolbar-btn" onclick="document.getElementById('csAiDiffViewer').style.display='none'">×</button>
+                <label class="feature-label">Client</label>
+                <div style="display:flex;gap:8px;align-items:center;">
+                    <select id="brandingClientSelect" class="feature-input"></select>
+                    <button class="connector-list-btn" onclick="window.brandingRefreshClients && window.brandingRefreshClients()">🔄</button>
                 </div>
-                <pre id="csAiDiffContent" class="cs-diff-content"></pre>
             </div>
+            <div class="feature-section">
+                <label class="feature-label">Attach Existing Asset</label>
+                <input type="text" id="brandingSourcePath" class="feature-input" placeholder="e.g. outputs/images/example.png">
+                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                    <select id="brandingAssetType" class="feature-input" style="max-width:180px;">
+                        <option value="">Auto-detect</option>
+                        <option value="images">Image</option>
+                        <option value="videos">Video</option>
+                        <option value="files">File</option>
+                    </select>
+                    <label style="font-size:13px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
+                        <input type="checkbox" id="brandingMoveFile"> Move instead of copy
+                    </label>
+                    <button class="feature-generate-btn" onclick="window.brandingAttachAsset && window.brandingAttachAsset()">Attach</button>
+                </div>
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Assets</label>
+                <div id="brandingAssetsList" style="max-height:260px;overflow:auto;color:var(--text-secondary);font-size:13px;">Select a client to view assets.</div>
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">AI Video Editing</label>
+                <input type="text" id="videoEditSourcePath" class="feature-input" placeholder="e.g. outputs/videos/input.mp4">
+                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                    <select id="videoEditOperation" class="feature-input" style="max-width:180px;">
+                        <option value="trim">Trim</option>
+                        <option value="mute">Mute</option>
+                        <option value="resize">Resize</option>
+                        <option value="fps">FPS</option>
+                        <option value="mux_audio">Mux Audio</option>
+                    </select>
+                    <input type="number" id="videoEditStart" class="feature-input" placeholder="start(s)" style="max-width:100px;">
+                    <input type="number" id="videoEditEnd" class="feature-input" placeholder="end(s)" style="max-width:100px;">
+                </div>
+                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
+                    <input type="number" id="videoEditWidth" class="feature-input" placeholder="width" style="max-width:100px;">
+                    <input type="number" id="videoEditHeight" class="feature-input" placeholder="height" style="max-width:100px;">
+                    <input type="number" id="videoEditFps" class="feature-input" placeholder="fps" style="max-width:100px;">
+                    <input type="text" id="videoEditAudioPath" class="feature-input" placeholder="audio path (mux only)">
+                    <button class="feature-generate-btn" onclick="window.runVideoEdit && window.runVideoEdit()">Run</button>
+                </div>
+            </div>
+            <div class="feature-status" id="brandingStatus" style="display:none"></div>
         </div>
+    </div>
 
-        <div class="feature-status" id="codespacesStatus" style="display:none; margin:8px"></div>
+    <div class="feature-panel" id="deepSearchPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🔎 Deep Search</h2>
+            <button class="feature-panel-close" onclick="window.toggleDeepSearchPanel && window.toggleDeepSearchPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
+            <div class="feature-section">
+                <label class="feature-label">Query</label>
+                <textarea id="deepSearchQuery" class="feature-input feature-textarea" rows="4" placeholder="Ask a research question..."></textarea>
+            </div>
+            <div style="display:flex;gap:8px;align-items:center; margin-bottom:10px;">
+                <input type="number" id="deepSearchLimit" class="feature-input" value="8" min="1" max="20" style="max-width:120px;">
+                <button class="feature-generate-btn" onclick="window.runDeepSearch && window.runDeepSearch()">Run Deep Search</button>
+            </div>
+            <div id="deepSearchResults" class="cs-file-viewer-content" style="min-height:160px;max-height:340px;overflow:auto;white-space:pre-wrap;">No results yet.</div>
+            <div class="feature-status" id="deepSearchStatus" style="display:none"></div>
+        </div>
     </div>
 
     
@@ -999,7 +958,7 @@
                 <div class="shortcut-row"><kbd>Ctrl+Enter</kbd><span>Send message</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+K</kbd><span>Focus input</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+P</kbd><span>Open Prompt Library</span></div>
-                <div class="shortcut-row"><kbd>Ctrl+Shift+C</kbd><span>Open Codespaces</span></div>
+                <div class="shortcut-row"><kbd>Ctrl+Shift+B</kbd><span>Open Branding panel</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+G</kbd><span>Open Git panel</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+/</kbd><span>Toggle dark/light</span></div>
                 <div class="shortcut-row"><kbd>Esc</kbd><span>Close overlays</span></div>
