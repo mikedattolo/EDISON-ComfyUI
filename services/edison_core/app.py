@@ -12007,137 +12007,161 @@ async def deep_search(request: SearchRequest):
 
 @app.get("/branding/clients")
 async def branding_list_clients():
-    db = _load_branding()
-    return {"ok": True, "clients": db.get("clients", [])}
+    try:
+        db = _load_branding()
+        return {"ok": True, "clients": db.get("clients", [])}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Branding list clients error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not load clients: {e}")
 
 
 @app.post("/branding/clients")
 async def branding_create_client(request: dict):
-    name = (request.get("name") or "").strip()
-    if not name:
-        raise HTTPException(status_code=400, detail="name is required")
+    try:
+        name = (request.get("name") or "").strip()
+        if not name:
+            raise HTTPException(status_code=400, detail="name is required")
 
-    db = _load_branding()
-    clients = db.get("clients", [])
-    existing = next((c for c in clients if c.get("name", "").lower() == name.lower()), None)
-    if existing:
-        return {"ok": True, "client": existing, "created": False}
+        db = _load_branding()
+        clients = db.get("clients", [])
+        existing = next((c for c in clients if c.get("name", "").lower() == name.lower()), None)
+        if existing:
+            return {"ok": True, "client": existing, "created": False}
 
-    slug = _slugify_client_name(name)
-    dirs = _client_asset_dirs(slug)
-    for d in dirs.values():
-        d.mkdir(parents=True, exist_ok=True)
+        slug = _slugify_client_name(name)
+        dirs = _client_asset_dirs(slug)
+        for d in dirs.values():
+            d.mkdir(parents=True, exist_ok=True)
 
-    entry = {
-        "id": f"client_{uuid.uuid4().hex[:10]}",
-        "name": name,
-        "slug": slug,
-        "created_at": int(time.time()),
-        "paths": {
-            "base": str(dirs["base"].relative_to(REPO_ROOT)),
-            "images": str(dirs["images"].relative_to(REPO_ROOT)),
-            "videos": str(dirs["videos"].relative_to(REPO_ROOT)),
-            "files": str(dirs["files"].relative_to(REPO_ROOT)),
-        },
-    }
-    clients.append(entry)
-    db["clients"] = clients
-    _save_branding(db)
-    return {"ok": True, "client": entry, "created": True}
+        entry = {
+            "id": f"client_{uuid.uuid4().hex[:10]}",
+            "name": name,
+            "slug": slug,
+            "created_at": int(time.time()),
+            "paths": {
+                "base": str(dirs["base"].relative_to(REPO_ROOT)),
+                "images": str(dirs["images"].relative_to(REPO_ROOT)),
+                "videos": str(dirs["videos"].relative_to(REPO_ROOT)),
+                "files": str(dirs["files"].relative_to(REPO_ROOT)),
+            },
+        }
+        clients.append(entry)
+        db["clients"] = clients
+        _save_branding(db)
+        return {"ok": True, "client": entry, "created": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Branding create client error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not create client: {e}")
 
 
 @app.get("/branding/clients/{client_id}/assets")
 async def branding_list_assets(client_id: str):
-    db = _load_branding()
-    clients = db.get("clients", [])
-    client = next((c for c in clients if c.get("id") == client_id), None)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
+    try:
+        db = _load_branding()
+        clients = db.get("clients", [])
+        client = next((c for c in clients if c.get("id") == client_id), None)
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
 
-    slug = client.get("slug", "")
-    dirs = _client_asset_dirs(slug)
+        slug = client.get("slug", "")
+        dirs = _client_asset_dirs(slug)
 
-    def _scan(folder: Path) -> list:
-        if not folder.exists():
-            return []
-        out = []
-        for fp in sorted(folder.rglob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
-            if not fp.is_file():
-                continue
-            try:
-                rel = fp.relative_to(REPO_ROOT)
-                out.append({
-                    "name": fp.name,
-                    "path": str(rel),
-                    "size": fp.stat().st_size,
-                    "mtime": int(fp.stat().st_mtime),
-                })
-            except Exception:
-                continue
-        return out[:200]
+        def _scan(folder: Path) -> list:
+            if not folder.exists():
+                return []
+            out = []
+            for fp in sorted(folder.rglob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
+                if not fp.is_file():
+                    continue
+                try:
+                    rel = fp.relative_to(REPO_ROOT)
+                    out.append({
+                        "name": fp.name,
+                        "path": str(rel),
+                        "size": fp.stat().st_size,
+                        "mtime": int(fp.stat().st_mtime),
+                    })
+                except Exception:
+                    continue
+            return out[:200]
 
-    return {
-        "ok": True,
-        "client": client,
-        "assets": {
-            "images": _scan(dirs["images"]),
-            "videos": _scan(dirs["videos"]),
-            "files": _scan(dirs["files"]),
-        },
-    }
+        return {
+            "ok": True,
+            "client": client,
+            "assets": {
+                "images": _scan(dirs["images"]),
+                "videos": _scan(dirs["videos"]),
+                "files": _scan(dirs["files"]),
+            },
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Branding list assets error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not load client assets: {e}")
 
 
 @app.post("/branding/clients/{client_id}/add-existing")
 async def branding_add_existing_asset(client_id: str, request: dict):
-    db = _load_branding()
-    clients = db.get("clients", [])
-    client = next((c for c in clients if c.get("id") == client_id), None)
-    if not client:
-        raise HTTPException(status_code=404, detail="Client not found")
-
-    source_path = (request.get("source_path") or "").strip()
-    asset_type = (request.get("asset_type") or "").strip().lower()
-    move_file = bool(request.get("move", False))
-    if not source_path:
-        raise HTTPException(status_code=400, detail="source_path is required")
-
     try:
-        safe_src = _safe_workspace_path(source_path)
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    if not safe_src.is_file():
-        raise HTTPException(status_code=404, detail=f"File not found: {source_path}")
+        db = _load_branding()
+        clients = db.get("clients", [])
+        client = next((c for c in clients if c.get("id") == client_id), None)
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
 
-    ext = safe_src.suffix.lower()
-    if not asset_type:
-        if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-            asset_type = "images"
-        elif ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
-            asset_type = "videos"
+        source_path = (request.get("source_path") or "").strip()
+        asset_type = (request.get("asset_type") or "").strip().lower()
+        move_file = bool(request.get("move", False))
+        if not source_path:
+            raise HTTPException(status_code=400, detail="source_path is required")
+
+        try:
+            safe_src = _safe_workspace_path(source_path)
+        except ValueError as e:
+            raise HTTPException(status_code=403, detail=str(e))
+        if not safe_src.is_file():
+            raise HTTPException(status_code=404, detail=f"File not found: {source_path}")
+
+        ext = safe_src.suffix.lower()
+        if not asset_type:
+            if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
+                asset_type = "images"
+            elif ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
+                asset_type = "videos"
+            else:
+                asset_type = "files"
+        if asset_type not in {"images", "videos", "files"}:
+            raise HTTPException(status_code=400, detail="asset_type must be one of images, videos, files")
+
+        dirs = _client_asset_dirs(client.get("slug", ""))
+        target_dir = dirs[asset_type]
+        target_dir.mkdir(parents=True, exist_ok=True)
+        target = target_dir / safe_src.name
+        if target.exists():
+            target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
+
+        if move_file:
+            shutil.move(str(safe_src), str(target))
         else:
-            asset_type = "files"
-    if asset_type not in {"images", "videos", "files"}:
-        raise HTTPException(status_code=400, detail="asset_type must be one of images, videos, files")
+            shutil.copy2(str(safe_src), str(target))
 
-    dirs = _client_asset_dirs(client.get("slug", ""))
-    target_dir = dirs[asset_type]
-    target_dir.mkdir(parents=True, exist_ok=True)
-    target = target_dir / safe_src.name
-    if target.exists():
-        target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
-
-    if move_file:
-        shutil.move(str(safe_src), str(target))
-    else:
-        shutil.copy2(str(safe_src), str(target))
-
-    return {
-        "ok": True,
-        "client_id": client_id,
-        "asset_type": asset_type,
-        "stored_path": str(target.relative_to(REPO_ROOT)),
-        "moved": move_file,
-    }
+        return {
+            "ok": True,
+            "client_id": client_id,
+            "asset_type": asset_type,
+            "stored_path": str(target.relative_to(REPO_ROOT)),
+            "moved": move_file,
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Branding add asset error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not add asset: {e}")
 
 
 # ==================== VIDEO EDITING ====================

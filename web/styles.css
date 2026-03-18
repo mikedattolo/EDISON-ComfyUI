@@ -6423,3 +6423,93 @@ details[open] > summary::after {
     .status-step { background: #f0f0f0; }
 }
 
+
+/* Branding Explorer UX */
+.branding-explorer-layout {
+    display: grid;
+    grid-template-columns: 280px 1fr;
+    gap: 12px;
+}
+
+.branding-left-pane,
+.branding-right-pane {
+    min-height: 0;
+}
+
+.branding-client-list {
+    margin-top: 8px;
+    max-height: 280px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-hover);
+}
+
+.branding-client-item {
+    padding: 10px 12px;
+    border-bottom: 1px solid var(--border);
+    cursor: pointer;
+    font-size: 13px;
+    color: var(--text-primary);
+}
+
+.branding-client-item:hover {
+    background: rgba(255, 255, 255, 0.03);
+}
+
+.branding-client-item.active {
+    background: rgba(89, 158, 255, 0.16);
+    outline: 1px solid rgba(89, 158, 255, 0.45);
+}
+
+.branding-selected-client {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-hover);
+    color: var(--text-secondary);
+    font-size: 13px;
+}
+
+.branding-asset-toolbar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-bottom: 8px;
+}
+
+.branding-assets-table {
+    max-height: 320px;
+    overflow: auto;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--surface-hover);
+    font-size: 13px;
+}
+
+.branding-assets-table table {
+    width: 100%;
+    border-collapse: collapse;
+}
+
+.branding-assets-table th,
+.branding-assets-table td {
+    text-align: left;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--border);
+}
+
+.branding-assets-table th {
+    position: sticky;
+    top: 0;
+    background: var(--surface);
+    color: var(--text-secondary);
+    font-weight: 600;
+    z-index: 1;
+}
+
+@media (max-width: 980px) {
+    .branding-explorer-layout {
+        grid-template-columns: 1fr;
+    }
+}

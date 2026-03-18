@@ -1757,8 +1757,24 @@ console.log('🧊 app_new_features.js v1 loading...');
     // FEATURE 4: Branding + Deep Search + 3D Printing
     // ========================================
     let brandingPanelOpen = false;
+    let videoEditorPanelOpen = false;
     let deepSearchPanelOpen = false;
     let printingPanelOpen = false;
+    let brandingClientsCache = [];
+    let brandingSelectedClientId = null;
+    let brandingAssetFilter = 'all';
+    let brandingAssetsCache = { images: [], videos: [], files: [] };
+
+    async function _readJsonResponseSafe(res) {
+        const raw = await res.text();
+        let data = {};
+        try {
+            data = raw ? JSON.parse(raw) : {};
+        } catch (_e) {
+            data = { ok: false, detail: raw || 'Invalid response from server' };
+        }
+        return data;
+    }
 
     function setPanelOpen(panelId, open) {
         const panel = document.getElementById(panelId);
@@ -1778,6 +1794,11 @@ console.log('🧊 app_new_features.js v1 loading...');
         if (brandingPanelOpen) {
             window.brandingRefreshClients && window.brandingRefreshClients();
         }
+    };
+
+    window.toggleVideoEditorPanel = function() {
+        videoEditorPanelOpen = !videoEditorPanelOpen;
+        setPanelOpen('videoEditorPanel', videoEditorPanelOpen);
     };
 
     window.toggleDeepSearchPanel = function() {
@@ -1804,34 +1825,74 @@ console.log('🧊 app_new_features.js v1 loading...');
     };
 
     window.brandingRefreshClients = async function() {
-        const select = document.getElementById('brandingClientSelect');
+        const listEl = document.getElementById('brandingClientList');
         const statusEl = document.getElementById('brandingStatus');
-        if (!select) return;
+        if (!listEl) return;
+        listEl.innerHTML = 'Loading clients...';
         try {
             const res = await fetch(`${API}/branding/clients`);
-            const data = await res.json();
-            const clients = data.clients || [];
-            select.innerHTML = '';
-            if (!clients.length) {
-                const opt = document.createElement('option');
-                opt.value = '';
-                opt.textContent = 'No clients yet';
-                select.appendChild(opt);
-                hideStatus(statusEl);
+            const data = await _readJsonResponseSafe(res);
+            if (!res.ok || !data.ok) {
+                listEl.innerHTML = '<div class="branding-client-item">No clients loaded</div>';
+                showStatus(statusEl, `❌ Failed to load clients: ${data.detail || data.error || 'Unknown error'}`, 'error');
                 return;
             }
-            clients.forEach(c => {
-                const opt = document.createElement('option');
-                opt.value = c.id;
-                opt.textContent = `${c.name} (${c.slug})`;
-                select.appendChild(opt);
-            });
-            select.onchange = () => window.brandingLoadAssets && window.brandingLoadAssets(select.value);
-            window.brandingLoadAssets && window.brandingLoadAssets(select.value);
+            const clients = data.clients || [];
+            brandingClientsCache = clients;
+            window.brandingRenderClientList(clients);
+            if (clients.length > 0) {
+                const selected = clients.find(c => c.id === brandingSelectedClientId) || clients[0];
+                brandingSelectedClientId = selected.id;
+                window.brandingLoadAssets && window.brandingLoadAssets(selected.id);
+            } else {
+                brandingSelectedClientId = null;
+                const selectedEl = document.getElementById('brandingSelectedClient');
+                if (selectedEl) selectedEl.textContent = 'No client selected';
+                const assetsEl = document.getElementById('brandingAssetsList');
+                if (assetsEl) assetsEl.textContent = 'No clients yet. Create one to begin.';
+            }
             hideStatus(statusEl);
         } catch (e) {
+            listEl.innerHTML = '<div class="branding-client-item">No clients loaded</div>';
             showStatus(statusEl, `❌ Failed to load clients: ${e.message}`, 'error');
         }
+    };
+
+    window.brandingRenderClientList = function(clients) {
+        const listEl = document.getElementById('brandingClientList');
+        if (!listEl) return;
+        if (!clients || !clients.length) {
+            listEl.innerHTML = '<div class="branding-client-item">No clients yet</div>';
+            return;
+        }
+        listEl.innerHTML = clients.map(c => {
+            const active = c.id === brandingSelectedClientId ? 'active' : '';
+            return `<div class="branding-client-item ${active}" data-client-id="${_escapeHtmlUtil(c.id)}">${_escapeHtmlUtil(c.name)}<br><span style="opacity:.7;font-size:12px;">${_escapeHtmlUtil(c.slug)}</span></div>`;
+        }).join('');
+        listEl.querySelectorAll('.branding-client-item[data-client-id]').forEach(el => {
+            el.addEventListener('click', () => {
+                const id = el.getAttribute('data-client-id');
+                if (id) {
+                    brandingSelectedClientId = id;
+                    window.brandingRenderClientList(brandingClientsCache);
+                    window.brandingLoadAssets(id);
+                }
+            });
+        });
+    };
+
+    window.brandingFilterClients = function(query) {
+        const q = (query || '').toLowerCase().trim();
+        if (!q) {
+            window.brandingRenderClientList(brandingClientsCache);
+            return;
+        }
+        const filtered = brandingClientsCache.filter(c => {
+            const name = (c.name || '').toLowerCase();
+            const slug = (c.slug || '').toLowerCase();
+            return name.includes(q) || slug.includes(q);
+        });
+        window.brandingRenderClientList(filtered);
     };
 
     window.brandingCreateClient = async function() {
@@ -1849,13 +1910,14 @@ console.log('🧊 app_new_features.js v1 loading...');
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ name }),
             });
-            const data = await res.json();
+            const data = await _readJsonResponseSafe(res);
             if (!res.ok || !data.ok) {
                 showStatus(statusEl, `❌ ${data.detail || data.error || 'Creation failed'}`, 'error');
                 return;
             }
             if (input) input.value = '';
             showStatus(statusEl, `✅ Client ready: ${data.client.name}`, 'success');
+            brandingSelectedClientId = data.client.id;
             await window.brandingRefreshClients();
         } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
@@ -1863,37 +1925,61 @@ console.log('🧊 app_new_features.js v1 loading...');
     };
 
     window.brandingLoadAssets = async function(clientId) {
+        brandingSelectedClientId = clientId;
         const listEl = document.getElementById('brandingAssetsList');
         if (!listEl || !clientId) return;
         listEl.innerHTML = 'Loading assets...';
+        const selectedEl = document.getElementById('brandingSelectedClient');
+        const clientMeta = brandingClientsCache.find(c => c.id === clientId);
+        if (selectedEl) {
+            selectedEl.textContent = clientMeta ? `${clientMeta.name} (${clientMeta.slug})` : clientId;
+        }
         try {
             const res = await fetch(`${API}/branding/clients/${encodeURIComponent(clientId)}/assets`);
-            const data = await res.json();
+            const data = await _readJsonResponseSafe(res);
             if (!res.ok || !data.ok) {
                 listEl.textContent = data.detail || data.error || 'Failed to load assets';
                 return;
             }
-            const sections = ['images', 'videos', 'files'];
-            let html = '';
-            sections.forEach(sec => {
-                const arr = data.assets?.[sec] || [];
-                html += `<div style="margin-bottom:8px;"><strong>${sec.toUpperCase()} (${arr.length})</strong></div>`;
-                if (!arr.length) {
-                    html += `<div style="margin:0 0 10px 8px;opacity:.75;">No assets</div>`;
-                    return;
-                }
-                arr.slice(0, 20).forEach(item => {
-                    html += `<div style="margin:0 0 6px 8px;word-break:break-all;">• ${_escapeHtmlUtil(item.path)}</div>`;
-                });
-            });
-            listEl.innerHTML = html;
+            brandingAssetsCache = {
+                images: data.assets?.images || [],
+                videos: data.assets?.videos || [],
+                files: data.assets?.files || [],
+            };
+            window.brandingRenderAssets();
         } catch (e) {
             listEl.textContent = `Error: ${e.message}`;
         }
     };
 
+    window.brandingSetAssetFilter = function(kind) {
+        brandingAssetFilter = kind || 'all';
+        window.brandingRenderAssets();
+    };
+
+    window.brandingRenderAssets = function() {
+        const listEl = document.getElementById('brandingAssetsList');
+        if (!listEl) return;
+        const rows = [];
+        ['images', 'videos', 'files'].forEach(kind => {
+            if (brandingAssetFilter !== 'all' && brandingAssetFilter !== kind) return;
+            (brandingAssetsCache[kind] || []).forEach(item => rows.push({ kind, ...item }));
+        });
+        rows.sort((a, b) => (b.mtime || 0) - (a.mtime || 0));
+        if (!rows.length) {
+            listEl.textContent = 'No assets in this view.';
+            return;
+        }
+        const html = [
+            '<table><thead><tr><th>Type</th><th>Name</th><th>Path</th><th>Size</th></tr></thead><tbody>',
+            ...rows.slice(0, 300).map(r => `<tr><td>${_escapeHtmlUtil(r.kind)}</td><td>${_escapeHtmlUtil(r.name || '')}</td><td>${_escapeHtmlUtil(r.path || '')}</td><td>${_escapeHtmlUtil(String(r.size || 0))}</td></tr>`),
+            '</tbody></table>'
+        ].join('');
+        listEl.innerHTML = html;
+    };
+
     window.brandingAttachAsset = async function() {
-        const clientId = document.getElementById('brandingClientSelect')?.value;
+        const clientId = brandingSelectedClientId;
         const sourcePath = (document.getElementById('brandingSourcePath')?.value || '').trim();
         const assetType = (document.getElementById('brandingAssetType')?.value || '').trim();
         const moveFile = !!document.getElementById('brandingMoveFile')?.checked;
@@ -1909,7 +1995,7 @@ console.log('🧊 app_new_features.js v1 loading...');
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ source_path: sourcePath, asset_type: assetType, move: moveFile }),
             });
-            const data = await res.json();
+            const data = await _readJsonResponseSafe(res);
             if (!res.ok || !data.ok) {
                 showStatus(statusEl, `❌ ${data.detail || data.error || 'Attach failed'}`, 'error');
                 return;
@@ -1922,7 +2008,8 @@ console.log('🧊 app_new_features.js v1 loading...');
     };
 
     window.runVideoEdit = async function() {
-        const statusEl = document.getElementById('brandingStatus');
+        const statusEl = document.getElementById('videoEditStatus');
+        const resultEl = document.getElementById('videoEditResult');
         const source_path = (document.getElementById('videoEditSourcePath')?.value || '').trim();
         const operation = (document.getElementById('videoEditOperation')?.value || 'trim').trim();
         if (!source_path) {
@@ -1946,24 +2033,28 @@ console.log('🧊 app_new_features.js v1 loading...');
         if (audio_path) payload.audio_path = audio_path;
 
         showStatus(statusEl, '⏳ Editing video...', 'loading');
+        if (resultEl) resultEl.textContent = 'Editing in progress...';
         try {
             const res = await fetch(`${API}/video/edit`, {
                 method: 'POST',
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify(payload),
             });
-            const data = await res.json();
+            const data = await _readJsonResponseSafe(res);
             if (!res.ok || !data.ok) {
                 showStatus(statusEl, `❌ ${data.detail || data.error || 'Video edit failed'}`, 'error');
+                if (resultEl) resultEl.textContent = data.detail || data.error || 'Video edit failed';
                 return;
             }
             showStatus(statusEl, `✅ Video ready: ${data.output_path}`, 'success');
+            if (resultEl) resultEl.textContent = JSON.stringify(data, null, 2);
             if (data.output_path) {
                 const srcInput = document.getElementById('brandingSourcePath');
                 if (srcInput) srcInput.value = data.output_path;
             }
         } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
+            if (resultEl) resultEl.textContent = `Error: ${e.message}`;
         }
     };
 
@@ -1984,7 +2075,7 @@ console.log('🧊 app_new_features.js v1 loading...');
                 headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ query: q, num_results: Number.isFinite(n) ? Math.max(1, Math.min(20, n)) : 8 }),
             });
-            const data = await res.json();
+            const data = await _readJsonResponseSafe(res);
             if (!res.ok || !data.ok) {
                 showStatus(statusEl, `❌ ${data.detail || data.error || 'Search failed'}`, 'error');
                 if (resultEl) resultEl.textContent = data.detail || data.error || 'Search failed';
@@ -2020,6 +2111,10 @@ console.log('🧊 app_new_features.js v1 loading...');
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'G') {
                 e.preventDefault();
                 window.openDeepSearchPanel && window.openDeepSearchPanel();
+            }
+            if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
+                e.preventDefault();
+                window.toggleVideoEditorPanel && window.toggleVideoEditorPanel();
             }
         });
     });
@@ -2643,13 +2738,14 @@ console.log('🧊 app_new_features.js v1 loading...');
                 if (mcPanelOpen) window.toggleMinecraftPanel();
                 if (fmPanelOpen) window.toggleFileManager();
                 if (brandingPanelOpen) window.toggleBrandingPanel();
+                if (videoEditorPanelOpen) window.toggleVideoEditorPanel();
                 if (deepSearchPanelOpen) window.toggleDeepSearchPanel();
                 if (printingPanelOpen) window.togglePrintingPanel();
                 if (connectorsPanelOpen) window.toggleConnectorsPanel();
             }
         });
 
-        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Branding, Deep Search, 3D Printing, API Connectors, Sandbox Browser');
+        console.log('✅ New features initialized: 3D Models, Minecraft Tools, File Manager, Branding Explorer, Video Editor, Deep Search, 3D Printing, API Connectors, Sandbox Browser');
     }
 
     // Wait for DOM

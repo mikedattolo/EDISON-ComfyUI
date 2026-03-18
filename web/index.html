@@ -4,7 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
     <title>EDISON - Offline AI Assistant</title>
-    <link rel="stylesheet" href="styles.css?v=15">
+    <link rel="stylesheet" href="styles.css?v=16">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Manrope:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -132,6 +132,14 @@
                         <path d="M5 8h10M5 11h7"/>
                     </svg>
                     Branding
+                </button>
+
+                <button class="sidebar-feature-btn" id="videoEditorBtn" title="AI Video Editing" onclick="event.stopPropagation(); window.toggleVideoEditorPanel && window.toggleVideoEditorPanel();">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <rect x="2" y="5" width="11" height="10" rx="1"/>
+                        <path d="M13 8l5-3v10l-5-3z"/>
+                    </svg>
+                    Video Edit
                 </button>
 
                 <button class="sidebar-feature-btn" id="connectorsBtn" title="API Connectors" onclick="event.stopPropagation(); window.toggleConnectorsPanel && window.toggleConnectorsPanel();">
@@ -608,63 +616,94 @@
             <button class="feature-panel-close" onclick="window.toggleBrandingPanel && window.toggleBrandingPanel();">×</button>
         </div>
         <div class="feature-panel-body">
-            <div class="feature-section">
-                <label class="feature-label">Create Client Folder</label>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <input type="text" id="brandingClientName" class="feature-input" placeholder="Company or business name">
-                    <button class="feature-generate-btn" onclick="window.brandingCreateClient && window.brandingCreateClient()">Create</button>
+            <div class="branding-explorer-layout">
+                <div class="branding-left-pane">
+                    <div class="feature-section">
+                        <label class="feature-label">Create Client Folder</label>
+                        <div style="display:flex;gap:8px;align-items:center;">
+                            <input type="text" id="brandingClientName" class="feature-input" placeholder="Company or business name">
+                            <button class="feature-generate-btn" onclick="window.brandingCreateClient && window.brandingCreateClient()">Create</button>
+                        </div>
+                    </div>
+                    <div class="feature-section">
+                        <label class="feature-label">Clients</label>
+                        <input type="text" id="brandingClientSearch" class="feature-input" placeholder="Search clients..." oninput="window.brandingFilterClients && window.brandingFilterClients(this.value)">
+                        <div id="brandingClientList" class="branding-client-list">Loading clients...</div>
+                        <div style="display:flex;justify-content:flex-end;margin-top:8px;">
+                            <button class="connector-list-btn" onclick="window.brandingRefreshClients && window.brandingRefreshClients()">🔄 Refresh</button>
+                        </div>
+                    </div>
+                </div>
+                <div class="branding-right-pane">
+                    <div class="feature-section">
+                        <label class="feature-label">Selected Client</label>
+                        <div id="brandingSelectedClient" class="branding-selected-client">No client selected</div>
+                    </div>
+                    <div class="feature-section">
+                        <label class="feature-label">Attach Existing Asset</label>
+                        <input type="text" id="brandingSourcePath" class="feature-input" placeholder="e.g. outputs/images/example.png">
+                        <div style="display:flex;gap:8px;margin-top:8px;align-items:center;flex-wrap:wrap;">
+                            <select id="brandingAssetType" class="feature-input" style="max-width:180px;">
+                                <option value="">Auto-detect</option>
+                                <option value="images">Image</option>
+                                <option value="videos">Video</option>
+                                <option value="files">File</option>
+                            </select>
+                            <label style="font-size:13px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
+                                <input type="checkbox" id="brandingMoveFile"> Move instead of copy
+                            </label>
+                            <button class="feature-generate-btn" onclick="window.brandingAttachAsset && window.brandingAttachAsset()">Attach</button>
+                        </div>
+                    </div>
+                    <div class="feature-section">
+                        <label class="feature-label">Assets (Explorer View)</label>
+                        <div class="branding-asset-toolbar">
+                            <button class="connector-list-btn" onclick="window.brandingSetAssetFilter && window.brandingSetAssetFilter('all')">All</button>
+                            <button class="connector-list-btn" onclick="window.brandingSetAssetFilter && window.brandingSetAssetFilter('images')">Images</button>
+                            <button class="connector-list-btn" onclick="window.brandingSetAssetFilter && window.brandingSetAssetFilter('videos')">Videos</button>
+                            <button class="connector-list-btn" onclick="window.brandingSetAssetFilter && window.brandingSetAssetFilter('files')">Files</button>
+                        </div>
+                        <div id="brandingAssetsList" class="branding-assets-table">Select a client to view assets.</div>
+                    </div>
                 </div>
             </div>
+            <div class="feature-status" id="brandingStatus" style="display:none"></div>
+        </div>
+    </div>
+
+    <div class="feature-panel" id="videoEditorPanel" style="transform: translateX(100%); visibility: hidden;">
+        <div class="feature-panel-header">
+            <h2>🎬 AI Video Editing</h2>
+            <button class="feature-panel-close" onclick="window.toggleVideoEditorPanel && window.toggleVideoEditorPanel();">×</button>
+        </div>
+        <div class="feature-panel-body">
             <div class="feature-section">
-                <label class="feature-label">Client</label>
-                <div style="display:flex;gap:8px;align-items:center;">
-                    <select id="brandingClientSelect" class="feature-input"></select>
-                    <button class="connector-list-btn" onclick="window.brandingRefreshClients && window.brandingRefreshClients()">🔄</button>
-                </div>
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">Attach Existing Asset</label>
-                <input type="text" id="brandingSourcePath" class="feature-input" placeholder="e.g. outputs/images/example.png">
-                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
-                    <select id="brandingAssetType" class="feature-input" style="max-width:180px;">
-                        <option value="">Auto-detect</option>
-                        <option value="images">Image</option>
-                        <option value="videos">Video</option>
-                        <option value="files">File</option>
-                    </select>
-                    <label style="font-size:13px;color:var(--text-secondary);display:flex;align-items:center;gap:6px;">
-                        <input type="checkbox" id="brandingMoveFile"> Move instead of copy
-                    </label>
-                    <button class="feature-generate-btn" onclick="window.brandingAttachAsset && window.brandingAttachAsset()">Attach</button>
-                </div>
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">Assets</label>
-                <div id="brandingAssetsList" style="max-height:260px;overflow:auto;color:var(--text-secondary);font-size:13px;">Select a client to view assets.</div>
-            </div>
-            <div class="feature-section">
-                <label class="feature-label">AI Video Editing</label>
+                <label class="feature-label">Source Video</label>
                 <input type="text" id="videoEditSourcePath" class="feature-input" placeholder="e.g. outputs/videos/input.mp4">
-                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
-                    <select id="videoEditOperation" class="feature-input" style="max-width:180px;">
+            </div>
+            <div class="feature-section">
+                <label class="feature-label">Operation</label>
+                <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+                    <select id="videoEditOperation" class="feature-input" style="max-width:220px;">
                         <option value="trim">Trim</option>
                         <option value="mute">Mute</option>
                         <option value="resize">Resize</option>
                         <option value="fps">FPS</option>
                         <option value="mux_audio">Mux Audio</option>
                     </select>
-                    <input type="number" id="videoEditStart" class="feature-input" placeholder="start(s)" style="max-width:100px;">
-                    <input type="number" id="videoEditEnd" class="feature-input" placeholder="end(s)" style="max-width:100px;">
-                </div>
-                <div style="display:flex;gap:8px;margin-top:8px;align-items:center;">
-                    <input type="number" id="videoEditWidth" class="feature-input" placeholder="width" style="max-width:100px;">
-                    <input type="number" id="videoEditHeight" class="feature-input" placeholder="height" style="max-width:100px;">
-                    <input type="number" id="videoEditFps" class="feature-input" placeholder="fps" style="max-width:100px;">
+                    <input type="number" id="videoEditStart" class="feature-input" placeholder="start(s)" style="max-width:110px;">
+                    <input type="number" id="videoEditEnd" class="feature-input" placeholder="end(s)" style="max-width:110px;">
+                    <input type="number" id="videoEditWidth" class="feature-input" placeholder="width" style="max-width:110px;">
+                    <input type="number" id="videoEditHeight" class="feature-input" placeholder="height" style="max-width:110px;">
+                    <input type="number" id="videoEditFps" class="feature-input" placeholder="fps" style="max-width:110px;">
                     <input type="text" id="videoEditAudioPath" class="feature-input" placeholder="audio path (mux only)">
-                    <button class="feature-generate-btn" onclick="window.runVideoEdit && window.runVideoEdit()">Run</button>
                 </div>
             </div>
-            <div class="feature-status" id="brandingStatus" style="display:none"></div>
+            <div class="feature-section">
+                <button class="feature-generate-btn" onclick="window.runVideoEdit && window.runVideoEdit()">Run Video Edit</button>
+            </div>
+            <div id="videoEditResult" class="cs-file-viewer-content" style="min-height:120px;max-height:260px;overflow:auto;white-space:pre-wrap;">No output yet.</div>
+            <div class="feature-status" id="videoEditStatus" style="display:none"></div>
         </div>
     </div>
 
@@ -959,7 +998,8 @@
                 <div class="shortcut-row"><kbd>Ctrl+K</kbd><span>Focus input</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+P</kbd><span>Open Prompt Library</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+B</kbd><span>Open Branding panel</span></div>
-                <div class="shortcut-row"><kbd>Ctrl+Shift+G</kbd><span>Open Git panel</span></div>
+                <div class="shortcut-row"><kbd>Ctrl+Shift+V</kbd><span>Open Video Editor panel</span></div>
+                <div class="shortcut-row"><kbd>Ctrl+Shift+G</kbd><span>Open Deep Search panel</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+/</kbd><span>Toggle dark/light</span></div>
                 <div class="shortcut-row"><kbd>Esc</kbd><span>Close overlays</span></div>
             </div>
@@ -980,7 +1020,7 @@
     <script src="gallery.js?v=13"></script>
     <script src="app_enhanced.js?v=16"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_new_features.js?v=5"></script>
+    <script src="app_new_features.js?v=6"></script
     <script src="voice_agent_live.js?v=8"></script>
 </body>
 </html>
