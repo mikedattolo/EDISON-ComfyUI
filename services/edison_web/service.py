@@ -164,6 +164,16 @@ async def root():
         return {"error": "Web UI not found"}
     return FileResponse(index_file)
 
+
+@app.get("/video-editor")
+async def video_editor_page():
+    """Serve dedicated video editor studio page."""
+    page = WEB_DIR / "video_editor.html"
+    if not page.exists():
+        logger.error(f"video_editor.html not found at {page}")
+        return {"error": "Video editor UI not found"}
+    return FileResponse(page)
+
 @app.get("/styles.css")
 async def styles():
     """Serve CSS file"""

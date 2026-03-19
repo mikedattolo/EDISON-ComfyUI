@@ -29,6 +29,8 @@ import numpy as np
 import gc
 import subprocess
 import shlex
+import mimetypes
+from urllib.parse import quote
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -1380,6 +1382,86 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
             "class_type": "SaveImage"
         }
     }
+
+
+def _estimate_image_generation_ram_mb(width: int, height: int, steps: int) -> int:
+    megapixels = (max(int(width), 64) * max(int(height), 64)) / 1_000_000
+    return max(2048, int(1400 + megapixels * 1200 + max(int(steps), 1) * 10))
+
+
+def _quantize_image_dimension(value: float, minimum: int = 256) -> int:
+    return max(minimum, int(round(float(value) / 64.0)) * 64)
+
+
+def _scale_image_dimensions(width: int, height: int, max_side: int) -> tuple[int, int]:
+    width = max(int(width), 64)
+    height = max(int(height), 64)
+    longest = max(width, height)
+    if longest <= max_side:
+        return _quantize_image_dimension(width), _quantize_image_dimension(height)
+    scale = max_side / float(longest)
+    return (
+        _quantize_image_dimension(width * scale),
+        _quantize_image_dimension(height * scale),
+    )
+
+
+def _image_generation_profiles(width: int, height: int, steps: int, auto_optimize: bool = True) -> list[dict]:
+    requested = {
+        "width": max(int(width), 256),
+        "height": max(int(height), 256),
+        "steps": max(int(steps), 1),
+        "profile": "requested",
+    }
+    profiles = [requested]
+    if not auto_optimize:
+        return profiles
+
+    candidates = [
+        (896, min(requested["steps"], 18), "balanced"),
+        (768, min(requested["steps"], 16), "reduced"),
+        (640, min(requested["steps"], 14), "lean"),
+        (512, min(requested["steps"], 12), "minimum"),
+    ]
+    seen = {(requested["width"], requested["height"], requested["steps"])}
+    for max_side, step_cap, label in candidates:
+        candidate_width, candidate_height = _scale_image_dimensions(
+            requested["width"], requested["height"], max_side
+        )
+        candidate = (candidate_width, candidate_height, max(step_cap, 1))
+        if candidate in seen:
+            continue
+        seen.add(candidate)
+        profiles.append({
+            "width": candidate[0],
+            "height": candidate[1],
+            "steps": candidate[2],
+            "profile": label,
+        })
+    return profiles
+
+
+def _video_editor_roots() -> list[tuple[str, Path]]:
+    roots = [
+        ("videos", (REPO_ROOT / "outputs" / "videos").resolve()),
+        ("clients", (REPO_ROOT / "outputs" / "clients").resolve()),
+        ("music", (REPO_ROOT / "outputs" / "music").resolve()),
+        ("audio_uploads", (REPO_ROOT / "uploads" / "audio").resolve()),
+    ]
+    for _, root in roots:
+        root.mkdir(parents=True, exist_ok=True)
+    return roots
+
+
+def _is_allowed_video_editor_path(target: Path) -> bool:
+    return any(str(target).startswith(str(root)) for _, root in _video_editor_roots())
+
+
+def _media_preview_url(path: Path) -> str | None:
+    media_type, _ = mimetypes.guess_type(str(path))
+    if not media_type or not media_type.startswith(("video/", "audio/")):
+        return None
+    return f"/video/asset?path={quote(str(path), safe='')}"
 
 # Request/Response models
 class ChatRequest(BaseModel):
@@ -7102,6 +7184,7 @@ async def generate_image(request: dict):
         ckpt_name = request.get('ckpt_name', 'sd_xl_base_1.0.safetensors')
         style_preset = request.get('style_preset', 'auto')
         comfyui_url_override = request.get('comfyui_url')
+        auto_optimize = bool(request.get('auto_optimize', True))
         
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
@@ -7115,32 +7198,70 @@ async def generate_image(request: dict):
 
         if seed is not None and (not isinstance(seed, int) or seed < 0):
             raise HTTPException(status_code=400, detail="seed must be a non-negative integer")
+
+        width = max(int(width), 256)
+        height = max(int(height), 256)
+        requested_profile = {
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "guidance_scale": guidance_scale,
+        }
         
         logger.info(
             f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale}, "
-            f"seed={seed}, sampler={sampler_name}, scheduler={scheduler}, style={style_preset})"
+            f"seed={seed}, sampler={sampler_name}, scheduler={scheduler}, style={style_preset}, auto_optimize={auto_optimize})"
         )
         
         # === MemoryGate: ensure enough VRAM for ComfyUI ===
         global _models_unloaded_for_image_gen
+        selected_profile = {
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "profile": "requested",
+        }
         with _image_gen_lock:
             if memory_gate_instance:
-                gate_result = memory_gate_instance.pre_heavy_task(
-                    required_vram_mb=4000,
-                    required_ram_mb=0,
-                    reason="image generation (ComfyUI)",
-                    allow_cpu_fallback=False,
-                )
-                if not gate_result["ok"]:
-                    raise HTTPException(
-                        status_code=507,
-                        detail=gate_result.get("error", {
-                            "message": "Not enough VRAM for image generation",
-                            "action": "unload_and_retry",
-                        }),
+                attempted_profiles = []
+                gate_result = None
+                for candidate in _image_generation_profiles(width, height, steps, auto_optimize=auto_optimize):
+                    estimated_ram_mb = _estimate_image_generation_ram_mb(
+                        candidate["width"], candidate["height"], candidate["steps"]
                     )
+                    attempted_profiles.append({
+                        **candidate,
+                        "estimated_ram_mb": estimated_ram_mb,
+                    })
+                    gate_result = memory_gate_instance.pre_heavy_task(
+                        required_vram_mb=4000,
+                        required_ram_mb=estimated_ram_mb,
+                        reason="image generation (ComfyUI)",
+                        allow_cpu_fallback=False,
+                    )
+                    if gate_result["ok"]:
+                        selected_profile = candidate
+                        break
+                if not gate_result or not gate_result["ok"]:
+                    detail = dict((gate_result or {}).get("error") or {
+                        "message": "Not enough RAM/VRAM for image generation",
+                        "action": "unload_and_retry",
+                    })
+                    detail["requested"] = requested_profile
+                    detail["attempted_profiles"] = attempted_profiles
+                    if attempted_profiles:
+                        detail["suggested_profile"] = attempted_profiles[-1]
+                    detail["auto_optimize"] = auto_optimize
+                    raise HTTPException(status_code=507, detail=detail)
+                width = selected_profile["width"]
+                height = selected_profile["height"]
+                steps = selected_profile["steps"]
                 _models_unloaded_for_image_gen = True
-                logger.info(f"MemoryGate: ok, freed={gate_result['freed_mb']:.0f}MB")
+                logger.info(
+                    "MemoryGate: ok, freed=%sMB, selected_profile=%s",
+                    f"{gate_result['freed_mb']:.0f}",
+                    {"width": width, "height": height, "steps": steps, "profile": selected_profile["profile"]},
+                )
             elif not _models_unloaded_for_image_gen:
                 # Legacy fallback
                 unload_all_llm_models()
@@ -7204,15 +7325,20 @@ async def generate_image(request: dict):
             "prompt_id": prompt_id,
             "message": "Image generation started. Check status with /image-status endpoint.",
             "comfyui_url": comfyui_url,
-            "settings": {
+            "requested_parameters": requested_profile,
+            "effective_parameters": {
                 "seed": workflow["3"]["inputs"]["seed"],
+                "width": width,
+                "height": height,
                 "steps": steps,
                 "guidance_scale": guidance_scale,
                 "sampler_name": sampler_name,
                 "scheduler": scheduler,
                 "style_preset": style_preset,
                 "ckpt_name": ckpt_name,
-            }
+                "optimized": (width != requested_profile["width"] or height != requested_profile["height"] or steps != requested_profile["steps"]),
+                "profile": selected_profile["profile"],
+            },
         }
         
     except requests.RequestException as e:
@@ -7222,6 +7348,8 @@ async def generate_image(request: dict):
             reload_llm_models_background()
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
     except HTTPException:
+        if _models_unloaded_for_image_gen:
+            reload_llm_models_background()
         raise
     except Exception as e:
         logger.error(f"Error generating image: {e}")
@@ -11102,6 +11230,110 @@ async def system_memory():
         return {"error": str(e)}
 
 
+@app.get("/system/diagnostics")
+async def system_diagnostics():
+    """Self-diagnostics for RAM pressure, tool availability, and codebase visibility."""
+    try:
+        memory = await system_memory()
+    except Exception as e:
+        memory = {"error": str(e)}
+
+    workspace = REPO_ROOT.resolve()
+    file_count = 0
+    py_js_count = 0
+    try:
+        for root, dirs, files in os.walk(workspace):
+            dirs[:] = [d for d in dirs if d not in {".git", ".venv", "__pycache__", "node_modules"}]
+            file_count += len(files)
+            py_js_count += sum(1 for f in files if f.endswith((".py", ".js", ".ts", ".md")))
+            if file_count > 25000:
+                break
+    except Exception:
+        file_count = -1
+        py_js_count = -1
+
+    tool_registry_tools = []
+    try:
+        from .tool_framework import get_tool_registry
+        tool_registry_tools = get_tool_registry().list_tools()
+    except Exception:
+        tool_registry_tools = []
+
+    workspace_probe = {
+        "sample_file": None,
+        "can_read_sample_file": False,
+        "sample_lines": 0,
+    }
+    for candidate in [REPO_ROOT / "README.md", REPO_ROOT / "pyproject.toml", REPO_ROOT / "services" / "edison_core" / "app.py"]:
+        if not candidate.exists() or not candidate.is_file():
+            continue
+        workspace_probe["sample_file"] = str(candidate)
+        try:
+            sample = candidate.read_text(encoding="utf-8", errors="replace")[:2048]
+            workspace_probe["can_read_sample_file"] = True
+            workspace_probe["sample_lines"] = sample.count("\n") + (1 if sample else 0)
+        except Exception:
+            workspace_probe["can_read_sample_file"] = False
+        break
+
+    self_eval_summary = {"available": False}
+    if self_evaluator is not None:
+        try:
+            self_eval_summary = {
+                "available": True,
+                "recent": self_evaluator.get_recent(limit=5),
+                "stats_24h": self_evaluator.get_stats(window_hours=24),
+                "corrections_24h": self_evaluator.get_correction_rate(window_hours=24),
+            }
+        except Exception as e:
+            self_eval_summary = {"available": False, "error": str(e)}
+
+    return {
+        "ok": True,
+        "timestamp": int(time.time()),
+        "workspace": {
+            "root": str(workspace),
+            "exists": workspace.exists(),
+            "readable": os.access(workspace, os.R_OK),
+            "writable": os.access(workspace, os.W_OK),
+            "file_count_estimate": file_count,
+            "code_file_count_estimate": py_js_count,
+            "probe": workspace_probe,
+        },
+        "services": {
+            "llm_fast_loaded": llm_fast is not None,
+            "llm_medium_loaded": llm_medium is not None,
+            "llm_deep_loaded": llm_deep is not None,
+            "llm_reasoning_loaded": llm_reasoning is not None,
+            "vision_loaded": llm_vision is not None,
+            "video_service_ready": video_service is not None,
+            "music_service_ready": music_service is not None,
+            "memory_gate_ready": memory_gate_instance is not None,
+            "tool_registry_count": len(TOOL_REGISTRY),
+            "self_evaluator_ready": self_evaluator is not None,
+        },
+        "code_awareness": {
+            "verified_workspace_endpoints": [
+                "/codespaces/read-file",
+                "/codespaces/list-dir",
+                "/codespaces/search-files",
+                "/codespaces/execute",
+                "/system/memory",
+                "/system/stats",
+                "/system/diagnostics",
+            ],
+            "structured_tools_enabled": len(tool_registry_tools) > 0,
+            "registered_tools": tool_registry_tools,
+            "dev_kb_endpoint": "/dev-kb/status",
+            "system_memory_endpoint": "/system/memory",
+            "system_stats_endpoint": "/system/stats",
+            "video_editor_endpoint": "/video/files",
+        },
+        "memory": memory,
+        "self_eval": self_eval_summary,
+    }
+
+
 # ── Provenance API ───────────────────────────────────────────────────────
 
 @app.get("/provenance/recent")
@@ -12165,6 +12397,78 @@ async def branding_add_existing_asset(client_id: str, request: dict):
 
 
 # ==================== VIDEO EDITING ====================
+
+
+@app.get("/video/files")
+async def video_files(path: str = ""):
+    """List files for the dedicated video editor workspace."""
+    roots = _video_editor_roots()
+
+    if not path:
+        return {
+            "ok": True,
+            "roots": [{"name": name, "path": str(root)} for name, root in roots],
+            "items": [],
+        }
+
+    target = Path(path).expanduser().resolve()
+    if not _is_allowed_video_editor_path(target):
+        raise HTTPException(status_code=403, detail="Path must be inside an allowed media root")
+    if not target.exists():
+        raise HTTPException(status_code=404, detail="Path not found")
+
+    items = []
+    if target.is_dir():
+        for entry in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
+            try:
+                stat = entry.stat()
+                items.append({
+                    "name": entry.name,
+                    "path": str(entry.resolve()),
+                    "type": "directory" if entry.is_dir() else "file",
+                    "size_bytes": 0 if entry.is_dir() else stat.st_size,
+                    "mtime": stat.st_mtime,
+                    "extension": entry.suffix.lower(),
+                    "preview_url": _media_preview_url(entry.resolve()) if entry.is_file() else None,
+                })
+            except Exception:
+                continue
+    else:
+        stat = target.stat()
+        items.append({
+            "name": target.name,
+            "path": str(target),
+            "type": "file",
+            "size_bytes": stat.st_size,
+            "mtime": stat.st_mtime,
+            "extension": target.suffix.lower(),
+            "preview_url": _media_preview_url(target),
+        })
+
+    return {
+        "ok": True,
+        "path": str(target),
+        "items": items,
+    }
+
+
+@app.get("/video/asset")
+async def serve_video_asset(path: str):
+    """Serve a previewable audio or video asset from the editor's allowed roots."""
+    if not path:
+        raise HTTPException(status_code=400, detail="path is required")
+
+    target = Path(path).expanduser().resolve()
+    if not _is_allowed_video_editor_path(target):
+        raise HTTPException(status_code=403, detail="Access denied")
+    if not target.exists() or not target.is_file():
+        raise HTTPException(status_code=404, detail="Media file not found")
+
+    media_type, _ = mimetypes.guess_type(str(target))
+    if not media_type or not media_type.startswith(("video/", "audio/")):
+        raise HTTPException(status_code=415, detail="Only audio and video assets can be previewed")
+
+    return FileResponse(str(target), media_type=media_type, filename=target.name)
 
 @app.post("/video/edit")
 async def video_edit(request: dict):

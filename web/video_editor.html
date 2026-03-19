@@ -1,0 +1,1265 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON Video Editor Studio</title>
+  <style>
+    :root {
+      --bg: #081018;
+      --bg-2: #0e1722;
+      --panel: rgba(12, 22, 35, 0.92);
+      --panel-2: rgba(18, 31, 49, 0.95);
+      --panel-3: rgba(23, 40, 61, 0.96);
+      --text: #f2f4f8;
+      --muted: #94a8bf;
+      --accent: #7ee081;
+      --accent-2: #ffb347;
+      --accent-3: #53c7ff;
+      --danger: #ff8d8d;
+      --border: rgba(177, 198, 224, 0.18);
+      --shadow: 0 18px 40px rgba(0, 0, 0, 0.3);
+    }
+
+    * { box-sizing: border-box; }
+
+    html, body { height: 100%; }
+
+    body {
+      margin: 0;
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      color: var(--text);
+      background:
+        radial-gradient(circle at 12% 18%, rgba(83, 199, 255, 0.18), transparent 28%),
+        radial-gradient(circle at 85% 8%, rgba(255, 179, 71, 0.18), transparent 30%),
+        linear-gradient(180deg, #050b12 0%, #09111a 38%, #07111b 100%);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 16px;
+      padding: 16px 18px;
+      border-bottom: 1px solid var(--border);
+      background: rgba(6, 12, 18, 0.78);
+      backdrop-filter: blur(16px);
+    }
+
+    .brand {
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+    }
+
+    .brand h1 {
+      margin: 0;
+      font-size: 22px;
+      font-weight: 800;
+      letter-spacing: 0.02em;
+    }
+
+    .brand p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .top-actions {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .btn {
+      appearance: none;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: linear-gradient(180deg, #18283d, #111c2d);
+      color: var(--text);
+      padding: 10px 14px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+      transition: transform 0.16s ease, border-color 0.16s ease, background 0.16s ease;
+    }
+
+    .btn:hover {
+      transform: translateY(-1px);
+      border-color: rgba(126, 224, 129, 0.45);
+    }
+
+    .btn.primary {
+      background: linear-gradient(135deg, #9aea66, #4fceac 70%, #4ab2ff);
+      color: #081018;
+      font-weight: 800;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 320px minmax(0, 1fr) 340px;
+      gap: 14px;
+      padding: 14px;
+      min-height: calc(100vh - 82px);
+    }
+
+    .panel {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      box-shadow: var(--shadow);
+      min-height: 0;
+      overflow: hidden;
+    }
+
+    .panel-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 16px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .panel-header h2,
+    .panel-header h3 {
+      margin: 0;
+      font-size: 15px;
+      font-weight: 800;
+    }
+
+    .panel-body {
+      padding: 14px;
+      min-height: 0;
+    }
+
+    .left-col,
+    .center-col,
+    .right-col {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 0;
+    }
+
+    .browser-actions,
+    .inspector-actions,
+    .transport,
+    .timeline-tools,
+    .preset-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .breadcrumbs,
+    .small-copy {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .search-input,
+    .text-input,
+    .number-input {
+      width: 100%;
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      background: rgba(8, 15, 24, 0.82);
+      color: var(--text);
+      padding: 10px 12px;
+      font: inherit;
+      font-size: 13px;
+    }
+
+    .media-bin {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      min-height: 0;
+    }
+
+    .file-list,
+    .history-list {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+      overflow: auto;
+      padding-right: 4px;
+    }
+
+    .file-list { min-height: 280px; max-height: calc(100vh - 320px); }
+    .history-list { max-height: 180px; }
+
+    .file-item,
+    .history-item,
+    .stat-card,
+    .operation-card,
+    .clip-fact,
+    .diag-card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(15, 25, 40, 0.88);
+    }
+
+    .file-item {
+      padding: 10px 12px;
+      cursor: pointer;
+      transition: border-color 0.14s ease, transform 0.14s ease;
+    }
+
+    .file-item:hover {
+      transform: translateY(-1px);
+      border-color: rgba(83, 199, 255, 0.5);
+    }
+
+    .file-item.active {
+      border-color: rgba(255, 179, 71, 0.6);
+      background: rgba(28, 44, 66, 0.95);
+    }
+
+    .file-name {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      border-radius: 999px;
+      padding: 4px 8px;
+      font-size: 11px;
+      font-weight: 700;
+      background: rgba(83, 199, 255, 0.12);
+      color: #9fdcff;
+    }
+
+    .pill.warn {
+      background: rgba(255, 179, 71, 0.12);
+      color: #ffd194;
+    }
+
+    .pill.ok {
+      background: rgba(126, 224, 129, 0.12);
+      color: #a7f6aa;
+    }
+
+    .file-meta,
+    .diag-copy,
+    .history-copy {
+      margin-top: 6px;
+      color: var(--muted);
+      font-size: 11px;
+      line-height: 1.45;
+      word-break: break-word;
+    }
+
+    .program-monitor {
+      display: flex;
+      flex-direction: column;
+      min-height: 0;
+      padding: 14px;
+      gap: 14px;
+    }
+
+    .monitor-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      gap: 12px;
+    }
+
+    .monitor-title {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+      min-width: 0;
+    }
+
+    .monitor-title strong {
+      font-size: 14px;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .stat-row,
+    .clip-facts,
+    .diag-grid {
+      display: grid;
+      gap: 10px;
+    }
+
+    .stat-row {
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+    }
+
+    .clip-facts,
+    .diag-grid {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .stat-card,
+    .clip-fact,
+    .diag-card {
+      padding: 12px;
+    }
+
+    .stat-card span,
+    .clip-fact span,
+    .diag-card span {
+      display: block;
+      font-size: 11px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .stat-card strong,
+    .clip-fact strong,
+    .diag-card strong {
+      font-size: 16px;
+    }
+
+    .preview-frame {
+      border: 1px solid var(--border);
+      border-radius: 18px;
+      background: radial-gradient(circle at top, rgba(83, 199, 255, 0.08), transparent 30%), #07111c;
+      overflow: hidden;
+      position: relative;
+      min-height: 360px;
+    }
+
+    video {
+      width: 100%;
+      height: min(54vh, 560px);
+      display: block;
+      background: #02070d;
+    }
+
+    .empty-preview {
+      position: absolute;
+      inset: 0;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      align-items: center;
+      gap: 10px;
+      color: var(--muted);
+      text-align: center;
+      padding: 24px;
+      pointer-events: none;
+    }
+
+    .empty-preview.hidden { display: none; }
+
+    .transport {
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .transport-left,
+    .transport-right {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      align-items: center;
+    }
+
+    .transport-time {
+      font-size: 12px;
+      color: var(--muted);
+      min-width: 130px;
+      text-align: right;
+    }
+
+    .timeline-wrap {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 16px;
+      background: rgba(9, 16, 27, 0.9);
+    }
+
+    .scrubber {
+      width: 100%;
+      accent-color: #7ee081;
+    }
+
+    .timeline-ruler {
+      display: flex;
+      justify-content: space-between;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .timeline-visual {
+      position: relative;
+      height: 76px;
+      border-radius: 14px;
+      border: 1px solid var(--border);
+      background:
+        repeating-linear-gradient(90deg, rgba(255,255,255,0.03) 0, rgba(255,255,255,0.03) 1px, transparent 1px, transparent 12.5%),
+        linear-gradient(180deg, rgba(13, 24, 37, 0.95), rgba(7, 14, 22, 0.95));
+      overflow: hidden;
+    }
+
+    .clip-bar {
+      position: absolute;
+      top: 16px;
+      height: 44px;
+      border-radius: 12px;
+      background: linear-gradient(90deg, rgba(126, 224, 129, 0.22), rgba(83, 199, 255, 0.28));
+      border: 1px solid rgba(126, 224, 129, 0.42);
+      left: var(--clip-start, 0%);
+      width: var(--clip-width, 100%);
+      min-width: 18px;
+      display: flex;
+      align-items: center;
+      padding: 0 10px;
+      font-size: 12px;
+      font-weight: 700;
+      color: #dfffee;
+    }
+
+    .playhead {
+      position: absolute;
+      top: 0;
+      bottom: 0;
+      width: 2px;
+      background: var(--accent-2);
+      left: var(--playhead, 0%);
+      box-shadow: 0 0 12px rgba(255, 179, 71, 0.5);
+    }
+
+    .playhead::before {
+      content: "";
+      position: absolute;
+      top: 6px;
+      left: -4px;
+      width: 10px;
+      height: 10px;
+      border-radius: 999px;
+      background: var(--accent-2);
+    }
+
+    .timeline-fields,
+    .inspector-grid {
+      display: grid;
+      gap: 10px;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
+    .field {
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+
+    .field label {
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .field.full { grid-column: 1 / -1; }
+
+    .inspector-panel {
+      padding: 14px;
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-height: 0;
+    }
+
+    .operations {
+      display: flex;
+      flex-direction: column;
+      gap: 8px;
+    }
+
+    .operation-card {
+      padding: 12px;
+      cursor: pointer;
+      transition: transform 0.14s ease, border-color 0.14s ease;
+    }
+
+    .operation-card:hover {
+      transform: translateY(-1px);
+      border-color: rgba(83, 199, 255, 0.45);
+    }
+
+    .operation-card.active {
+      border-color: rgba(255, 179, 71, 0.55);
+      background: rgba(34, 47, 67, 0.96);
+    }
+
+    .operation-card strong {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .operation-card p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .status {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      background: rgba(9, 15, 25, 0.92);
+      padding: 12px;
+      font-size: 13px;
+      line-height: 1.5;
+      white-space: pre-wrap;
+    }
+
+    .status.ok { border-color: rgba(126, 224, 129, 0.48); }
+    .status.warn { border-color: rgba(255, 179, 71, 0.48); }
+    .status.err { border-color: rgba(255, 141, 141, 0.56); }
+
+    .subpanel-title {
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: var(--muted);
+      margin-bottom: 8px;
+    }
+
+    .history-item {
+      padding: 10px 12px;
+    }
+
+    .history-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .empty-state {
+      color: var(--muted);
+      font-size: 12px;
+      padding: 14px;
+      text-align: center;
+      border: 1px dashed rgba(177, 198, 224, 0.18);
+      border-radius: 14px;
+    }
+
+    @media (max-width: 1380px) {
+      .shell {
+        grid-template-columns: 300px minmax(0, 1fr);
+      }
+
+      .right-col {
+        grid-column: 1 / -1;
+      }
+
+      .stat-row,
+      .clip-facts,
+      .diag-grid,
+      .inspector-grid {
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+      }
+    }
+
+    @media (max-width: 1040px) {
+      .shell {
+        grid-template-columns: 1fr;
+      }
+
+      .stat-row,
+      .clip-facts,
+      .diag-grid,
+      .timeline-fields,
+      .inspector-grid {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .file-list { max-height: 260px; }
+    }
+
+    @media (max-width: 720px) {
+      .topbar,
+      .monitor-head,
+      .transport {
+        flex-direction: column;
+        align-items: stretch;
+      }
+
+      .transport-time { text-align: left; }
+
+      .stat-row,
+      .clip-facts,
+      .diag-grid,
+      .timeline-fields,
+      .inspector-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Video Editor Studio</h1>
+      <p>Dedicated editing WebUI with media browser, timeline workspace, diagnostics, and client asset access.</p>
+    </div>
+    <div class="top-actions">
+      <button class="btn" id="openMainBtn">Main Chat</button>
+      <button class="btn" id="refreshDiagnosticsBtn">Refresh Diagnostics</button>
+      <button class="btn" id="refreshBtn">Refresh Media</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="left-col">
+      <div class="panel">
+        <div class="panel-header">
+          <h2>Media Browser</h2>
+          <div class="browser-actions">
+            <button class="btn" id="upBtn">Up</button>
+            <button class="btn" id="rootsBtn">Roots</button>
+          </div>
+        </div>
+        <div class="panel-body media-bin">
+          <div class="breadcrumbs" id="crumbs">Loading roots...</div>
+          <input class="search-input" id="fileSearchInput" type="text" placeholder="Filter clips, audio, client files..." />
+          <div class="small-copy">Roots include rendered videos, client folders, music outputs, and uploaded audio.</div>
+          <div class="file-list" id="fileList"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="center-col">
+      <div class="panel">
+        <div class="program-monitor">
+          <div class="monitor-head">
+            <div class="monitor-title">
+              <strong id="currentFileLabel">No source selected</strong>
+              <div class="small-copy" id="currentFileMeta">Choose a video clip from the browser or select an audio file to prefill muxing.</div>
+            </div>
+            <div class="transport-time" id="timeLabel">00:00.0 / 00:00.0</div>
+          </div>
+
+          <div class="stat-row">
+            <div class="stat-card"><span>In</span><strong id="inLabel">0.0s</strong></div>
+            <div class="stat-card"><span>Out</span><strong id="outLabel">0.0s</strong></div>
+            <div class="stat-card"><span>Duration</span><strong id="durationLabel">--</strong></div>
+          </div>
+
+          <div class="preview-frame">
+            <video id="preview" controls preload="metadata"></video>
+            <div class="empty-preview" id="emptyPreview">
+              <strong>Program monitor idle</strong>
+              <div>Select a video to preview it here, or choose an audio file to set the mux track.</div>
+            </div>
+          </div>
+
+          <div class="transport">
+            <div class="transport-left">
+              <button class="btn" id="rewindBtn">-1s</button>
+              <button class="btn" id="playPauseBtn">Play / Pause</button>
+              <button class="btn" id="forwardBtn">+1s</button>
+              <button class="btn" id="setInBtn">Mark In</button>
+              <button class="btn" id="setOutBtn">Mark Out</button>
+            </div>
+            <div class="transport-right">
+              <button class="btn" id="playheadTrimBtn">Trim Around Playhead</button>
+              <button class="btn primary" id="runEditBtn">Render Edit</button>
+            </div>
+          </div>
+
+          <div class="timeline-wrap">
+            <div class="timeline-tools">
+              <div class="small-copy">Timeline</div>
+              <div class="small-copy" id="timelineSummary">Source clip not loaded yet.</div>
+            </div>
+            <input class="scrubber" id="timelineScrubber" type="range" min="0" max="0" step="0.05" value="0" />
+            <div class="timeline-ruler">
+              <span>00:00</span>
+              <span id="midTick">00:00</span>
+              <span id="endTick">00:00</span>
+            </div>
+            <div class="timeline-visual" id="timelineVisual">
+              <div class="clip-bar" id="clipBar">Selected edit range</div>
+              <div class="playhead" id="playhead"></div>
+            </div>
+            <div class="timeline-fields">
+              <div class="field">
+                <label for="startSeconds">In point (seconds)</label>
+                <input class="number-input" id="startSeconds" type="number" min="0" step="0.1" value="0" />
+              </div>
+              <div class="field">
+                <label for="endSeconds">Out point (seconds)</label>
+                <input class="number-input" id="endSeconds" type="number" min="0" step="0.1" value="0" />
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="right-col">
+      <div class="panel">
+        <div class="panel-header">
+          <h3>Inspector</h3>
+          <div class="pill" id="selectedOperationLabel">trim</div>
+        </div>
+        <div class="inspector-panel">
+          <div>
+            <div class="subpanel-title">Operations</div>
+            <div class="operations" id="opButtons">
+              <div class="operation-card active" data-op="trim">
+                <strong>Trim clip</strong>
+                <p>Cut a section between in and out points.</p>
+              </div>
+              <div class="operation-card" data-op="mute">
+                <strong>Mute audio</strong>
+                <p>Keep the picture, remove the embedded audio track.</p>
+              </div>
+              <div class="operation-card" data-op="resize">
+                <strong>Resize output</strong>
+                <p>Scale the source to a new delivery resolution.</p>
+              </div>
+              <div class="operation-card" data-op="fps">
+                <strong>Change frame rate</strong>
+                <p>Conform the clip to a target playback FPS.</p>
+              </div>
+              <div class="operation-card" data-op="mux_audio">
+                <strong>Mux external audio</strong>
+                <p>Lay music or client audio under the selected video source.</p>
+              </div>
+            </div>
+          </div>
+
+          <div>
+            <div class="subpanel-title">Clip Facts</div>
+            <div class="clip-facts">
+              <div class="clip-fact"><span>Source</span><strong id="clipTypeLabel">None</strong></div>
+              <div class="clip-fact"><span>Size</span><strong id="clipSizeLabel">--</strong></div>
+              <div class="clip-fact"><span>Extension</span><strong id="clipExtLabel">--</strong></div>
+              <div class="clip-fact"><span>Modified</span><strong id="clipMtimeLabel">--</strong></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="subpanel-title">Parameters</div>
+            <div class="inspector-grid">
+              <div class="field">
+                <label for="widthInput">Width</label>
+                <input class="number-input" id="widthInput" type="number" min="16" placeholder="1280" />
+              </div>
+              <div class="field">
+                <label for="heightInput">Height</label>
+                <input class="number-input" id="heightInput" type="number" min="16" placeholder="720" />
+              </div>
+              <div class="field">
+                <label for="fpsInput">FPS</label>
+                <input class="number-input" id="fpsInput" type="number" min="1" max="240" step="0.1" placeholder="30" />
+              </div>
+              <div class="field full">
+                <label for="audioPath">External audio path</label>
+                <input class="text-input" id="audioPath" type="text" placeholder="/workspaces/EDISON-ComfyUI/outputs/music/example.mp3" />
+              </div>
+            </div>
+            <div class="preset-row" style="margin-top:10px;">
+              <button class="btn" data-preset="1920x1080">1080p</button>
+              <button class="btn" data-preset="1280x720">720p</button>
+              <button class="btn" data-preset="1080x1080">Square</button>
+              <button class="btn" data-preset="1080x1920">Vertical</button>
+            </div>
+          </div>
+
+          <div>
+            <div class="subpanel-title">Machine Diagnostics</div>
+            <div class="diag-grid">
+              <div class="diag-card"><span>RAM Free</span><strong id="diagRam">--</strong><div class="diag-copy" id="diagWorkspace">Workspace probe pending.</div></div>
+              <div class="diag-card"><span>VRAM Free</span><strong id="diagVram">--</strong><div class="diag-copy" id="diagModels">Model state pending.</div></div>
+            </div>
+          </div>
+
+          <div>
+            <div class="subpanel-title">Render History</div>
+            <div class="history-list" id="historyList">
+              <div class="empty-state">Edited outputs will appear here for quick reuse.</div>
+            </div>
+          </div>
+
+          <div class="status" id="statusBox">Video editor ready. Choose a media root and select a source clip.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = '/api';
+    const previewEl = document.getElementById('preview');
+    const emptyPreviewEl = document.getElementById('emptyPreview');
+    const fileListEl = document.getElementById('fileList');
+    const historyListEl = document.getElementById('historyList');
+    const crumbsEl = document.getElementById('crumbs');
+    const statusEl = document.getElementById('statusBox');
+    const timelineScrubberEl = document.getElementById('timelineScrubber');
+    const clipBarEl = document.getElementById('clipBar');
+    const playheadEl = document.getElementById('playhead');
+    const fileSearchInputEl = document.getElementById('fileSearchInput');
+
+    let currentRoots = [];
+    let currentPath = '';
+    let currentItems = [];
+    let selectedFile = '';
+    let selectedFileItem = null;
+    let selectedOperation = 'trim';
+    let historyEntries = [];
+
+    function setStatus(message, tone = '') {
+      statusEl.textContent = message;
+      statusEl.className = `status ${tone}`.trim();
+    }
+
+    function fmtBytes(bytes) {
+      if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let value = bytes;
+      let unitIndex = 0;
+      while (value >= 1024 && unitIndex < units.length - 1) {
+        value /= 1024;
+        unitIndex += 1;
+      }
+      return `${value.toFixed(unitIndex === 0 ? 0 : 1)} ${units[unitIndex]}`;
+    }
+
+    function fmtTime(seconds) {
+      const value = Number(seconds || 0);
+      const mins = Math.floor(value / 60);
+      const secs = value - mins * 60;
+      return `${String(mins).padStart(2, '0')}:${secs.toFixed(1).padStart(4, '0')}`;
+    }
+
+    function fmtDate(ts) {
+      if (!Number.isFinite(ts)) return '--';
+      return new Date(ts * 1000).toLocaleString();
+    }
+
+    function isAudioFile(item) {
+      const ext = (item?.extension || '').toLowerCase();
+      return ['.mp3', '.wav', '.m4a', '.aac', '.flac', '.ogg'].includes(ext);
+    }
+
+    function isVideoFile(item) {
+      const ext = (item?.extension || '').toLowerCase();
+      return ['.mp4', '.mov', '.m4v', '.webm', '.avi', '.mkv'].includes(ext);
+    }
+
+    async function readJson(res) {
+      const raw = await res.text();
+      try {
+        return raw ? JSON.parse(raw) : {};
+      } catch {
+        return { ok: false, detail: raw || 'Invalid response' };
+      }
+    }
+
+    function updateOperationUI() {
+      document.getElementById('selectedOperationLabel').textContent = selectedOperation;
+      document.querySelectorAll('#opButtons .operation-card').forEach((card) => {
+        card.classList.toggle('active', card.getAttribute('data-op') === selectedOperation);
+      });
+    }
+
+    function updateClipFacts(item) {
+      document.getElementById('clipTypeLabel').textContent = item ? (item.type === 'directory' ? 'Folder' : (isAudioFile(item) ? 'Audio' : (isVideoFile(item) ? 'Video' : 'File'))) : 'None';
+      document.getElementById('clipSizeLabel').textContent = item ? fmtBytes(item.size_bytes || 0) : '--';
+      document.getElementById('clipExtLabel').textContent = item ? (item.extension || '(none)') : '--';
+      document.getElementById('clipMtimeLabel').textContent = item ? fmtDate(item.mtime) : '--';
+      document.getElementById('currentFileMeta').textContent = item ? `${item.path || ''}` : 'Choose a video clip from the browser or select an audio file to prefill muxing.';
+    }
+
+    function updateTimelineVisual() {
+      const duration = Number(previewEl.duration || 0);
+      const startValue = Math.max(0, Number(document.getElementById('startSeconds').value || 0));
+      const endRaw = Number(document.getElementById('endSeconds').value || 0);
+      const endValue = duration > 0 ? Math.min(duration, Math.max(endRaw, startValue)) : Math.max(endRaw, startValue);
+      const currentTime = Math.max(0, Number(previewEl.currentTime || 0));
+      const normalizedDuration = duration > 0 ? duration : 1;
+      const startPct = Math.min(100, (startValue / normalizedDuration) * 100);
+      const endPct = Math.min(100, (endValue / normalizedDuration) * 100);
+      const widthPct = Math.max(1, endPct - startPct);
+      const playheadPct = Math.min(100, (currentTime / normalizedDuration) * 100);
+
+      clipBarEl.style.setProperty('--clip-start', `${startPct}%`);
+      clipBarEl.style.setProperty('--clip-width', `${widthPct}%`);
+      playheadEl.style.setProperty('--playhead', `${playheadPct}%`);
+
+      document.getElementById('inLabel').textContent = `${startValue.toFixed(1)}s`;
+      document.getElementById('outLabel').textContent = `${endValue.toFixed(1)}s`;
+      document.getElementById('timelineSummary').textContent = duration > 0
+        ? `Edit window: ${startValue.toFixed(1)}s to ${endValue.toFixed(1)}s of ${duration.toFixed(1)}s.`
+        : 'Source clip not loaded yet.';
+    }
+
+    function updateTransportTime() {
+      const current = Number(previewEl.currentTime || 0);
+      const duration = Number(previewEl.duration || 0);
+      document.getElementById('timeLabel').textContent = `${fmtTime(current)} / ${fmtTime(duration)}`;
+      timelineScrubberEl.value = String(current);
+      updateTimelineVisual();
+    }
+
+    function renderHistory() {
+      if (!historyEntries.length) {
+        historyListEl.innerHTML = '<div class="empty-state">Edited outputs will appear here for quick reuse.</div>';
+        return;
+      }
+
+      historyListEl.innerHTML = historyEntries.map((entry, index) => `
+        <div class="history-item">
+          <div class="history-head">
+            <span>${entry.operation}</span>
+            <button class="btn" data-history-index="${index}">Load</button>
+          </div>
+          <div class="history-copy">${entry.output_path}</div>
+        </div>
+      `).join('');
+
+      historyListEl.querySelectorAll('[data-history-index]').forEach((button) => {
+        button.addEventListener('click', () => {
+          const entry = historyEntries[Number(button.getAttribute('data-history-index'))];
+          if (!entry) return;
+          selectedFile = entry.output_path;
+          document.getElementById('currentFileLabel').textContent = entry.output_path;
+          if (entry.output_url) {
+            previewEl.src = `${API}${entry.output_url}`;
+            previewEl.load();
+          }
+          emptyPreviewEl.classList.add('hidden');
+          setStatus(`Loaded output back into monitor: ${entry.output_path}`, 'ok');
+        });
+      });
+    }
+
+    function renderFileList(items) {
+      const query = (fileSearchInputEl.value || '').trim().toLowerCase();
+      const filtered = query
+        ? items.filter((item) => (item.name || '').toLowerCase().includes(query) || (item.extension || '').toLowerCase().includes(query))
+        : items;
+
+      if (!filtered.length) {
+        fileListEl.innerHTML = '<div class="empty-state">No files match the current filter.</div>';
+        return;
+      }
+
+      fileListEl.innerHTML = filtered.map((item) => {
+        const kind = item.type === 'directory'
+          ? '<span class="pill">dir</span>'
+          : isAudioFile(item)
+            ? '<span class="pill warn">audio</span>'
+            : isVideoFile(item)
+              ? '<span class="pill ok">video</span>'
+              : '<span class="pill">file</span>';
+        const active = selectedFile && item.path === selectedFile ? 'active' : '';
+        return `
+          <div class="file-item ${active}" data-path="${item.path}" data-type="${item.type}">
+            <div class="file-name">
+              <span>${item.name}</span>
+              ${kind}
+            </div>
+            <div class="file-meta">${item.type === 'directory' ? item.path : `${fmtBytes(item.size_bytes || 0)} • ${item.extension || 'no ext'}`}</div>
+          </div>
+        `;
+      }).join('');
+
+      fileListEl.querySelectorAll('.file-item').forEach((el) => {
+        el.addEventListener('click', () => {
+          const path = el.getAttribute('data-path') || '';
+          const type = el.getAttribute('data-type') || '';
+          const item = currentItems.find((entry) => entry.path === path) || currentRoots.find((entry) => entry.path === path);
+          if (type === 'directory') {
+            loadDirectory(path).catch((err) => setStatus(err.message, 'err'));
+            return;
+          }
+          selectFile(item);
+        });
+      });
+    }
+
+    function selectFile(item) {
+      if (!item) return;
+      selectedFile = item.path;
+      selectedFileItem = item;
+      document.getElementById('currentFileLabel').textContent = item.path;
+      updateClipFacts(item);
+      renderFileList(currentItems);
+
+      if (isAudioFile(item)) {
+        document.getElementById('audioPath').value = item.path;
+        setStatus(`Audio selected: ${item.path}. Use mux audio to lay it under a video clip.`, 'ok');
+        previewEl.removeAttribute('src');
+        previewEl.load();
+        emptyPreviewEl.classList.remove('hidden');
+        return;
+      }
+
+      if (item.preview_url) {
+        previewEl.src = `${API}${item.preview_url}`;
+        previewEl.load();
+        emptyPreviewEl.classList.add('hidden');
+      } else {
+        previewEl.removeAttribute('src');
+        previewEl.load();
+        emptyPreviewEl.classList.remove('hidden');
+      }
+
+      setStatus(`Source selected: ${item.path}`, 'ok');
+    }
+
+    async function loadRoots() {
+      const res = await fetch(`${API}/video/files`);
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.detail || 'Failed to load media roots');
+      }
+      currentRoots = data.roots || [];
+      currentPath = '';
+      currentItems = currentRoots.map((root) => ({ ...root, type: 'directory', extension: '', size_bytes: 0, mtime: 0 }));
+      crumbsEl.textContent = 'Media Roots';
+      renderFileList(currentItems);
+    }
+
+    async function loadDirectory(path) {
+      const res = await fetch(`${API}/video/files?path=${encodeURIComponent(path || '')}`);
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        throw new Error(data.detail || 'Failed to load directory');
+      }
+      currentPath = data.path || path;
+      currentItems = data.items || [];
+      crumbsEl.textContent = currentPath;
+      renderFileList(currentItems);
+    }
+
+    async function loadDiagnostics() {
+      try {
+        const res = await fetch(`${API}/system/diagnostics`);
+        const data = await readJson(res);
+        const memory = data.memory || {};
+        const workspace = data.workspace || {};
+        const services = data.services || {};
+        document.getElementById('diagRam').textContent = Number.isFinite(memory.ram_available_mb) ? `${(memory.ram_available_mb / 1024).toFixed(1)} GB` : '--';
+        document.getElementById('diagVram').textContent = Number.isFinite(memory.total_vram_free_mb) ? `${(memory.total_vram_free_mb / 1024).toFixed(1)} GB` : '--';
+        document.getElementById('diagWorkspace').textContent = workspace.probe?.can_read_sample_file
+          ? `Workspace readable. Probe: ${workspace.probe.sample_file}`
+          : 'Workspace probe not confirmed.';
+        document.getElementById('diagModels').textContent = `Fast: ${services.llm_fast_loaded ? 'on' : 'off'} • Deep: ${services.llm_deep_loaded ? 'on' : 'off'} • Tools: ${services.tool_registry_count || 0}`;
+      } catch (error) {
+        document.getElementById('diagWorkspace').textContent = `Diagnostics unavailable: ${error.message}`;
+        document.getElementById('diagModels').textContent = 'Could not reach self-diagnostics endpoint.';
+      }
+    }
+
+    function getPayload() {
+      const payload = {
+        source_path: selectedFile,
+        operation: selectedOperation,
+      };
+      if (selectedOperation === 'trim') {
+        payload.start_seconds = Number(document.getElementById('startSeconds').value || 0);
+        payload.end_seconds = Number(document.getElementById('endSeconds').value || 0);
+      } else if (selectedOperation === 'resize') {
+        payload.width = Number(document.getElementById('widthInput').value || 0);
+        payload.height = Number(document.getElementById('heightInput').value || 0);
+      } else if (selectedOperation === 'fps') {
+        payload.fps = Number(document.getElementById('fpsInput').value || 0);
+      } else if (selectedOperation === 'mux_audio') {
+        payload.audio_path = (document.getElementById('audioPath').value || '').trim();
+      }
+      return payload;
+    }
+
+    async function runEdit() {
+      if (!selectedFile) {
+        setStatus('Choose a source file before rendering an edit.', 'warn');
+        return;
+      }
+      if (selectedFileItem && isAudioFile(selectedFileItem) && selectedOperation !== 'mux_audio') {
+        setStatus('Audio files can be used as mux sources, but the source clip must be a video.', 'warn');
+        return;
+      }
+
+      const payload = getPayload();
+      setStatus(`Rendering ${selectedOperation} operation...`, 'warn');
+
+      const res = await fetch(`${API}/video/edit`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(payload),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        setStatus(data.detail || data.error || 'Video edit failed.', 'err');
+        return;
+      }
+
+      historyEntries.unshift(data);
+      historyEntries = historyEntries.slice(0, 12);
+      renderHistory();
+
+      if (data.output_url) {
+        previewEl.src = `${API}${data.output_url}`;
+        previewEl.load();
+        emptyPreviewEl.classList.add('hidden');
+      }
+      if (data.output_path) {
+        selectedFile = data.output_path;
+        document.getElementById('currentFileLabel').textContent = data.output_path;
+      }
+
+      setStatus(`Render complete.\nOperation: ${data.operation}\nOutput: ${data.output_path}`, 'ok');
+      if (currentPath) {
+        loadDirectory(currentPath).catch(() => {});
+      }
+    }
+
+    function setTrimAroundPlayhead() {
+      const current = Number(previewEl.currentTime || 0);
+      const duration = Number(previewEl.duration || 0);
+      const start = Math.max(0, current - 1.0);
+      const end = duration > 0 ? Math.min(duration, current + 1.5) : current + 1.5;
+      document.getElementById('startSeconds').value = start.toFixed(1);
+      document.getElementById('endSeconds').value = end.toFixed(1);
+      updateTimelineVisual();
+      setStatus('Trim range aligned around current playhead.', 'ok');
+    }
+
+    document.getElementById('openMainBtn').addEventListener('click', () => {
+      window.location.href = '/';
+    });
+
+    document.getElementById('refreshBtn').addEventListener('click', () => {
+      const loader = currentPath ? loadDirectory(currentPath) : loadRoots();
+      loader.catch((err) => setStatus(err.message, 'err'));
+    });
+
+    document.getElementById('refreshDiagnosticsBtn').addEventListener('click', () => {
+      loadDiagnostics().then(() => setStatus('Diagnostics refreshed.', 'ok')).catch((err) => setStatus(err.message, 'err'));
+    });
+
+    document.getElementById('rootsBtn').addEventListener('click', () => {
+      loadRoots().catch((err) => setStatus(err.message, 'err'));
+    });
+
+    document.getElementById('upBtn').addEventListener('click', () => {
+      if (!currentPath) {
+        loadRoots().catch((err) => setStatus(err.message, 'err'));
+        return;
+      }
+      const parent = currentPath.split('/').slice(0, -1).join('/');
+      if (!parent) {
+        loadRoots().catch((err) => setStatus(err.message, 'err'));
+      } else {
+        loadDirectory(parent).catch((err) => setStatus(err.message, 'err'));
+      }
+    });
+
+    document.getElementById('runEditBtn').addEventListener('click', () => {
+      runEdit().catch((err) => setStatus(err.message, 'err'));
+    });
+
+    document.getElementById('playheadTrimBtn').addEventListener('click', setTrimAroundPlayhead);
+    document.getElementById('rewindBtn').addEventListener('click', () => {
+      previewEl.currentTime = Math.max(0, Number(previewEl.currentTime || 0) - 1);
+    });
+    document.getElementById('forwardBtn').addEventListener('click', () => {
+      previewEl.currentTime = Math.min(Number(previewEl.duration || 0), Number(previewEl.currentTime || 0) + 1);
+    });
+    document.getElementById('playPauseBtn').addEventListener('click', () => {
+      if (previewEl.paused) previewEl.play().catch(() => {});
+      else previewEl.pause();
+    });
+    document.getElementById('setInBtn').addEventListener('click', () => {
+      document.getElementById('startSeconds').value = Number(previewEl.currentTime || 0).toFixed(1);
+      updateTimelineVisual();
+    });
+    document.getElementById('setOutBtn').addEventListener('click', () => {
+      document.getElementById('endSeconds').value = Number(previewEl.currentTime || 0).toFixed(1);
+      updateTimelineVisual();
+    });
+
+    fileSearchInputEl.addEventListener('input', () => renderFileList(currentItems));
+
+    document.querySelectorAll('#opButtons .operation-card').forEach((card) => {
+      card.addEventListener('click', () => {
+        selectedOperation = card.getAttribute('data-op') || 'trim';
+        updateOperationUI();
+        setStatus(`Operation selected: ${selectedOperation}`, 'ok');
+      });
+    });
+
+    document.querySelectorAll('[data-preset]').forEach((button) => {
+      button.addEventListener('click', () => {
+        const preset = (button.getAttribute('data-preset') || '').split('x');
+        if (preset.length !== 2) return;
+        document.getElementById('widthInput').value = preset[0];
+        document.getElementById('heightInput').value = preset[1];
+        setStatus(`Resize preset loaded: ${preset[0]} x ${preset[1]}`, 'ok');
+      });
+    });
+
+    ['startSeconds', 'endSeconds'].forEach((id) => {
+      document.getElementById(id).addEventListener('input', updateTimelineVisual);
+    });
+
+    timelineScrubberEl.addEventListener('input', () => {
+      previewEl.currentTime = Number(timelineScrubberEl.value || 0);
+      updateTransportTime();
+    });
+
+    previewEl.addEventListener('loadedmetadata', () => {
+      const duration = Number(previewEl.duration || 0);
+      document.getElementById('durationLabel').textContent = duration > 0 ? `${duration.toFixed(2)}s` : '--';
+      timelineScrubberEl.max = String(duration || 0);
+      document.getElementById('endSeconds').value = duration > 0 ? duration.toFixed(1) : '0';
+      document.getElementById('midTick').textContent = fmtTime(duration / 2);
+      document.getElementById('endTick').textContent = fmtTime(duration);
+      emptyPreviewEl.classList.toggle('hidden', Boolean(previewEl.currentSrc));
+      updateTransportTime();
+    });
+
+    previewEl.addEventListener('timeupdate', updateTransportTime);
+    previewEl.addEventListener('emptied', () => {
+      document.getElementById('durationLabel').textContent = '--';
+      document.getElementById('timeLabel').textContent = '00:00.0 / 00:00.0';
+      emptyPreviewEl.classList.remove('hidden');
+      updateTimelineVisual();
+    });
+
+    (async function init() {
+      updateOperationUI();
+      renderHistory();
+      updateTimelineVisual();
+      try {
+        await Promise.all([loadRoots(), loadDiagnostics()]);
+        setStatus('Video editor ready. Browse media roots, preview a source clip, and render edits from the inspector.', 'ok');
+      } catch (error) {
+        setStatus(error.message, 'err');
+      }
+    })();
+  </script>
+</body>
+</html>

@@ -1707,16 +1707,25 @@ class EdisonApp {
                     prompt: imagePrompt,
                     width: 1024,
                     height: 1024,
+                    auto_optimize: true,
                     comfyui_url: this.settings.comfyuiEndpoint
                 })
             });
             
             if (!response.ok) {
-                throw new Error(`Image generation failed: ${response.statusText}`);
+                const errorPayload = await response.json().catch(() => ({}));
+                const detail = errorPayload.detail || {};
+                let message = detail.message || errorPayload.error || `Image generation failed: ${response.statusText}`;
+                if (detail.suggested_profile) {
+                    const suggestion = detail.suggested_profile;
+                    message += ` Suggested fallback: ${suggestion.width}x${suggestion.height} @ ${suggestion.steps} steps.`;
+                }
+                throw new Error(message);
             }
             
             const result = await response.json();
             const promptId = result.prompt_id;
+            const effective = result.effective_parameters || {};
             
             // Show loading animation
             const loadingHtml = `
@@ -1729,6 +1738,7 @@ class EdisonApp {
                         </div>
                     </div>
                     <p style="margin-top: 16px; color: #888;"><strong>Prompt:</strong> ${imagePrompt}</p>
+                    ${effective.optimized ? `<p style="margin-top: 8px; color: #f59e0b;"><strong>Low-memory mode:</strong> Rendering at ${effective.width}x${effective.height}, ${effective.steps} steps (${effective.profile || 'optimized'} profile).</p>` : ''}
                 </div>
             `;
             this.updateMessage(assistantMessageEl, loadingHtml, 'image');

@@ -28,6 +28,11 @@ def test_integration_and_printing_routes_present():
         "/printing/printers/{printer_id}": {"PATCH", "DELETE"},
         "/printing/slice": {"POST"},
         "/printing/slice/{job_id}": {"GET"},
+        "/system/memory": {"GET"},
+        "/system/diagnostics": {"GET"},
+        "/video/files": {"GET"},
+        "/video/edit": {"POST"},
+        "/video/asset": {"GET"},
     }
 
     for path, methods in expected.items():

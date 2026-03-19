@@ -1801,6 +1801,10 @@ console.log('🧊 app_new_features.js v1 loading...');
         setPanelOpen('videoEditorPanel', videoEditorPanelOpen);
     };
 
+    window.openVideoEditorStudio = function() {
+        window.open('/video-editor', '_blank', 'noopener');
+    };
+
     window.toggleDeepSearchPanel = function() {
         deepSearchPanelOpen = !deepSearchPanelOpen;
         setPanelOpen('deepSearchPanel', deepSearchPanelOpen);
@@ -2114,7 +2118,7 @@ console.log('🧊 app_new_features.js v1 loading...');
             }
             if ((e.ctrlKey || e.metaKey) && e.shiftKey && e.key === 'V') {
                 e.preventDefault();
-                window.toggleVideoEditorPanel && window.toggleVideoEditorPanel();
+                window.openVideoEditorStudio && window.openVideoEditorStudio();
             }
         });
     });

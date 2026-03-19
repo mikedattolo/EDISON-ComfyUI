@@ -134,7 +134,7 @@
                     Branding
                 </button>
 
-                <button class="sidebar-feature-btn" id="videoEditorBtn" title="AI Video Editing" onclick="event.stopPropagation(); window.toggleVideoEditorPanel && window.toggleVideoEditorPanel();">
+                <button class="sidebar-feature-btn" id="videoEditorBtn" title="Open Video Editor Studio" onclick="event.stopPropagation(); window.openVideoEditorStudio && window.openVideoEditorStudio();">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
                         <rect x="2" y="5" width="11" height="10" rx="1"/>
                         <path d="M13 8l5-3v10l-5-3z"/>
@@ -678,6 +678,10 @@
         </div>
         <div class="feature-panel-body">
             <div class="feature-section">
+                <label class="feature-label">Dedicated Studio</label>
+                <button class="feature-generate-btn" onclick="window.openVideoEditorStudio && window.openVideoEditorStudio()">Open Full Video Editor WebUI</button>
+            </div>
+            <div class="feature-section">
                 <label class="feature-label">Source Video</label>
                 <input type="text" id="videoEditSourcePath" class="feature-input" placeholder="e.g. outputs/videos/input.mp4">
             </div>
@@ -998,7 +1002,7 @@
                 <div class="shortcut-row"><kbd>Ctrl+K</kbd><span>Focus input</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+P</kbd><span>Open Prompt Library</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+B</kbd><span>Open Branding panel</span></div>
-                <div class="shortcut-row"><kbd>Ctrl+Shift+V</kbd><span>Open Video Editor panel</span></div>
+                <div class="shortcut-row"><kbd>Ctrl+Shift+V</kbd><span>Open Video Editor Studio</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+Shift+G</kbd><span>Open Deep Search panel</span></div>
                 <div class="shortcut-row"><kbd>Ctrl+/</kbd><span>Toggle dark/light</span></div>
                 <div class="shortcut-row"><kbd>Esc</kbd><span>Close overlays</span></div>
