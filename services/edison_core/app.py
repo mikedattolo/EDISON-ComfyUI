@@ -13,6 +13,7 @@ from pathlib import Path
 import yaml
 import sys
 import requests
+import datetime
 import json
 from contextlib import asynccontextmanager
 import asyncio
@@ -614,52 +615,73 @@ CONNECTOR_CATALOG = {
     "github": {
         "label": "GitHub",
         "base_url": "https://api.github.com",
-        "auth": "bearer",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://github.com/login/oauth/authorize",
+        "oauth_token_url": "https://github.com/login/oauth/access_token",
+        "oauth_scopes": ["repo", "user", "gist"],
         "test_path": "/user",
-        "docs": "https://docs.github.com/en/rest",
+        "docs": "https://docs.github.com/en/developers/apps/building-oauth-apps",
     },
     "gmail": {
         "label": "Gmail",
         "base_url": "https://gmail.googleapis.com/gmail/v1",
-        "auth": "bearer",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "oauth_token_url": "https://oauth2.googleapis.com/token",
+        "oauth_scopes": ["https://www.googleapis.com/auth/gmail.readonly"],
         "test_path": "/users/me/profile",
-        "docs": "https://developers.google.com/gmail/api",
-    },
-    "outlook": {
-        "label": "Microsoft Outlook (Graph)",
-        "base_url": "https://graph.microsoft.com/v1.0",
-        "auth": "bearer",
-        "test_path": "/me",
-        "docs": "https://learn.microsoft.com/graph/api/resources/mail-api-overview",
+        "docs": "https://developers.google.com/gmail/api/guides/using_oauth",
     },
     "google_drive": {
         "label": "Google Drive",
         "base_url": "https://www.googleapis.com/drive/v3",
-        "auth": "bearer",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://accounts.google.com/o/oauth2/v2/auth",
+        "oauth_token_url": "https://oauth2.googleapis.com/token",
+        "oauth_scopes": ["https://www.googleapis.com/auth/drive.readonly"],
         "test_path": "/about?fields=user,storageQuota",
         "docs": "https://developers.google.com/drive/api",
     },
     "slack": {
         "label": "Slack",
         "base_url": "https://slack.com/api",
-        "auth": "bearer",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://slack.com/oauth_authorize",
+        "oauth_token_url": "https://slack.com/api/oauth.v2.access",
+        "oauth_scopes": ["chat:read", "channels:read", "users:read"],
         "test_path": "/auth.test",
-        "docs": "https://api.slack.com/web",
+        "docs": "https://api.slack.com/authentication/oauth-2",
     },
     "notion": {
         "label": "Notion",
         "base_url": "https://api.notion.com/v1",
-        "auth": "bearer",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://api.notion.com/v1/oauth/authorize",
+        "oauth_token_url": "https://api.notion.com/v1/oauth/token",
+        "oauth_scopes": [],
         "test_path": "/users/me",
-        "docs": "https://developers.notion.com/reference/intro",
+        "docs": "https://developers.notion.com/reference/create-an-integration",
         "extra_headers": {"Notion-Version": "2022-06-28"},
     },
     "dropbox": {
         "label": "Dropbox",
         "base_url": "https://api.dropboxapi.com/2",
-        "auth": "bearer",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://www.dropbox.com/oauth2/authorize",
+        "oauth_token_url": "https://api.dropboxapi.com/oauth2/token",
+        "oauth_scopes": ["files.content.read"],
         "test_path": "/users/get_current_account",
         "docs": "https://www.dropbox.com/developers/documentation/http/overview",
+    },
+    "discord": {
+        "label": "Discord",
+        "base_url": "https://discordapp.com/api/v10",
+        "auth": "oauth2",
+        "oauth_auth_url": "https://discord.com/api/oauth2/authorize",
+        "oauth_token_url": "https://discord.com/api/oauth2/token",
+        "oauth_scopes": ["identify", "guilds"],
+        "test_path": "/users/@me",
+        "docs": "https://discord.com/developers/docs/topics/oauth2",
     },
 }
 
@@ -13372,16 +13394,33 @@ async def get_connector_auth_details(provider: str):
         raise HTTPException(status_code=404, detail="Provider not found")
     
     template = CONNECTOR_CATALOG[provider_lower]
-    return {
+    auth_type = template.get("auth", "bearer")
+    
+    response = {
         "ok": True,
         "provider": provider_lower,
         "label": template.get("label"),
         "docs": template.get("docs"),
-        "auth_type": template.get("auth", "bearer"),
+        "auth_type": auth_type,
         "base_url": template.get("base_url"),
         "test_path": template.get("test_path"),
-        "setup_steps": _get_provider_setup_steps(provider_lower),
     }
+    
+    # Add OAuth information for OAuth2 providers
+    if auth_type == "oauth2":
+        response["oauth_auth_url"] = template.get("oauth_auth_url")
+        response["oauth_token_url"] = template.get("oauth_token_url")
+        response["oauth_scopes"] = template.get("oauth_scopes", [])
+        response["setup_steps"] = [
+            "1. Click 'Connect with <Provider>' button",
+            "2. You'll be redirected to authenticate",
+            "3. Authorize EDISON to access your account",
+            "4. You'll be redirected back and token will be saved",
+        ]
+    else:
+        response["setup_steps"] = _get_provider_setup_steps(provider_lower)
+    
+    return response
 
 
 def _get_provider_setup_steps(provider: str) -> list:
@@ -13557,6 +13596,140 @@ async def test_connector(request: dict):
         return {"ok": result.get("ok", False), "connector": connector_name, "provider": provider or "custom", **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Connector test failed: {e}")
+
+
+@app.post("/integrations/connectors/oauth-start/{provider}")
+async def oauth_start(provider: str, request: dict = None):
+    """Initiate OAuth flow for a provider. Returns auth_url for user to visit."""
+    provider_lower = (provider or "").strip().lower()
+    if provider_lower not in CONNECTOR_CATALOG:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    template = CONNECTOR_CATALOG[provider_lower]
+    auth_type = template.get("auth", "bearer")
+    if auth_type != "oauth2":
+        raise HTTPException(status_code=400, detail=f"Provider {provider_lower} does not support OAuth2")
+
+    # Get OAuth configuration from environment
+    provider_upper = provider_lower.replace("-", "_").upper()
+    client_id = os.environ.get(f"OAUTH_{provider_upper}_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=500, detail=f"OAUTH_{provider_upper}_CLIENT_ID not configured")
+
+    # Generate state token for CSRF protection
+    state = str(uuid.uuid4())
+    redirect_uri = (request.get("redirect_uri") if request else None) or os.environ.get("OAUTH_REDIRECT_URI", "http://localhost:3000/oauth-callback")
+
+    # Build authorization URL
+    auth_url = template.get("oauth_auth_url")
+    scopes = template.get("oauth_scopes", [])
+    scope_str = " ".join(scopes) if isinstance(scopes, list) else scopes
+
+    # Store state in memory (in production, use Redis or database)
+    if not hasattr(oauth_start, "_states"):
+        oauth_start._states = {}
+    oauth_start._states[state] = {
+        "provider": provider_lower,
+        "created": datetime.datetime.now(),
+        "redirect_uri": redirect_uri,
+    }
+
+    # Build full auth URL with parameters
+    separator = "&" if "?" in auth_url else "?"
+    full_auth_url = f"{auth_url}{separator}client_id={client_id}&redirect_uri={redirect_uri}&scope={scope_str}&state={state}&response_type=code"
+
+    return {
+        "ok": True,
+        "provider": provider_lower,
+        "auth_url": full_auth_url,
+        "state": state,
+    }
+
+
+@app.post("/integrations/connectors/oauth-callback")
+async def oauth_callback(request: dict):
+    """Handle OAuth callback from provider. Exchanges code for access_token."""
+    code = (request.get("code") or "").strip()
+    state = (request.get("state") or "").strip()
+    connector_name = (request.get("connector_name") or "").strip()
+
+    if not code or not state or not connector_name:
+        raise HTTPException(status_code=400, detail="code, state, and connector_name are required")
+
+    # Validate state token
+    if not hasattr(oauth_start, "_states") or state not in oauth_start._states:
+        raise HTTPException(status_code=401, detail="Invalid or expired state token")
+
+    state_data = oauth_start._states[state]
+    provider = state_data.get("provider")
+
+    # Check state expiry (10 minute window)
+    created = state_data.get("created")
+    if datetime.datetime.now() - created > datetime.timedelta(minutes=10):
+        del oauth_start._states[state]
+        raise HTTPException(status_code=401, detail="State token expired")
+
+    if provider not in CONNECTOR_CATALOG:
+        raise HTTPException(status_code=404, detail="Provider not found")
+
+    template = CONNECTOR_CATALOG[provider]
+    provider_upper = provider.replace("-", "_").upper()
+    client_id = os.environ.get(f"OAUTH_{provider_upper}_CLIENT_ID")
+    client_secret = os.environ.get(f"OAUTH_{provider_upper}_CLIENT_SECRET")
+    redirect_uri = state_data.get("redirect_uri")
+
+    if not client_id or not client_secret:
+        raise HTTPException(status_code=500, detail=f"OAuth credentials not configured for {provider}")
+
+    # Exchange code for access token
+    token_url = template.get("oauth_token_url")
+    try:
+        token_response = requests.post(
+            token_url,
+            data={
+                "client_id": client_id,
+                "client_secret": client_secret,
+                "code": code,
+                "redirect_uri": redirect_uri,
+                "grant_type": "authorization_code",
+            },
+            timeout=10,
+        )
+        token_response.raise_for_status()
+        token_data = token_response.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to exchange code for token: {e}")
+
+    # Extract access token
+    access_token = token_data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="No access token in response")
+
+    # Store token in connectors
+    db = _load_connectors()
+    connector = next((c for c in db.get("connectors", []) if c.get("name") == connector_name), None)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    connector["token"] = access_token
+    connector["auth_type"] = "bearer"
+    connector["token_type"] = token_data.get("token_type", "Bearer")
+    connector["expires_at"] = token_data.get("expires_in", 3600) + int(datetime.datetime.now().timestamp())
+    if "refresh_token" in token_data:
+        connector["refresh_token"] = token_data.get("refresh_token")
+
+    db["connectors"] = db.get("connectors", [])
+    _save_connectors(db)
+
+    # Clean up state token
+    del oauth_start._states[state]
+
+    return {
+        "ok": True,
+        "connector": connector_name,
+        "provider": provider,
+        "message": "OAuth authorization successful",
+    }
 
 
 @app.get("/printers")
