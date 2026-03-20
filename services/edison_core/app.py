@@ -4128,6 +4128,15 @@ async def lifespan(app: FastAPI):
     logger.info("=" * 50)
     logger.info("Starting EDISON Core Service...")
     logger.info(f"Repo root: {REPO_ROOT}")
+    
+    # Initialize required directories early
+    try:
+        _ensure_integrations_dir()
+        logger.info("✓ Integration directories initialized")
+    except Exception as e:
+        logger.warning(f"⚠ Failed to initialize integration directories: {e}")
+        logger.warning("Note: If running in Docker, check volume mount permissions")
+    
     load_config()
     _init_vllm_config()
 
@@ -12396,6 +12405,9 @@ async def branding_list_clients():
 @app.post("/branding/clients")
 async def branding_create_client(request: dict):
     try:
+        # Ensure all required directories exist with proper permissions
+        _ensure_integrations_dir()
+        
         name = (request.get("name") or "").strip()
         if not name:
             raise HTTPException(status_code=400, detail="name is required")
@@ -12408,8 +12420,25 @@ async def branding_create_client(request: dict):
 
         slug = _slugify_client_name(name)
         dirs = _client_asset_dirs(slug)
+        
+        # Ensure parent BRANDING_ROOT exists first with proper error handling
+        try:
+            BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
+        except PermissionError as pe:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied creating client folder. Check directory permissions or Docker volume mounts for {BRANDING_ROOT}. Error: {pe}"
+            )
+        
+        # Create client-specific subdirectories
         for d in dirs.values():
-            d.mkdir(parents=True, exist_ok=True)
+            try:
+                d.mkdir(parents=True, exist_ok=True)
+            except PermissionError as pe:
+                raise HTTPException(
+                    status_code=403,
+                    detail=f"Permission denied creating client directories. Check Docker volume permissions. Error: {pe}"
+                )
 
         entry = {
             "id": f"client_{uuid.uuid4().hex[:10]}",
@@ -12484,6 +12513,9 @@ async def branding_list_assets(client_id: str):
 @app.post("/branding/clients/{client_id}/add-existing")
 async def branding_add_existing_asset(client_id: str, request: dict):
     try:
+        # Ensure all required directories exist with proper permissions
+        _ensure_integrations_dir()
+        
         db = _load_branding()
         clients = db.get("clients", [])
         client = next((c for c in clients if c.get("id") == client_id), None)
@@ -12516,7 +12548,24 @@ async def branding_add_existing_asset(client_id: str, request: dict):
 
         dirs = _client_asset_dirs(client.get("slug", ""))
         target_dir = dirs[asset_type]
-        target_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Ensure parent BRANDING_ROOT exists first
+        try:
+            BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
+        except PermissionError as pe:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied. Check Docker volume mounts for {BRANDING_ROOT}. Error: {pe}"
+            )
+        
+        # Create asset-type specific directory
+        try:
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as pe:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied creating asset directory. Check Docker volume permissions. Error: {pe}"
+            )
         target = target_dir / safe_src.name
         if target.exists():
             target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
