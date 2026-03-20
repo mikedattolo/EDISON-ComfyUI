@@ -1,0 +1,417 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON Connectors</title>
+  <style>
+    :root {
+      --bg: #0f1722;
+      --bg-2: #152232;
+      --panel: #18293e;
+      --panel-2: #1c3049;
+      --ink: #f4f8ff;
+      --muted: #9db3cc;
+      --line: rgba(178, 201, 231, 0.22);
+      --accent: #63d2a3;
+      --accent-2: #46b588;
+      --warn: #ffba69;
+      --bad: #ff9090;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 8% 10%, rgba(99, 210, 163, 0.18), transparent 30%),
+        radial-gradient(circle at 90% 5%, rgba(70, 181, 136, 0.15), transparent 28%),
+        linear-gradient(180deg, #0b121b 0%, #101a26 100%);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      padding: 14px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(11, 18, 27, 0.85);
+      backdrop-filter: blur(12px);
+    }
+
+    .title h1 { margin: 0; font-size: 22px; }
+    .title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #243a55, #1b2d44);
+      color: var(--ink);
+      padding: 9px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(120deg, #6de0af, #43bb8b);
+      color: #082114;
+      font-weight: 800;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 330px minmax(0, 1fr) 360px;
+      gap: 12px;
+      padding: 12px;
+      min-height: calc(100vh - 74px);
+    }
+
+    .panel {
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .head {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .head h2, .head h3 { margin: 0; font-size: 14px; }
+
+    .body { padding: 12px; min-height: 0; overflow: auto; display: flex; flex-direction: column; gap: 8px; }
+
+    .text, .select, .area {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      font: inherit;
+      color: var(--ink);
+      background: rgba(9, 16, 25, 0.8);
+    }
+
+    .area { min-height: 76px; resize: vertical; }
+
+    .provider {
+      border: 1px solid var(--line);
+      border-radius: 11px;
+      background: rgba(9, 16, 25, 0.5);
+      padding: 10px;
+      cursor: pointer;
+    }
+
+    .provider.active {
+      border-color: rgba(99, 210, 163, 0.66);
+      background: rgba(26, 52, 43, 0.6);
+    }
+
+    .provider strong { display: block; font-size: 13px; }
+    .provider span { color: var(--muted); font-size: 11px; }
+
+    .connector-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(6, 13, 21, 0.48);
+      padding: 10px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(6, 13, 21, 0.52);
+      color: var(--muted);
+      padding: 9px 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+
+    .status.ok { border-color: rgba(99, 210, 163, 0.42); color: #95efc9; }
+    .status.warn { border-color: rgba(255, 186, 105, 0.45); color: #ffd4a0; }
+    .status.bad { border-color: rgba(255, 144, 144, 0.45); color: #ffb2b2; }
+
+    pre {
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(8, 15, 23, 0.8);
+      color: #b8cde7;
+      padding: 10px;
+      font-size: 12px;
+      overflow: auto;
+      max-height: 300px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    @media (max-width: 1250px) { .shell { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <h1>Connector Studio</h1>
+      <p>Production-ready connectors for GitHub, email providers, docs, chat, and storage APIs.</p>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn" id="homeBtn">Main Chat</button>
+      <button class="btn primary" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel">
+      <div class="head"><h2>Provider Catalog</h2></div>
+      <div class="body" id="providers"></div>
+    </section>
+
+    <section class="panel">
+      <div class="head"><h2>Quick Connect</h2></div>
+      <div class="body">
+        <input class="text" id="connectorName" type="text" placeholder="Connector name (optional; defaults to provider key)" />
+        <input class="text" id="connectorToken" type="password" placeholder="Bearer token / API key" />
+        <div style="display:flex;gap:8px;align-items:center;">
+          <input class="text" id="connectorTimeout" type="number" value="20" min="5" max="120" />
+          <button class="btn primary" id="quickConnectBtn">Save Connector</button>
+        </div>
+        <div class="status" id="status">Choose a provider and add its token.</div>
+        <div class="head" style="margin:6px -12px 0;"><h3>Configured Connectors</h3></div>
+        <div id="connectors"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="head"><h3>Test Connector</h3></div>
+      <div class="body">
+        <select id="testConnector" class="select"></select>
+        <input id="testPath" class="text" type="text" placeholder="Override test path (optional)" />
+        <select id="testMethod" class="select">
+          <option value="GET">GET</option>
+          <option value="POST">POST</option>
+          <option value="PUT">PUT</option>
+          <option value="PATCH">PATCH</option>
+          <option value="DELETE">DELETE</option>
+        </select>
+        <textarea id="testBody" class="area" placeholder='Optional JSON body (for write endpoints), e.g. {"name":"example"}'></textarea>
+        <button class="btn primary" id="runTestBtn">Run Test</button>
+        <pre id="testOutput">No test run yet.</pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = '/api';
+    let providerCatalog = [];
+    let selectedProvider = '';
+    let connectors = [];
+
+    const el = (id) => document.getElementById(id);
+
+    function setStatus(msg, tone = '') {
+      const s = el('status');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    async function readJson(res) {
+      const raw = await res.text();
+      try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
+    }
+
+    function renderProviders() {
+      const host = el('providers');
+      if (!providerCatalog.length) {
+        host.innerHTML = '<div class="provider">No providers loaded.</div>';
+        return;
+      }
+      host.innerHTML = providerCatalog.map((p) => `
+        <div class="provider ${p.key === selectedProvider ? 'active' : ''}" data-key="${p.key}">
+          <strong>${p.label}</strong>
+          <span>${p.base_url}</span>
+        </div>`).join('');
+
+      host.querySelectorAll('.provider[data-key]').forEach((node) => {
+        node.addEventListener('click', () => {
+          selectedProvider = node.getAttribute('data-key') || '';
+          renderProviders();
+          const p = providerCatalog.find((x) => x.key === selectedProvider);
+          setStatus(`Provider selected: ${p?.label || selectedProvider}\nDocs: ${p?.docs || ''}`);
+        });
+      });
+    }
+
+    function renderConnectors() {
+      const host = el('connectors');
+      const sel = el('testConnector');
+      if (!connectors.length) {
+        host.innerHTML = '<div class="status">No connectors configured yet.</div>';
+        sel.innerHTML = '<option value="">No connectors</option>';
+        return;
+      }
+
+      host.innerHTML = connectors.map((c) => `
+        <div class="connector-item">
+          <div>
+            <strong>${c.name}</strong><br>
+            <span style="font-size:11px;color:#9db3cc;">${c.provider || 'custom'} - ${c.base_url}</span>
+          </div>
+          <div style="display:flex;gap:6px;">
+            <button class="btn" data-test="${c.name}">Test</button>
+            <button class="btn" data-delete="${c.name}">Delete</button>
+          </div>
+        </div>`).join('');
+
+      sel.innerHTML = connectors.map((c) => `<option value="${c.name}">${c.name}</option>`).join('');
+
+      host.querySelectorAll('button[data-test]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          el('testConnector').value = btn.getAttribute('data-test') || '';
+          runTest().catch((e) => { el('testOutput').textContent = e.message; });
+        });
+      });
+
+      host.querySelectorAll('button[data-delete]').forEach((btn) => {
+        btn.addEventListener('click', () => deleteConnector(btn.getAttribute('data-delete') || ''));
+      });
+    }
+
+    async function loadCatalog() {
+      const res = await fetch(`${API}/integrations/connectors/catalog`);
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.detail || 'Could not load provider catalog');
+      providerCatalog = data.providers || [];
+      if (!selectedProvider && providerCatalog.length) selectedProvider = providerCatalog[0].key;
+      renderProviders();
+    }
+
+    async function loadConnectors() {
+      const res = await fetch(`${API}/integrations/connectors`);
+      const data = await readJson(res);
+      if (!res.ok) throw new Error(data.detail || 'Could not load connectors');
+      connectors = data.connectors || [];
+      renderConnectors();
+    }
+
+    async function quickConnect() {
+      if (!selectedProvider) {
+        setStatus('Select a provider first.', 'warn');
+        return;
+      }
+      const token = (el('connectorToken').value || '').trim();
+      if (!token) {
+        setStatus('Enter a token or API key.', 'warn');
+        return;
+      }
+
+      const body = {
+        provider: selectedProvider,
+        token,
+        name: (el('connectorName').value || '').trim(),
+        timeout_sec: Number(el('connectorTimeout').value || 20),
+      };
+
+      const res = await fetch(`${API}/integrations/connectors/quick-connect`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        setStatus(data.detail || 'Connector save failed.', 'bad');
+        return;
+      }
+
+      el('connectorToken').value = '';
+      await loadConnectors();
+      setStatus(`Connector saved: ${data.connector?.name}\nDefault test path: ${data.connector?.test_path || '/'}`, 'ok');
+    }
+
+    async function deleteConnector(name) {
+      if (!name) return;
+      const res = await fetch(`${API}/integrations/connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        setStatus(data.detail || 'Delete failed.', 'bad');
+        return;
+      }
+      await loadConnectors();
+      setStatus(`Deleted connector: ${name}`, 'ok');
+    }
+
+    async function runTest() {
+      const connector = (el('testConnector').value || '').trim();
+      if (!connector) {
+        setStatus('Select a connector to test.', 'warn');
+        return;
+      }
+
+      let bodyPayload = undefined;
+      const rawBody = (el('testBody').value || '').trim();
+      if (rawBody) {
+        try { bodyPayload = JSON.parse(rawBody); }
+        catch {
+          setStatus('Test body must be valid JSON.', 'warn');
+          return;
+        }
+      }
+
+      const reqBody = {
+        connector,
+        path: (el('testPath').value || '').trim() || undefined,
+        method: (el('testMethod').value || 'GET').trim(),
+        body: bodyPayload,
+      };
+
+      const res = await fetch(`${API}/integrations/connectors/test`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(reqBody),
+      });
+      const data = await readJson(res);
+      el('testOutput').textContent = JSON.stringify(data, null, 2);
+      if (!res.ok || !data.ok) {
+        setStatus('Connector test failed. See output panel.', 'bad');
+        return;
+      }
+      setStatus(`Test OK (${data.status}) against ${data.url}`, 'ok');
+    }
+
+    el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
+    el('refreshBtn').addEventListener('click', async () => {
+      await Promise.all([loadCatalog(), loadConnectors()]);
+      setStatus('Connectors refreshed.', 'ok');
+    });
+    el('quickConnectBtn').addEventListener('click', () => quickConnect().catch((e) => setStatus(e.message, 'bad')));
+    el('runTestBtn').addEventListener('click', () => runTest().catch((e) => setStatus(e.message, 'bad')));
+
+    (async function init() {
+      try {
+        await Promise.all([loadCatalog(), loadConnectors()]);
+        setStatus('Connector studio ready.', 'ok');
+      } catch (e) {
+        setStatus(e.message || 'Initialization failed', 'bad');
+      }
+    })();
+  </script>
+</body>
+</html>

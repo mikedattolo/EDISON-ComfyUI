@@ -876,11 +876,12 @@ class EdisonAgentLiveView {
             <div class="agent-live-header" id="agentLiveHeader">
                 <span class="agent-live-title">
                     <span class="agent-live-dot"></span>
-                    Live Activity
+                    Sandbox Activity
                 </span>
                 <button class="agent-live-toggle" id="agentLiveToggle" aria-label="Toggle live panel">▼</button>
             </div>
             <div class="agent-live-body" id="agentLiveBody">
+                <div id="agentLiveBrowserPreview" style="display:none; margin-bottom:10px;"></div>
                 <div class="agent-live-steps" id="agentLiveSteps"></div>
             </div>
         `;
@@ -997,9 +998,25 @@ class EdisonAgentLiveView {
                 this._addBrowserEvent(event);
                 break;
             case 'browser_view':
-                this._updateBrowserView(event);
+                // New: inject inline chat browser card
+                if (window.injectBrowserCard) window.injectBrowserCard(event);
+                this._renderBrowserPreview(event);
+                this._addBrowserViewStep(event);
+                break;
+            case 'sandbox_browser_open':
+                this._addSandboxBrowserEvent(event);
                 break;
             case 'browser_screenshot':
+                this._renderBrowserPreview({
+                    url: event.url || '',
+                    title: event.title || event.url || 'Browser',
+                    screenshot_b64: event.screenshot_b64 || event.png_base64 || null,
+                    status: event.status || 'done',
+                    session_id: event.session_id || 'default',
+                    width: event.width,
+                    height: event.height,
+                    error: event.error || null,
+                });
                 this._addScreenshot(event);
                 break;
             case 'file_diff':
@@ -1056,64 +1073,57 @@ class EdisonAgentLiveView {
         container.scrollTop = container.scrollHeight;
     }
 
-    _updateBrowserView(event) {
-        // Update or create a single browser view card in the agent live panel
-        // Reuses existing card to avoid duplicates
+    _addBrowserViewStep(event) {
+        // Adds a compact activity-bar step for browser navigation
         const container = document.getElementById('agentLiveSteps');
         if (!container) return;
-
-        let viewEl = container.querySelector('.agent-browser-view');
-        if (!viewEl) {
-            viewEl = document.createElement('div');
-            viewEl.className = 'agent-step agent-browser-view';
-            container.appendChild(viewEl);
+        const icon = event.status === 'loading' ? '⏳' :
+                     event.status === 'error' ? '❌' : '🌐';
+        // Reuse card-anchor by scanning existing steps for same URL
+        let el = null;
+        container.querySelectorAll('[data-browser-url]').forEach(node => {
+            if (node.dataset.browserUrl === event.url) el = node;
+        });
+        if (!el) {
+            el = document.createElement('div');
+            el.className = 'agent-step agent-browser-event';
+            el.dataset.browserUrl = event.url;
+            container.appendChild(el);
         }
-
-        const url = this._escapeHtml(event.url || '');
-        const title = this._escapeHtml(event.title || event.url || '');
-        const status = event.status || 'loading';
-        const screenshot = event.screenshot_b64 || null;
-
-        if (status === 'loading') {
-            viewEl.innerHTML = `
-                <span class="agent-step-icon running">⟳</span>
-                <span class="agent-step-title">🌐 Navigating to ${url}…</span>
-            `;
-        } else if (status === 'done' && screenshot) {
-            const cursorHtml = (typeof event.cursor_x === 'number' && typeof event.cursor_y === 'number')
-                ? `<div class="agent-browser-cursor" style="position:absolute;left:${event.cursor_x}px;top:${event.cursor_y}px;width:12px;height:12px;border-radius:50%;background:red;border:2px solid white;box-shadow:0 0 4px rgba(0,0,0,0.5);pointer-events:none;transform:translate(-50%,-50%);z-index:10;"></div>`
-                : '';
-            viewEl.innerHTML = `
-                <span class="agent-step-icon done">✓</span>
-                <span class="agent-step-title">🌐 ${title}</span>
-                <div style="position:relative;display:inline-block;max-width:100%;">
-                    <img src="data:image/jpeg;base64,${screenshot}" 
-                         class="agent-screenshot-img" 
-                         alt="${title}"
-                         loading="lazy"
-                         style="max-width:100%;margin-top:4px;border-radius:6px;cursor:pointer"
-                         onclick="window.open('${url}','_blank')" />
-                    ${cursorHtml}
-                </div>
-            `;
-        } else if (status === 'error') {
-            viewEl.innerHTML = `
-                <span class="agent-step-icon error">✗</span>
-                <span class="agent-step-title">🌐 Failed: ${this._escapeHtml(event.error || 'unknown error')}</span>
-            `;
-        } else {
-            viewEl.innerHTML = `
-                <span class="agent-step-icon done">✓</span>
-                <span class="agent-step-title">🌐 <a href="${url}" target="_blank" rel="noopener">${title}</a></span>
-            `;
-        }
-
+        el.innerHTML = `<span class="agent-step-icon">${icon}</span>
+            <span class="agent-step-title">${event.status === 'loading' ? 'Navigating to ' : 'Visited '}<a href="${this._escapeHtml(event.url)}" target="_blank" rel="noopener">${this._escapeHtml(event.title || event.url)}</a></span>`;
         container.scrollTop = container.scrollHeight;
+    }
 
-        // Also forward to the inline browser card in chat if available
+    _addSandboxBrowserEvent(event) {
+        // Legacy sandbox_browser_open → forward to new inline browser card
         if (window.injectBrowserCard) {
-            window.injectBrowserCard(event);
+            window.injectBrowserCard({ ...event, status: 'loading', screenshot_b64: null });
         }
+    }
+
+    _renderBrowserPreview(event) {
+        const holder = document.getElementById('agentLiveBrowserPreview');
+        if (!holder) return;
+
+        const url = event.url || '';
+        const title = event.title || url || 'Browser';
+        const screenshot = event.screenshot_b64 || null;
+        const status = event.status || 'loading';
+        const sid = event.session_id || 'default';
+
+        holder.style.display = 'block';
+        holder.innerHTML = `
+            <div style="border:1px solid rgba(255,255,255,0.15); border-radius:10px; overflow:hidden; background:rgba(0,0,0,0.25)">
+                <div style="display:flex; justify-content:space-between; gap:8px; padding:8px 10px; font-size:12px; border-bottom:1px solid rgba(255,255,255,0.12)">
+                    <strong style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${this._escapeHtml(title)}</strong>
+                    <span style="opacity:0.7">${this._escapeHtml(sid)} · ${this._escapeHtml(status)}</span>
+                </div>
+                ${screenshot ? `<img src="data:image/jpeg;base64,${screenshot}" alt="Browser stream" style="display:block; width:100%; height:auto;"/>`
+                    : `<div style="padding:12px; font-size:12px; opacity:0.75">${this._escapeHtml(event.error || 'Waiting for screenshot...')}</div>`}
+                <div style="padding:6px 10px; font-size:11px; opacity:0.8; white-space:nowrap; overflow:hidden; text-overflow:ellipsis">${this._escapeHtml(url)}</div>
+            </div>
+        `;
     }
 
     _addScreenshot(event) {
