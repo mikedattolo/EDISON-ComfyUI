@@ -29,8 +29,9 @@ import numpy as np
 import gc
 import subprocess
 import shlex
+import socket
+import ipaddress
 import mimetypes
-from urllib.parse import quote
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -602,6 +603,66 @@ SELF_EDIT_BACKUP_DIR = REPO_ROOT / "outputs" / "self_edit_backups"
 CODESPACES_ENABLED = False
 PERSONALITY_TRAITS = ("innovative", "thoughtful", "kind")
 
+MEDIA_ROOTS = [
+    REPO_ROOT / "outputs",
+    REPO_ROOT / "uploads",
+    REPO_ROOT / "gallery",
+    BRANDING_ROOT,
+]
+
+CONNECTOR_CATALOG = {
+    "github": {
+        "label": "GitHub",
+        "base_url": "https://api.github.com",
+        "auth": "bearer",
+        "test_path": "/user",
+        "docs": "https://docs.github.com/en/rest",
+    },
+    "gmail": {
+        "label": "Gmail",
+        "base_url": "https://gmail.googleapis.com/gmail/v1",
+        "auth": "bearer",
+        "test_path": "/users/me/profile",
+        "docs": "https://developers.google.com/gmail/api",
+    },
+    "outlook": {
+        "label": "Microsoft Outlook (Graph)",
+        "base_url": "https://graph.microsoft.com/v1.0",
+        "auth": "bearer",
+        "test_path": "/me",
+        "docs": "https://learn.microsoft.com/graph/api/resources/mail-api-overview",
+    },
+    "google_drive": {
+        "label": "Google Drive",
+        "base_url": "https://www.googleapis.com/drive/v3",
+        "auth": "bearer",
+        "test_path": "/about?fields=user,storageQuota",
+        "docs": "https://developers.google.com/drive/api",
+    },
+    "slack": {
+        "label": "Slack",
+        "base_url": "https://slack.com/api",
+        "auth": "bearer",
+        "test_path": "/auth.test",
+        "docs": "https://api.slack.com/web",
+    },
+    "notion": {
+        "label": "Notion",
+        "base_url": "https://api.notion.com/v1",
+        "auth": "bearer",
+        "test_path": "/users/me",
+        "docs": "https://developers.notion.com/reference/intro",
+        "extra_headers": {"Notion-Version": "2022-06-28"},
+    },
+    "dropbox": {
+        "label": "Dropbox",
+        "base_url": "https://api.dropboxapi.com/2",
+        "auth": "bearer",
+        "test_path": "/users/get_current_account",
+        "docs": "https://www.dropbox.com/developers/documentation/http/overview",
+    },
+}
+
 def _is_file_request(text: str) -> bool:
     """Check if user is explicitly requesting file/document creation.
     
@@ -870,6 +931,226 @@ def _client_asset_dirs(slug: str) -> dict:
         "images": base / "images",
         "videos": base / "videos",
         "files": base / "files",
+    }
+
+
+def _path_under_allowed_roots(candidate: Path, roots: List[Path]) -> bool:
+    resolved = candidate.resolve()
+    for root in roots:
+        try:
+            resolved.relative_to(root.resolve())
+            return True
+        except Exception:
+            continue
+    return False
+
+
+def _resolve_media_path(path_str: str) -> Path:
+    candidate = _safe_workspace_path(path_str)
+    if not _path_under_allowed_roots(candidate, MEDIA_ROOTS):
+        raise ValueError("Access denied: media path outside allowed roots")
+    return candidate
+
+
+def _workspace_relative(path: Path) -> str:
+    try:
+        return str(path.resolve().relative_to(REPO_ROOT))
+    except Exception:
+        return str(path.resolve())
+
+
+def _infer_media_kind(path: Path) -> str:
+    ext = path.suffix.lower()
+    if ext in {".mp4", ".mov", ".m4v", ".mkv", ".webm", ".avi"}:
+        return "video"
+    if ext in {".mp3", ".wav", ".m4a", ".aac", ".flac", ".ogg"}:
+        return "audio"
+    if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}:
+        return "image"
+    return "file"
+
+
+def _build_media_item(path: Path) -> dict:
+    stat = path.stat()
+    is_dir = path.is_dir()
+    rel = _workspace_relative(path)
+    kind = "directory" if is_dir else _infer_media_kind(path)
+    item = {
+        "name": path.name,
+        "type": "directory" if is_dir else "file",
+        "kind": kind,
+        "path": rel,
+        "size_bytes": 0 if is_dir else stat.st_size,
+        "extension": "" if is_dir else path.suffix.lower(),
+        "mtime": stat.st_mtime,
+    }
+    if not is_dir:
+        item["preview_url"] = f"/video/media?path={rel}"
+    return item
+
+
+def _list_media_directory(path: Path, limit: int = 500) -> list:
+    items = []
+    entries = sorted(path.iterdir(), key=lambda p: (not p.is_dir(), p.name.lower()))
+    for entry in entries:
+        if len(items) >= limit:
+            break
+        try:
+            items.append(_build_media_item(entry))
+        except Exception:
+            continue
+    return items
+
+
+def _video_media_roots() -> list:
+    roots = []
+    for root in MEDIA_ROOTS:
+        root.mkdir(parents=True, exist_ok=True)
+        roots.append({
+            "name": root.name,
+            "path": _workspace_relative(root),
+            "type": "directory",
+        })
+    return roots
+
+
+def _escape_ffmpeg_subtitles_path(path: Path) -> str:
+    # ffmpeg subtitles filter expects escaped separators in filter expression.
+    escaped = str(path).replace("\\", "\\\\").replace(":", "\\:").replace("'", "\\'")
+    return escaped
+
+
+def _auto_caption_with_whisper_cli(source_path: Path, output_dir: Path, language: str = "en") -> Optional[Path]:
+    whisper_bin = shutil.which("whisper")
+    if not whisper_bin:
+        return None
+    cmd = [
+        whisper_bin,
+        str(source_path),
+        "--task",
+        "transcribe",
+        "--output_format",
+        "srt",
+        "--output_dir",
+        str(output_dir),
+        "--language",
+        language,
+        "--fp16",
+        "False",
+    ]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=1200)
+    if proc.returncode != 0:
+        raise RuntimeError((proc.stderr or proc.stdout or "Whisper failed")[:1200])
+    srt_path = output_dir / f"{source_path.stem}.srt"
+    if not srt_path.exists():
+        raise RuntimeError("Whisper did not produce an SRT file")
+    return srt_path
+
+
+def _call_connector_http(connector: dict, method: str, path: str, body: Any = None) -> dict:
+    method = (method or "GET").upper()
+    base_url = (connector.get("base_url") or "").rstrip("/")
+    target_path = path if str(path).startswith("/") else f"/{path}"
+    url = f"{base_url}{target_path}"
+    headers = dict(connector.get("headers") or {})
+    timeout_sec = int(connector.get("timeout_sec", 20) or 20)
+
+    req_kwargs = {
+        "headers": headers,
+        "timeout": timeout_sec,
+    }
+    payload = body
+    if isinstance(payload, str):
+        payload_str = payload.strip()
+        if payload_str:
+            try:
+                payload = json.loads(payload_str)
+            except Exception:
+                payload = payload_str
+        else:
+            payload = None
+
+    if method in {"POST", "PUT", "PATCH", "DELETE"} and payload not in (None, ""):
+        if isinstance(payload, (dict, list)):
+            req_kwargs["json"] = payload
+        else:
+            req_kwargs["data"] = str(payload)
+
+    resp = requests.request(method, url, **req_kwargs)
+    content_type = (resp.headers.get("content-type") or "").lower()
+    body_out: Any
+    if "application/json" in content_type:
+        try:
+            body_out = resp.json()
+        except Exception:
+            body_out = resp.text[:4000]
+    else:
+        body_out = resp.text[:4000]
+
+    return {
+        "ok": resp.ok,
+        "status": resp.status_code,
+        "url": url,
+        "method": method,
+        "response": body_out,
+    }
+
+
+def _discover_printers_simple(subnet: str = "", timeout_sec: float = 0.25, max_hosts: int = 64) -> dict:
+    """Best-effort LAN scan for likely printer devices when PrinterManager discovery is unavailable."""
+    target_subnet = subnet.strip()
+    if not target_subnet:
+        with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+            s.connect(("8.8.8.8", 80))
+            local_ip = s.getsockname()[0]
+        base = ".".join(local_ip.split(".")[:3])
+        target_subnet = f"{base}.0/24"
+
+    net = ipaddress.ip_network(target_subnet, strict=False)
+    common_ports = [80, 443, 8080, 7125, 8899]
+    discovered = []
+    scanned = 0
+
+    for host in list(net.hosts())[: max(1, max_hosts)]:
+        scanned += 1
+        host_str = str(host)
+        open_ports = []
+        for port in common_ports:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(timeout_sec)
+            try:
+                if sock.connect_ex((host_str, port)) == 0:
+                    open_ports.append(port)
+            finally:
+                sock.close()
+
+        if not open_ports:
+            continue
+
+        dtype = "generic"
+        endpoint = f"http://{host_str}:{open_ports[0]}"
+        if 80 in open_ports or 8080 in open_ports:
+            try:
+                probe = requests.get(f"http://{host_str}/api/version", timeout=1.0)
+                if probe.ok and "OctoPrint" in probe.text:
+                    dtype = "octoprint"
+                    endpoint = f"http://{host_str}"
+            except Exception:
+                pass
+
+        discovered.append({
+            "id": f"discovered_{host_str.replace('.', '_')}",
+            "name": f"Network Device {host_str}",
+            "type": dtype,
+            "host": host_str,
+            "endpoint": endpoint,
+            "ports": open_ports,
+        })
+
+    return {
+        "subnet": target_subnet,
+        "scanned_hosts": scanned,
+        "discovered": discovered,
     }
 
 # Thread locks for concurrent model access safety
@@ -1382,86 +1663,6 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
             "class_type": "SaveImage"
         }
     }
-
-
-def _estimate_image_generation_ram_mb(width: int, height: int, steps: int) -> int:
-    megapixels = (max(int(width), 64) * max(int(height), 64)) / 1_000_000
-    return max(2048, int(1400 + megapixels * 1200 + max(int(steps), 1) * 10))
-
-
-def _quantize_image_dimension(value: float, minimum: int = 256) -> int:
-    return max(minimum, int(round(float(value) / 64.0)) * 64)
-
-
-def _scale_image_dimensions(width: int, height: int, max_side: int) -> tuple[int, int]:
-    width = max(int(width), 64)
-    height = max(int(height), 64)
-    longest = max(width, height)
-    if longest <= max_side:
-        return _quantize_image_dimension(width), _quantize_image_dimension(height)
-    scale = max_side / float(longest)
-    return (
-        _quantize_image_dimension(width * scale),
-        _quantize_image_dimension(height * scale),
-    )
-
-
-def _image_generation_profiles(width: int, height: int, steps: int, auto_optimize: bool = True) -> list[dict]:
-    requested = {
-        "width": max(int(width), 256),
-        "height": max(int(height), 256),
-        "steps": max(int(steps), 1),
-        "profile": "requested",
-    }
-    profiles = [requested]
-    if not auto_optimize:
-        return profiles
-
-    candidates = [
-        (896, min(requested["steps"], 18), "balanced"),
-        (768, min(requested["steps"], 16), "reduced"),
-        (640, min(requested["steps"], 14), "lean"),
-        (512, min(requested["steps"], 12), "minimum"),
-    ]
-    seen = {(requested["width"], requested["height"], requested["steps"])}
-    for max_side, step_cap, label in candidates:
-        candidate_width, candidate_height = _scale_image_dimensions(
-            requested["width"], requested["height"], max_side
-        )
-        candidate = (candidate_width, candidate_height, max(step_cap, 1))
-        if candidate in seen:
-            continue
-        seen.add(candidate)
-        profiles.append({
-            "width": candidate[0],
-            "height": candidate[1],
-            "steps": candidate[2],
-            "profile": label,
-        })
-    return profiles
-
-
-def _video_editor_roots() -> list[tuple[str, Path]]:
-    roots = [
-        ("videos", (REPO_ROOT / "outputs" / "videos").resolve()),
-        ("clients", (REPO_ROOT / "outputs" / "clients").resolve()),
-        ("music", (REPO_ROOT / "outputs" / "music").resolve()),
-        ("audio_uploads", (REPO_ROOT / "uploads" / "audio").resolve()),
-    ]
-    for _, root in roots:
-        root.mkdir(parents=True, exist_ok=True)
-    return roots
-
-
-def _is_allowed_video_editor_path(target: Path) -> bool:
-    return any(str(target).startswith(str(root)) for _, root in _video_editor_roots())
-
-
-def _media_preview_url(path: Path) -> str | None:
-    media_type, _ = mimetypes.guess_type(str(path))
-    if not media_type or not media_type.startswith(("video/", "audio/")):
-        return None
-    return f"/video/asset?path={quote(str(path), safe='')}"
 
 # Request/Response models
 class ChatRequest(BaseModel):
@@ -7184,7 +7385,6 @@ async def generate_image(request: dict):
         ckpt_name = request.get('ckpt_name', 'sd_xl_base_1.0.safetensors')
         style_preset = request.get('style_preset', 'auto')
         comfyui_url_override = request.get('comfyui_url')
-        auto_optimize = bool(request.get('auto_optimize', True))
         
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
@@ -7198,70 +7398,32 @@ async def generate_image(request: dict):
 
         if seed is not None and (not isinstance(seed, int) or seed < 0):
             raise HTTPException(status_code=400, detail="seed must be a non-negative integer")
-
-        width = max(int(width), 256)
-        height = max(int(height), 256)
-        requested_profile = {
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "guidance_scale": guidance_scale,
-        }
         
         logger.info(
             f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale}, "
-            f"seed={seed}, sampler={sampler_name}, scheduler={scheduler}, style={style_preset}, auto_optimize={auto_optimize})"
+            f"seed={seed}, sampler={sampler_name}, scheduler={scheduler}, style={style_preset})"
         )
         
         # === MemoryGate: ensure enough VRAM for ComfyUI ===
         global _models_unloaded_for_image_gen
-        selected_profile = {
-            "width": width,
-            "height": height,
-            "steps": steps,
-            "profile": "requested",
-        }
         with _image_gen_lock:
             if memory_gate_instance:
-                attempted_profiles = []
-                gate_result = None
-                for candidate in _image_generation_profiles(width, height, steps, auto_optimize=auto_optimize):
-                    estimated_ram_mb = _estimate_image_generation_ram_mb(
-                        candidate["width"], candidate["height"], candidate["steps"]
-                    )
-                    attempted_profiles.append({
-                        **candidate,
-                        "estimated_ram_mb": estimated_ram_mb,
-                    })
-                    gate_result = memory_gate_instance.pre_heavy_task(
-                        required_vram_mb=4000,
-                        required_ram_mb=estimated_ram_mb,
-                        reason="image generation (ComfyUI)",
-                        allow_cpu_fallback=False,
-                    )
-                    if gate_result["ok"]:
-                        selected_profile = candidate
-                        break
-                if not gate_result or not gate_result["ok"]:
-                    detail = dict((gate_result or {}).get("error") or {
-                        "message": "Not enough RAM/VRAM for image generation",
-                        "action": "unload_and_retry",
-                    })
-                    detail["requested"] = requested_profile
-                    detail["attempted_profiles"] = attempted_profiles
-                    if attempted_profiles:
-                        detail["suggested_profile"] = attempted_profiles[-1]
-                    detail["auto_optimize"] = auto_optimize
-                    raise HTTPException(status_code=507, detail=detail)
-                width = selected_profile["width"]
-                height = selected_profile["height"]
-                steps = selected_profile["steps"]
-                _models_unloaded_for_image_gen = True
-                logger.info(
-                    "MemoryGate: ok, freed=%sMB, selected_profile=%s",
-                    f"{gate_result['freed_mb']:.0f}",
-                    {"width": width, "height": height, "steps": steps, "profile": selected_profile["profile"]},
+                gate_result = memory_gate_instance.pre_heavy_task(
+                    required_vram_mb=4000,
+                    required_ram_mb=0,
+                    reason="image generation (ComfyUI)",
+                    allow_cpu_fallback=False,
                 )
+                if not gate_result["ok"]:
+                    raise HTTPException(
+                        status_code=507,
+                        detail=gate_result.get("error", {
+                            "message": "Not enough VRAM for image generation",
+                            "action": "unload_and_retry",
+                        }),
+                    )
+                _models_unloaded_for_image_gen = True
+                logger.info(f"MemoryGate: ok, freed={gate_result['freed_mb']:.0f}MB")
             elif not _models_unloaded_for_image_gen:
                 # Legacy fallback
                 unload_all_llm_models()
@@ -7325,20 +7487,15 @@ async def generate_image(request: dict):
             "prompt_id": prompt_id,
             "message": "Image generation started. Check status with /image-status endpoint.",
             "comfyui_url": comfyui_url,
-            "requested_parameters": requested_profile,
-            "effective_parameters": {
+            "settings": {
                 "seed": workflow["3"]["inputs"]["seed"],
-                "width": width,
-                "height": height,
                 "steps": steps,
                 "guidance_scale": guidance_scale,
                 "sampler_name": sampler_name,
                 "scheduler": scheduler,
                 "style_preset": style_preset,
                 "ckpt_name": ckpt_name,
-                "optimized": (width != requested_profile["width"] or height != requested_profile["height"] or steps != requested_profile["steps"]),
-                "profile": selected_profile["profile"],
-            },
+            }
         }
         
     except requests.RequestException as e:
@@ -7348,8 +7505,6 @@ async def generate_image(request: dict):
             reload_llm_models_background()
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
     except HTTPException:
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
         raise
     except Exception as e:
         logger.error(f"Error generating image: {e}")
@@ -11230,110 +11385,6 @@ async def system_memory():
         return {"error": str(e)}
 
 
-@app.get("/system/diagnostics")
-async def system_diagnostics():
-    """Self-diagnostics for RAM pressure, tool availability, and codebase visibility."""
-    try:
-        memory = await system_memory()
-    except Exception as e:
-        memory = {"error": str(e)}
-
-    workspace = REPO_ROOT.resolve()
-    file_count = 0
-    py_js_count = 0
-    try:
-        for root, dirs, files in os.walk(workspace):
-            dirs[:] = [d for d in dirs if d not in {".git", ".venv", "__pycache__", "node_modules"}]
-            file_count += len(files)
-            py_js_count += sum(1 for f in files if f.endswith((".py", ".js", ".ts", ".md")))
-            if file_count > 25000:
-                break
-    except Exception:
-        file_count = -1
-        py_js_count = -1
-
-    tool_registry_tools = []
-    try:
-        from .tool_framework import get_tool_registry
-        tool_registry_tools = get_tool_registry().list_tools()
-    except Exception:
-        tool_registry_tools = []
-
-    workspace_probe = {
-        "sample_file": None,
-        "can_read_sample_file": False,
-        "sample_lines": 0,
-    }
-    for candidate in [REPO_ROOT / "README.md", REPO_ROOT / "pyproject.toml", REPO_ROOT / "services" / "edison_core" / "app.py"]:
-        if not candidate.exists() or not candidate.is_file():
-            continue
-        workspace_probe["sample_file"] = str(candidate)
-        try:
-            sample = candidate.read_text(encoding="utf-8", errors="replace")[:2048]
-            workspace_probe["can_read_sample_file"] = True
-            workspace_probe["sample_lines"] = sample.count("\n") + (1 if sample else 0)
-        except Exception:
-            workspace_probe["can_read_sample_file"] = False
-        break
-
-    self_eval_summary = {"available": False}
-    if self_evaluator is not None:
-        try:
-            self_eval_summary = {
-                "available": True,
-                "recent": self_evaluator.get_recent(limit=5),
-                "stats_24h": self_evaluator.get_stats(window_hours=24),
-                "corrections_24h": self_evaluator.get_correction_rate(window_hours=24),
-            }
-        except Exception as e:
-            self_eval_summary = {"available": False, "error": str(e)}
-
-    return {
-        "ok": True,
-        "timestamp": int(time.time()),
-        "workspace": {
-            "root": str(workspace),
-            "exists": workspace.exists(),
-            "readable": os.access(workspace, os.R_OK),
-            "writable": os.access(workspace, os.W_OK),
-            "file_count_estimate": file_count,
-            "code_file_count_estimate": py_js_count,
-            "probe": workspace_probe,
-        },
-        "services": {
-            "llm_fast_loaded": llm_fast is not None,
-            "llm_medium_loaded": llm_medium is not None,
-            "llm_deep_loaded": llm_deep is not None,
-            "llm_reasoning_loaded": llm_reasoning is not None,
-            "vision_loaded": llm_vision is not None,
-            "video_service_ready": video_service is not None,
-            "music_service_ready": music_service is not None,
-            "memory_gate_ready": memory_gate_instance is not None,
-            "tool_registry_count": len(TOOL_REGISTRY),
-            "self_evaluator_ready": self_evaluator is not None,
-        },
-        "code_awareness": {
-            "verified_workspace_endpoints": [
-                "/codespaces/read-file",
-                "/codespaces/list-dir",
-                "/codespaces/search-files",
-                "/codespaces/execute",
-                "/system/memory",
-                "/system/stats",
-                "/system/diagnostics",
-            ],
-            "structured_tools_enabled": len(tool_registry_tools) > 0,
-            "registered_tools": tool_registry_tools,
-            "dev_kb_endpoint": "/dev-kb/status",
-            "system_memory_endpoint": "/system/memory",
-            "system_stats_endpoint": "/system/stats",
-            "video_editor_endpoint": "/video/files",
-        },
-        "memory": memory,
-        "self_eval": self_eval_summary,
-    }
-
-
 # ── Provenance API ───────────────────────────────────────────────────────
 
 @app.get("/provenance/recent")
@@ -12398,83 +12449,108 @@ async def branding_add_existing_asset(client_id: str, request: dict):
 
 # ==================== VIDEO EDITING ====================
 
+@app.get("/system/diagnostics")
+async def system_diagnostics():
+    """Return lightweight diagnostics for web tools like video and printing pages."""
+    ram_available_mb = None
+    total_vram_free_mb = None
+    workspace_probe = {
+        "can_read_sample_file": False,
+        "sample_file": "README.md",
+    }
 
-@app.get("/video/files")
-async def video_files(path: str = ""):
-    """List files for the dedicated video editor workspace."""
-    roots = _video_editor_roots()
+    try:
+        import psutil  # type: ignore
 
-    if not path:
-        return {
-            "ok": True,
-            "roots": [{"name": name, "path": str(root)} for name, root in roots],
-            "items": [],
-        }
+        vm = psutil.virtual_memory()
+        ram_available_mb = int(vm.available / (1024 * 1024))
+    except Exception:
+        ram_available_mb = None
 
-    target = Path(path).expanduser().resolve()
-    if not _is_allowed_video_editor_path(target):
-        raise HTTPException(status_code=403, detail="Path must be inside an allowed media root")
-    if not target.exists():
-        raise HTTPException(status_code=404, detail="Path not found")
+    try:
+        total_vram_free_mb = 0
+        gpu_count = 0
+        try:
+            import torch  # type: ignore
 
-    items = []
-    if target.is_dir():
-        for entry in sorted(target.iterdir(), key=lambda item: (not item.is_dir(), item.name.lower())):
-            try:
-                stat = entry.stat()
-                items.append({
-                    "name": entry.name,
-                    "path": str(entry.resolve()),
-                    "type": "directory" if entry.is_dir() else "file",
-                    "size_bytes": 0 if entry.is_dir() else stat.st_size,
-                    "mtime": stat.st_mtime,
-                    "extension": entry.suffix.lower(),
-                    "preview_url": _media_preview_url(entry.resolve()) if entry.is_file() else None,
-                })
-            except Exception:
-                continue
-    else:
-        stat = target.stat()
-        items.append({
-            "name": target.name,
-            "path": str(target),
-            "type": "file",
-            "size_bytes": stat.st_size,
-            "mtime": stat.st_mtime,
-            "extension": target.suffix.lower(),
-            "preview_url": _media_preview_url(target),
-        })
+            if torch.cuda.is_available():
+                gpu_count = torch.cuda.device_count()
+                for did in range(gpu_count):
+                    free, _total = torch.cuda.mem_get_info(did)
+                    total_vram_free_mb += int(free / (1024 * 1024))
+        except Exception:
+            total_vram_free_mb = None
+        if gpu_count == 0 and total_vram_free_mb == 0:
+            total_vram_free_mb = None
+    except Exception:
+        total_vram_free_mb = None
+
+    sample = REPO_ROOT / "README.md"
+    if sample.exists() and sample.is_file():
+        workspace_probe["can_read_sample_file"] = True
 
     return {
         "ok": True,
-        "path": str(target),
-        "items": items,
+        "memory": {
+            "ram_available_mb": ram_available_mb,
+            "total_vram_free_mb": total_vram_free_mb,
+        },
+        "workspace": {
+            "probe": workspace_probe,
+        },
+        "services": {
+            "llm_fast_loaded": llm_fast is not None,
+            "llm_deep_loaded": llm_deep is not None,
+            "tool_registry_count": len(TOOL_REGISTRY),
+        },
     }
 
 
-@app.get("/video/asset")
-async def serve_video_asset(path: str):
-    """Serve a previewable audio or video asset from the editor's allowed roots."""
+@app.get("/video/files")
+async def video_files(path: str = ""):
+    """List media roots or browse a specific allowed media directory."""
+    try:
+        if not path.strip():
+            return {"ok": True, "roots": _video_media_roots()}
+
+        target = _resolve_media_path(path)
+        if not target.exists():
+            raise HTTPException(status_code=404, detail="Media path not found")
+        if target.is_file():
+            return {"ok": True, "path": _workspace_relative(target), "items": [_build_media_item(target)]}
+        return {
+            "ok": True,
+            "path": _workspace_relative(target),
+            "items": _list_media_directory(target),
+        }
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not browse media files: {e}")
+
+
+@app.get("/video/media")
+async def video_media(path: str):
+    """Serve media files from approved workspace roots for preview and download."""
     if not path:
         raise HTTPException(status_code=400, detail="path is required")
-
-    target = Path(path).expanduser().resolve()
-    if not _is_allowed_video_editor_path(target):
-        raise HTTPException(status_code=403, detail="Access denied")
+    try:
+        target = _resolve_media_path(path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
     if not target.exists() or not target.is_file():
         raise HTTPException(status_code=404, detail="Media file not found")
 
-    media_type, _ = mimetypes.guess_type(str(target))
-    if not media_type or not media_type.startswith(("video/", "audio/")):
-        raise HTTPException(status_code=415, detail="Only audio and video assets can be previewed")
-
+    media_type = mimetypes.guess_type(str(target))[0] or "application/octet-stream"
     return FileResponse(str(target), media_type=media_type, filename=target.name)
 
 @app.post("/video/edit")
 async def video_edit(request: dict):
     """
     Edit existing video files using ffmpeg operations.
-    Supported operations: trim, mute, resize, fps, mux_audio.
+    Supported operations: trim, mute, resize, fps, mux_audio, auto_captions, auto_edit.
     """
     source_path = (request.get("source_path") or "").strip()
     operation = (request.get("operation") or "trim").strip().lower()
@@ -12534,6 +12610,75 @@ async def video_edit(request: dict):
         if not safe_audio.is_file():
             raise HTTPException(status_code=404, detail=f"Audio file not found: {audio_path}")
         cmd.extend(["-i", str(safe_audio), "-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)])
+    elif operation == "auto_captions":
+        language = (request.get("language") or "en").strip() or "en"
+        burn_in = bool(request.get("burn_in", True))
+        captions_dir = REPO_ROOT / "outputs" / "videos" / "captions"
+        captions_dir.mkdir(parents=True, exist_ok=True)
+        try:
+            srt_path = _auto_caption_with_whisper_cli(src, captions_dir, language=language)
+        except Exception as e:
+            raise HTTPException(
+                status_code=503,
+                detail=f"Auto captions unavailable. Install whisper CLI for this feature. Details: {e}",
+            )
+
+        if burn_in:
+            subtitle_filter = f"subtitles='{_escape_ffmpeg_subtitles_path(srt_path)}'"
+            cmd.extend(["-vf", subtitle_filter, "-c:v", "libx264", "-c:a", "aac", str(out_path)])
+        else:
+            cmd.extend(["-c:v", "copy", "-c:a", "copy", str(out_path)])
+        request["_captions_path"] = _workspace_relative(srt_path)
+    elif operation == "auto_edit":
+        # Practical one-click preset: remove tiny start/end padding, normalize audio, and deliver 720p MP4.
+        trim_start = float(request.get("trim_start", 0.4) or 0.0)
+        trim_end = float(request.get("trim_end", 0.4) or 0.0)
+        duration = None
+        ffprobe_bin = shutil.which("ffprobe") or "ffprobe"
+        try:
+            probe = subprocess.run(
+                [
+                    ffprobe_bin,
+                    "-v",
+                    "error",
+                    "-show_entries",
+                    "format=duration",
+                    "-of",
+                    "default=noprint_wrappers=1:nokey=1",
+                    str(src),
+                ],
+                capture_output=True,
+                text=True,
+                timeout=20,
+            )
+            if probe.returncode == 0:
+                duration = float((probe.stdout or "0").strip() or 0)
+        except Exception:
+            duration = None
+
+        effective_duration = None
+        if duration and duration > (trim_start + trim_end + 1.0):
+            effective_duration = max(0.5, duration - trim_start - trim_end)
+
+        if trim_start > 0:
+            cmd.extend(["-ss", str(trim_start)])
+        if effective_duration is not None:
+            cmd.extend(["-t", str(effective_duration)])
+        cmd.extend([
+            "-vf",
+            "scale=1280:720:force_original_aspect_ratio=decrease,pad=1280:720:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-af",
+            "loudnorm",
+            "-c:v",
+            "libx264",
+            "-preset",
+            "medium",
+            "-crf",
+            "20",
+            "-c:a",
+            "aac",
+            str(out_path),
+        ])
     else:
         raise HTTPException(status_code=400, detail="Unsupported operation")
 
@@ -12551,7 +12696,9 @@ async def video_edit(request: dict):
         "operation": operation,
         "source_path": str(src.relative_to(REPO_ROOT)),
         "output_path": str(out_path.relative_to(REPO_ROOT)),
+        "output_url": f"/video/media?path={_workspace_relative(out_path)}",
         "video_url": f"/video/{out_path.name}",
+        "captions_path": request.get("_captions_path"),
     }
 
 
@@ -12935,11 +13082,21 @@ async def list_connectors():
         redacted.append({
             "name": c.get("name"),
             "base_url": c.get("base_url"),
+            "provider": c.get("provider", "custom"),
             "enabled": c.get("enabled", True),
             "timeout_sec": c.get("timeout_sec", 20),
             "headers": list((c.get("headers") or {}).keys()),
         })
     return {"connectors": redacted}
+
+
+@app.get("/integrations/connectors/catalog")
+async def list_connector_catalog():
+    """Return built-in, production-ready connector templates (GitHub, email, docs, chat, etc.)."""
+    items = []
+    for key, item in CONNECTOR_CATALOG.items():
+        items.append({"key": key, **item})
+    return {"providers": items}
 
 
 @app.post("/integrations/connectors")
@@ -12959,6 +13116,7 @@ async def upsert_connector(request: dict):
     existing = next((c for c in items if c.get("name") == name), None)
     payload = {
         "name": name,
+        "provider": (request.get("provider") or "custom").strip() or "custom",
         "base_url": base_url,
         "headers": headers,
         "enabled": bool(request.get("enabled", True)),
@@ -12971,6 +13129,56 @@ async def upsert_connector(request: dict):
     db["connectors"] = items
     _save_connectors(db)
     return {"ok": True, "connector": {"name": name, "base_url": base_url}}
+
+
+@app.post("/integrations/connectors/quick-connect")
+async def quick_connect_connector(request: dict):
+    """Create a connector from a first-party provider template using a token/API key."""
+    provider_key = (request.get("provider") or "").strip().lower()
+    token = (request.get("token") or request.get("api_key") or "").strip()
+    custom_name = (request.get("name") or "").strip()
+    timeout_sec = int(request.get("timeout_sec", 20) or 20)
+
+    if provider_key not in CONNECTOR_CATALOG:
+        raise HTTPException(status_code=400, detail="Unknown provider. Use /integrations/connectors/catalog")
+    if not token:
+        raise HTTPException(status_code=400, detail="token is required")
+
+    template = CONNECTOR_CATALOG[provider_key]
+    connector_name = custom_name or provider_key
+    headers = {
+        "Authorization": f"Bearer {token}",
+        "Accept": "application/json",
+    }
+    headers.update(template.get("extra_headers") or {})
+
+    db = _load_connectors()
+    items = db.get("connectors", [])
+    existing = next((c for c in items if c.get("name") == connector_name), None)
+    payload = {
+        "name": connector_name,
+        "provider": provider_key,
+        "base_url": template.get("base_url"),
+        "headers": headers,
+        "enabled": bool(request.get("enabled", True)),
+        "timeout_sec": timeout_sec,
+    }
+    if existing:
+        existing.update(payload)
+    else:
+        items.append(payload)
+    db["connectors"] = items
+    _save_connectors(db)
+
+    return {
+        "ok": True,
+        "connector": {
+            "name": connector_name,
+            "provider": provider_key,
+            "base_url": payload["base_url"],
+            "test_path": template.get("test_path"),
+        },
+    }
 
 
 @app.patch("/integrations/connectors/{name}")
@@ -13042,15 +13250,60 @@ async def delete_connector(name: str):
 @app.post("/integrations/connectors/call")
 async def call_connector(request: dict):
     """Call a connector by name with method/path/body."""
-    result = await _execute_tool("call_external_api", {
-        "connector": request.get("connector", ""),
-        "path": request.get("path", "/"),
-        "method": request.get("method", "GET"),
-        "body": json.dumps(request.get("body", {})) if isinstance(request.get("body", {}), dict) else str(request.get("body", "")),
-    }, chat_id=None)
+    connector_name = (request.get("connector") or "").strip()
+    if not connector_name:
+        raise HTTPException(status_code=400, detail="connector is required")
+
+    db = _load_connectors()
+    connector = next((c for c in db.get("connectors", []) if c.get("name") == connector_name and c.get("enabled", True)), None)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found or disabled")
+
+    try:
+        result = await asyncio.to_thread(
+            _call_connector_http,
+            connector,
+            request.get("method", "GET"),
+            request.get("path", "/"),
+            request.get("body", None),
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Connector request failed: {e}")
+
     if not result.get("ok"):
-        raise HTTPException(status_code=400, detail=result.get("error", "connector call failed"))
-    return result
+        raise HTTPException(status_code=400, detail=result)
+    return {"ok": True, **result}
+
+
+@app.post("/integrations/connectors/test")
+async def test_connector(request: dict):
+    """Test a configured connector using provider defaults or explicit path/method."""
+    connector_name = (request.get("connector") or "").strip()
+    if not connector_name:
+        raise HTTPException(status_code=400, detail="connector is required")
+
+    db = _load_connectors()
+    connector = next((c for c in db.get("connectors", []) if c.get("name") == connector_name), None)
+    if not connector:
+        raise HTTPException(status_code=404, detail="Connector not found")
+
+    provider = str(connector.get("provider") or "").strip().lower()
+    method = request.get("method") or "GET"
+    path = request.get("path")
+    if not path:
+        path = (CONNECTOR_CATALOG.get(provider) or {}).get("test_path") or "/"
+
+    try:
+        result = await asyncio.to_thread(
+            _call_connector_http,
+            connector,
+            method,
+            path,
+            request.get("body"),
+        )
+        return {"ok": result.get("ok", False), "connector": connector_name, "provider": provider or "custom", **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Connector test failed: {e}")
 
 
 @app.get("/printers")
@@ -13061,6 +13314,29 @@ async def list_printers():
         return {"success": True, **printer_manager_instance.list_printers()}
     db = _load_printers()
     return {"success": True, "printers": db.get("printers", [])}
+
+
+@app.post("/printing/discover")
+async def discover_printers(request: dict):
+    """Discover likely network printers on a local subnet."""
+    subnet = str(request.get("subnet", "")).strip()
+    timeout_sec = float(request.get("timeout_sec", 0.25) or 0.25)
+    max_hosts = int(request.get("max_hosts", 64) or 64)
+
+    try:
+        if printer_manager_instance is not None and hasattr(printer_manager_instance, "discover_network_printers"):
+            data = await asyncio.to_thread(
+                printer_manager_instance.discover_network_printers,
+                subnet,
+                timeout_sec,
+                max_hosts,
+            )
+            return {"success": True, **(data or {})}
+
+        data = await asyncio.to_thread(_discover_printers_simple, subnet, timeout_sec, max_hosts)
+        return {"success": True, **data}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Printer discovery failed: {e}")
 
 
 @app.post("/printers")
@@ -13182,21 +13458,54 @@ _SLICE_STATUS: Dict[str, dict] = {}
 
 @app.post("/printing/slice")
 async def enqueue_slice_job(request: dict):
-    """Queue a slice request and return a status handle (stub endpoint)."""
+    """Run a slicing job and return status + generated gcode path."""
     model_path = (request.get("model_path") or "").strip()
     profile = (request.get("profile") or "0.2mm").strip() or "0.2mm"
     if not model_path:
         raise HTTPException(status_code=400, detail="model_path is required")
 
+    try:
+        safe_model = _safe_workspace_path(model_path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    if not safe_model.exists() or not safe_model.is_file():
+        raise HTTPException(status_code=404, detail="Model file not found")
+
     job_id = f"slice_{uuid.uuid4().hex[:10]}"
     _SLICE_STATUS[job_id] = {
         "job_id": job_id,
-        "status": "queued",
-        "model_path": model_path,
+        "status": "running",
+        "model_path": _workspace_relative(safe_model),
         "profile": profile,
         "created_at": int(time.time()),
     }
-    return {"ok": True, "job_id": job_id, "status": "queued"}
+
+    gcode_out = safe_model.with_suffix(".gcode")
+    slicer_bin = shutil.which("prusa-slicer") or shutil.which("orca-slicer") or shutil.which("slic3r")
+    if not slicer_bin:
+        _SLICE_STATUS[job_id].update({
+            "status": "failed",
+            "error": "No slicer found (install prusa-slicer, orca-slicer, or slic3r)",
+            "updated_at": int(time.time()),
+        })
+        return {"ok": False, **_SLICE_STATUS[job_id]}
+
+    cmd = [slicer_bin, "--export-gcode", str(safe_model), "--output", str(gcode_out)]
+    res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if res.returncode != 0 or not gcode_out.exists():
+        _SLICE_STATUS[job_id].update({
+            "status": "failed",
+            "error": (res.stderr or res.stdout or "Slicing failed")[:1200],
+            "updated_at": int(time.time()),
+        })
+        return {"ok": False, **_SLICE_STATUS[job_id]}
+
+    _SLICE_STATUS[job_id].update({
+        "status": "completed",
+        "gcode_path": _workspace_relative(gcode_out),
+        "updated_at": int(time.time()),
+    })
+    return {"ok": True, **_SLICE_STATUS[job_id]}
 
 
 @app.get("/printing/slice/{job_id}")

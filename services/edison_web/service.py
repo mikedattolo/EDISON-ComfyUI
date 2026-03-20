@@ -174,6 +174,36 @@ async def video_editor_page():
         return {"error": "Video editor UI not found"}
     return FileResponse(page)
 
+
+@app.get("/branding")
+async def branding_page():
+    """Serve dedicated branding/file explorer page."""
+    page = WEB_DIR / "branding.html"
+    if not page.exists():
+        logger.error(f"branding.html not found at {page}")
+        return {"error": "Branding UI not found"}
+    return FileResponse(page)
+
+
+@app.get("/connectors")
+async def connectors_page():
+    """Serve dedicated connectors management page."""
+    page = WEB_DIR / "connectors.html"
+    if not page.exists():
+        logger.error(f"connectors.html not found at {page}")
+        return {"error": "Connectors UI not found"}
+    return FileResponse(page)
+
+
+@app.get("/printing")
+async def printing_page():
+    """Serve dedicated 3D printing page."""
+    page = WEB_DIR / "printing.html"
+    if not page.exists():
+        logger.error(f"printing.html not found at {page}")
+        return {"error": "Printing UI not found"}
+    return FileResponse(page)
+
 @app.get("/styles.css")
 async def styles():
     """Serve CSS file"""

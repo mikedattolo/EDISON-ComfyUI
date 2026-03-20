@@ -745,6 +745,14 @@
                 <strong>Mux external audio</strong>
                 <p>Lay music or client audio under the selected video source.</p>
               </div>
+              <div class="operation-card" data-op="auto_captions">
+                <strong>Auto captions (AI)</strong>
+                <p>Generate subtitles and burn them into a delivery copy.</p>
+              </div>
+              <div class="operation-card" data-op="auto_edit">
+                <strong>Auto edit (AI preset)</strong>
+                <p>Apply one-click cleanup: trim edges, normalize loudness, and format output.</p>
+              </div>
             </div>
           </div>
 
@@ -776,6 +784,17 @@
               <div class="field full">
                 <label for="audioPath">External audio path</label>
                 <input class="text-input" id="audioPath" type="text" placeholder="/workspaces/EDISON-ComfyUI/outputs/music/example.mp3" />
+              </div>
+              <div class="field">
+                <label for="captionLanguage">Caption language</label>
+                <input class="text-input" id="captionLanguage" type="text" placeholder="en" value="en" />
+              </div>
+              <div class="field">
+                <label for="captionBurnIn">Burn captions into video</label>
+                <select class="text-input" id="captionBurnIn">
+                  <option value="true">Yes</option>
+                  <option value="false">No (create sidecar captions)</option>
+                </select>
               </div>
             </div>
             <div class="preset-row" style="margin-top:10px;">
@@ -1088,6 +1107,12 @@
         payload.fps = Number(document.getElementById('fpsInput').value || 0);
       } else if (selectedOperation === 'mux_audio') {
         payload.audio_path = (document.getElementById('audioPath').value || '').trim();
+      } else if (selectedOperation === 'auto_captions') {
+        payload.language = (document.getElementById('captionLanguage').value || 'en').trim() || 'en';
+        payload.burn_in = (document.getElementById('captionBurnIn').value || 'true') === 'true';
+      } else if (selectedOperation === 'auto_edit') {
+        payload.trim_start = 0.4;
+        payload.trim_end = 0.4;
       }
       return payload;
     }
@@ -1130,7 +1155,8 @@
         document.getElementById('currentFileLabel').textContent = data.output_path;
       }
 
-      setStatus(`Render complete.\nOperation: ${data.operation}\nOutput: ${data.output_path}`, 'ok');
+      const captionsLine = data.captions_path ? `\nCaptions: ${data.captions_path}` : '';
+      setStatus(`Render complete.\nOperation: ${data.operation}\nOutput: ${data.output_path}${captionsLine}`, 'ok');
       if (currentPath) {
         loadDirectory(currentPath).catch(() => {});
       }

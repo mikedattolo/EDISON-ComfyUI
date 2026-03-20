@@ -1,0 +1,496 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON Branding Explorer</title>
+  <style>
+    :root {
+      --bg: #f2f5f8;
+      --panel: #ffffff;
+      --panel-2: #eef3f8;
+      --ink: #13273b;
+      --muted: #5f7388;
+      --line: #d1dbe6;
+      --accent: #2275d7;
+      --accent-2: #0f4f99;
+      --ok: #1d8f5b;
+      --warn: #c66a15;
+      --shadow: 0 14px 32px rgba(16, 45, 78, 0.12);
+    }
+
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 6% 8%, rgba(34, 117, 215, 0.16), transparent 26%),
+        radial-gradient(circle at 92% 3%, rgba(15, 79, 153, 0.12), transparent 24%),
+        linear-gradient(180deg, #f8fbff 0%, #edf2f8 100%);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 14px 18px;
+      background: rgba(255, 255, 255, 0.86);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+
+    .brand h1 { margin: 0; font-size: 22px; }
+    .brand p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #fff, #eff4fa);
+      color: var(--ink);
+      font: inherit;
+      font-size: 13px;
+      padding: 9px 12px;
+      cursor: pointer;
+    }
+
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(120deg, #2f87ef, #1f65c2);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 280px minmax(0, 1fr) 360px;
+      gap: 12px;
+      padding: 12px;
+      min-height: calc(100vh - 72px);
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      box-shadow: var(--shadow);
+      min-height: 0;
+      overflow: hidden;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .panel-head {
+      padding: 12px 14px;
+      border-bottom: 1px solid var(--line);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .panel-head h2,
+    .panel-head h3 { margin: 0; font-size: 14px; }
+
+    .panel-body { padding: 12px; min-height: 0; overflow: auto; }
+
+    .text, .select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      font: inherit;
+      background: #fff;
+      color: var(--ink);
+    }
+
+    .stack { display: flex; flex-direction: column; gap: 8px; }
+
+    .client-list { display: flex; flex-direction: column; gap: 7px; margin-top: 8px; }
+    .client-item {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: var(--panel-2);
+      padding: 9px 10px;
+      cursor: pointer;
+      font-size: 13px;
+    }
+    .client-item.active {
+      border-color: #7fb2ee;
+      background: #e4effb;
+    }
+
+    .pathbar {
+      padding: 8px 10px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      font-size: 12px;
+      color: var(--muted);
+      background: #fff;
+      margin-bottom: 8px;
+      word-break: break-all;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      overflow: hidden;
+    }
+
+    thead {
+      background: #ecf2fa;
+      color: #304a63;
+      position: sticky;
+      top: 0;
+      z-index: 1;
+    }
+
+    th, td {
+      text-align: left;
+      padding: 8px 9px;
+      border-bottom: 1px solid #e5edf6;
+      white-space: nowrap;
+      text-overflow: ellipsis;
+      overflow: hidden;
+      max-width: 1px;
+    }
+
+    tbody tr:hover { background: #f3f8ff; }
+    tbody tr.sel { background: #dbeafe; }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f7fbff;
+      color: var(--muted);
+      padding: 9px 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+
+    .status.ok { border-color: rgba(29, 143, 91, 0.4); color: #12633f; }
+    .status.warn { border-color: rgba(198, 106, 21, 0.4); color: #925110; }
+
+    .asset-table { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
+
+    @media (max-width: 1200px) {
+      .shell { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <h1>Branding File Explorer</h1>
+      <p>Windows-style explorer for all client-accessible files and branding assets.</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn" id="videoBtn">Video Editor</button>
+      <button class="btn" id="homeBtn">Main Chat</button>
+      <button class="btn primary" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel">
+      <div class="panel-head"><h2>Clients</h2></div>
+      <div class="panel-body">
+        <div class="stack">
+          <input id="clientName" class="text" type="text" placeholder="New client name" />
+          <button class="btn primary" id="createClientBtn">Create Client Folder</button>
+          <input id="clientSearch" class="text" type="text" placeholder="Search clients" />
+        </div>
+        <div id="clients" class="client-list"></div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head">
+        <h2>All Available Files</h2>
+        <div style="display:flex;gap:8px;">
+          <button class="btn" id="upBtn">Up</button>
+          <button class="btn" id="rootsBtn">Roots</button>
+        </div>
+      </div>
+      <div class="panel-body">
+        <div id="pathBar" class="pathbar">Loading...</div>
+        <input id="filter" class="text" type="text" placeholder="Filter file names" style="margin-bottom:8px;" />
+        <div style="max-height:560px;overflow:auto;border-radius:10px;">
+          <table>
+            <thead>
+              <tr><th>Name</th><th>Type</th><th>Size</th><th>Modified</th></tr>
+            </thead>
+            <tbody id="fileRows"></tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="panel-head"><h3>Client Asset Hub</h3></div>
+      <div class="panel-body stack">
+        <div class="status" id="selectedClient">No client selected</div>
+        <input id="attachPath" class="text" type="text" placeholder="Selected file path" />
+        <select id="assetType" class="select">
+          <option value="">Auto detect type</option>
+          <option value="images">Image</option>
+          <option value="videos">Video</option>
+          <option value="files">File</option>
+        </select>
+        <label style="font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;">
+          <input id="moveFile" type="checkbox" /> Move instead of copy
+        </label>
+        <button class="btn primary" id="attachBtn">Attach To Selected Client</button>
+        <div class="asset-table">
+          <table>
+            <thead><tr><th>Name</th><th>Kind</th><th>Size</th></tr></thead>
+            <tbody id="assetRows"></tbody>
+          </table>
+        </div>
+        <div class="status" id="status">Ready.</div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = '/api';
+    let clients = [];
+    let selectedClientId = '';
+    let currentPath = '';
+    let currentItems = [];
+    let selectedFilePath = '';
+
+    const el = (id) => document.getElementById(id);
+
+    function setStatus(msg, tone = '') {
+      const s = el('status');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    async function readJson(res) {
+      const raw = await res.text();
+      try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
+    }
+
+    function fmtBytes(v) {
+      const n = Number(v || 0);
+      if (!n) return '0 B';
+      const units = ['B', 'KB', 'MB', 'GB'];
+      let val = n;
+      let idx = 0;
+      while (val >= 1024 && idx < units.length - 1) { val /= 1024; idx += 1; }
+      return `${val.toFixed(idx === 0 ? 0 : 1)} ${units[idx]}`;
+    }
+
+    function fmtDate(ts) {
+      return Number.isFinite(ts) ? new Date(ts * 1000).toLocaleString() : '--';
+    }
+
+    function filteredClients() {
+      const q = (el('clientSearch').value || '').trim().toLowerCase();
+      if (!q) return clients;
+      return clients.filter((c) => (c.name || '').toLowerCase().includes(q) || (c.slug || '').toLowerCase().includes(q));
+    }
+
+    function renderClients() {
+      const rows = filteredClients();
+      const host = el('clients');
+      if (!rows.length) {
+        host.innerHTML = '<div class="client-item">No clients yet.</div>';
+        return;
+      }
+      host.innerHTML = rows.map((c) => `<div class="client-item ${c.id === selectedClientId ? 'active' : ''}" data-id="${c.id}"><strong>${c.name}</strong><br><span style="color:#63809c;font-size:11px;">${c.slug}</span></div>`).join('');
+      host.querySelectorAll('.client-item[data-id]').forEach((node) => {
+        node.addEventListener('click', () => {
+          selectedClientId = node.getAttribute('data-id') || '';
+          renderClients();
+          loadAssets().catch((e) => setStatus(e.message, 'warn'));
+        });
+      });
+    }
+
+    async function loadClients() {
+      const res = await fetch(`${API}/branding/clients`);
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) throw new Error(data.detail || 'Could not load clients');
+      clients = data.clients || [];
+      if (!selectedClientId && clients.length) selectedClientId = clients[0].id;
+      renderClients();
+      await loadAssets();
+    }
+
+    async function createClient() {
+      const name = (el('clientName').value || '').trim();
+      if (!name) {
+        setStatus('Enter a client name first.', 'warn');
+        return;
+      }
+      const res = await fetch(`${API}/branding/clients`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ name }),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        setStatus(data.detail || 'Could not create client.', 'warn');
+        return;
+      }
+      el('clientName').value = '';
+      selectedClientId = data.client?.id || selectedClientId;
+      await loadClients();
+      setStatus(`Client ready: ${data.client?.name || name}`, 'ok');
+    }
+
+    function fileRows() {
+      const query = (el('filter').value || '').trim().toLowerCase();
+      if (!query) return currentItems;
+      return currentItems.filter((item) => (item.name || '').toLowerCase().includes(query));
+    }
+
+    function renderFiles() {
+      const rows = fileRows();
+      const host = el('fileRows');
+      if (!rows.length) {
+        host.innerHTML = '<tr><td colspan="4">No files found.</td></tr>';
+        return;
+      }
+      host.innerHTML = rows.map((item) => {
+        const kind = item.type === 'directory' ? 'Folder' : (item.kind || 'File');
+        return `<tr data-path="${item.path}" data-type="${item.type}" class="${item.path === selectedFilePath ? 'sel' : ''}">
+          <td>${item.type === 'directory' ? '📁 ' : '📄 '}${item.name}</td>
+          <td>${kind}</td>
+          <td>${item.type === 'directory' ? '-' : fmtBytes(item.size_bytes)}</td>
+          <td>${fmtDate(item.mtime)}</td>
+        </tr>`;
+      }).join('');
+
+      host.querySelectorAll('tr[data-path]').forEach((row) => {
+        row.addEventListener('click', () => {
+          selectedFilePath = row.getAttribute('data-path') || '';
+          if (selectedFilePath) el('attachPath').value = selectedFilePath;
+          renderFiles();
+        });
+        row.addEventListener('dblclick', () => {
+          if ((row.getAttribute('data-type') || '') !== 'directory') return;
+          const next = row.getAttribute('data-path') || '';
+          browse(next).catch((e) => setStatus(e.message, 'warn'));
+        });
+      });
+    }
+
+    async function loadRoots() {
+      const res = await fetch(`${API}/video/files`);
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) throw new Error(data.detail || 'Unable to load roots');
+      currentPath = '';
+      currentItems = (data.roots || []).map((r) => ({ ...r, extension: '', size_bytes: 0, mtime: 0 }));
+      el('pathBar').textContent = 'Media Roots';
+      renderFiles();
+    }
+
+    async function browse(path) {
+      const res = await fetch(`${API}/video/files?path=${encodeURIComponent(path || '')}`);
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) throw new Error(data.detail || 'Unable to open folder');
+      currentPath = data.path || path;
+      currentItems = data.items || [];
+      el('pathBar').textContent = currentPath;
+      renderFiles();
+    }
+
+    async function goUp() {
+      if (!currentPath) {
+        await loadRoots();
+        return;
+      }
+      const parent = currentPath.split('/').slice(0, -1).join('/');
+      if (!parent) await loadRoots();
+      else await browse(parent);
+    }
+
+    async function loadAssets() {
+      if (!selectedClientId) {
+        el('selectedClient').textContent = 'No client selected';
+        el('assetRows').innerHTML = '<tr><td colspan="3">Select a client.</td></tr>';
+        return;
+      }
+      const client = clients.find((c) => c.id === selectedClientId);
+      el('selectedClient').textContent = client ? `${client.name} (${client.slug})` : selectedClientId;
+      const res = await fetch(`${API}/branding/clients/${encodeURIComponent(selectedClientId)}/assets`);
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) throw new Error(data.detail || 'Unable to load assets');
+      const rows = [];
+      ['images', 'videos', 'files'].forEach((kind) => {
+        (data.assets?.[kind] || []).forEach((item) => rows.push({ ...item, kind }));
+      });
+      if (!rows.length) {
+        el('assetRows').innerHTML = '<tr><td colspan="3">No assets attached yet.</td></tr>';
+        return;
+      }
+      el('assetRows').innerHTML = rows.map((r) => `<tr><td>${r.name}</td><td>${r.kind}</td><td>${fmtBytes(r.size)}</td></tr>`).join('');
+    }
+
+    async function attachAsset() {
+      if (!selectedClientId) {
+        setStatus('Select a client first.', 'warn');
+        return;
+      }
+      const sourcePath = (el('attachPath').value || '').trim();
+      if (!sourcePath) {
+        setStatus('Select a file from the explorer first.', 'warn');
+        return;
+      }
+      const body = {
+        source_path: sourcePath,
+        asset_type: (el('assetType').value || '').trim(),
+        move: !!el('moveFile').checked,
+      };
+      const res = await fetch(`${API}/branding/clients/${encodeURIComponent(selectedClientId)}/add-existing`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.ok) {
+        setStatus(data.detail || 'Unable to attach asset.', 'warn');
+        return;
+      }
+      await loadAssets();
+      setStatus(`Attached ${data.stored_path} to client.`, 'ok');
+    }
+
+    el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
+    el('videoBtn').addEventListener('click', () => { window.location.href = '/video-editor'; });
+    el('refreshBtn').addEventListener('click', async () => {
+      await Promise.all([loadClients(), currentPath ? browse(currentPath) : loadRoots()]);
+      setStatus('Explorer refreshed.', 'ok');
+    });
+    el('rootsBtn').addEventListener('click', () => loadRoots().catch((e) => setStatus(e.message, 'warn')));
+    el('upBtn').addEventListener('click', () => goUp().catch((e) => setStatus(e.message, 'warn')));
+    el('createClientBtn').addEventListener('click', () => createClient().catch((e) => setStatus(e.message, 'warn')));
+    el('attachBtn').addEventListener('click', () => attachAsset().catch((e) => setStatus(e.message, 'warn')));
+    el('filter').addEventListener('input', renderFiles);
+    el('clientSearch').addEventListener('input', renderClients);
+
+    (async function init() {
+      try {
+        await Promise.all([loadClients(), loadRoots()]);
+        setStatus('Branding explorer ready.', 'ok');
+      } catch (e) {
+        setStatus(e.message || 'Initialization failed', 'warn');
+      }
+    })();
+  </script>
+</body>
+</html>

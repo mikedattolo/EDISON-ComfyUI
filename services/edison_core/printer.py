@@ -9,6 +9,8 @@ from __future__ import annotations
 from dataclasses import dataclass, asdict
 import json
 import logging
+import ipaddress
+import socket
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
@@ -271,3 +273,63 @@ class PrinterManager:
         redacted = dict(serialized)
         redacted.pop("api_key", None)
         return redacted
+
+    def discover_network_printers(self, subnet: str = "", timeout_sec: float = 0.25, max_hosts: int = 64) -> Dict[str, Any]:
+        """Best-effort network discovery for likely printer endpoints."""
+        target_subnet = (subnet or "").strip()
+        if not target_subnet:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+            base = ".".join(local_ip.split(".")[:3])
+            target_subnet = f"{base}.0/24"
+
+        net = ipaddress.ip_network(target_subnet, strict=False)
+        common_ports = [80, 443, 8080, 7125, 8899]
+        discovered: List[Dict[str, Any]] = []
+        scanned = 0
+
+        for host in list(net.hosts())[: max(1, max_hosts)]:
+            scanned += 1
+            host_str = str(host)
+            open_ports: List[int] = []
+            for port in common_ports:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(timeout_sec)
+                try:
+                    if sock.connect_ex((host_str, port)) == 0:
+                        open_ports.append(port)
+                finally:
+                    sock.close()
+
+            if not open_ports:
+                continue
+
+            ptype = "generic"
+            endpoint = f"http://{host_str}:{open_ports[0]}"
+            name = f"Network Device {host_str}"
+
+            try:
+                probe = requests.get(f"http://{host_str}/api/version", timeout=1.0)
+                if probe.ok and "OctoPrint" in probe.text:
+                    ptype = "octoprint"
+                    endpoint = f"http://{host_str}"
+                    name = f"OctoPrint {host_str}"
+            except Exception:
+                pass
+
+            discovered.append({
+                "id": f"discovered_{host_str.replace('.', '_')}",
+                "name": name,
+                "type": ptype,
+                "host": host_str,
+                "endpoint": endpoint,
+                "ports": open_ports,
+                "enabled": True,
+            })
+
+        return {
+            "subnet": target_subnet,
+            "scanned_hosts": scanned,
+            "discovered": discovered,
+        }

@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON 3D Printing</title>
+  <style>
+    :root {
+      --bg: #fff7ef;
+      --bg-2: #ffe6cf;
+      --panel: #ffffff;
+      --line: #f0c9a4;
+      --ink: #3a2a1c;
+      --muted: #8b6a50;
+      --accent: #e8752b;
+      --accent-2: #c85e1d;
+      --ok: #2f9961;
+      --warn: #bb6c2e;
+      --bad: #b54747;
+      --shadow: 0 12px 30px rgba(127, 69, 24, 0.14);
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 8% 6%, rgba(232, 117, 43, 0.18), transparent 26%),
+        radial-gradient(circle at 94% 8%, rgba(200, 94, 29, 0.12), transparent 20%),
+        linear-gradient(180deg, #fffaf4 0%, #ffeedf 100%);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      border-bottom: 1px solid var(--line);
+      background: rgba(255, 248, 240, 0.9);
+      backdrop-filter: blur(10px);
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 14px 18px;
+    }
+
+    .title h1 { margin: 0; font-size: 22px; }
+    .title p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
+
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #fff, #ffeedf);
+      color: var(--ink);
+      padding: 9px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(120deg, #ef8c45, #d8671f);
+      color: #fff;
+      font-weight: 700;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 340px minmax(0, 1fr) 380px;
+      gap: 12px;
+      padding: 12px;
+      min-height: calc(100vh - 74px);
+    }
+
+    .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      box-shadow: var(--shadow);
+      min-height: 0;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .head {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .head h2, .head h3 { margin: 0; font-size: 14px; }
+
+    .body { padding: 12px; display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow: auto; }
+
+    .text, .select {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      font: inherit;
+      color: var(--ink);
+      background: #fff;
+    }
+
+    .device {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff8f1;
+      padding: 10px;
+      cursor: pointer;
+    }
+
+    .device.active {
+      border-color: #ef8c45;
+      background: #ffe7d3;
+    }
+
+    .device strong { display: block; font-size: 13px; }
+    .device span { color: var(--muted); font-size: 11px; }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff9f2;
+      color: var(--muted);
+      padding: 9px 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+      line-height: 1.45;
+    }
+
+    .status.ok { border-color: rgba(47, 153, 97, 0.4); color: #1e7748; }
+    .status.warn { border-color: rgba(187, 108, 46, 0.4); color: #9e5a24; }
+    .status.bad { border-color: rgba(181, 71, 71, 0.4); color: #9f3f3f; }
+
+    pre {
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff7ef;
+      padding: 10px;
+      font-size: 12px;
+      max-height: 270px;
+      overflow: auto;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    .hint { color: var(--muted); font-size: 12px; }
+
+    @media (max-width: 1260px) {
+      .shell { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <h1>3D Printing Hub</h1>
+      <p>Detect printers on your network, slice models, and send jobs from one page.</p>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn" id="homeBtn">Main Chat</button>
+      <button class="btn primary" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel">
+      <div class="head">
+        <h2>Device Menu</h2>
+        <button class="btn" id="discoverBtn">Network Detect</button>
+      </div>
+      <div class="body">
+        <div style="display:flex;gap:8px;">
+          <input id="subnet" class="text" type="text" placeholder="Subnet (optional, e.g. 192.168.1.0/24)" />
+          <input id="maxHosts" class="text" type="number" min="16" max="512" value="64" />
+        </div>
+        <div id="devices"></div>
+        <div class="status" id="deviceStatus">No printer selected.</div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="head"><h2>Slicer</h2></div>
+      <div class="body">
+        <input id="modelPath" class="text" type="text" placeholder="Model path (STL/3MF), e.g. outputs/meshes/model.stl" />
+        <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Slicing profile" />
+        <div style="display:flex;gap:8px;flex-wrap:wrap;">
+          <button class="btn" id="sliceBtn">Slice Model</button>
+          <button class="btn primary" id="sliceSendBtn">Slice + Send To Selected Printer</button>
+        </div>
+        <div class="hint">Requires local slicer install: prusa-slicer, orca-slicer, or slic3r.</div>
+        <div class="status" id="sliceStatus">Slicer idle.</div>
+        <pre id="sliceOutput">No slicing output yet.</pre>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="head"><h3>Add / Update Printer</h3></div>
+      <div class="body">
+        <input id="printerId" class="text" type="text" placeholder="Printer ID (optional)" />
+        <input id="printerName" class="text" type="text" placeholder="Printer Name" />
+        <select id="printerType" class="select">
+          <option value="octoprint">OctoPrint</option>
+          <option value="bambu">Bambu</option>
+          <option value="generic">Generic</option>
+          <option value="prusa">Prusa</option>
+          <option value="creality">Creality</option>
+        </select>
+        <input id="printerHost" class="text" type="text" placeholder="Host (e.g. 192.168.1.42)" />
+        <input id="printerEndpoint" class="text" type="text" placeholder="Endpoint (e.g. http://192.168.1.42)" />
+        <input id="printerApiKey" class="text" type="password" placeholder="API key/token (optional)" />
+        <button class="btn primary" id="savePrinterBtn">Save Printer Profile</button>
+        <div class="status" id="formStatus">Use this form to save printers found by discovery.</div>
+        <button class="btn" id="statusBtn">Get Selected Printer Status</button>
+        <pre id="statusOutput">No status request yet.</pre>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = '/api';
+    let printers = [];
+    let selectedPrinterId = '';
+
+    const el = (id) => document.getElementById(id);
+
+    function setDeviceStatus(msg, tone = '') {
+      const d = el('deviceStatus');
+      d.textContent = msg;
+      d.className = `status ${tone}`.trim();
+    }
+
+    function setSliceStatus(msg, tone = '') {
+      const s = el('sliceStatus');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    function setFormStatus(msg, tone = '') {
+      const s = el('formStatus');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    async function readJson(res) {
+      const raw = await res.text();
+      try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
+    }
+
+    function renderDevices() {
+      const host = el('devices');
+      if (!printers.length) {
+        host.innerHTML = '<div class="status">No printers registered yet.</div>';
+        return;
+      }
+      host.innerHTML = printers.map((p) => `
+        <div class="device ${p.id === selectedPrinterId ? 'active' : ''}" data-id="${p.id}">
+          <strong>${p.name || p.id}</strong>
+          <span>${p.type || 'generic'} - ${p.host || p.endpoint || 'no address'}</span>
+        </div>`).join('');
+
+      host.querySelectorAll('.device[data-id]').forEach((node) => {
+        node.addEventListener('click', () => {
+          selectedPrinterId = node.getAttribute('data-id') || '';
+          const p = printers.find((x) => x.id === selectedPrinterId);
+          if (!p) return;
+          renderDevices();
+          setDeviceStatus(`Selected: ${p.name || p.id} (${p.type || 'generic'})`, 'ok');
+          el('printerId').value = p.id || '';
+          el('printerName').value = p.name || '';
+          el('printerType').value = p.type || 'generic';
+          el('printerHost').value = p.host || '';
+          el('printerEndpoint').value = p.endpoint || '';
+        });
+      });
+    }
+
+    async function loadPrinters() {
+      const res = await fetch(`${API}/printing/printers`);
+      const data = await readJson(res);
+      if (!res.ok || !data.success) throw new Error(data.detail || 'Unable to load printers');
+      printers = data.printers || [];
+      if (!selectedPrinterId && printers.length) selectedPrinterId = printers[0].id;
+      renderDevices();
+    }
+
+    async function discoverPrinters() {
+      const body = {
+        subnet: (el('subnet').value || '').trim(),
+        max_hosts: Number(el('maxHosts').value || 64),
+      };
+      const res = await fetch(`${API}/printing/discover`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.success) {
+        setDeviceStatus(data.detail || 'Discovery failed.', 'bad');
+        return;
+      }
+
+      const discovered = data.discovered || [];
+      if (!discovered.length) {
+        setDeviceStatus(`No printers discovered on ${data.subnet || 'network'} (scanned ${data.scanned_hosts || 0} hosts).`, 'warn');
+        return;
+      }
+
+      const knownIds = new Set(printers.map((p) => p.id));
+      discovered.forEach((d) => {
+        if (!knownIds.has(d.id)) printers.push(d);
+      });
+      renderDevices();
+      setDeviceStatus(`Discovered ${discovered.length} candidate device(s) on ${data.subnet}. Save desired devices to keep them.`, 'ok');
+    }
+
+    async function savePrinter() {
+      const body = {
+        id: (el('printerId').value || '').trim() || undefined,
+        name: (el('printerName').value || '').trim(),
+        type: (el('printerType').value || 'generic').trim(),
+        host: (el('printerHost').value || '').trim(),
+        endpoint: (el('printerEndpoint').value || '').trim(),
+        api_key: (el('printerApiKey').value || '').trim(),
+        enabled: true,
+      };
+      if (!body.name) {
+        setFormStatus('Printer name is required.', 'warn');
+        return;
+      }
+
+      const res = await fetch(`${API}/printing/printers`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readJson(res);
+      if (!res.ok || !data.success) {
+        setFormStatus(data.detail || 'Save failed.', 'bad');
+        return;
+      }
+      selectedPrinterId = data.printer?.id || selectedPrinterId;
+      await loadPrinters();
+      setFormStatus(`Saved printer: ${data.printer?.name || data.printer?.id}`, 'ok');
+      el('printerApiKey').value = '';
+    }
+
+    async function sliceModel() {
+      const modelPath = (el('modelPath').value || '').trim();
+      if (!modelPath) {
+        setSliceStatus('Model path is required.', 'warn');
+        return;
+      }
+
+      const body = {
+        model_path: modelPath,
+        profile: (el('sliceProfile').value || '0.2mm').trim(),
+      };
+      const res = await fetch(`${API}/printing/slice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readJson(res);
+      el('sliceOutput').textContent = JSON.stringify(data, null, 2);
+      if (!res.ok || !data.ok) {
+        setSliceStatus(data.detail || data.error || 'Slicing failed.', 'bad');
+        return;
+      }
+      setSliceStatus(`Slice complete: ${data.gcode_path || 'no gcode path returned'}`, 'ok');
+    }
+
+    async function sliceAndSend() {
+      if (!selectedPrinterId) {
+        setSliceStatus('Select a printer first.', 'warn');
+        return;
+      }
+      const modelPath = (el('modelPath').value || '').trim();
+      if (!modelPath) {
+        setSliceStatus('Model path is required.', 'warn');
+        return;
+      }
+
+      const body = {
+        model_path: modelPath,
+        profile: (el('sliceProfile').value || '0.2mm').trim(),
+        printer_id: selectedPrinterId,
+      };
+      const res = await fetch(`${API}/printing/slice-and-send`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      const data = await readJson(res);
+      el('sliceOutput').textContent = JSON.stringify(data, null, 2);
+      if (!res.ok || !data.ok) {
+        setSliceStatus(data.detail || 'Slice/send failed.', 'bad');
+        return;
+      }
+      setSliceStatus(`Print job submitted to ${selectedPrinterId}.`, 'ok');
+    }
+
+    async function getSelectedStatus() {
+      if (!selectedPrinterId) {
+        setFormStatus('Select a printer first.', 'warn');
+        return;
+      }
+      const res = await fetch(`${API}/printing/printers/${encodeURIComponent(selectedPrinterId)}/status`);
+      const data = await readJson(res);
+      el('statusOutput').textContent = JSON.stringify(data, null, 2);
+      if (!res.ok) {
+        setFormStatus(data.detail?.error || data.detail || 'Status check failed.', 'bad');
+        return;
+      }
+      setFormStatus(`Printer state: ${data.state || 'unknown'}`, 'ok');
+    }
+
+    el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
+    el('refreshBtn').addEventListener('click', () => loadPrinters().then(() => setDeviceStatus('Printer list refreshed.', 'ok')).catch((e) => setDeviceStatus(e.message, 'bad')));
+    el('discoverBtn').addEventListener('click', () => discoverPrinters().catch((e) => setDeviceStatus(e.message, 'bad')));
+    el('savePrinterBtn').addEventListener('click', () => savePrinter().catch((e) => setFormStatus(e.message, 'bad')));
+    el('sliceBtn').addEventListener('click', () => sliceModel().catch((e) => setSliceStatus(e.message, 'bad')));
+    el('sliceSendBtn').addEventListener('click', () => sliceAndSend().catch((e) => setSliceStatus(e.message, 'bad')));
+    el('statusBtn').addEventListener('click', () => getSelectedStatus().catch((e) => setFormStatus(e.message, 'bad')));
+
+    (async function init() {
+      try {
+        await loadPrinters();
+        setDeviceStatus('3D printing page ready.', 'ok');
+      } catch (e) {
+        setDeviceStatus(e.message || 'Failed to initialize printers', 'bad');
+      }
+    })();
+  </script>
+</body>
+</html>
