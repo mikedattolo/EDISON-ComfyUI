@@ -625,7 +625,11 @@ BRANDING_ROOT = _find_writable_dir(
     REPO_ROOT / "outputs" / "clients",           # default (Docker volume mount)
     Path.home() / ".edison" / "clients",         # user-home fallback
 )
-SELF_EDIT_BACKUP_DIR = REPO_ROOT / "outputs" / "self_edit_backups"
+SELF_EDIT_BACKUP_DIR = _find_writable_dir(
+    os.environ.get("EDISON_BACKUP_DIR"),
+    REPO_ROOT / "outputs" / "self_edit_backups",
+    Path.home() / ".edison" / "backups",
+)
 CODESPACES_ENABLED = False
 PERSONALITY_TRAITS = ("innovative", "thoughtful", "kind")
 
@@ -903,23 +907,23 @@ def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 30) -> 
 
 
 def _ensure_integrations_dir():
-    try:
-        INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
-        BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
-        SELF_EDIT_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
-        
-        # Create default DB files if missing
-        for db_path, default_data in [
-            (CONNECTORS_DB, {"connectors": []}),
-            (PRINTERS_DB, {"printers": []}),
-            (PROMPTS_DB, {"prompts": []}),
-            (BRANDING_DB, {"clients": []}),
-        ]:
+    """Create needed dirs; never raises — permission errors are logged and skipped."""
+    for dir_path in [INTEGRATIONS_DIR, BRANDING_ROOT, SELF_EDIT_BACKUP_DIR]:
+        try:
+            dir_path.mkdir(parents=True, exist_ok=True)
+        except Exception as e:
+            logger.warning(f"Could not create {dir_path}: {e}")
+    for db_path, default_data in [
+        (CONNECTORS_DB, {"connectors": []}),
+        (PRINTERS_DB, {"printers": []}),
+        (PROMPTS_DB, {"prompts": []}),
+        (BRANDING_DB, {"clients": []}),
+    ]:
+        try:
             if not db_path.exists():
                 db_path.write_text(json.dumps(default_data, indent=2))
-    except Exception as e:
-        logger.error(f"Failed to ensure integrations directory: {e}")
-        raise
+        except Exception as e:
+            logger.warning(f"Could not create DB file {db_path}: {e}")
 
 
 def _load_prompts() -> dict:
@@ -13685,6 +13689,119 @@ async def test_connector(request: dict):
         return {"ok": result.get("ok", False), "connector": connector_name, "provider": provider or "custom", **result}
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Connector test failed: {e}")
+
+
+# Device Authorization Grant (RFC 8628) — what GitHub CLI / VS Code use.
+# User sees a short code + URL, visits the URL, clicks Authorize — no redirect URI needed.
+_DEVICE_CONFIGS = {
+    "github": {
+        "device_url": "https://github.com/login/device/code",
+        "token_url": "https://github.com/login/oauth/access_token",
+        "scope": "repo user gist",
+        "base_url": "https://api.github.com",
+    },
+}
+
+
+@app.post("/integrations/connectors/device-start/{provider}")
+async def device_flow_start(provider: str):
+    """Start Device Authorization flow. Returns user_code + verification_uri to show user."""
+    key = (provider or "").strip().lower()
+    cfg = _DEVICE_CONFIGS.get(key)
+    if not cfg:
+        raise HTTPException(status_code=400, detail=f"Device flow not supported for '{key}'. Supported: {list(_DEVICE_CONFIGS)}")
+
+    client_id = os.environ.get(f"OAUTH_{key.upper()}_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(
+            status_code=500,
+            detail=f"OAUTH_{key.upper()}_CLIENT_ID not set. Add it to your environment once to enable one-click connect.",
+        )
+
+    try:
+        resp = requests.post(
+            cfg["device_url"],
+            data={"client_id": client_id, "scope": cfg["scope"]},
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to start device flow: {e}")
+
+    return {
+        "ok": True,
+        "provider": key,
+        "user_code": data.get("user_code"),
+        "verification_uri": data.get("verification_uri", "https://github.com/login/device"),
+        "verification_uri_complete": data.get("verification_uri_complete"),
+        "device_code": data.get("device_code"),
+        "expires_in": data.get("expires_in", 900),
+        "interval": data.get("interval", 5),
+    }
+
+
+@app.post("/integrations/connectors/device-poll/{provider}")
+async def device_flow_poll(provider: str, request: dict):
+    """Poll for device flow token. Frontend calls this every ~5s until pending=False."""
+    key = (provider or "").strip().lower()
+    cfg = _DEVICE_CONFIGS.get(key)
+    if not cfg:
+        raise HTTPException(status_code=400, detail="Device flow not supported for this provider")
+
+    device_code = (request.get("device_code") or "").strip()
+    connector_name = (request.get("connector_name") or key).strip()
+    if not device_code:
+        raise HTTPException(status_code=400, detail="device_code is required")
+
+    client_id = os.environ.get(f"OAUTH_{key.upper()}_CLIENT_ID")
+    if not client_id:
+        raise HTTPException(status_code=500, detail="OAuth not configured")
+
+    try:
+        resp = requests.post(
+            cfg["token_url"],
+            data={
+                "client_id": client_id,
+                "device_code": device_code,
+                "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
+            },
+            headers={"Accept": "application/json"},
+            timeout=10,
+        )
+        data = resp.json()
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Poll failed: {e}")
+
+    error = data.get("error")
+    if error in ("authorization_pending", "slow_down"):
+        return {"ok": False, "pending": True}
+    if error:
+        raise HTTPException(status_code=400, detail=data.get("error_description") or error)
+
+    access_token = data.get("access_token")
+    if not access_token:
+        raise HTTPException(status_code=400, detail="No access token returned")
+
+    db = _load_connectors()
+    existing = next((c for c in db.get("connectors", []) if c.get("name") == connector_name), None)
+    if existing:
+        existing["token"] = access_token
+        existing["auth_type"] = "bearer"
+    else:
+        db.setdefault("connectors", []).append({
+            "name": connector_name,
+            "provider": key,
+            "base_url": cfg.get("base_url", ""),
+            "token": access_token,
+            "auth_type": "bearer",
+            "enabled": True,
+            "timeout_sec": 20,
+            "headers": {},
+        })
+    _save_connectors(db)
+    return {"ok": True, "connected": True, "connector": connector_name, "provider": key}
 
 
 @app.post("/integrations/connectors/oauth-start/{provider}")
