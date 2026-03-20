@@ -240,17 +240,37 @@
       <div class="panel-head"><h3>Client Asset Hub</h3></div>
       <div class="panel-body stack">
         <div class="status" id="selectedClient">No client selected</div>
-        <input id="attachPath" class="text" type="text" placeholder="Selected file path" />
-        <select id="assetType" class="select">
-          <option value="">Auto detect type</option>
-          <option value="images">Image</option>
-          <option value="videos">Video</option>
-          <option value="files">File</option>
-        </select>
-        <label style="font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;">
-          <input id="moveFile" type="checkbox" /> Move instead of copy
-        </label>
-        <button class="btn primary" id="attachBtn">Attach To Selected Client</button>
+
+        <div style="border:1px solid var(--line);border-radius:10px;padding:10px;background:#f8fbff;">
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">Upload from your computer</div>
+          <div style="display:flex;gap:8px;align-items:center;">
+            <label class="btn" style="cursor:pointer;flex:1;text-align:center;" for="uploadInput">📁 Choose File(s)</label>
+            <input id="uploadInput" type="file" multiple style="display:none;" />
+          </div>
+          <div id="uploadFileList" style="font-size:11px;color:var(--muted);margin-top:6px;"></div>
+          <select id="uploadAssetType" class="select" style="margin-top:6px;">
+            <option value="">Auto detect type</option>
+            <option value="images">Image</option>
+            <option value="videos">Video</option>
+            <option value="files">File</option>
+          </select>
+          <button class="btn primary" id="uploadBtn" style="margin-top:8px;width:100%;">⬆ Upload to Client Folder</button>
+        </div>
+
+        <div style="border-top:1px dashed var(--line);padding-top:10px;">
+          <div style="font-size:12px;font-weight:600;color:var(--muted);margin-bottom:8px;text-transform:uppercase;letter-spacing:.5px;">Attach existing server file</div>
+          <input id="attachPath" class="text" type="text" placeholder="Selected file path from explorer" />
+          <select id="assetType" class="select" style="margin-top:6px;">
+            <option value="">Auto detect type</option>
+            <option value="images">Image</option>
+            <option value="videos">Video</option>
+            <option value="files">File</option>
+          </select>
+          <label style="font-size:12px;color:var(--muted);display:flex;gap:8px;align-items:center;margin-top:6px;">
+            <input id="moveFile" type="checkbox" /> Move instead of copy
+          </label>
+          <button class="btn primary" id="attachBtn" style="margin-top:8px;width:100%;">Attach To Selected Client</button>
+        </div>
         <div class="asset-table">
           <table>
             <thead><tr><th>Name</th><th>Kind</th><th>Size</th></tr></thead>
@@ -469,6 +489,42 @@
       await loadAssets();
       setStatus(`Attached ${data.stored_path} to client.`, 'ok');
     }
+
+    el('uploadInput').addEventListener('change', () => {
+      const files = Array.from(el('uploadInput').files || []);
+      el('uploadFileList').textContent = files.length ? files.map((f) => f.name).join(', ') : '';
+    });
+
+    el('uploadBtn').addEventListener('click', async () => {
+      if (!selectedClientId) { setStatus('Select a client first.', 'warn'); return; }
+      const files = Array.from(el('uploadInput').files || []);
+      if (!files.length) { setStatus('Choose at least one file to upload.', 'warn'); return; }
+      const assetType = el('uploadAssetType').value || '';
+      setStatus(`Uploading ${files.length} file(s)…`);
+      let uploaded = 0;
+      let errors = [];
+      for (const file of files) {
+        const fd = new FormData();
+        fd.append('file', file, file.name);
+        if (assetType) fd.append('asset_type', assetType);
+        try {
+          const res = await fetch(`${API}/branding/clients/${encodeURIComponent(selectedClientId)}/upload`, {
+            method: 'POST',
+            body: fd,
+          });
+          const data = await readJson(res);
+          if (!res.ok || !data.ok) errors.push(`${file.name}: ${data.detail || 'Failed'}`);
+          else uploaded++;
+        } catch (e) {
+          errors.push(`${file.name}: ${e.message}`);
+        }
+      }
+      el('uploadInput').value = '';
+      el('uploadFileList').textContent = '';
+      await loadAssets();
+      if (errors.length) setStatus(`Uploaded ${uploaded}/${files.length}. Errors: ${errors.join('; ')}`, 'warn');
+      else setStatus(`Uploaded ${uploaded} file(s) successfully.`, 'ok');
+    });
 
     el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
     el('videoBtn').addEventListener('click', () => { window.location.href = '/video-editor'; });

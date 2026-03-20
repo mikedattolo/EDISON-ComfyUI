@@ -12611,6 +12611,70 @@ async def branding_add_existing_asset(client_id: str, request: dict):
         raise HTTPException(status_code=500, detail=f"Could not add asset: {e}")
 
 
+@app.post("/branding/clients/{client_id}/upload")
+async def branding_upload_asset(client_id: str, file: UploadFile = File(...), asset_type: str = ""):
+    """Upload a file directly from the browser into a client's asset folder."""
+    try:
+        _ensure_integrations_dir()
+
+        db = _load_branding()
+        clients = db.get("clients", [])
+        client = next((c for c in clients if c.get("id") == client_id), None)
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+
+        filename = (file.filename or "upload").strip()
+        # Sanitize filename - only keep safe characters
+        safe_name = re.sub(r'[^\w.\-]', '_', Path(filename).name)
+        if not safe_name or safe_name.startswith('.'):
+            raise HTTPException(status_code=400, detail="Invalid filename")
+
+        ext = Path(safe_name).suffix.lower()
+        resolved_type = asset_type.strip().lower()
+        if not resolved_type:
+            if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}:
+                resolved_type = "images"
+            elif ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
+                resolved_type = "videos"
+            else:
+                resolved_type = "files"
+        if resolved_type not in {"images", "videos", "files"}:
+            raise HTTPException(status_code=400, detail="asset_type must be images, videos, or files")
+
+        dirs = _client_asset_dirs(client.get("slug", ""))
+        target_dir = dirs[resolved_type]
+
+        try:
+            BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
+            target_dir.mkdir(parents=True, exist_ok=True)
+        except PermissionError as pe:
+            raise HTTPException(
+                status_code=403,
+                detail=f"Permission denied. Check Docker volume mounts for {BRANDING_ROOT}. Error: {pe}"
+            )
+
+        target = target_dir / safe_name
+        if target.exists():
+            target = target_dir / f"{Path(safe_name).stem}_{uuid.uuid4().hex[:6]}{ext}"
+
+        content = await file.read()
+        target.write_bytes(content)
+
+        return {
+            "ok": True,
+            "client_id": client_id,
+            "asset_type": resolved_type,
+            "filename": target.name,
+            "stored_path": str(target.relative_to(REPO_ROOT)),
+            "size": len(content),
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Branding upload error: {e}")
+        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+
+
 # ==================== VIDEO EDITING ====================
 
 @app.get("/system/diagnostics")
