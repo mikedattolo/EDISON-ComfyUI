@@ -287,6 +287,27 @@ REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
 sys.path.insert(0, str(REPO_ROOT))
 
 
+def _find_writable_dir(*candidates) -> Path:
+    """Return the first candidate path that can be created and written to.
+    Falls back to a temp directory if all candidates fail."""
+    import tempfile
+    for path in candidates:
+        if not path:
+            continue
+        try:
+            path = Path(path)
+            path.mkdir(parents=True, exist_ok=True)
+            test = path / ".write_test"
+            test.write_text("ok")
+            test.unlink(missing_ok=True)
+            return path
+        except (PermissionError, OSError):
+            continue
+    fallback = Path(tempfile.gettempdir()) / "edison_data"
+    fallback.mkdir(parents=True, exist_ok=True)
+    return fallback
+
+
 # Helper functions for RAG context management
 def normalize_chunk(text: str) -> str:
     """Normalize chunk text for deduplication by stripping whitespace and collapsing spaces"""
@@ -599,7 +620,11 @@ CONNECTORS_DB = INTEGRATIONS_DIR / "connectors.json"
 PRINTERS_DB = INTEGRATIONS_DIR / "printers.json"
 PROMPTS_DB = INTEGRATIONS_DIR / "prompts.json"
 BRANDING_DB = INTEGRATIONS_DIR / "branding.json"
-BRANDING_ROOT = REPO_ROOT / "outputs" / "clients"
+BRANDING_ROOT = _find_writable_dir(
+    os.environ.get("EDISON_CLIENTS_DIR"),        # explicit env var override
+    REPO_ROOT / "outputs" / "clients",           # default (Docker volume mount)
+    Path.home() / ".edison" / "clients",         # user-home fallback
+)
 SELF_EDIT_BACKUP_DIR = REPO_ROOT / "outputs" / "self_edit_backups"
 CODESPACES_ENABLED = False
 PERSONALITY_TRAITS = ("innovative", "thoughtful", "kind")

@@ -66,6 +66,625 @@
       font-weight: 800;
     }
 
+    .btn.connect {
+      border-color: rgba(99,210,163,0.5);
+      background: linear-gradient(120deg, #1d4a38, #152f24);
+      color: #63d2a3;
+      font-weight: 700;
+      font-size: 13px;
+      padding: 10px 16px;
+      width: 100%;
+      margin-top: 8px;
+    }
+
+    .btn.connect:hover { background: linear-gradient(120deg, #25604a, #1a3c2f); }
+
+    .btn.disconnect {
+      border-color: rgba(255,144,144,0.4);
+      background: rgba(80,20,20,0.4);
+      color: #ffb2b2;
+      font-size: 12px;
+      padding: 6px 10px;
+    }
+
+    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
+
+    .shell {
+      padding: 16px;
+      max-width: 1200px;
+      margin: 0 auto;
+    }
+
+    .section-title {
+      font-size: 13px;
+      font-weight: 700;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: .6px;
+      margin: 20px 0 10px;
+    }
+
+    .provider-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(200px, 1fr));
+      gap: 12px;
+    }
+
+    .provider-card {
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      transition: border-color 0.2s;
+    }
+
+    .provider-card.connected {
+      border-color: rgba(99, 210, 163, 0.55);
+      background: linear-gradient(180deg, #152e24, #0f2019);
+    }
+
+    .provider-card .icon { font-size: 28px; margin-bottom: 4px; }
+    .provider-card .name { font-size: 15px; font-weight: 700; }
+    .provider-card .desc { font-size: 11px; color: var(--muted); flex: 1; }
+
+    .connected-badge {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      font-size: 11px;
+      font-weight: 700;
+      color: #63d2a3;
+      background: rgba(99,210,163,0.12);
+      border: 1px solid rgba(99,210,163,0.35);
+      border-radius: 20px;
+      padding: 3px 8px;
+      margin-top: 4px;
+    }
+
+    .status {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(6, 13, 21, 0.52);
+      color: var(--muted);
+      padding: 9px 10px;
+      font-size: 12px;
+      white-space: pre-wrap;
+    }
+    .status.ok { border-color: rgba(99,210,163,0.42); color: #95efc9; }
+    .status.warn { border-color: rgba(255,186,105,0.45); color: #ffd4a0; }
+    .status.bad { border-color: rgba(255,144,144,0.45); color: #ffb2b2; }
+
+    .panel {
+      background: linear-gradient(180deg, var(--panel-2), var(--panel));
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      overflow: hidden;
+      margin-top: 12px;
+    }
+
+    .panel .head {
+      border-bottom: 1px solid var(--line);
+      padding: 12px 14px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+
+    .panel .head h2, .panel .head h3 { margin: 0; font-size: 14px; }
+    .panel .body { padding: 12px; display: flex; flex-direction: column; gap: 8px; }
+
+    .text, .select, .area {
+      width: 100%;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      padding: 9px 10px;
+      font: inherit;
+      color: var(--ink);
+      background: rgba(9, 16, 25, 0.8);
+    }
+
+    .area { min-height: 76px; resize: vertical; }
+
+    pre {
+      margin: 0;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(8, 15, 23, 0.8);
+      color: #b8cde7;
+      padding: 10px;
+      font-size: 12px;
+      overflow: auto;
+      max-height: 300px;
+      white-space: pre-wrap;
+      word-break: break-word;
+    }
+
+    /* Modal */
+    .modal-backdrop {
+      display: none;
+      position: fixed; inset: 0;
+      background: rgba(0,0,0,0.7);
+      z-index: 100;
+      justify-content: center;
+      align-items: center;
+    }
+    .modal-backdrop.open { display: flex; }
+    .modal {
+      background: #152232;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      padding: 24px;
+      max-width: 420px;
+      width: 92%;
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+    }
+    .modal h3 { margin: 0; font-size: 16px; }
+    .modal p { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.55; }
+    .modal-actions { display: flex; gap: 8px; justify-content: flex-end; margin-top: 4px; }
+
+    @media (max-width: 700px) {
+      .provider-grid { grid-template-columns: 1fr 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <h1>🔗 Connectors</h1>
+      <p>Click Connect on any service — you'll be redirected to authorize automatically.</p>
+    </div>
+    <div style="display:flex;gap:8px;">
+      <button class="btn" id="homeBtn">← Main Chat</button>
+      <button class="btn primary" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <div class="section-title">Available Services</div>
+    <div class="provider-grid" id="providers">
+      <div class="provider-card"><div class="desc">Loading...</div></div>
+    </div>
+
+    <div class="status" id="globalStatus" style="margin-top:16px;"></div>
+
+    <!-- Advanced: manual token entry -->
+    <div class="panel" style="margin-top:20px;">
+      <div class="head">
+        <h3>⚙ Advanced: Manual Token / Custom API</h3>
+        <button class="btn" id="toggleAdvanced" style="font-size:11px;padding:5px 10px;">Show</button>
+      </div>
+      <div class="body" id="advancedBody" style="display:none;">
+        <select id="advProvider" class="select">
+          <option value="">Choose provider...</option>
+        </select>
+        <input class="text" id="advName" type="text" placeholder="Connector name (optional)" />
+        <input class="text" id="advToken" type="password" placeholder="Paste API key / personal access token" />
+        <div style="display:flex;gap:8px;">
+          <button class="btn primary" id="advSaveBtn" style="flex:1;">Save Connector</button>
+          <button class="btn" id="advTestBtn">Test First</button>
+        </div>
+        <div class="status" id="advStatus"></div>
+      </div>
+    </div>
+
+    <!-- Advanced: call API -->
+    <div class="panel">
+      <div class="head">
+        <h3>🧪 Call API Directly</h3>
+        <button class="btn" id="toggleCall" style="font-size:11px;padding:5px 10px;">Show</button>
+      </div>
+      <div class="body" id="callBody" style="display:none;">
+        <select id="testConnector" class="select"></select>
+        <input id="testPath" class="text" type="text" placeholder="API path e.g. /user" />
+        <select id="testMethod" class="select">
+          <option>GET</option><option>POST</option><option>PUT</option><option>PATCH</option><option>DELETE</option>
+        </select>
+        <textarea id="testBody" class="area" placeholder="JSON body (optional)"></textarea>
+        <button class="btn primary" id="runTestBtn">Run Request</button>
+        <pre id="testOutput">No requests yet.</pre>
+      </div>
+    </div>
+  </main>
+
+  <!-- OAuth redirect modal -->
+  <div class="modal-backdrop" id="oauthModal">
+    <div class="modal">
+      <h3 id="oauthModalTitle">Connect Service</h3>
+      <p id="oauthModalBody"></p>
+      <div class="modal-actions">
+        <button class="btn" id="oauthModalCancel">Cancel</button>
+        <button class="btn primary" id="oauthModalGo">Authorize →</button>
+      </div>
+    </div>
+  </div>
+
+  <script>
+    const API = '/api';
+    let providerCatalog = [];
+    let connectors = [];
+    let pendingOAuthProvider = null;
+    let pendingOAuthUrl = null;
+
+    const el = (id) => document.getElementById(id);
+
+    const PROVIDER_ICONS = {
+      github: '🐙', gmail: '📧', 'google-drive': '📁', google_drive: '📁',
+      slack: '💬', notion: '📝', dropbox: '📦', discord: '🎮',
+    };
+
+    const PROVIDER_DESC = {
+      github: 'Access repos, issues, code',
+      gmail: 'Read & send email',
+      'google-drive': 'Browse & manage files',
+      google_drive: 'Browse & manage files',
+      slack: 'Send messages, read channels',
+      notion: 'Read pages & databases',
+      dropbox: 'Access & upload files',
+      discord: 'Interact with servers',
+    };
+
+    function setStatus(msg, tone = '') {
+      const s = el('globalStatus');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    async function readJson(res) {
+      const raw = await res.text();
+      try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
+    }
+
+    function isConnected(key) {
+      return connectors.some((c) => (c.provider || '').toLowerCase() === key.toLowerCase() && c.enabled !== false);
+    }
+
+    function getConnector(key) {
+      return connectors.find((c) => (c.provider || '').toLowerCase() === key.toLowerCase());
+    }
+
+    function renderProviders() {
+      const host = el('providers');
+      if (!providerCatalog.length) {
+        host.innerHTML = '<div class="provider-card"><div class="desc">No providers available.</div></div>';
+        return;
+      }
+
+      host.innerHTML = providerCatalog.map((p) => {
+        const connected = isConnected(p.key);
+        const icon = PROVIDER_ICONS[p.key] || '🔌';
+        const desc = PROVIDER_DESC[p.key] || p.auth || '';
+        const isOAuth = p.auth === 'oauth2';
+
+        let actionHtml = '';
+        if (connected) {
+          const conn = getConnector(p.key);
+          actionHtml = `
+            <span class="connected-badge">✓ Connected</span>
+            <button class="btn disconnect" data-disconnect="${conn ? conn.name : p.key}" style="margin-top:8px;width:100%;">Disconnect</button>`;
+        } else if (isOAuth) {
+          actionHtml = `<button class="btn connect" data-oauth="${p.key}">🔗 Connect with ${p.label}</button>`;
+        } else {
+          actionHtml = `<button class="btn connect" data-manual="${p.key}">🔑 Add Token</button>`;
+        }
+
+        return `<div class="provider-card ${connected ? 'connected' : ''}" data-key="${p.key}">
+          <div class="icon">${icon}</div>
+          <div class="name">${p.label}</div>
+          <div class="desc">${desc}</div>
+          ${actionHtml}
+        </div>`;
+      }).join('');
+
+      // OAuth connect buttons
+      host.querySelectorAll('button[data-oauth]').forEach((btn) => {
+        btn.addEventListener('click', () => startOAuth(btn.getAttribute('data-oauth')));
+      });
+
+      // Manual token buttons - scroll to advanced section
+      host.querySelectorAll('button[data-manual]').forEach((btn) => {
+        btn.addEventListener('click', () => {
+          const key = btn.getAttribute('data-manual');
+          el('advProvider').value = key;
+          el('advancedBody').style.display = 'flex';
+          el('toggleAdvanced').textContent = 'Hide';
+          el('advancedBody').scrollIntoView({ behavior: 'smooth' });
+        });
+      });
+
+      // Disconnect buttons
+      host.querySelectorAll('button[data-disconnect]').forEach((btn) => {
+        btn.addEventListener('click', () => deleteConnector(btn.getAttribute('data-disconnect')));
+      });
+    }
+
+    async function startOAuth(providerKey) {
+      setStatus(`Connecting to ${providerKey}...`, 'warn');
+      try {
+        const res = await fetch(`${API}/integrations/connectors/oauth-start/${encodeURIComponent(providerKey)}`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({}),
+        });
+        const data = await readJson(res);
+
+        if (!res.ok) {
+          // If credentials not configured, show a helpful modal
+          if (res.status === 500 && data.detail && data.detail.includes('not configured')) {
+            const envVar = data.detail.match(/OAUTH_[A-Z_]+_CLIENT_ID/)?.[0] || 'OAUTH credentials';
+            showOAuthSetupModal(providerKey, envVar);
+          } else {
+            setStatus(`Error: ${data.detail || 'Could not start OAuth'}`, 'bad');
+          }
+          return;
+        }
+
+        // Redirect to provider's auth page
+        pendingOAuthProvider = providerKey;
+        pendingOAuthUrl = data.auth_url;
+
+        el('oauthModalTitle').textContent = `Authorize ${providerKey}`;
+        el('oauthModalBody').textContent = `You'll be redirected to ${providerKey}'s login page to grant access. After you approve, you'll be brought back here automatically.`;
+        el('oauthModal').classList.add('open');
+      } catch (e) {
+        setStatus(`Failed: ${e.message}`, 'bad');
+      }
+    }
+
+    function showOAuthSetupModal(providerKey, envVar) {
+      el('oauthModalTitle').textContent = `One-time Setup: ${providerKey}`;
+      el('oauthModalBody').innerHTML = `To enable one-click connect for ${providerKey}, add this to your docker-compose.yml environment once:\n\n${envVar}=your_client_id\n${envVar.replace('CLIENT_ID','CLIENT_SECRET')}=your_client_secret\n\nGet these free from the ${providerKey} developer portal. After that, click Connect with no manual keys ever again.`;
+      pendingOAuthUrl = null;
+      el('oauthModalGo').textContent = 'Got it';
+      el('oauthModal').classList.add('open');
+    }
+
+    el('oauthModalCancel').addEventListener('click', () => {
+      el('oauthModal').classList.remove('open');
+      pendingOAuthUrl = null;
+    });
+
+    el('oauthModalGo').addEventListener('click', () => {
+      el('oauthModal').classList.remove('open');
+      if (pendingOAuthUrl) {
+        window.location.href = pendingOAuthUrl;
+      }
+      el('oauthModalGo').textContent = 'Authorize →';
+      pendingOAuthUrl = null;
+    });
+
+    async function loadCatalog() {
+      try {
+        const res = await fetch(`${API}/integrations/connectors/catalog`);
+        const data = await readJson(res);
+        providerCatalog = data.providers || [];
+
+        // Populate advanced dropdown
+        const sel = el('advProvider');
+        sel.innerHTML = '<option value="">Choose provider...</option>' +
+          providerCatalog.map((p) => `<option value="${p.key}">${p.label}</option>`).join('');
+
+        renderProviders();
+      } catch (e) {
+        el('providers').innerHTML = `<div class="status bad">Error loading: ${e.message}</div>`;
+      }
+    }
+
+    async function loadConnectors() {
+      try {
+        const res = await fetch(`${API}/integrations/connectors`);
+        const data = await readJson(res);
+        connectors = data.connectors || [];
+
+        // Update call-API dropdown too
+        const sel = el('testConnector');
+        sel.innerHTML = '<option value="">Choose connector...</option>' +
+          connectors.map((c) => `<option value="${c.name}">${c.name} (${c.provider || 'custom'})</option>`).join('');
+
+        renderProviders();
+      } catch (e) {
+        setStatus(`Error loading connectors: ${e.message}`, 'bad');
+      }
+    }
+
+    async function advancedSave() {
+      const provider = el('advProvider').value;
+      const token = (el('advToken').value || '').trim();
+      if (!token) { el('advStatus').textContent = 'Paste a token first.'; el('advStatus').className = 'status warn'; return; }
+      const body = {
+        provider: provider || 'custom',
+        token,
+        name: (el('advName').value || provider || 'custom').trim(),
+      };
+      try {
+        el('advSaveBtn').disabled = true;
+        const res = await fetch(`${API}/integrations/connectors/quick-connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.detail || 'Failed to save');
+        el('advStatus').textContent = `✓ Saved ${data.connector.name}`;
+        el('advStatus').className = 'status ok';
+        el('advToken').value = '';
+        await loadConnectors();
+      } catch (e) {
+        el('advStatus').textContent = `Error: ${e.message}`;
+        el('advStatus').className = 'status bad';
+      } finally {
+        el('advSaveBtn').disabled = false;
+      }
+    }
+
+    async function deleteConnector(name) {
+      if (!confirm(`Disconnect "${name}"?`)) return;
+      try {
+        const res = await fetch(`${API}/integrations/connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
+        if (!res.ok) throw new Error('Delete failed');
+        await loadConnectors();
+        setStatus(`Disconnected ${name}.`);
+      } catch (e) {
+        setStatus(`Error: ${e.message}`, 'bad');
+      }
+    }
+
+    async function runTest() {
+      const cname = el('testConnector').value;
+      if (!cname) { el('testOutput').textContent = 'Select a connector.'; return; }
+      const body = { connector: cname, method: el('testMethod').value, path: el('testPath').value || undefined };
+      const raw = el('testBody').value.trim();
+      if (raw) { try { body.body = JSON.parse(raw); } catch (e) { el('testOutput').textContent = `Bad JSON: ${e.message}`; return; } }
+      try {
+        const res = await fetch(`${API}/integrations/connectors/call`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        el('testOutput').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        el('testOutput').textContent = `Failed: ${e.message}`;
+      }
+    }
+
+    // Toggle panels
+    el('toggleAdvanced').addEventListener('click', () => {
+      const body = el('advancedBody');
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? 'flex' : 'none';
+      el('toggleAdvanced').textContent = hidden ? 'Hide' : 'Show';
+    });
+
+    el('toggleCall').addEventListener('click', () => {
+      const body = el('callBody');
+      const hidden = body.style.display === 'none';
+      body.style.display = hidden ? 'flex' : 'none';
+      el('toggleCall').textContent = hidden ? 'Hide' : 'Show';
+    });
+
+    el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
+    el('refreshBtn').addEventListener('click', async () => {
+      await Promise.all([loadCatalog(), loadConnectors()]);
+      setStatus('Refreshed.', 'ok');
+    });
+    el('advSaveBtn').addEventListener('click', advancedSave);
+    el('advTestBtn').addEventListener('click', async () => {
+      const token = (el('advToken').value || '').trim();
+      if (!token) { el('advStatus').textContent = 'Paste a token first.'; el('advStatus').className = 'status warn'; return; }
+      el('advStatus').textContent = 'Token looks valid (format check only — save and use Test API to verify).';
+      el('advStatus').className = 'status ok';
+    });
+    el('runTestBtn').addEventListener('click', runTest);
+
+    // Handle OAuth callback (provider redirects back with ?code=&state=)
+    (async function handleOAuthReturn() {
+      const params = new URLSearchParams(window.location.search);
+      const code = params.get('code');
+      const state = params.get('state');
+      if (!code || !state) return;
+
+      setStatus('Completing authorization...', 'warn');
+      window.history.replaceState({}, '', window.location.pathname);
+
+      try {
+        const providerGuess = params.get('provider') || localStorage.getItem('edison_oauth_provider') || 'unknown';
+        const connName = localStorage.getItem('edison_oauth_connector_name') || providerGuess;
+        const res = await fetch(`${API}/integrations/connectors/oauth-callback`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ code, state, connector_name: connName }),
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.detail || 'Callback failed');
+        setStatus(`✓ ${data.provider} connected successfully!`, 'ok');
+        localStorage.removeItem('edison_oauth_provider');
+        localStorage.removeItem('edison_oauth_connector_name');
+        await loadConnectors();
+      } catch (e) {
+        setStatus(`Authorization failed: ${e.message}`, 'bad');
+      }
+    })();
+
+    // Store provider name before redirect so we can use it on return
+    const _origStartOAuth = startOAuth;
+    window.startOAuth = async (key) => {
+      localStorage.setItem('edison_oauth_provider', key);
+      localStorage.setItem('edison_oauth_connector_name', key);
+      await _origStartOAuth(key);
+    };
+
+    loadCatalog();
+    loadConnectors();
+  </script>
+</body>
+</html>
+  <style>
+    :root {
+      --bg: #0f1722;
+      --bg-2: #152232;
+      --panel: #18293e;
+      --panel-2: #1c3049;
+      --ink: #f4f8ff;
+      --muted: #9db3cc;
+      --line: rgba(178, 201, 231, 0.22);
+      --accent: #63d2a3;
+      --accent-2: #46b588;
+      --warn: #ffba69;
+      --bad: #ff9090;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      background:
+        radial-gradient(circle at 8% 10%, rgba(99, 210, 163, 0.18), transparent 30%),
+        radial-gradient(circle at 90% 5%, rgba(70, 181, 136, 0.15), transparent 28%),
+        linear-gradient(180deg, #0b121b 0%, #101a26 100%);
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 10;
+      padding: 14px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      border-bottom: 1px solid var(--line);
+      background: rgba(11, 18, 27, 0.85);
+      backdrop-filter: blur(12px);
+    }
+
+    .title h1 { margin: 0; font-size: 22px; }
+    .title p { margin: 3px 0 0; color: var(--muted); font-size: 12px; }
+
+    .btn {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: linear-gradient(180deg, #243a55, #1b2d44);
+      color: var(--ink);
+      padding: 9px 12px;
+      font: inherit;
+      font-size: 13px;
+      cursor: pointer;
+    }
+
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(120deg, #6de0af, #43bb8b);
+      color: #082114;
+      font-weight: 800;
+    }
+
     .btn:disabled {
       opacity: 0.5;
       cursor: not-allowed;
