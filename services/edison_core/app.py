@@ -856,15 +856,23 @@ def _run_codespaces_command(command: str, cwd: str = ".", timeout: int = 30) -> 
 
 
 def _ensure_integrations_dir():
-    INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
-    if not CONNECTORS_DB.exists():
-        CONNECTORS_DB.write_text(json.dumps({"connectors": []}, indent=2))
-    if not PRINTERS_DB.exists():
-        PRINTERS_DB.write_text(json.dumps({"printers": []}, indent=2))
-    if not PROMPTS_DB.exists():
-        PROMPTS_DB.write_text(json.dumps({"prompts": []}, indent=2))
-    if not BRANDING_DB.exists():
-        BRANDING_DB.write_text(json.dumps({"clients": []}, indent=2))
+    try:
+        INTEGRATIONS_DIR.mkdir(parents=True, exist_ok=True)
+        BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
+        SELF_EDIT_BACKUP_DIR.mkdir(parents=True, exist_ok=True)
+        
+        # Create default DB files if missing
+        for db_path, default_data in [
+            (CONNECTORS_DB, {"connectors": []}),
+            (PRINTERS_DB, {"printers": []}),
+            (PROMPTS_DB, {"prompts": []}),
+            (BRANDING_DB, {"clients": []}),
+        ]:
+            if not db_path.exists():
+                db_path.write_text(json.dumps(default_data, indent=2))
+    except Exception as e:
+        logger.error(f"Failed to ensure integrations directory: {e}")
+        raise
 
 
 def _load_prompts() -> dict:
@@ -1147,11 +1155,96 @@ def _discover_printers_simple(subnet: str = "", timeout_sec: float = 0.25, max_h
             "ports": open_ports,
         })
 
+    # Also try to discover Bambu Lab printers via mDNS-like approach
+    bambu_discovered = _discover_bambu_lab_printers()
+    discovered.extend(bambu_discovered)
+
     return {
         "subnet": target_subnet,
         "scanned_hosts": scanned,
         "discovered": discovered,
     }
+
+
+def _discover_bambu_lab_printers() -> list:
+    """Discover Bambu Lab 3D printers on the local network."""
+    discovered = []
+    try:
+        # Try to discover Bambu Lab printers via zeroconf/mDNS
+        try:
+            from zeroconf import ServiceBrowser, Zeroconf, IPVersion
+            
+            class BambuListener:
+                def __init__(self):
+                    self.found_printers = []
+                
+                def add_service(self, zeroconf, service_type, name):
+                    try:
+                        info = zeroconf.get_service_info(service_type, name)
+                        if info and info.addresses:
+                            ip = str(info.addresses[0])  # IPv4 address
+                            printer_name = name.split('.')[0]
+                            self.found_printers.append({
+                                "id": f"bambulab_{ip.replace('.', '_')}",
+                                "name": f"Bambu Lab {printer_name}",
+                                "type": "bambulabb1",
+                                "host": ip,
+                                "endpoint": f"http://{ip}",
+                                "ports": [8899],  # Bambu Lab default API port
+                            })
+                    except Exception:
+                        pass
+                
+                def remove_service(self, zeroconf, service_type, name):
+                    pass
+                
+                def update_service(self, zeroconf, service_type, name):
+                    pass
+            
+            zeroconf = Zeroconf(ip_version=IPVersion.V4Only)
+            listener = BambuListener()
+            ServiceBrowser(zeroconf, "_http._tcp.local.", listener)
+            
+            # Give mDNS a moment to discover
+            import time as time_module
+            time_module.sleep(0.5)
+            zeroconf.close()
+            discovered.extend(listener.found_printers)
+        except ImportError:
+            # zeroconf not installed, try simpler approach
+            pass
+        
+        # Fallback: check common Bambu Lab hostnames on the subnet
+        try:
+            with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:
+                s.connect(("8.8.8.8", 80))
+                local_ip = s.getsockname()[0]
+            
+            prefix = ".".join(local_ip.split(".")[:3])
+            # Try common Bambu Lab printer patterns
+            for i in range(1, 20):
+                host = f"{prefix}.{100 + i}"
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.settimeout(0.2)
+                try:
+                    if sock.connect_ex((host, 8899)) == 0:  # Bambu Lab port
+                        if not any(d.get('host') == host for d in discovered):
+                            discovered.append({
+                                "id": f"bambulab_{host.replace('.', '_')}",
+                                "name": f"Bambu Lab Printer ({host})",
+                                "type": "bambulabb1",
+                                "host": host,
+                                "endpoint": f"http://{host}:8899",
+                                "ports": [8899],
+                            })
+                finally:
+                    sock.close()
+        except Exception:
+            pass
+    except Exception as e:
+        logger.debug(f"Bambu Lab discovery attempt failed: {e}")
+    
+    return discovered
 
 # Thread locks for concurrent model access safety
 lock_fast = threading.Lock()
@@ -12506,6 +12599,47 @@ async def system_diagnostics():
     }
 
 
+@app.post("/system/initialize")
+async def system_initialize():
+    """Initialize/verify all required directories and databases with proper permissions."""
+    try:
+        _ensure_integrations_dir()
+        # Ensure other required dirs
+        for dir_path in [BRANDING_ROOT, SELF_EDIT_BACKUP_DIR]:
+            dir_path.mkdir(parents=True, exist_ok=True)
+        
+        # Test write permissions
+        test_file = INTEGRATIONS_DIR / ".write_test"
+        test_file.write_text("test")
+        test_file.unlink()
+        
+        return {
+            "ok": True,
+            "message": "System initialized successfully",
+            "directories": {
+                "integrations": str(INTEGRATIONS_DIR),
+                "branding": str(BRANDING_ROOT),
+                "config": str(INTEGRATIONS_DIR.parent),
+            },
+            "writable": True,
+        }
+    except PermissionError as e:
+        return {
+            "ok": False,
+            "message": "Permission denied. Check Docker volume permissions or file ownership.",
+            "error": str(e),
+            "hint": "If using Docker, ensure volumes are mounted with proper permissions: docker-compose restart",
+            "writable": False,
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "message": f"Initialization failed: {e}",
+            "error": str(e),
+            "writable": False,
+        }
+
+
 @app.get("/video/files")
 async def video_files(path: str = ""):
     """List media roots or browse a specific allowed media directory."""
@@ -13181,6 +13315,76 @@ async def quick_connect_connector(request: dict):
     }
 
 
+@app.get("/integrations/connectors/auth/{provider}")
+async def get_connector_auth_details(provider: str):
+    """Get auth requirements and setup guide for a specific provider."""
+    provider_lower = (provider or "").strip().lower()
+    if provider_lower not in CONNECTOR_CATALOG:
+        raise HTTPException(status_code=404, detail="Provider not found")
+    
+    template = CONNECTOR_CATALOG[provider_lower]
+    return {
+        "ok": True,
+        "provider": provider_lower,
+        "label": template.get("label"),
+        "docs": template.get("docs"),
+        "auth_type": template.get("auth", "bearer"),
+        "base_url": template.get("base_url"),
+        "test_path": template.get("test_path"),
+        "setup_steps": _get_provider_setup_steps(provider_lower),
+    }
+
+
+def _get_provider_setup_steps(provider: str) -> list:
+    """Return setup instructions for a given provider."""
+    steps = {
+        "github": [
+            "1. Go to https://github.com/settings/tokens",
+            "2. Click 'Generate new token (classic)'",
+            "3. Select scopes: repo, user, gist",
+            "4. Copy the token and paste it below",
+        ],
+        "gmail": [
+            "1. Go to https://myaccount.google.com/apppasswords",
+            "2. Select Mail and Windows Computer",
+            "3. Google will generate a 16-character password",
+            "4. Use that password as your API key",
+        ],
+        "google-drive": [
+            "1. Go to https://console.cloud.google.com/",
+            "2. Create a new project or select existing",
+            "3. Enable Google Drive API",
+            "4. Create OAuth 2.0 credentials (Desktop app)",
+            "5. Download and use the client secret",
+        ],
+        "slack": [
+            "1. Go to https://api.slack.com/apps",
+            "2. Create New App or select existing",
+            "3. Go to OAuth & Permissions",
+            "4. Copy Bot User OAuth Token",
+            "5. Paste it below",
+        ],
+        "dropbox": [
+            "1. Go to https://www.dropbox.com/developers/apps",
+            "2. Create a new app",
+            "3. Choose 'Full Dropbox' or 'App folder'",
+            "4. Go to Settings and generate access token",
+            "5. Paste it below",
+        ],
+        "notion": [
+            "1. Go to https://www.notion.so/my-integrations",
+            "2. Click 'Create new integration'",
+            "3. Copy the API secret",
+            "4. Share your Notion workspace with the integration",
+            "5. Paste the secret below",
+        ],
+    }
+    return steps.get(provider, [
+        "1. Get an API token from your provider's documentation",
+        "2. Paste it below to connect",
+    ])
+
+
 @app.patch("/integrations/connectors/{name}")
 async def patch_connector(name: str, request: dict):
     """Patch selected fields for an existing connector profile."""
@@ -13339,7 +13543,80 @@ async def discover_printers(request: dict):
         raise HTTPException(status_code=500, detail=f"Printer discovery failed: {e}")
 
 
-@app.post("/printers")
+@app.get("/printing/setup-guide/{printer_type}")
+async def get_printer_setup_guide(printer_type: str):
+    """Get setup instructions for a specific printer type."""
+    ptype = (printer_type or "").strip().lower()
+    
+    guides = {
+        "bambulabb1": {
+            "label": "Bambu Lab B1 / X1 Carbon",
+            "ports": [8899],
+            "default_port": 8899,
+            "steps": [
+                "1. Power on your Bambu Lab printer",
+                "2. Connect it to your Wi-Fi network using the printer's touchscreen",
+                "3. Find the printer's IP address:",
+                "   - Check Bambu Handy app: Device → Network → IP address",
+                "   - Or: Router admin panel → Connected devices",
+                "4. Get your API key:",
+                "   - Bambu Handy app → Account → Security → Generate API Key",
+                "   - Or: In the printer settings menu",
+                "5. Enter the printer IP and API key below",
+            ],
+            "fields": [
+                {"name": "host", "label": "Printer IP Address", "type": "text", "placeholder": "192.168.1.100"},
+                {"name": "api_key", "label": "API Key / Access Code", "type": "password", "placeholder": "Your 32-char API key"},
+            ],
+            "test_endpoint": "/api/info",
+        },
+        "octoprint": {
+            "label": "OctoPrint",
+            "ports": [80, 8080, 5000],
+            "default_port": 8080,
+            "steps": [
+                "1. Power on your printer and Raspberry Pi running OctoPrint",
+                "2. Find the OctoPrint IP address:",
+                "   - Check router: connected devices named 'octoprint'",
+                "   - Or: Go to octopi.local in browser",
+                "3. Get your API key:",
+                "   - OctoPrint Web UI → Settings → API → Current API key",
+                "4. Enter the OctoPrint IP below",
+            ],
+            "fields": [
+                {"name": "host", "label": "OctoPrint IP Address", "type": "text", "placeholder": "192.168.1.101"},
+                {"name": "api_key", "label": "OctoPrint API Key", "type": "password", "placeholder": "Your API key"},
+            ],
+            "test_endpoint": "/api/version",
+        },
+        "generic": {
+            "label": "Generic/Other 3D Printer",
+            "ports": [80, 443, 8080, 9000],
+            "steps": [
+                "1. Find your printer's IP address on your network",
+                "2. Determine the web interface port (usually 80, 8080, or 9000)",
+                "3. Enter the IP and details below",
+            ],
+            "fields": [
+                {"name": "host", "label": "Printer IP Address", "type": "text", "placeholder": "192.168.1.102"},
+                {"name": "api_endpoint", "label": "API Base URL (optional)", "type": "text", "placeholder": "http://192.168.1.102:8080"},
+            ],
+        },
+    }
+    
+    guide = guides.get(ptype)
+    if not guide:
+        return {
+            "ok": True,
+            "type": ptype,
+            "label": "Unknown Printer Type",
+            "steps": ["Please specify a known printer type (bambulabb1, octoprint, generic)"],
+        }
+    
+    return {"ok": True, "type": ptype, **guide}
+
+
+@app.post("/printing/printers")
 @app.post("/printing/printers")
 async def upsert_printer(request: dict):
     """Register or update a Wi-Fi 3D printer profile (OctoPrint/Bambu/generic)."""

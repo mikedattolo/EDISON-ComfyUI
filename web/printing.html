@@ -58,6 +58,11 @@
       font: inherit;
       font-size: 13px;
       cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .btn:hover {
+      border-color: #ef8c45;
     }
 
     .btn.primary {
@@ -67,9 +72,14 @@
       font-weight: 700;
     }
 
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .shell {
       display: grid;
-      grid-template-columns: 340px minmax(0, 1fr) 380px;
+      grid-template-columns: 1fr;
       gap: 12px;
       padding: 12px;
       min-height: calc(100vh - 74px);
@@ -115,15 +125,26 @@
       background: #fff8f1;
       padding: 10px;
       cursor: pointer;
+      transition: all 0.2s ease;
+    }
+
+    .device:hover {
+      border-color: #ef8c45;
+      background: #ffe7d3;
     }
 
     .device.active {
       border-color: #ef8c45;
       background: #ffe7d3;
+      font-weight: 600;
     }
 
     .device strong { display: block; font-size: 13px; }
     .device span { color: var(--muted); font-size: 11px; }
+
+    .device.bambu::before {
+      content: "🌸 ";
+    }
 
     .status {
       border: 1px solid var(--line);
@@ -140,6 +161,17 @@
     .status.warn { border-color: rgba(187, 108, 46, 0.4); color: #9e5a24; }
     .status.bad { border-color: rgba(181, 71, 71, 0.4); color: #9f3f3f; }
 
+    .setup-guide {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #f8f1e8;
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .setup-guide strong { color: #e8752b; }
+
     pre {
       margin: 0;
       border: 1px solid var(--line);
@@ -147,13 +179,19 @@
       background: #fff7ef;
       padding: 10px;
       font-size: 12px;
-      max-height: 270px;
+      max-height: 200px;
       overflow: auto;
       white-space: pre-wrap;
       word-break: break-word;
     }
 
-    .hint { color: var(--muted); font-size: 12px; }
+    .hint { color: var(--muted); font-size: 11px; }
+
+    .grid-2 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+      gap: 12px;
+    }
 
     @media (max-width: 1260px) {
       .shell { grid-template-columns: 1fr; }
@@ -163,65 +201,112 @@
 <body>
   <header class="topbar">
     <div class="title">
-      <h1>3D Printing Hub</h1>
-      <p>Detect printers on your network, slice models, and send jobs from one page.</p>
+      <h1>🖨️ 3D Printing Hub</h1>
+      <p>Detect your Bambu Lab or network printers, slice models, and send jobs instantly.</p>
     </div>
     <div style="display:flex;gap:8px;">
-      <button class="btn" id="homeBtn">Main Chat</button>
+      <button class="btn" id="homeBtn">← Main Chat</button>
       <button class="btn primary" id="refreshBtn">Refresh</button>
     </div>
   </header>
 
   <main class="shell">
+    <!-- Step 1: Discover or Add Printer -->
     <section class="panel">
       <div class="head">
-        <h2>Device Menu</h2>
-        <button class="btn" id="discoverBtn">Network Detect</button>
+        <h2>Step 1: Add Your 3D Printer</h2>
+        <button class="btn primary" id="discoverBtn">🔍 Network Detect</button>
       </div>
-      <div class="body">
-        <div style="display:flex;gap:8px;">
-          <input id="subnet" class="text" type="text" placeholder="Subnet (optional, e.g. 192.168.1.0/24)" />
-          <input id="maxHosts" class="text" type="number" min="16" max="512" value="64" />
+      <div class="body grid-2">
+        <!-- Discovery options -->
+        <div>
+          <div class="head"><h3>Auto-Detect (Network Scan)</h3></div>
+          <div class="body" style="gap:6px;">
+            <input id="subnet" class="text" type="text" placeholder="Subnet (auto-detected)" />
+            <input id="maxHosts" class="text" type="number" min="16" max="512" value="64" />
+            <button class="btn" id="scanBtn" style="width:100%;">Scan & Find</button>
+            <div id="discoveredList" class="status">Click "Scan & Find" to detect printers on your network.</div>
+          </div>
         </div>
-        <div id="devices"></div>
-        <div class="status" id="deviceStatus">No printer selected.</div>
+
+        <!-- Manual setup for Bambu Lab -->
+        <div>
+          <div class="head"><h3>Setup by Type</h3></div>
+          <div class="body" style="gap:6px;">
+            <select id="quickType" class="select">
+              <option value="">Choose printer type...</option>
+              <option value="bambulabb1">🌸 Bambu Lab B1 / X1 Carbon</option>
+              <option value="octoprint">🐙 OctoPrint</option>
+              <option value="generic">⚙️ Other 3D Printer</option>
+            </select>
+            <button class="btn" id="setupGuideBtn" style="width:100%;">Get Setup Guide</button>
+            <div id="setupInfo" class="status">Select a printer type to see setup steps.</div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Registered Printers List -->
+      <div class="head"><h3>✓ Your Printers</h3></div>
+      <div class="body" id="devices"></div>
+    </section>
+
+    <!-- Step 2: Printer Settings -->
+    <section class="panel">
+      <div class="head"><h2>Step 2: Printer Settings</h2></div>
+      <div class="body grid-2">
+        <div>
+          <div class="head"><h3>Register / Update</h3></div>
+          <div class="body" style="gap:6px;">
+            <input id="printerName" class="text" type="text" placeholder="Printer Name (e.g. Bambu B1)" />
+            <select id="printerType" class="select">
+              <option value="generic">Generic</option>
+              <option value="bambulabb1">Bambu Lab B1</option>
+              <option value="bambulabx1">Bambu Lab X1 Carbon</option>
+              <option value="octoprint">OctoPrint</option>
+              <option value="prusa">Prusa</option>
+              <option value="creality">Creality</option>
+            </select>
+            <input id="printerHost" class="text" type="text" placeholder="IP Address (192.168.1.100)" />
+            <input id="printerEndpoint" class="text" type="text" placeholder="Endpoint (auto)" />
+            <input id="printerApiKey" class="text" type="password" placeholder="API Key (if needed)" />
+            <button class="btn primary" id="savePrinterBtn" style="width:100%;">✓ Save Printer</button>
+            <div class="status" id="formStatus">Fill in details and save your printer.</div>
+          </div>
+        </div>
+
+        <div>
+          <div class="head"><h3>Selected Printer Info</h3></div>
+          <div class="body" style="gap:6px;">
+            <div class="status" id="deviceStatus">No printer selected yet.</div>
+            <button class="btn" id="statusBtn" style="width:100%;">Get Status</button>
+            <pre id="statusOutput">Status will appear here.</pre>
+          </div>
+        </div>
       </div>
     </section>
 
+    <!-- Step 3: Slicing & Sending -->
     <section class="panel">
-      <div class="head"><h2>Slicer</h2></div>
-      <div class="body">
-        <input id="modelPath" class="text" type="text" placeholder="Model path (STL/3MF), e.g. outputs/meshes/model.stl" />
-        <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Slicing profile" />
-        <div style="display:flex;gap:8px;flex-wrap:wrap;">
-          <button class="btn" id="sliceBtn">Slice Model</button>
-          <button class="btn primary" id="sliceSendBtn">Slice + Send To Selected Printer</button>
+      <div class="head"><h2>Step 3: Slice & Send to Printer</h2></div>
+      <div class="body grid-2">
+        <div>
+          <div class="head"><h3>Model & Settings</h3></div>
+          <div class="body" style="gap:6px;">
+            <input id="modelPath" class="text" type="text" placeholder="Model file path (e.g. outputs/chair.stl)" />
+            <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Layer height (0.2mm)" />
+            <div class="hint">Supports: STL, 3MF. Requires slicer installed: prusa-slicer, orca-slicer, or slic3r.</div>
+            <button class="btn" id="sliceBtn" style="width:100%;">Slice Model</button>
+            <button class="btn primary" id="sliceSendBtn" style="width:100%;">→ Slice + Send</button>
+            <div class="status" id="sliceStatus">Ready to slice.</div>
+          </div>
         </div>
-        <div class="hint">Requires local slicer install: prusa-slicer, orca-slicer, or slic3r.</div>
-        <div class="status" id="sliceStatus">Slicer idle.</div>
-        <pre id="sliceOutput">No slicing output yet.</pre>
-      </div>
-    </section>
 
-    <section class="panel">
-      <div class="head"><h3>Add / Update Printer</h3></div>
-      <div class="body">
-        <input id="printerId" class="text" type="text" placeholder="Printer ID (optional)" />
-        <input id="printerName" class="text" type="text" placeholder="Printer Name" />
-        <select id="printerType" class="select">
-          <option value="octoprint">OctoPrint</option>
-          <option value="bambu">Bambu</option>
-          <option value="generic">Generic</option>
-          <option value="prusa">Prusa</option>
-          <option value="creality">Creality</option>
-        </select>
-        <input id="printerHost" class="text" type="text" placeholder="Host (e.g. 192.168.1.42)" />
-        <input id="printerEndpoint" class="text" type="text" placeholder="Endpoint (e.g. http://192.168.1.42)" />
-        <input id="printerApiKey" class="text" type="password" placeholder="API key/token (optional)" />
-        <button class="btn primary" id="savePrinterBtn">Save Printer Profile</button>
-        <div class="status" id="formStatus">Use this form to save printers found by discovery.</div>
-        <button class="btn" id="statusBtn">Get Selected Printer Status</button>
-        <pre id="statusOutput">No status request yet.</pre>
+        <div>
+          <div class="head"><h3>Slicing Output</h3></div>
+          <div class="body">
+            <pre id="sliceOutput">Slice results shown here.</pre>
+          </div>
+        </div>
       </div>
     </section>
   </main>
@@ -230,6 +315,7 @@
     const API = '/api';
     let printers = [];
     let selectedPrinterId = '';
+    let discoveredDevices = [];
 
     const el = (id) => document.getElementById(id);
 
@@ -251,6 +337,12 @@
       s.className = `status ${tone}`.trim();
     }
 
+    function setSetupInfo(msg, tone = '') {
+      const s = el('setupInfo');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
     async function readJson(res) {
       const raw = await res.text();
       try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
@@ -258,24 +350,24 @@
 
     function renderDevices() {
       const host = el('devices');
-      if (!printers.length) {
-        host.innerHTML = '<div class="status">No printers registered yet.</div>';
+      const combined = [...printers, ...discoveredDevices.filter(d => !printers.find(p => p.id === d.id))];
+      if (!combined.length) {
+        host.innerHTML = '<div class="status">No printers found. Use Network Detect or add manually.</div>';
         return;
       }
-      host.innerHTML = printers.map((p) => `
-        <div class="device ${p.id === selectedPrinterId ? 'active' : ''}" data-id="${p.id}">
+      host.innerHTML = combined.map((p) => `
+        <div class="device ${p.type && p.type.includes('bambu') ? 'bambu' : ''} ${p.id === selectedPrinterId ? 'active' : ''}" data-id="${p.id}">
           <strong>${p.name || p.id}</strong>
-          <span>${p.type || 'generic'} - ${p.host || p.endpoint || 'no address'}</span>
+          <span>${p.type || 'generic'} • ${p.host || p.endpoint || 'unknown'}</span>
         </div>`).join('');
 
       host.querySelectorAll('.device[data-id]').forEach((node) => {
         node.addEventListener('click', () => {
           selectedPrinterId = node.getAttribute('data-id') || '';
-          const p = printers.find((x) => x.id === selectedPrinterId);
+          const p = combined.find((x) => x.id === selectedPrinterId);
           if (!p) return;
           renderDevices();
-          setDeviceStatus(`Selected: ${p.name || p.id} (${p.type || 'generic'})`, 'ok');
-          el('printerId').value = p.id || '';
+          setDeviceStatus(`✓ Selected: ${p.name || p.id}`, 'ok');
           el('printerName').value = p.name || '';
           el('printerType').value = p.type || 'generic';
           el('printerHost').value = p.host || '';
@@ -285,12 +377,44 @@
     }
 
     async function loadPrinters() {
-      const res = await fetch(`${API}/printing/printers`);
-      const data = await readJson(res);
-      if (!res.ok || !data.success) throw new Error(data.detail || 'Unable to load printers');
-      printers = data.printers || [];
-      if (!selectedPrinterId && printers.length) selectedPrinterId = printers[0].id;
-      renderDevices();
+      try {
+        const res = await fetch(`${API}/printing/printers`);
+        const data = await readJson(res);
+        if (!res.ok || !data.success) throw new Error(data.detail || 'Load failed');
+        printers = data.printers || [];
+        if (!selectedPrinterId && printers.length) selectedPrinterId = printers[0].id;
+        renderDevices();
+      } catch (e) {
+        setDeviceStatus(`Error: ${e.message}`, 'bad');
+      }
+    }
+
+    async function showSetupGuide() {
+      const ptype = (el('quickType').value || '').trim();
+      if (!ptype) {
+        setSetupInfo('Select a printer type.', 'warn');
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API}/printing/setup-guide/${ptype}`);
+        const data = await readJson(res);
+        if (!res.ok || !data.ok) throw new Error(data.detail || 'Load guide failed');
+
+        let msg = `\n${data.label}\n\nSteps:\n`;
+        if (data.steps) {
+          msg += data.steps.join('\n');
+        }
+        if (data.fields) {
+          msg += '\n\nFields to fill:';
+          data.fields.forEach(f => {
+            msg += `\n  • ${f.label}: ${f.type}`;
+          });
+        }
+        setSetupInfo(msg, 'ok');
+      } catch (e) {
+        setSetupInfo(`Error: ${e.message}`, 'bad');
+      }
     }
 
     async function discoverPrinters() {
@@ -298,34 +422,41 @@
         subnet: (el('subnet').value || '').trim(),
         max_hosts: Number(el('maxHosts').value || 64),
       };
-      const res = await fetch(`${API}/printing/discover`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await readJson(res);
-      if (!res.ok || !data.success) {
-        setDeviceStatus(data.detail || 'Discovery failed.', 'bad');
-        return;
-      }
+      
+      try {
+        el('scanBtn').disabled = true;
+        el('discoveredList').textContent = 'Scanning network...';
+        
+        const res = await fetch(`${API}/printing/discover`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        if (!res.ok || !data.success) throw new Error(data.detail || 'Discovery failed');
 
-      const discovered = data.discovered || [];
-      if (!discovered.length) {
-        setDeviceStatus(`No printers discovered on ${data.subnet || 'network'} (scanned ${data.scanned_hosts || 0} hosts).`, 'warn');
-        return;
-      }
+        discoveredDevices = data.discovered || [];
+        const knownIds = new Set(printers.map(p => p.id));
+        const newDevices = discoveredDevices.filter(d => !knownIds.has(d.id));
 
-      const knownIds = new Set(printers.map((p) => p.id));
-      discovered.forEach((d) => {
-        if (!knownIds.has(d.id)) printers.push(d);
-      });
-      renderDevices();
-      setDeviceStatus(`Discovered ${discovered.length} candidate device(s) on ${data.subnet}. Save desired devices to keep them.`, 'ok');
+        if (!newDevices.length) {
+          el('discoveredList').textContent = `Scanned ${data.scanned_hosts || 0} hosts, no new devices found.`;
+          el('discoveredList').className = 'status warn';
+        } else {
+          el('discoveredList').textContent = `Found ${newDevices.length} device(s). Click one to select, then save.`;
+          el('discoveredList').className = 'status ok';
+        }
+        renderDevices();
+      } catch (e) {
+        el('discoveredList').textContent = `Error: ${e.message}`;
+        el('discoveredList').className = 'status bad';
+      } finally {
+        el('scanBtn').disabled = false;
+      }
     }
 
     async function savePrinter() {
       const body = {
-        id: (el('printerId').value || '').trim() || undefined,
         name: (el('printerName').value || '').trim(),
         type: (el('printerType').value || 'generic').trim(),
         host: (el('printerHost').value || '').trim(),
@@ -338,20 +469,24 @@
         return;
       }
 
-      const res = await fetch(`${API}/printing/printers`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await readJson(res);
-      if (!res.ok || !data.success) {
-        setFormStatus(data.detail || 'Save failed.', 'bad');
-        return;
+      try {
+        el('savePrinterBtn').disabled = true;
+        const res = await fetch(`${API}/printing/printers`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        if (!res.ok || !data.success) throw new Error(data.detail || 'Save failed');
+        selectedPrinterId = data.printer?.id || selectedPrinterId;
+        await loadPrinters();
+        setFormStatus(`✓ Saved: ${data.printer?.name || data.printer?.id}`, 'ok');
+        el('printerApiKey').value = '';
+      } catch (e) {
+        setFormStatus(`Error: ${e.message}`, 'bad');
+      } finally {
+        el('savePrinterBtn').disabled = false;
       }
-      selectedPrinterId = data.printer?.id || selectedPrinterId;
-      await loadPrinters();
-      setFormStatus(`Saved printer: ${data.printer?.name || data.printer?.id}`, 'ok');
-      el('printerApiKey').value = '';
     }
 
     async function sliceModel() {
@@ -361,22 +496,27 @@
         return;
       }
 
-      const body = {
-        model_path: modelPath,
-        profile: (el('sliceProfile').value || '0.2mm').trim(),
-      };
-      const res = await fetch(`${API}/printing/slice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await readJson(res);
-      el('sliceOutput').textContent = JSON.stringify(data, null, 2);
-      if (!res.ok || !data.ok) {
-        setSliceStatus(data.detail || data.error || 'Slicing failed.', 'bad');
-        return;
+      try {
+        el('sliceBtn').disabled = true;
+        setSliceStatus('Slicing...');
+        const body = {
+          model_path: modelPath,
+          profile: (el('sliceProfile').value || '0.2mm').trim(),
+        };
+        const res = await fetch(`${API}/printing/slice`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        el('sliceOutput').textContent = JSON.stringify(data, null, 2);
+        if (!res.ok || !data.ok) throw new Error(data.error || 'Slicing failed');
+        setSliceStatus(`✓ Complete: ${data.gcode_path || 'G-code ready'}`, 'ok');
+      } catch (e) {
+        setSliceStatus(`Error: ${e.message}`, 'bad');
+      } finally {
+        el('sliceBtn').disabled = false;
       }
-      setSliceStatus(`Slice complete: ${data.gcode_path || 'no gcode path returned'}`, 'ok');
     }
 
     async function sliceAndSend() {
@@ -390,56 +530,59 @@
         return;
       }
 
-      const body = {
-        model_path: modelPath,
-        profile: (el('sliceProfile').value || '0.2mm').trim(),
-        printer_id: selectedPrinterId,
-      };
-      const res = await fetch(`${API}/printing/slice-and-send`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await readJson(res);
-      el('sliceOutput').textContent = JSON.stringify(data, null, 2);
-      if (!res.ok || !data.ok) {
-        setSliceStatus(data.detail || 'Slice/send failed.', 'bad');
-        return;
+      try {
+        el('sliceSendBtn').disabled = true;
+        setSliceStatus('Slicing and sending...', 'warn');
+        const body = {
+          model_path: modelPath,
+          profile: (el('sliceProfile').value || '0.2mm').trim(),
+          printer_id: selectedPrinterId,
+        };
+        const res = await fetch(`${API}/printing/slice-and-send`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        el('sliceOutput').textContent = JSON.stringify(data, null, 2);
+        if (!res.ok) throw new Error(data.detail || data.error || 'Failed');
+        setSliceStatus(`✓ Sent to printer!`, 'ok');
+      } catch (e) {
+        setSliceStatus(`Error: ${e.message}`, 'bad');
+      } finally {
+        el('sliceSendBtn').disabled = false;
       }
-      setSliceStatus(`Print job submitted to ${selectedPrinterId}.`, 'ok');
     }
 
-    async function getSelectedStatus() {
+    async function getPrinterStatus() {
       if (!selectedPrinterId) {
-        setFormStatus('Select a printer first.', 'warn');
+        setDeviceStatus('Select a printer first.', 'warn');
         return;
       }
-      const res = await fetch(`${API}/printing/printers/${encodeURIComponent(selectedPrinterId)}/status`);
-      const data = await readJson(res);
-      el('statusOutput').textContent = JSON.stringify(data, null, 2);
-      if (!res.ok) {
-        setFormStatus(data.detail?.error || data.detail || 'Status check failed.', 'bad');
-        return;
+      try {
+        const res = await fetch(`${API}/printing/printers/${encodeURIComponent(selectedPrinterId)}/status`);
+        const data = await readJson(res);
+        el('statusOutput').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        el('statusOutput').textContent = `Error: ${e.message}`;
       }
-      setFormStatus(`Printer state: ${data.state || 'unknown'}`, 'ok');
     }
 
     el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
-    el('refreshBtn').addEventListener('click', () => loadPrinters().then(() => setDeviceStatus('Printer list refreshed.', 'ok')).catch((e) => setDeviceStatus(e.message, 'bad')));
-    el('discoverBtn').addEventListener('click', () => discoverPrinters().catch((e) => setDeviceStatus(e.message, 'bad')));
-    el('savePrinterBtn').addEventListener('click', () => savePrinter().catch((e) => setFormStatus(e.message, 'bad')));
-    el('sliceBtn').addEventListener('click', () => sliceModel().catch((e) => setSliceStatus(e.message, 'bad')));
-    el('sliceSendBtn').addEventListener('click', () => sliceAndSend().catch((e) => setSliceStatus(e.message, 'bad')));
-    el('statusBtn').addEventListener('click', () => getSelectedStatus().catch((e) => setFormStatus(e.message, 'bad')));
+    el('refreshBtn').addEventListener('click', async () => {
+      await loadPrinters();
+      setDeviceStatus('Refreshed.');
+    });
+    el('discoverBtn').addEventListener('click', discoverPrinters);
+    el('scanBtn').addEventListener('click', discoverPrinters);
+    el('setupGuideBtn').addEventListener('click', showSetupGuide);
+    el('savePrinterBtn').addEventListener('click', savePrinter);
+    el('sliceBtn').addEventListener('click', sliceModel);
+    el('sliceSendBtn').addEventListener('click', sliceAndSend);
+    el('statusBtn').addEventListener('click', getPrinterStatus);
 
-    (async function init() {
-      try {
-        await loadPrinters();
-        setDeviceStatus('3D printing page ready.', 'ok');
-      } catch (e) {
-        setDeviceStatus(e.message || 'Failed to initialize printers', 'bad');
-      }
-    })();
+    // Init
+    loadPrinters();
   </script>
 </body>
 </html>

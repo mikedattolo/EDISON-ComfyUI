@@ -66,9 +66,14 @@
       font-weight: 800;
     }
 
+    .btn:disabled {
+      opacity: 0.5;
+      cursor: not-allowed;
+    }
+
     .shell {
       display: grid;
-      grid-template-columns: 330px minmax(0, 1fr) 360px;
+      grid-template-columns: 1fr;
       gap: 12px;
       padding: 12px;
       min-height: calc(100vh - 74px);
@@ -115,6 +120,11 @@
       background: rgba(9, 16, 25, 0.5);
       padding: 10px;
       cursor: pointer;
+      transition: all 0.25s ease;
+    }
+
+    .provider:hover {
+      border-color: rgba(99, 210, 163, 0.4);
     }
 
     .provider.active {
@@ -150,6 +160,17 @@
     .status.warn { border-color: rgba(255, 186, 105, 0.45); color: #ffd4a0; }
     .status.bad { border-color: rgba(255, 144, 144, 0.45); color: #ffb2b2; }
 
+    .setup-guide {
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: rgba(26, 52, 43, 0.3);
+      padding: 10px;
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .setup-guide strong { color: var(--accent); }
+
     pre {
       margin: 0;
       border: 1px solid var(--line);
@@ -164,47 +185,67 @@
       word-break: break-word;
     }
 
-    @media (max-width: 1250px) { .shell { grid-template-columns: 1fr; } }
+    .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+
+    @media (max-width: 1024px) { 
+      .grid-2 { grid-template-columns: 1fr; }
+      .shell { grid-template-columns: 1fr; } 
+    }
   </style>
 </head>
 <body>
   <header class="topbar">
     <div class="title">
-      <h1>Connector Studio</h1>
-      <p>Production-ready connectors for GitHub, email providers, docs, chat, and storage APIs.</p>
+      <h1>🔗 Connector Studio</h1>
+      <p>Connect GitHub, email, Google Drive, and more. Just authorize like in ChatGPT.</p>
     </div>
     <div style="display:flex;gap:8px;">
-      <button class="btn" id="homeBtn">Main Chat</button>
+      <button class="btn" id="homeBtn">← Main Chat</button>
       <button class="btn primary" id="refreshBtn">Refresh</button>
     </div>
   </header>
 
   <main class="shell">
     <section class="panel">
-      <div class="head"><h2>Provider Catalog</h2></div>
+      <div class="head"><h2>Step 1: Choose a Provider</h2></div>
       <div class="body" id="providers"></div>
     </section>
 
     <section class="panel">
-      <div class="head"><h2>Quick Connect</h2></div>
-      <div class="body">
-        <input class="text" id="connectorName" type="text" placeholder="Connector name (optional; defaults to provider key)" />
-        <input class="text" id="connectorToken" type="password" placeholder="Bearer token / API key" />
-        <div style="display:flex;gap:8px;align-items:center;">
-          <input class="text" id="connectorTimeout" type="number" value="20" min="5" max="120" />
-          <button class="btn primary" id="quickConnectBtn">Save Connector</button>
-        </div>
-        <div class="status" id="status">Choose a provider and add its token.</div>
-        <div class="head" style="margin:6px -12px 0;"><h3>Configured Connectors</h3></div>
-        <div id="connectors"></div>
+      <div class="head"><h2>Step 2: Get Your Credentials</h2></div>
+      <div class="body" id="setupGuide">
+        <div class="status">Select a provider above to see setup instructions.</div>
       </div>
     </section>
 
     <section class="panel">
-      <div class="head"><h3>Test Connector</h3></div>
+      <div class="head"><h2>Step 3: Connect & Test</h2></div>
+      <div class="body">
+        <div style="display:flex;gap:8px;">
+          <input class="text" id="connectorName" type="text" placeholder="Connector name (optional)" style="flex:1;" />
+        </div>
+        <input class="text" id="connectorToken" type="password" placeholder="Paste your API key / Token here" />
+        <div style="display:flex;gap:8px;align-items:center;">
+          <button class="btn primary" id="quickConnectBtn" style="flex:1;">✓ Save Connector</button>
+          <button class="btn" id="testConnectBtn">🧪 Test First</button>
+        </div>
+        <div class="status" id="status">Ready to connect.</div>
+        <div style="margin-top:12px;">
+          <div class="head"><h3>✓ Connected Connectors</h3></div>
+          <div id="connectors"></div>
+        </div>
+      </div>
+    </section>
+
+    <section class="panel">
+      <div class="head"><h3>Advanced: Call API</h3></div>
       <div class="body">
         <select id="testConnector" class="select"></select>
-        <input id="testPath" class="text" type="text" placeholder="Override test path (optional)" />
+        <input id="testPath" class="text" type="text" placeholder="API path (e.g. /user, /repos, /files)" />
         <select id="testMethod" class="select">
           <option value="GET">GET</option>
           <option value="POST">POST</option>
@@ -212,9 +253,9 @@
           <option value="PATCH">PATCH</option>
           <option value="DELETE">DELETE</option>
         </select>
-        <textarea id="testBody" class="area" placeholder='Optional JSON body (for write endpoints), e.g. {"name":"example"}'></textarea>
-        <button class="btn primary" id="runTestBtn">Run Test</button>
-        <pre id="testOutput">No test run yet.</pre>
+        <textarea id="testBody" class="area" placeholder='JSON body (optional)'></textarea>
+        <button class="btn primary" id="runTestBtn">Run Request</button>
+        <pre id="testOutput">No requests yet.</pre>
       </div>
     </section>
   </main>
@@ -223,6 +264,7 @@
     const API = '/api';
     let providerCatalog = [];
     let selectedProvider = '';
+    let selectedProviderData = null;
     let connectors = [];
 
     const el = (id) => document.getElementById(id);
@@ -241,39 +283,75 @@
     function renderProviders() {
       const host = el('providers');
       if (!providerCatalog.length) {
-        host.innerHTML = '<div class="provider">No providers loaded.</div>';
+        host.innerHTML = '<div class="provider">Loading providers...</div>';
         return;
       }
       host.innerHTML = providerCatalog.map((p) => `
         <div class="provider ${p.key === selectedProvider ? 'active' : ''}" data-key="${p.key}">
           <strong>${p.label}</strong>
-          <span>${p.base_url}</span>
+          <span>${p.auth}</span>
         </div>`).join('');
 
       host.querySelectorAll('.provider[data-key]').forEach((node) => {
         node.addEventListener('click', () => {
           selectedProvider = node.getAttribute('data-key') || '';
           renderProviders();
-          const p = providerCatalog.find((x) => x.key === selectedProvider);
-          setStatus(`Provider selected: ${p?.label || selectedProvider}\nDocs: ${p?.docs || ''}`);
+          loadProviderGuide();
         });
       });
+    }
+
+    async function loadProviderGuide() {
+      const guide = el('setupGuide');
+      if (!selectedProvider) {
+        guide.innerHTML = '<div class="status">Select a provider above.</div>';
+        el('connectorToken').placeholder = 'Paste your API key here';
+        return;
+      }
+
+      try {
+        const res = await fetch(`${API}/integrations/connectors/auth/${selectedProvider}`);
+        const data = await readJson(res);
+        if (!data.ok) throw new Error(data.detail || 'Failed to load guide');
+
+        selectedProviderData = data;
+        el('connectorName').value = '';
+        el('connectorToken').placeholder = `Paste your ${data.provider} token/key here`;
+
+        let html = `<div class="setup-guide"><strong>${data.label}</strong><br><br>`;
+        
+        if (data.setup_steps && data.setup_steps.length) {
+          html += data.setup_steps.join('<br>') + '<br><br>';
+        }
+
+        html += `<strong>Test endpoint:</strong> ${data.test_path || '/'}`;
+        if (data.docs) {
+          html += `<br><a href="${data.docs}" target="_blank" style="color:#63d2a3;">📖 Full Docs</a>`;
+        }
+        html += '</div>';
+
+        guide.innerHTML = html;
+        setStatus(`Setup guide loaded for ${data.label}. Follow the steps to get your key.`);
+      } catch (e) {
+        guide.innerHTML = `<div class="status bad">Error: ${e.message}</div>`;
+        setStatus(`Failed to load guide: ${e.message}`, 'bad');
+      }
     }
 
     function renderConnectors() {
       const host = el('connectors');
       const sel = el('testConnector');
       if (!connectors.length) {
-        host.innerHTML = '<div class="status">No connectors configured yet.</div>';
+        host.innerHTML = '<div class="status">No connectors yet. Create one above!</div>';
         sel.innerHTML = '<option value="">No connectors</option>';
         return;
       }
 
       host.innerHTML = connectors.map((c) => `
         <div class="connector-item">
-          <div>
+          <div style="flex:1;">
             <strong>${c.name}</strong><br>
-            <span style="font-size:11px;color:#9db3cc;">${c.provider || 'custom'} - ${c.base_url}</span>
+            <span style="font-size:11px;color:#9db3cc;">${c.provider || 'custom'}</span>
           </div>
           <div style="display:flex;gap:6px;">
             <button class="btn" data-test="${c.name}">Test</button>
@@ -281,7 +359,8 @@
           </div>
         </div>`).join('');
 
-      sel.innerHTML = connectors.map((c) => `<option value="${c.name}">${c.name}</option>`).join('');
+      sel.innerHTML = '<option value="">Choose a connector...</option>' + 
+        connectors.map((c) => `<option value="${c.name}">${c.name} (${c.provider || 'custom'})</option>`).join('');
 
       host.querySelectorAll('button[data-test]').forEach((btn) => {
         btn.addEventListener('click', () => {
@@ -296,122 +375,182 @@
     }
 
     async function loadCatalog() {
-      const res = await fetch(`${API}/integrations/connectors/catalog`);
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.detail || 'Could not load provider catalog');
-      providerCatalog = data.providers || [];
-      if (!selectedProvider && providerCatalog.length) selectedProvider = providerCatalog[0].key;
-      renderProviders();
+      try {
+        const res = await fetch(`${API}/integrations/connectors/catalog`);
+        const data = await readJson(res);
+        providerCatalog = data.providers || [];
+        renderProviders();
+      } catch (e) {
+        el('providers').innerHTML = `<div class="status bad">Error loading providers: ${e.message}</div>`;
+      }
     }
 
     async function loadConnectors() {
-      const res = await fetch(`${API}/integrations/connectors`);
-      const data = await readJson(res);
-      if (!res.ok) throw new Error(data.detail || 'Could not load connectors');
-      connectors = data.connectors || [];
-      renderConnectors();
+      try {
+        const res = await fetch(`${API}/integrations/connectors`);
+        const data = await readJson(res);
+        connectors = data.connectors || [];
+        renderConnectors();
+      } catch (e) {
+        el('connectors').innerHTML = `<div class="status bad">Error loading: ${e.message}</div>`;
+      }
     }
 
     async function quickConnect() {
       if (!selectedProvider) {
-        setStatus('Select a provider first.', 'warn');
+        setStatus('Please select a provider first.', 'warn');
         return;
       }
+
       const token = (el('connectorToken').value || '').trim();
       if (!token) {
-        setStatus('Enter a token or API key.', 'warn');
+        setStatus('Please paste your API key.', 'warn');
         return;
       }
 
       const body = {
         provider: selectedProvider,
-        token,
-        name: (el('connectorName').value || '').trim(),
-        timeout_sec: Number(el('connectorTimeout').value || 20),
+        token: token,
+        name: (el('connectorName').value || selectedProvider).trim(),
       };
 
-      const res = await fetch(`${API}/integrations/connectors/quick-connect`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(body),
-      });
-      const data = await readJson(res);
-      if (!res.ok || !data.ok) {
-        setStatus(data.detail || 'Connector save failed.', 'bad');
+      try {
+        el('quickConnectBtn').disabled = true;
+        const res = await fetch(`${API}/integrations/connectors/quick-connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.detail || 'Failed to save');
+
+        setStatus(`✓ Connected to ${data.connector.name}!`, 'ok');
+        el('connectorName').value = '';
+        el('connectorToken').value = '';
+        await loadConnectors();
+
+        setTimeout(() => {
+          setStatus('Ready to connect next provider.');
+          selectedProvider = '';
+          renderProviders();
+          loadProviderGuide();
+        }, 2000);
+      } catch (e) {
+        setStatus(`Error: ${e.message}`, 'bad');
+      } finally {
+        el('quickConnectBtn').disabled = false;
+      }
+    }
+
+    async function testBeforeConnect() {
+      if (!selectedProvider) {
+        setStatus('Please select a provider first.', 'warn');
         return;
       }
 
-      el('connectorToken').value = '';
-      await loadConnectors();
-      setStatus(`Connector saved: ${data.connector?.name}\nDefault test path: ${data.connector?.test_path || '/'}`, 'ok');
+      const token = (el('connectorToken').value || '').trim();
+      if (!token) {
+        setStatus('Please paste your API key first.', 'warn');
+        return;
+      }
+
+      try {
+        el('testConnectBtn').disabled = true;
+        setStatus('Testing connection...', 'warn');
+
+        const body = {
+          provider: selectedProvider,
+          token: token,
+          name: (el('connectorName').value || selectedProvider).trim(),
+        };
+
+        const res = await fetch(`${API}/integrations/connectors/quick-connect`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        if (!res.ok) throw new Error(data.detail || 'Connection failed');
+
+        // Now test it
+        const testRes = await fetch(`${API}/integrations/connectors/test`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ connector: data.connector.name }),
+        });
+        const testData = await readJson(testRes);
+        if (!testRes.ok) throw new Error(testData.detail || 'Test failed');
+
+        setStatus('✓ Connection test passed! Ready to authorize.', 'ok');
+      } catch (e) {
+        setStatus(`Test failed: ${e.message}. Check your token.`, 'bad');
+      } finally {
+        el('testConnectBtn').disabled = false;
+      }
     }
 
     async function deleteConnector(name) {
-      if (!name) return;
-      const res = await fetch(`${API}/integrations/connectors/${encodeURIComponent(name)}`, { method: 'DELETE' });
-      const data = await readJson(res);
-      if (!res.ok || !data.ok) {
-        setStatus(data.detail || 'Delete failed.', 'bad');
-        return;
+      if (!confirm(`Delete connector "${name}"?`)) return;
+      try {
+        const res = await fetch(`${API}/integrations/connectors/${encodeURIComponent(name)}`, {
+          method: 'DELETE',
+        });
+        if (!res.ok) throw new Error('Delete failed');
+        await loadConnectors();
+        setStatus(`Deleted ${name}.`);
+      } catch (e) {
+        setStatus(`Error: ${e.message}`, 'bad');
       }
-      await loadConnectors();
-      setStatus(`Deleted connector: ${name}`, 'ok');
     }
 
     async function runTest() {
-      const connector = (el('testConnector').value || '').trim();
-      if (!connector) {
-        setStatus('Select a connector to test.', 'warn');
+      const cname = el('testConnector').value;
+      if (!cname) {
+        el('testOutput').textContent = 'Please select a connector.';
         return;
       }
 
-      let bodyPayload = undefined;
-      const rawBody = (el('testBody').value || '').trim();
-      if (rawBody) {
-        try { bodyPayload = JSON.parse(rawBody); }
-        catch {
-          setStatus('Test body must be valid JSON.', 'warn');
+      const body = {
+        connector: cname,
+        method: el('testMethod').value,
+        path: el('testPath').value || undefined,
+      };
+      const testBody = el('testBody').value.trim();
+      if (testBody) {
+        try {
+          body.body = JSON.parse(testBody);
+        } catch (e) {
+          el('testOutput').textContent = `Invalid JSON: ${e.message}`;
           return;
         }
       }
 
-      const reqBody = {
-        connector,
-        path: (el('testPath').value || '').trim() || undefined,
-        method: (el('testMethod').value || 'GET').trim(),
-        body: bodyPayload,
-      };
-
-      const res = await fetch(`${API}/integrations/connectors/test`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(reqBody),
-      });
-      const data = await readJson(res);
-      el('testOutput').textContent = JSON.stringify(data, null, 2);
-      if (!res.ok || !data.ok) {
-        setStatus('Connector test failed. See output panel.', 'bad');
-        return;
+      try {
+        const res = await fetch(`${API}/integrations/connectors/call`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        el('testOutput').textContent = JSON.stringify(data, null, 2);
+      } catch (e) {
+        el('testOutput').textContent = `Request failed: ${e.message}`;
       }
-      setStatus(`Test OK (${data.status}) against ${data.url}`, 'ok');
     }
 
     el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
     el('refreshBtn').addEventListener('click', async () => {
-      await Promise.all([loadCatalog(), loadConnectors()]);
-      setStatus('Connectors refreshed.', 'ok');
+      await loadCatalog();
+      await loadConnectors();
+      setStatus('Refreshed.');
     });
-    el('quickConnectBtn').addEventListener('click', () => quickConnect().catch((e) => setStatus(e.message, 'bad')));
-    el('runTestBtn').addEventListener('click', () => runTest().catch((e) => setStatus(e.message, 'bad')));
+    el('quickConnectBtn').addEventListener('click', quickConnect);
+    el('testConnectBtn').addEventListener('click', testBeforeConnect);
+    el('runTestBtn').addEventListener('click', runTest);
 
-    (async function init() {
-      try {
-        await Promise.all([loadCatalog(), loadConnectors()]);
-        setStatus('Connector studio ready.', 'ok');
-      } catch (e) {
-        setStatus(e.message || 'Initialization failed', 'bad');
-      }
-    })();
+    // Init
+    loadCatalog();
+    loadConnectors();
   </script>
 </body>
 </html>
