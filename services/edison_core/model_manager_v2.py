@@ -83,9 +83,10 @@ class LoadedModel:
 HEAVY_KEYS = {"medium", "deep", "reasoning", "vision", "vision_code"}
 FAST_KEY = "fast"
 
-# Fallback ladder: try progressively lighter configurations
-FALLBACK_GPU_LAYERS = [None, 32, 20, 12, 4, 0]  # None = use config default
-FALLBACK_CTX_SIZES = [None, 4096, 2048, 1024]     # None = use config default
+# Fallback ladder: try progressively lighter GPU configurations.
+# 0 (CPU-only) is intentionally excluded — all tasks must stay on VRAM.
+FALLBACK_GPU_LAYERS = [None, 32, 20, 12, 4]  # None = use config default
+FALLBACK_CTX_SIZES = [None, 4096, 2048, 1024]  # None = use config default
 
 
 class ModelPool:

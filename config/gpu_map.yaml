@@ -14,6 +14,14 @@ gpus:
     allocated_services:
       - inference
 
+  - id: 2
+    name: "Tertiary GPU"
+    memory: "24GB"
+    allocated_services:
+      - inference
+      - video
+      - music
+
 coral_tpu:
   enabled: true
   device_path: "/dev/apex_0"

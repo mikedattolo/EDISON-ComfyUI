@@ -158,37 +158,91 @@ class VideoGenerationService:
             raise RuntimeError(f"Could not load CogVideoX. Last error: {last_error}")
 
     def _load_model(self, model_id: str, torch):
-        """Load pipeline, trying multi-GPU first then single-GPU CPU offload."""
+        """Load pipeline using balanced multi-GPU when available, else single GPU."""
         from diffusers import CogVideoXPipeline
 
-        # Try CogVideoXPipeline first, fall back to DiffusionPipeline
         for PipeClass in (CogVideoXPipeline,):
             for dtype in (torch.float16, torch.bfloat16):
+                # ── Attempt 1: balanced device_map across all GPUs (no CPU offload) ──
+                if self.multi_gpu and torch.cuda.device_count() > 1:
+                    try:
+                        logger.info(
+                            f"Trying {PipeClass.__name__} + {dtype} with "
+                            f"device_map='balanced' across {torch.cuda.device_count()} GPUs"
+                        )
+                        pipe = PipeClass.from_pretrained(
+                            model_id,
+                            torch_dtype=dtype,
+                            device_map="balanced",
+                        )
+                        pipe.vae.enable_slicing()
+                        pipe.vae.enable_tiling()
+                        logger.info(
+                            f"✓ CogVideoX loaded via balanced multi-GPU "
+                            f"({torch.cuda.device_count()} GPUs, {dtype})"
+                        )
+                        return pipe
+                    except Exception as e:
+                        logger.warning(
+                            f"Balanced multi-GPU load failed ({dtype}): {e} — "
+                            "falling back to single-GPU"
+                        )
+                        gc.collect()
+                        try:
+                            torch.cuda.empty_cache()
+                        except Exception:
+                            pass
+
+                # ── Attempt 2: single best GPU, no CPU offload ──
                 try:
+                    best_gpu = self._find_best_gpu(torch)
+                    logger.info(
+                        f"Trying {PipeClass.__name__} + {dtype} on GPU {best_gpu} "
+                        "(no CPU offload)"
+                    )
                     pipe = PipeClass.from_pretrained(model_id, torch_dtype=dtype)
                     pipe.vae.enable_slicing()
                     pipe.vae.enable_tiling()
-
-                    # Find best compatible GPU and use CPU offload on it
-                    best_gpu = self._find_best_gpu(torch)
-                    logger.info(f"Using GPU {best_gpu} with CPU offload")
-                    pipe.enable_model_cpu_offload(gpu_id=best_gpu)
+                    pipe = pipe.to(f"cuda:{best_gpu}")
+                    logger.info(
+                        f"✓ CogVideoX loaded on GPU {best_gpu} ({dtype}, no CPU offload)"
+                    )
                     return pipe
                 except Exception as e:
-                    logger.warning(f"{PipeClass.__name__} + {dtype} failed: {e}")
+                    logger.warning(
+                        f"{PipeClass.__name__} + {dtype} single-GPU failed: {e}"
+                    )
                     gc.collect()
                     try:
                         torch.cuda.empty_cache()
                     except Exception:
                         pass
 
-        # Last resort: DiffusionPipeline auto-detect
+        # Last resort: DiffusionPipeline — balanced multi-GPU, then single-GPU
         from diffusers import DiffusionPipeline
+        if self.multi_gpu and torch.cuda.device_count() > 1:
+            try:
+                pipe = DiffusionPipeline.from_pretrained(
+                    model_id,
+                    torch_dtype=torch.float16,
+                    device_map="balanced",
+                )
+                pipe.vae.enable_slicing()
+                pipe.vae.enable_tiling()
+                return pipe
+            except Exception as e:
+                logger.warning(f"DiffusionPipeline balanced multi-GPU failed: {e}")
+                gc.collect()
+                try:
+                    torch.cuda.empty_cache()
+                except Exception:
+                    pass
+
+        best_gpu = self._find_best_gpu(torch)
         pipe = DiffusionPipeline.from_pretrained(model_id, torch_dtype=torch.float16)
         pipe.vae.enable_slicing()
         pipe.vae.enable_tiling()
-        best_gpu = self._find_best_gpu(torch)
-        pipe.enable_model_cpu_offload(gpu_id=best_gpu)
+        pipe = pipe.to(f"cuda:{best_gpu}")
         return pipe
 
     def _find_best_gpu(self, torch) -> int:

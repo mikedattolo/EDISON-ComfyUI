@@ -24,12 +24,12 @@ edison:
     vision_code_n_ctx: 4096
     # GPU split and attention settings
     tensor_split: [0.55, 0.30, 0.15]
-    # Per-model GPU offload (lower values reduce VRAM usage)
+    # Per-model GPU offload: -1 offloads ALL layers to VRAM (no CPU fallback)
     n_gpu_layers: -1
-    deep_n_gpu_layers: 35
-    reasoning_n_gpu_layers: 24
-    vision_n_gpu_layers: 20
-    vision_code_n_gpu_layers: 16
+    deep_n_gpu_layers: -1
+    reasoning_n_gpu_layers: -1
+    vision_n_gpu_layers: -1
+    vision_code_n_gpu_layers: -1
     # Safety guard: block vision inference if GPU0 free VRAM is below this threshold.
     # Helps avoid native CLIP loader crashes when memory is tight.
     vision_min_free_vram_mb: 1024
@@ -162,7 +162,7 @@ edison:
     server_stt: true        # faster-whisper for speech-to-text
     server_tts: true        # edge-tts neural voices for text-to-speech
     stt_model: "base"       # Whisper model: tiny, base, small, medium, large-v3
-    stt_device: "cpu"       # cpu recommended (avoids GPU conflicts with LLMs)
+    stt_device: "cuda"      # cuda: use GPU VRAM for STT; avoids CPU bottleneck with 3 GPUs
     tts_voice: "en-AU-WilliamNeural"  # Default voice (see GET /voice/voices for options)
 
   agent_live_view:

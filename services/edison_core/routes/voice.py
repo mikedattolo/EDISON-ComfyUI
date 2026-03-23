@@ -66,17 +66,13 @@ def _ensure_stt():
     model_size = cfg.get("stt_model", "base")
     device = cfg.get("stt_device", "auto")
 
-    # For small models (tiny/base/small) CPU with int8 is fast and avoids
-    # cuBLAS conflicts with LLM models already using the GPUs.
+    # With 3 GPUs available, always prefer CUDA for all model sizes.
     if device == "auto":
-        if model_size in ("tiny", "base", "small"):
+        try:
+            import torch
+            device = "cuda" if torch.cuda.is_available() else "cpu"
+        except ImportError:
             device = "cpu"
-        else:
-            try:
-                import torch
-                device = "cuda" if torch.cuda.is_available() else "cpu"
-            except ImportError:
-                device = "cpu"
 
     compute_type = "int8" if device == "cpu" else "float16"
 
