@@ -340,6 +340,8 @@
                                 <span class="mode-label">Work</span>
                             </button>
                         </div>
+                        <div class="mode-help" id="modeHelp">Auto selects the best mode for your request.</div>
+                        <div class="module-availability-bar" id="moduleAvailabilityBar"></div>
                         
                         <div class="input-area">
                             <input type="file" id="fileInput" multiple style="display: none;" accept="*/*" />
@@ -391,6 +393,10 @@
                                 <button class="input-footer-btn" id="promptLibBtn" title="Prompt Library" onclick="window.togglePromptLibrary && window.togglePromptLibrary()">
                                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="1" y="3" width="8" height="9" rx="1"/><path d="M4 7h4M4 9h3"/><path d="M9 1h3a1 1 0 011 1v9a1 1 0 01-1 1"/></svg>
                                     Prompts
+                                </button>
+                                <button class="input-footer-btn" id="setupCheckBtn" title="Run setup and readiness checks">
+                                    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 1v12M1 7h12"/><circle cx="7" cy="7" r="5"/></svg>
+                                    System Check
                                 </button>
                                 <button class="input-footer-btn" id="exportChatBtn" title="Export Chat" onclick="window.exportCurrentChat && window.exportCurrentChat()">
                                     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5"><path d="M7 9V1M4 6l3 3 3-3"/><path d="M2 11h10"/></svg>
@@ -674,6 +680,7 @@
                         </div>
                         <div id="brandingAssetsList" class="branding-assets-table">Select a client to view assets.</div>
                     </div>
+                    <div class="branding-empty-hint">First run: create a client, then attach existing files or upload new assets. Images/videos/files are stored under your configured branding root.</div>
                 </div>
             </div>
             <div class="feature-status" id="brandingStatus" style="display:none"></div>
@@ -904,8 +911,8 @@
                     <circle cx="20" cy="24" r="4" fill="currentColor"/>
                     <path d="M8 44l12-12 8 8 12-16 16 20" stroke="currentColor" stroke-width="2" fill="none"/>
                 </svg>
-                <h3>No images yet</h3>
-                <p>Generated images will appear here</p>
+                <h3>No gallery assets yet</h3>
+                <p>Generate an image from chat (for example: "create a cinematic city skyline") to populate this gallery.</p>
             </div>
             <div class="gallery-grid" id="galleryGrid">
                 <!-- Images will be dynamically inserted here -->
@@ -991,6 +998,23 @@
                     <button class="cs-run-btn" onclick="window.plSave()" style="flex:1">💾 Save</button>
                     <button class="cs-toolbar-btn" onclick="window.plCancelEdit()" style="flex:1">Cancel</button>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Setup Check Modal -->
+    <div id="setupCheckModal" class="pl-modal" style="display:none">
+        <div class="pl-modal-box" style="max-width:760px; width: 92vw;">
+            <div class="pl-modal-header">
+                <h3>🩺 System Check</h3>
+                <button class="pl-close-btn" id="setupCheckCloseBtn">×</button>
+            </div>
+            <div class="pl-search-row" style="justify-content:space-between;gap:10px;align-items:center;">
+                <div style="font-size:12px;color:var(--text-secondary);">Checks core API, ComfyUI, deep search, agent/swarm, storage roots, media paths, and printing readiness.</div>
+                <button class="cs-run-btn" id="setupCheckRefreshBtn">↻ Refresh</button>
+            </div>
+            <div id="setupCheckList" class="pl-list">
+                <div class="cs-tree-hint">Running checks…</div>
             </div>
         </div>
     </div>

@@ -16,10 +16,22 @@ class EdisonApp {
         localStorage.setItem('edison_session_id', this.sessionId);
         this.availableModels = [];
         this.selectedModel = localStorage.getItem('edison_selected_model') || 'auto';
+        this.readiness = { overall: 'unknown', components: [], unavailable: [] };
         this.modelSelector = null;
         this.modelSelect = null;
         this.bestVlm = null;
         this.supportedModes = new Set(['auto', 'instant', 'thinking', 'chat', 'reasoning', 'code', 'agent', 'swarm', 'work']);
+        this.modeDescriptions = {
+            auto: 'Auto picks the best strategy for your request.',
+            instant: 'Instant is optimized for quick answers with minimal latency.',
+            thinking: 'Thinking uses deeper reasoning for complex multi-step problems.',
+            chat: 'Chat is balanced for natural conversation and everyday help.',
+            reasoning: 'Reasoning focuses on explicit step-by-step analysis.',
+            code: 'Code is specialized for coding, debugging, and implementation tasks.',
+            agent: 'Agent can use tools for multi-step task execution.',
+            swarm: 'Swarm coordinates multiple specialist agents in parallel.',
+            work: 'Work mode structures progress and task-oriented workflows.',
+        };
 
         // Swarm collaboration state
         this.swarmSessionId = null;
@@ -29,8 +41,9 @@ class EdisonApp {
         this.initializeElements();
         this.attachEventListeners();
         this.checkSystemStatus();
+        this.refreshReadiness();
         this.loadCurrentChat();
-        this.setMode(this.settings.defaultMode);
+        this.setMode(localStorage.getItem('edison_last_mode') || this.settings.defaultMode);
         this.loadAvailableModels();
         this.loadSwarmAgentCatalog();  // Preload swarm agent names for @mention
         this.loadUsers();  // Populate user dropdowns on startup
@@ -164,6 +177,8 @@ class EdisonApp {
         
         // Mode selector
         this.modeButtons = document.querySelectorAll('.mode-btn');
+        this.modeHelp = document.getElementById('modeHelp');
+        this.moduleAvailabilityBar = document.getElementById('moduleAvailabilityBar');
         
         // Settings modal
         this.settingsModal = document.getElementById('settingsModal');
@@ -175,6 +190,11 @@ class EdisonApp {
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
         this.systemStatus = document.getElementById('systemStatus');
+        this.setupCheckBtn = document.getElementById('setupCheckBtn');
+        this.setupCheckModal = document.getElementById('setupCheckModal');
+        this.setupCheckList = document.getElementById('setupCheckList');
+        this.setupCheckCloseBtn = document.getElementById('setupCheckCloseBtn');
+        this.setupCheckRefreshBtn = document.getElementById('setupCheckRefreshBtn');
 
         // Model selector
         this.modelSelector = document.getElementById('modelSelector');
@@ -237,6 +257,22 @@ class EdisonApp {
         this.modeButtons.forEach(btn => {
             btn.addEventListener('click', () => this.setMode(btn.dataset.mode));
         });
+
+        // Setup Check modal
+        if (this.setupCheckBtn) {
+            this.setupCheckBtn.addEventListener('click', () => this.openSetupCheck());
+        }
+        if (this.setupCheckCloseBtn) {
+            this.setupCheckCloseBtn.addEventListener('click', () => this.closeSetupCheck());
+        }
+        if (this.setupCheckRefreshBtn) {
+            this.setupCheckRefreshBtn.addEventListener('click', () => this.runSetupCheck());
+        }
+        if (this.setupCheckModal) {
+            this.setupCheckModal.addEventListener('click', (e) => {
+                if (e.target === this.setupCheckModal) this.closeSetupCheck();
+            });
+        }
 
         // Model selector
         if (this.modelSelect) {
@@ -400,7 +436,14 @@ class EdisonApp {
     }
 
     setMode(mode) {
-        const safeMode = this.supportedModes.has(mode) ? mode : 'auto';
+        let safeMode = this.supportedModes.has(mode) ? mode : 'auto';
+        
+        // Gate unavailable modes
+        if (!this.isModeAvailable(safeMode)) {
+            console.warn(`Mode '${safeMode}' is unavailable, falling back to 'auto'`);
+            safeMode = 'auto';
+        }
+        
         this.currentMode = safeMode;
         this.modeButtons.forEach(btn => {
             btn.classList.toggle('active', btn.dataset.mode === safeMode);
@@ -409,6 +452,12 @@ class EdisonApp {
         if (this.modelSelector) {
             this.modelSelector.style.display = safeMode === 'auto' ? 'none' : 'flex';
         }
+        
+        // Save to localStorage
+        localStorage.setItem('edison_last_mode', safeMode);
+        
+        // Apply readiness UI updates
+        this.applyReadinessToUI();
     }
 
     setSelectedModel(modelPath) {
@@ -1692,6 +1741,21 @@ class EdisonApp {
 
     async handleImageGeneration(message, assistantMessageEl) {
         try {
+            // Check ComfyUI readiness before attempting generation
+            const comfyuiComponent = this.readiness.components?.find(c => c.key === 'comfyui');
+            if (comfyuiComponent?.state !== 'green') {
+                const errorMsg = this.formatSystemMessage(comfyuiComponent || {
+                    title: 'ComfyUI',
+                    key: 'comfyui',
+                    state: 'red',
+                    likely_cause: 'ComfyUI is not available',
+                    next_step: 'Check ComfyUI connection using Setup Check'
+                });
+                this.updateMessage(assistantMessageEl, `⚠️ Image generation unavailable:\n\n${errorMsg}`, 'error');
+                this.showNotification('ComfyUI not available - check Setup Check for details');
+                return;
+            }
+            
             // Extract the actual image prompt from the message
             const imagePrompt = this.extractImagePrompt(message);
             
@@ -2824,6 +2888,140 @@ class EdisonApp {
         // Persist migrated settings
         localStorage.setItem('edison_settings', JSON.stringify(settings));
         return settings;
+    }
+
+    async refreshReadiness() {
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/system/readiness`, {
+                method: 'GET',
+                headers: { 'Content-Type': 'application/json' },
+                signal: AbortSignal.timeout(8000)
+            });
+            if (response.ok) {
+                this.readiness = await response.json();
+                this.applyReadinessToUI();
+            } else {
+                console.warn('Readiness check failed:', response.status);
+                this.readiness = { overall: 'unknown', components: [], unavailable: [] };
+            }
+        } catch (error) {
+            console.warn('Readiness fetch error:', error);
+            this.readiness = { overall: 'unknown', components: [], unavailable: [] };
+        }
+    }
+
+    applyReadinessToUI() {
+        // Update mode button availability
+        ['agent', 'swarm'].forEach(mode => {
+            const btn = document.querySelector(`[data-mode="${mode}"]`);
+            if (!btn) return;
+            const available = this.isModeAvailable(mode);
+            if (available) {
+                btn.classList.remove('unavailable');
+            } else {
+                btn.classList.add('unavailable');
+            }
+        });
+
+        // Update module availability bar
+        if (this.moduleAvailabilityBar) {
+            const criticalComponents = ['comfyui', 'core_api'];
+            const chipsHtml = criticalComponents.map(key => {
+                const component = this.readiness.components?.find(c => c.key === key);
+                const state = component?.state === 'green' ? 'green' : 'red';
+                const title = component?.title || key;
+                return `<span class="availability-chip ${state}" title="${title}">${key}</span>`;
+            }).join('');
+            this.moduleAvailabilityBar.innerHTML = chipsHtml;
+        }
+
+        // Update mode help text
+        if (this.modeHelp) {
+            const mode = this.currentMode || this.settings.defaultMode;
+            const description = this.modeDescriptions[mode] || 'Mode description not available.';
+            this.modeHelp.textContent = description;
+        }
+    }
+
+    isModeAvailable(mode) {
+        if (mode !== 'agent' && mode !== 'swarm') return true;
+        
+        const modeKeyMap = { agent: 'agent', swarm: 'swarm' };
+        const key = modeKeyMap[mode];
+        if (!key) return true;
+        
+        const component = this.readiness.components?.find(c => c.key === key);
+        return component?.ready !== false;
+    }
+
+    openSetupCheck() {
+        if (this.setupCheckModal) {
+            this.setupCheckModal.style.display = 'flex';
+            this.runSetupCheck();
+        }
+    }
+
+    closeSetupCheck() {
+        if (this.setupCheckModal) {
+            this.setupCheckModal.style.display = 'none';
+        }
+    }
+
+    async runSetupCheck() {
+        if (!this.setupCheckList) return;
+        
+        this.setupCheckList.innerHTML = '<div style="padding:20px; text-align:center; color:#888;">🔍 Checking system...</div>';
+        
+        try {
+            await this.refreshReadiness();
+            
+            const components = this.readiness.components || [];
+            if (components.length === 0) {
+                this.setupCheckList.innerHTML = '<div style="padding:20px; color:#888;">No components to check.</div>';
+                return;
+            }
+            
+            const html = components.map(comp => `
+                <div class="setup-check-item">
+                    <div class="setup-check-title">
+                        <span class="setup-check-state ${comp.state === 'green' ? 'green' : 'red'}">
+                            ${comp.state === 'green' ? '✓' : '✕'}
+                        </span>
+                        ${comp.title || comp.key}
+                    </div>
+                    ${comp.system ? `<div style="font-size:0.85em; color:#888; margin-top:4px;">System: ${comp.system}</div>` : ''}
+                    ${comp.state !== 'green' && comp.likely_cause ? `
+                        <div style="font-size:0.85em; color:#fca5a5; margin-top:6px;">
+                            <strong>Issue:</strong> ${comp.likely_cause}
+                        </div>
+                    ` : ''}
+                    ${comp.state !== 'green' && comp.next_step ? `
+                        <div style="font-size:0.85em; color:#9ddf88; margin-top:4px;">
+                            <strong>Next step:</strong> ${comp.next_step}
+                        </div>
+                    ` : ''}
+                    ${comp.raw_detail && comp.state !== 'green' ? `
+                        <div style="font-size:0.75em; color:#aaa; margin-top:4px; font-family:monospace; white-space:pre-wrap; word-break:break-word;">
+                            ${comp.raw_detail.slice(0, 500)}${comp.raw_detail.length > 500 ? '...' : ''}
+                        </div>
+                    ` : ''}
+                </div>
+            `).join('');
+            
+            this.setupCheckList.innerHTML = html;
+        } catch (error) {
+            console.error('Setup check error:', error);
+            this.setupCheckList.innerHTML = `<div style="padding:20px; color:#fca5a5;">Error running setup check: ${error.message}</div>`;
+        }
+    }
+
+    formatSystemMessage(component) {
+        let msg = `**${component.title || component.key}**\n`;
+        if (component.system) msg += `System: ${component.system}\n`;
+        if (component.likely_cause) msg += `Issue: ${component.likely_cause}\n`;
+        if (component.next_step) msg += `Next step: ${component.next_step}\n`;
+        if (component.raw_detail) msg += `\`\`\`\n${component.raw_detail}\n\`\`\``;
+        return msg;
     }
 }
 

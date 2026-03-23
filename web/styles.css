@@ -903,6 +903,44 @@ button, input, textarea, select {
     background: var(--primary);
     color: white;
     border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.25);
+}
+
+.mode-btn.unavailable {
+    opacity: 0.5;
+    border-style: dashed;
+}
+
+.mode-help {
+    margin-top: 8px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.module-availability-bar {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    margin-top: 8px;
+}
+
+.availability-chip {
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: 3px 9px;
+    font-size: 11px;
+    color: var(--text-secondary);
+    background: var(--surface-hover);
+}
+
+.availability-chip.green {
+    border-color: rgba(46, 204, 113, 0.55);
+    color: #c6f7d9;
+}
+
+.availability-chip.red {
+    border-color: rgba(231, 76, 60, 0.55);
+    color: #ffc3bb;
 }
 
 .mode-icon {
@@ -5962,6 +6000,51 @@ details[open] > summary::after {
     backdrop-filter: blur(3px);
 }
 
+.setup-check-item {
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface-hover);
+    padding: 10px;
+    margin-bottom: 8px;
+}
+
+.setup-check-title {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    font-size: 13px;
+    font-weight: 600;
+}
+
+.setup-check-meta {
+    margin-top: 4px;
+    font-size: 12px;
+    color: var(--text-secondary);
+}
+
+.setup-check-next {
+    margin-top: 6px;
+    font-size: 12px;
+}
+
+.setup-check-state {
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 11px;
+    border: 1px solid var(--border);
+}
+
+.setup-check-state.green {
+    border-color: rgba(46, 204, 113, 0.55);
+    color: #c6f7d9;
+}
+
+.setup-check-state.red {
+    border-color: rgba(231, 76, 60, 0.55);
+    color: #ffc3bb;
+}
+
 /* =========================================================
    INLINE CHAT BROWSER CARD — .chat-browser-card
    Shows what Edison's headless browser sees, embedded in the
@@ -6506,6 +6589,12 @@ details[open] > summary::after {
     color: var(--text-secondary);
     font-weight: 600;
     z-index: 1;
+}
+
+.branding-empty-hint {
+    margin-top: 10px;
+    font-size: 12px;
+    color: var(--text-secondary);
 }
 
 @media (max-width: 980px) {

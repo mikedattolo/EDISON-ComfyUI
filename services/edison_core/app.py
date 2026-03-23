@@ -983,8 +983,25 @@ def _slugify_client_name(name: str) -> str:
     return slug or f"client-{uuid.uuid4().hex[:8]}"
 
 
+def _unique_client_slug(name: str, clients: list) -> str:
+    """Create a stable slug and avoid collisions when different names normalize the same."""
+    base_slug = _slugify_client_name(name)
+    used = {str((c or {}).get("slug") or "").strip() for c in clients}
+    if base_slug not in used:
+        return base_slug
+    idx = 2
+    while True:
+        candidate = f"{base_slug}-{idx}"
+        if candidate not in used:
+            return candidate
+        idx += 1
+
+
 def _client_asset_dirs(slug: str) -> dict:
-    base = BRANDING_ROOT / slug
+    # BRANDING_ROOT may be outside REPO_ROOT (for example a mounted /tmp or host volume).
+    # Resolve before use so all comparisons/serialization operate on normalized paths.
+    root = BRANDING_ROOT.resolve(strict=False)
+    base = (root / slug).resolve(strict=False)
     return {
         "base": base,
         "images": base / "images",
@@ -1013,9 +1030,88 @@ def _resolve_media_path(path_str: str) -> Path:
 
 def _workspace_relative(path: Path) -> str:
     try:
-        return str(path.resolve().relative_to(REPO_ROOT))
+        return str(path.resolve(strict=False).relative_to(REPO_ROOT.resolve(strict=False)))
     except Exception:
-        return str(path.resolve())
+        return str(path.resolve(strict=False))
+
+
+def _ensure_directory(path: Path, purpose: str) -> Path:
+    """Create directory with consistent normalization and clear permission errors."""
+    resolved = path.resolve(strict=False)
+    try:
+        resolved.mkdir(parents=True, exist_ok=True)
+    except PermissionError as pe:
+        raise HTTPException(
+            status_code=403,
+            detail=f"Permission denied creating {purpose} at {resolved}. Check directory permissions or Docker volume mounts. Error: {pe}",
+        )
+    except OSError as oe:
+        raise HTTPException(
+            status_code=500,
+            detail=f"Could not create {purpose} at {resolved}. Error: {oe}",
+        )
+    return resolved
+
+
+def _normalize_tags(raw_tags: Any) -> list:
+    if isinstance(raw_tags, list):
+        vals = raw_tags
+    elif isinstance(raw_tags, str):
+        vals = [t.strip() for t in raw_tags.split(",")]
+    else:
+        vals = []
+    out = []
+    seen = set()
+    for tag in vals:
+        clean = re.sub(r"\s+", " ", str(tag or "").strip())
+        if not clean:
+            continue
+        key = clean.lower()
+        if key in seen:
+            continue
+        seen.add(key)
+        out.append(clean)
+    return out
+
+
+def _normalize_prompt_entry(entry: dict) -> dict:
+    normalized = dict(entry or {})
+    normalized["tags"] = _normalize_tags(normalized.get("tags"))
+    normalized["category"] = str(normalized.get("category") or "general").strip().lower() or "general"
+    return normalized
+
+
+def _comfyui_base_url(override: Optional[str] = None) -> str:
+    if override:
+        return str(override).rstrip("/")
+    comfyui_config = config.get("edison", {}).get("comfyui", {})
+    comfyui_host = comfyui_config.get("host", "127.0.0.1")
+    if comfyui_host == "0.0.0.0":
+        comfyui_host = "127.0.0.1"
+    comfyui_port = comfyui_config.get("port", 8188)
+    return f"http://{comfyui_host}:{comfyui_port}"
+
+
+def _readiness_component(
+    key: str,
+    title: str,
+    system: str,
+    ready: bool,
+    likely_cause: str,
+    next_step: str,
+    detail: Optional[str] = None,
+) -> dict:
+    state = "green" if ready else "red"
+    return {
+        "key": key,
+        "title": title,
+        "system": system,
+        "state": state,
+        "ready": ready,
+        "likely_cause": likely_cause,
+        "next_step": next_step,
+        "raw_detail": detail,
+    }
 
 
 def _infer_media_kind(path: Path) -> str:
@@ -12469,38 +12565,28 @@ async def branding_create_client(request: dict):
         if existing:
             return {"ok": True, "client": existing, "created": False}
 
-        slug = _slugify_client_name(name)
+        slug = _unique_client_slug(name, clients)
         dirs = _client_asset_dirs(slug)
-        
-        # Ensure parent BRANDING_ROOT exists first with proper error handling
-        try:
-            BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
-        except PermissionError as pe:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Permission denied creating client folder. Check directory permissions or Docker volume mounts for {BRANDING_ROOT}. Error: {pe}"
-            )
-        
+
+        # Ensure parent BRANDING_ROOT exists first with proper error handling.
+        _ensure_directory(BRANDING_ROOT, "branding root directory")
+
         # Create client-specific subdirectories
         for d in dirs.values():
-            try:
-                d.mkdir(parents=True, exist_ok=True)
-            except PermissionError as pe:
-                raise HTTPException(
-                    status_code=403,
-                    detail=f"Permission denied creating client directories. Check Docker volume permissions. Error: {pe}"
-                )
+            _ensure_directory(d, f"client directory '{d.name}'")
 
         entry = {
             "id": f"client_{uuid.uuid4().hex[:10]}",
             "name": name,
             "slug": slug,
             "created_at": int(time.time()),
+            "notes": str(request.get("notes") or "").strip(),
+            "tags": _normalize_tags(request.get("tags")),
             "paths": {
-                "base": str(dirs["base"].relative_to(REPO_ROOT)),
-                "images": str(dirs["images"].relative_to(REPO_ROOT)),
-                "videos": str(dirs["videos"].relative_to(REPO_ROOT)),
-                "files": str(dirs["files"].relative_to(REPO_ROOT)),
+                "base": _workspace_relative(dirs["base"]),
+                "images": _workspace_relative(dirs["images"]),
+                "videos": _workspace_relative(dirs["videos"]),
+                "files": _workspace_relative(dirs["files"]),
             },
         }
         clients.append(entry)
@@ -12534,10 +12620,9 @@ async def branding_list_assets(client_id: str):
                 if not fp.is_file():
                     continue
                 try:
-                    rel = fp.relative_to(REPO_ROOT)
                     out.append({
                         "name": fp.name,
-                        "path": str(rel),
+                        "path": _workspace_relative(fp),
                         "size": fp.stat().st_size,
                         "mtime": int(fp.stat().st_mtime),
                     })
@@ -12599,27 +12684,15 @@ async def branding_add_existing_asset(client_id: str, request: dict):
 
         dirs = _client_asset_dirs(client.get("slug", ""))
         target_dir = dirs[asset_type]
-        
+
         # Ensure parent BRANDING_ROOT exists first
-        try:
-            BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
-        except PermissionError as pe:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Permission denied. Check Docker volume mounts for {BRANDING_ROOT}. Error: {pe}"
-            )
-        
+        _ensure_directory(BRANDING_ROOT, "branding root directory")
+
         # Create asset-type specific directory
-        try:
-            target_dir.mkdir(parents=True, exist_ok=True)
-        except PermissionError as pe:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Permission denied creating asset directory. Check Docker volume permissions. Error: {pe}"
-            )
-        target = target_dir / safe_src.name
+        target_dir = _ensure_directory(target_dir, f"client asset directory '{asset_type}'")
+        target = (target_dir / safe_src.name).resolve(strict=False)
         if target.exists():
-            target = target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}"
+            target = (target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}").resolve(strict=False)
 
         if move_file:
             shutil.move(str(safe_src), str(target))
@@ -12630,7 +12703,7 @@ async def branding_add_existing_asset(client_id: str, request: dict):
             "ok": True,
             "client_id": client_id,
             "asset_type": asset_type,
-            "stored_path": str(target.relative_to(REPO_ROOT)),
+            "stored_path": _workspace_relative(target),
             "moved": move_file,
         }
     except HTTPException:
@@ -12673,18 +12746,12 @@ async def branding_upload_asset(client_id: str, file: UploadFile = File(...), as
         dirs = _client_asset_dirs(client.get("slug", ""))
         target_dir = dirs[resolved_type]
 
-        try:
-            BRANDING_ROOT.mkdir(parents=True, exist_ok=True)
-            target_dir.mkdir(parents=True, exist_ok=True)
-        except PermissionError as pe:
-            raise HTTPException(
-                status_code=403,
-                detail=f"Permission denied. Check Docker volume mounts for {BRANDING_ROOT}. Error: {pe}"
-            )
+        _ensure_directory(BRANDING_ROOT, "branding root directory")
+        target_dir = _ensure_directory(target_dir, f"client asset directory '{resolved_type}'")
 
-        target = target_dir / safe_name
+        target = (target_dir / safe_name).resolve(strict=False)
         if target.exists():
-            target = target_dir / f"{Path(safe_name).stem}_{uuid.uuid4().hex[:6]}{ext}"
+            target = (target_dir / f"{Path(safe_name).stem}_{uuid.uuid4().hex[:6]}{ext}").resolve(strict=False)
 
         content = await file.read()
         target.write_bytes(content)
@@ -12694,7 +12761,7 @@ async def branding_upload_asset(client_id: str, file: UploadFile = File(...), as
             "client_id": client_id,
             "asset_type": resolved_type,
             "filename": target.name,
-            "stored_path": str(target.relative_to(REPO_ROOT)),
+            "stored_path": _workspace_relative(target),
             "size": len(content),
         }
     except HTTPException:
@@ -12760,6 +12827,167 @@ async def system_diagnostics():
             "llm_deep_loaded": llm_deep is not None,
             "tool_registry_count": len(TOOL_REGISTRY),
         },
+    }
+
+
+@app.get("/system/readiness")
+async def system_readiness():
+    """Readiness snapshot for frontend UX gating and setup diagnostics."""
+    components = []
+
+    # Core API is running if this endpoint is reachable.
+    components.append(
+        _readiness_component(
+            "core_api",
+            "Core API",
+            "edison-core",
+            True,
+            "Core service is healthy.",
+            "No action required.",
+            detail=str(REPO_ROOT),
+        )
+    )
+
+    comfyui_url = _comfyui_base_url()
+    comfyui_ready = False
+    comfyui_detail = None
+    try:
+        resp = requests.get(f"{comfyui_url}/queue", timeout=2)
+        comfyui_ready = bool(resp.ok)
+        comfyui_detail = f"{comfyui_url} -> HTTP {resp.status_code}"
+    except Exception as e:
+        comfyui_detail = str(e)
+    components.append(
+        _readiness_component(
+            "comfyui",
+            "ComfyUI",
+            "image-generation",
+            comfyui_ready,
+            "ComfyUI is not reachable or still starting.",
+            "Start ComfyUI and confirm the configured host/port are reachable.",
+            detail=comfyui_detail,
+        )
+    )
+
+    deep_search_ready = AgentControllerBrain is not None and llm_fast is not None
+    components.append(
+        _readiness_component(
+            "deep_search",
+            "Deep Search",
+            "research",
+            deep_search_ready,
+            "Orchestration brain or fast model is unavailable.",
+            "Verify model loading and orchestration imports.",
+            detail=f"brain={AgentControllerBrain is not None}, fast_model={llm_fast is not None}",
+        )
+    )
+
+    agent_ready = AgentControllerBrain is not None
+    components.append(
+        _readiness_component(
+            "agent",
+            "Agent Mode",
+            "orchestration",
+            agent_ready,
+            "Agent controller is not initialized.",
+            "Check orchestration module imports and startup logs.",
+            detail=f"AgentControllerBrain={AgentControllerBrain is not None}",
+        )
+    )
+
+    swarm_ready = agent_ready
+    components.append(
+        _readiness_component(
+            "swarm",
+            "Swarm Mode",
+            "multi-agent",
+            swarm_ready,
+            "Swarm relies on agent orchestration and is not available yet.",
+            "Enable agent backend first, then refresh.",
+            detail=f"agent_ready={agent_ready}",
+        )
+    )
+
+    branding_writable = False
+    branding_detail = None
+    try:
+        root = _ensure_directory(BRANDING_ROOT, "branding root directory")
+        probe = root / ".readiness_probe"
+        probe.write_text("ok")
+        probe.unlink(missing_ok=True)
+        branding_writable = True
+        branding_detail = str(root)
+    except HTTPException as he:
+        branding_detail = str(he.detail)
+    except Exception as e:
+        branding_detail = str(e)
+    components.append(
+        _readiness_component(
+            "branding_storage",
+            "Branding Storage",
+            "branding",
+            branding_writable,
+            "Branding root is not writable.",
+            "Set EDISON_CLIENTS_DIR to a writable volume and verify permissions.",
+            detail=branding_detail,
+        )
+    )
+
+    media_roots = [p.resolve(strict=False) for p in MEDIA_ROOTS]
+    video_ready = False
+    video_detail = None
+    try:
+        writable_count = 0
+        for root in media_roots:
+            root.mkdir(parents=True, exist_ok=True)
+            try:
+                probe = root / ".media_probe"
+                probe.write_text("ok")
+                probe.unlink(missing_ok=True)
+                writable_count += 1
+            except Exception:
+                continue
+        video_ready = writable_count > 0
+        video_detail = f"writable_roots={writable_count}/{len(media_roots)}"
+    except Exception as e:
+        video_detail = str(e)
+    components.append(
+        _readiness_component(
+            "video_media",
+            "Video Media Roots",
+            "video-editor",
+            video_ready,
+            "No media roots are writable.",
+            "Check mounted volumes for outputs/uploads/gallery paths.",
+            detail=video_detail,
+        )
+    )
+
+    printers_count = 0
+    try:
+        printers_count = len((_load_printers().get("printers") or []))
+    except Exception:
+        printers_count = 0
+    printing_ready = printer_manager_instance is not None or printers_count > 0
+    components.append(
+        _readiness_component(
+            "printing",
+            "3D Printing",
+            "printing",
+            printing_ready,
+            "No printer manager or configured printers are available.",
+            "Open Printing and run discovery, then save at least one printer.",
+            detail=f"manager={printer_manager_instance is not None}, configured_printers={printers_count}",
+        )
+    )
+
+    unavailable = [c["key"] for c in components if not c["ready"]]
+    return {
+        "ok": True,
+        "timestamp": int(time.time()),
+        "overall": "ready" if not unavailable else "degraded",
+        "unavailable": unavailable,
+        "components": components,
     }
 
 
@@ -13003,10 +13231,30 @@ async def video_edit(request: dict):
 # ==================== PROMPT LIBRARY ====================
 
 @app.get("/prompts")
-async def list_prompts():
+async def list_prompts(q: str = "", tag: str = "", category: str = ""):
     """List all saved prompt library entries."""
     db = _load_prompts()
-    return {"prompts": db.get("prompts", [])}
+    items = [_normalize_prompt_entry(p) for p in db.get("prompts", [])]
+
+    q_norm = (q or "").strip().lower()
+    tag_norm = (tag or "").strip().lower()
+    cat_norm = (category or "").strip().lower()
+
+    if q_norm:
+        items = [
+            p for p in items
+            if q_norm in str(p.get("title", "")).lower()
+            or q_norm in str(p.get("content", "")).lower()
+            or any(q_norm in t.lower() for t in p.get("tags", []))
+            or q_norm in str(p.get("category", "")).lower()
+        ]
+    if tag_norm:
+        items = [p for p in items if any(t.lower() == tag_norm for t in p.get("tags", []))]
+    if cat_norm:
+        items = [p for p in items if str(p.get("category", "")).lower() == cat_norm]
+
+    items.sort(key=lambda p: int(p.get("updated_at", p.get("created_at", 0)) or 0), reverse=True)
+    return {"prompts": items}
 
 
 @app.post("/prompts")
@@ -13024,7 +13272,8 @@ async def save_prompt(request: dict):
         "id": pid,
         "title": title,
         "content": content,
-        "tags": request.get("tags") or [],
+        "tags": _normalize_tags(request.get("tags")),
+        "category": str(request.get("category") or "general").strip().lower() or "general",
         "created_at": existing.get("created_at", int(time.time())) if existing else int(time.time()),
         "updated_at": int(time.time()),
     }
@@ -13377,13 +13626,26 @@ async def list_connectors():
     db = _load_connectors()
     redacted = []
     for c in db.get("connectors", []):
+        headers = c.get("headers") or {}
+        auth_present = bool(headers.get("Authorization") or headers.get("authorization") or c.get("oauth_token"))
+        expires_at = c.get("token_expires_at")
+        token_expired = False
+        if expires_at:
+            try:
+                token_expired = int(expires_at) <= int(time.time())
+            except Exception:
+                token_expired = False
         redacted.append({
             "name": c.get("name"),
             "base_url": c.get("base_url"),
             "provider": c.get("provider", "custom"),
             "enabled": c.get("enabled", True),
             "timeout_sec": c.get("timeout_sec", 20),
-            "headers": list((c.get("headers") or {}).keys()),
+            "headers": list(headers.keys()),
+            "connected": auth_present and bool(c.get("enabled", True)),
+            "permissions": c.get("scopes") or c.get("permissions") or [],
+            "token_expires_at": expires_at,
+            "token_expired": token_expired,
         })
     return {"connectors": redacted}
 
@@ -13419,6 +13681,8 @@ async def upsert_connector(request: dict):
         "headers": headers,
         "enabled": bool(request.get("enabled", True)),
         "timeout_sec": int(request.get("timeout_sec", 20)),
+        "scopes": request.get("scopes") or [],
+        "token_expires_at": request.get("token_expires_at"),
     }
     if existing:
         existing.update(payload)
@@ -13460,6 +13724,7 @@ async def quick_connect_connector(request: dict):
         "headers": headers,
         "enabled": bool(request.get("enabled", True)),
         "timeout_sec": timeout_sec,
+        "scopes": template.get("oauth_scopes", []),
     }
     if existing:
         existing.update(payload)
@@ -13789,6 +14054,7 @@ async def device_flow_poll(provider: str, request: dict):
     if existing:
         existing["token"] = access_token
         existing["auth_type"] = "bearer"
+        existing.setdefault("headers", {})["Authorization"] = f"Bearer {access_token}"
     else:
         db.setdefault("connectors", []).append({
             "name": connector_name,
@@ -13798,7 +14064,7 @@ async def device_flow_poll(provider: str, request: dict):
             "auth_type": "bearer",
             "enabled": True,
             "timeout_sec": 20,
-            "headers": {},
+            "headers": {"Authorization": f"Bearer {access_token}", "Accept": "application/json"},
         })
     _save_connectors(db)
     return {"ok": True, "connected": True, "connector": connector_name, "provider": key}
@@ -13920,7 +14186,9 @@ async def oauth_callback(request: dict):
     connector["token"] = access_token
     connector["auth_type"] = "bearer"
     connector["token_type"] = token_data.get("token_type", "Bearer")
-    connector["expires_at"] = token_data.get("expires_in", 3600) + int(datetime.datetime.now().timestamp())
+    connector["token_expires_at"] = token_data.get("expires_in", 3600) + int(datetime.datetime.now().timestamp())
+    connector.setdefault("headers", {})["Authorization"] = f"Bearer {access_token}"
+    connector["scopes"] = template.get("oauth_scopes", [])
     if "refresh_token" in token_data:
         connector["refresh_token"] = token_data.get("refresh_token")
 
