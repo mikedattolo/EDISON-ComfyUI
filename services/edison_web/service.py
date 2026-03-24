@@ -185,6 +185,16 @@ async def branding_page():
     return FileResponse(page)
 
 
+@app.get("/projects")
+async def projects_page():
+    """Serve dedicated client and project workspace page."""
+    page = WEB_DIR / "projects.html"
+    if not page.exists():
+        logger.error(f"projects.html not found at {page}")
+        return {"error": "Projects UI not found"}
+    return FileResponse(page)
+
+
 @app.get("/connectors")
 async def connectors_page():
     """Serve dedicated connectors management page."""

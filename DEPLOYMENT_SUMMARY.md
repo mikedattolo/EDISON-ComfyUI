@@ -334,7 +334,7 @@ Before deploying to your AI PC, test:
 1. **README.md** - Overview, quick start, features
 2. **INSTALL.md** - Detailed installation guide
 3. **TROUBLESHOOTING.md** - Solutions to all issues
-4. **COPILOT_SPEC.md** - Original specification
+4. **COPILOT_SPEC.md** - Current Copilot implementation specification
 5. **IMPLEMENTATION_COMPLETE.md** - Implementation notes
 
 ## Commit Message

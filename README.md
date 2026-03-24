@@ -494,7 +494,7 @@ sudo systemctl disable edison-core
 
 - **[INSTALL.md](INSTALL.md)** - Detailed installation guide with all options
 - **[TROUBLESHOOTING.md](TROUBLESHOOTING.md)** - Solutions to common issues
-- **[COPILOT_SPEC.md](COPILOT_SPEC.md)** - Original specification
+- **[COPILOT_SPEC.md](COPILOT_SPEC.md)** - Current Copilot implementation specification
 - **[IMPLEMENTATION_COMPLETE.md](IMPLEMENTATION_COMPLETE.md)** - Implementation notes
 
 ---
@@ -846,4 +846,4 @@ See LICENSE file.
 For issues, please check:
 1. Run `bash scripts/doctor.sh`
 2. Check service logs
-3. Review COPILOT_SPEC.md for detailed requirements
+3. Review COPILOT_SPEC.md for the current implementation requirements

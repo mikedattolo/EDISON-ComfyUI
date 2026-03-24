@@ -83,14 +83,89 @@ class ProjectCreateRequest(BaseModel):
     description: Optional[str] = None
     template: Optional[str] = None
 
+    client_id: Optional[str] = None
+    service_types: List[Literal["branding", "printing", "video", "marketing", "mixed"]] = Field(default_factory=list)
+    due_date: Optional[str] = None
+    status: Literal["draft", "planned", "active", "in_review", "approved", "completed", "archived"] = "planned"
+    notes: str = ""
+    tags: List[str] = Field(default_factory=list)
+    assets: List[Dict[str, Any]] = Field(default_factory=list)
+    tasks: List[Dict[str, Any]] = Field(default_factory=list)
+    approvals: List[Dict[str, Any]] = Field(default_factory=list)
+    deliverables: List[Dict[str, Any]] = Field(default_factory=list)
+
+
+class ProjectUpdateRequest(BaseModel):
+    name: Optional[str] = None
+    description: Optional[str] = None
+    template: Optional[str] = None
+    client_id: Optional[str] = None
+    service_types: Optional[List[Literal["branding", "printing", "video", "marketing", "mixed"]]] = None
+    due_date: Optional[str] = None
+    status: Optional[Literal["draft", "planned", "active", "in_review", "approved", "completed", "archived"]] = None
+    notes: Optional[str] = None
+    tags: Optional[List[str]] = None
+    assets: Optional[List[Dict[str, Any]]] = None
+    tasks: Optional[List[Dict[str, Any]]] = None
+    approvals: Optional[List[Dict[str, Any]]] = None
+    deliverables: Optional[List[Dict[str, Any]]] = None
+
 
 class ProjectResponse(BaseModel):
     project_id: str
     name: str
-    description: Optional[str]
+    slug: str = ""
+    description: Optional[str] = None
+    template: Optional[str] = None
+    client_id: Optional[str] = None
+    client_name: Optional[str] = None
+    client_slug: Optional[str] = None
+    service_types: List[str] = Field(default_factory=list)
+    due_date: Optional[str] = None
+    status: str = "planned"
+    notes: str = ""
+    tags: List[str] = Field(default_factory=list)
+    assets: List[Dict[str, Any]] = Field(default_factory=list)
+    tasks: List[Dict[str, Any]] = Field(default_factory=list)
+    approvals: List[Dict[str, Any]] = Field(default_factory=list)
+    deliverables: List[Dict[str, Any]] = Field(default_factory=list)
+    workspace_paths: Dict[str, str] = Field(default_factory=dict)
     root_path: str
     created_at: str
+    updated_at: Optional[str] = None
     config_path: str
+
+
+class BrandingGenerationRequest(BaseModel):
+    business_name: str
+    client_id: Optional[str] = None
+    project_id: Optional[str] = None
+    industry: str = ""
+    audience: str = ""
+    prompt: str = ""
+    tone: str = "confident"
+    style_keywords: List[str] = Field(default_factory=list)
+    deliverable_count: int = Field(default=5, ge=1, le=12)
+    include_moodboard: bool = True
+
+
+class MarketingCopyRequest(BaseModel):
+    business_name: str
+    client_id: Optional[str] = None
+    project_id: Optional[str] = None
+    industry: str = ""
+    audience: str = ""
+    prompt: str = ""
+    tone: str = "confident"
+    channels: List[str] = Field(default_factory=list)
+    copy_types: List[Literal[
+        "ad_copy",
+        "social_captions",
+        "email_campaign",
+        "business_description",
+        "product_copy",
+        "website_hero_text",
+    ]] = Field(default_factory=list)
 
 
 class ArtifactGenerateRequest(BaseModel):

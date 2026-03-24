@@ -227,6 +227,17 @@ except ImportError:
         MusicGenerationService = None
         logger.warning("⚠ Music generation service not available")
 
+try:
+    from .resource_protocol import IdleResourceManager
+    logger.info("✓ Resource protocol loaded")
+except ImportError:
+    try:
+        from resource_protocol import IdleResourceManager
+        logger.info("✓ Resource protocol loaded (direct import)")
+    except ImportError:
+        IdleResourceManager = None
+        logger.warning("⚠ Resource protocol not available")
+
 # Import professional file generators
 try:
     from .file_generators import (
@@ -255,6 +266,34 @@ except ImportError:
         generate_slideshow_html = None
         logger.warning("⚠ File generators not available")
         logger.warning("⚠ Orchestration modules not available")
+
+try:
+    from .branding_store import BrandingClientStore
+    from .branding_ops import BrandingWorkflowService
+    from .business_actions import execute_business_action
+    from .projects import ProjectWorkspaceManager
+    from .contracts import BrandingGenerationRequest, MarketingCopyRequest
+    logger.info("✓ Business workflow services loaded")
+except ImportError:
+    try:
+        from branding_store import BrandingClientStore
+        from branding_ops import BrandingWorkflowService
+        from business_actions import execute_business_action
+        from projects import ProjectWorkspaceManager
+        from contracts import BrandingGenerationRequest, MarketingCopyRequest
+        logger.info("✓ Business workflow services loaded (direct import)")
+    except ImportError:
+        BrandingClientStore = None
+        BrandingWorkflowService = None
+        execute_business_action = None
+        ProjectWorkspaceManager = None
+        class BrandingGenerationRequest(BaseModel):
+            business_name: str = ""
+
+        class MarketingCopyRequest(BaseModel):
+            business_name: str = ""
+
+        logger.warning("⚠ Business workflow services not available")
 
 # Minecraft features removed
 _mc_utils_available = False
@@ -1035,6 +1074,64 @@ def _workspace_relative(path: Path) -> str:
         return str(path.resolve(strict=False))
 
 
+def _get_business_config() -> dict:
+    if not config:
+        return {}
+    return config.get("edison", config)
+
+
+def _get_branding_store():
+    if BrandingClientStore is None:
+        return None
+    media_roots = [Path(root).resolve(strict=False) for root in MEDIA_ROOTS]
+    return BrandingClientStore(
+        repo_root=REPO_ROOT,
+        branding_root=BRANDING_ROOT,
+        branding_db_path=BRANDING_DB,
+        media_roots=media_roots,
+    )
+
+
+def _get_project_manager():
+    if ProjectWorkspaceManager is None:
+        return None
+    return ProjectWorkspaceManager(
+        repo_root=REPO_ROOT,
+        config=_get_business_config(),
+        branding_db_path=BRANDING_DB,
+    )
+
+
+def _get_branding_workflow_service():
+    if BrandingWorkflowService is None:
+        return None
+    branding_store = _get_branding_store()
+    project_manager = _get_project_manager()
+    if branding_store is None or project_manager is None:
+        return None
+    return BrandingWorkflowService(REPO_ROOT, branding_store, project_manager)
+
+
+def _maybe_execute_business_action(message: str) -> Optional[Dict[str, Any]]:
+    if execute_business_action is None:
+        return None
+    branding_store = _get_branding_store()
+    project_manager = _get_project_manager()
+    if branding_store is None or project_manager is None:
+        return None
+    try:
+        return execute_business_action(
+            message=message,
+            repo_root=REPO_ROOT,
+            config=_get_business_config(),
+            branding_store=branding_store,
+            project_manager=project_manager,
+        )
+    except Exception as e:
+        logger.warning(f"Business action execution failed: {e}")
+        return None
+
+
 def _ensure_directory(path: Path, purpose: str) -> Path:
     """Create directory with consistent normalization and clear permission errors."""
     resolved = path.resolve(strict=False)
@@ -1422,6 +1519,10 @@ _reload_lock = threading.Lock()
 _reload_in_progress = False
 browser_session_manager = None
 _browser_cleanup_task = None
+_resource_cleanup_task = None
+_active_image_prompts: Dict[str, float] = {}
+_active_image_prompts_lock = threading.Lock()
+_resource_manager = IdleResourceManager(idle_seconds=45.0) if IdleResourceManager else None
 
 
 def _sandbox_host_config() -> tuple[bool, list[str], int]:
@@ -1432,6 +1533,17 @@ def _sandbox_host_config() -> tuple[bool, list[str], int]:
         hosts = []
     ttl_seconds = int(ed.get("sandbox_session_ttl_seconds", 900))
     return allow_any, hosts, max(60, ttl_seconds)
+
+
+def _resource_protocol_config() -> dict:
+    ed = config.get("edison", {}) if isinstance(config, dict) else {}
+    return {
+        "idle_cleanup_seconds": max(15, int(ed.get("idle_cleanup_seconds", 45))),
+        "cleanup_poll_seconds": max(10, int(ed.get("idle_cleanup_poll_seconds", 20))),
+        "swarm_session_ttl_seconds": max(60, int(ed.get("swarm_session_ttl_seconds", 900))),
+        "browser_cleanup_ttl_seconds": max(60, int(ed.get("sandbox_session_ttl_seconds", 900))),
+        "image_job_timeout_seconds": max(120, int(ed.get("image_job_timeout_seconds", 1800))),
+    }
 
 
 def _get_browser_session_manager() -> BrowserSessionManager:
@@ -1455,6 +1567,142 @@ def _get_browser_session_manager() -> BrowserSessionManager:
         hosts,
     )
     return browser_session_manager
+
+
+def _comfyui_queue_snapshot(comfyui_url: Optional[str] = None) -> Dict[str, Any]:
+    try:
+        base_url = _comfyui_base_url(comfyui_url)
+        response = requests.get(f"{base_url}/queue", timeout=3)
+        if not response.ok:
+            return {"reachable": False, "running": 0, "pending": 0, "idle": False}
+        data = response.json()
+        running = len(data.get("queue_running", []) or [])
+        pending = len(data.get("queue_pending", []) or [])
+        return {
+            "reachable": True,
+            "running": running,
+            "pending": pending,
+            "idle": (running + pending) == 0,
+        }
+    except Exception:
+        return {"reachable": False, "running": 0, "pending": 0, "idle": False}
+
+
+def _track_image_prompt(prompt_id: str) -> None:
+    if _resource_manager is None:
+        return
+    with _active_image_prompts_lock:
+        _active_image_prompts[prompt_id] = time.time()
+    _resource_manager.begin_task("image_generation")
+
+
+def _complete_image_prompt(prompt_id: Optional[str] = None, mark_all: bool = False) -> int:
+    completed = 0
+    if _resource_manager is None:
+        return completed
+    with _active_image_prompts_lock:
+        if mark_all:
+            prompt_ids = list(_active_image_prompts.keys())
+            _active_image_prompts.clear()
+        elif prompt_id and prompt_id in _active_image_prompts:
+            prompt_ids = [prompt_id]
+            _active_image_prompts.pop(prompt_id, None)
+        else:
+            prompt_ids = []
+    for _ in prompt_ids:
+        _resource_manager.end_task("image_generation")
+        completed += 1
+    return completed
+
+
+def _on_image_generation_complete(prompt_id: Optional[str] = None, mark_all: bool = False) -> None:
+    _complete_image_prompt(prompt_id=prompt_id, mark_all=mark_all)
+    if _models_unloaded_for_image_gen:
+        reload_llm_models_background()
+    if memory_gate_instance:
+        try:
+            memory_gate_instance.post_heavy_task()
+        except Exception:
+            pass
+
+
+def _sync_image_generation_activity() -> Dict[str, Any]:
+    tracked = 0
+    oldest_age = 0.0
+    with _active_image_prompts_lock:
+        tracked = len(_active_image_prompts)
+        if _active_image_prompts:
+            oldest_age = max(0.0, time.time() - min(_active_image_prompts.values()))
+    if tracked == 0:
+        return {"tracked": 0, "completed": 0, "reason": "no_active_prompts"}
+
+    queue_state = _comfyui_queue_snapshot()
+    cfg = _resource_protocol_config()
+    if queue_state.get("reachable") and queue_state.get("idle"):
+        _on_image_generation_complete(mark_all=True)
+        completed = tracked
+        return {"tracked": tracked, "completed": completed, "reason": "queue_idle"}
+
+    if not queue_state.get("reachable") and oldest_age >= cfg["image_job_timeout_seconds"]:
+        _on_image_generation_complete(mark_all=True)
+        completed = tracked
+        return {"tracked": tracked, "completed": completed, "reason": "queue_unreachable_timeout"}
+
+    return {"tracked": tracked, "completed": 0, "reason": "still_active"}
+
+
+def _cleanup_browser_sessions_for_idle_protocol() -> Dict[str, Any]:
+    try:
+        manager = _get_browser_session_manager()
+        ttl = _resource_protocol_config()["browser_cleanup_ttl_seconds"]
+        return manager.cleanup_expired_sessions(ttl)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _cleanup_swarm_sessions_for_idle_protocol() -> Dict[str, Any]:
+    try:
+        from services.edison_core.swarm_engine import prune_sessions
+        ttl = _resource_protocol_config()["swarm_session_ttl_seconds"]
+        return prune_sessions(ttl_seconds=ttl, compact_completed=True)
+    except Exception as exc:
+        return {"error": str(exc)}
+
+
+def _cleanup_media_services_for_idle_protocol() -> Dict[str, Any]:
+    result: Dict[str, Any] = {}
+    try:
+        if video_service is not None and getattr(video_service, "_pipe", None) is not None:
+            video_service._unload_pipeline()
+            result["video"] = "unloaded"
+        else:
+            result["video"] = "idle"
+    except Exception as exc:
+        result["video"] = {"error": str(exc)}
+
+    try:
+        if music_service is not None and getattr(music_service, "_model_loaded", False):
+            music_service._unload_model()
+            result["music"] = "unloaded"
+        else:
+            result["music"] = "idle"
+    except Exception as exc:
+        result["music"] = {"error": str(exc)}
+
+    gc.collect()
+    _flush_gpu_memory()
+    result["gc"] = "completed"
+    return result
+
+
+def _configure_resource_manager() -> None:
+    if _resource_manager is None:
+        return
+    cfg = _resource_protocol_config()
+    _resource_manager.set_idle_seconds(cfg["idle_cleanup_seconds"])
+    _resource_manager.register_cleanup("browser_sessions", _cleanup_browser_sessions_for_idle_protocol)
+    _resource_manager.register_cleanup("swarm_sessions", _cleanup_swarm_sessions_for_idle_protocol)
+    _resource_manager.register_cleanup("media_services", _cleanup_media_services_for_idle_protocol)
 
 def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
     """Get free VRAM in MiB for a specific GPU"""
@@ -1945,8 +2193,12 @@ class ChatResponse(BaseModel):
     mode_used: str
     model_used: str
     work_steps: Optional[list] = None
+    work_step_results: Optional[list] = None
     context_used: Optional[int] = None
     search_results_count: Optional[int] = None
+    tools_used: Optional[list] = None
+    business_action: Optional[dict] = None
+    image_generation: Optional[dict] = None
 
 class SearchRequest(BaseModel):
     query: str = Field(..., description="Search query")
@@ -4269,7 +4521,7 @@ def get_intent_from_coral(message: str) -> Optional[str]:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Startup and shutdown events"""
-    global _detected_gpus, _normalized_tensor_split, _browser_cleanup_task
+    global _detected_gpus, _normalized_tensor_split, _browser_cleanup_task, _resource_cleanup_task
 
     # Startup
     logger.info("=" * 50)
@@ -4286,6 +4538,7 @@ async def lifespan(app: FastAPI):
     
     load_config()
     _init_vllm_config()
+    _configure_resource_manager()
 
     # ── GPU detection & config validation (new) ──────────────────────
     try:
@@ -4336,6 +4589,19 @@ async def lifespan(app: FastAPI):
 
     _browser_cleanup_task = asyncio.create_task(_browser_cleanup_loop())
 
+    async def _resource_cleanup_loop():
+        poll_seconds = _resource_protocol_config()["cleanup_poll_seconds"]
+        while True:
+            await asyncio.sleep(poll_seconds)
+            try:
+                _sync_image_generation_activity()
+                if _resource_manager is not None:
+                    _resource_manager.cleanup_if_idle()
+            except Exception:
+                pass
+
+    _resource_cleanup_task = asyncio.create_task(_resource_cleanup_loop())
+
     # Optional model manager v1 for hot-swap (legacy)
     global model_manager
     try:
@@ -4361,6 +4627,12 @@ async def lifespan(app: FastAPI):
         _browser_cleanup_task.cancel()
         try:
             await _browser_cleanup_task
+        except BaseException:
+            pass
+    if _resource_cleanup_task:
+        _resource_cleanup_task.cancel()
+        try:
+            await _resource_cleanup_task
         except BaseException:
             pass
     if model_manager_v2_instance:
@@ -4468,6 +4740,18 @@ except Exception as e:
         logger.info("✓ Agent live view routes registered (direct import)")
     except Exception:
         logger.warning(f"⚠ Agent live view routes not available: {e}")
+
+try:
+    from .routes.business_platform import router as business_platform_router
+    app.include_router(business_platform_router)
+    logger.info("✓ Business platform routes registered")
+except Exception as e:
+    try:
+        from routes.business_platform import router as business_platform_router
+        app.include_router(business_platform_router)
+        logger.info("✓ Business platform routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Business platform routes not available: {e}")
 
 @app.post("/rag/search")
 async def rag_search(request: dict):
@@ -5131,6 +5415,17 @@ async def chat(request: ChatRequest):
             conversation_state_mgr.increment_turn(_chat_session_id)
     except Exception:
         pass
+
+    business_result = _maybe_execute_business_action(request.message)
+    if business_result:
+        assistant_response = business_result.get("response", "")
+        store_conversation_exchange(request, assistant_response, business_result.get("mode_used", "business"), remember)
+        return ChatResponse(
+            response=assistant_response,
+            mode_used=business_result.get("mode_used", "business"),
+            model_used="business",
+            business_action=business_result.get("business_action"),
+        )
 
     # Check for image generation intent and redirect
     if intent in ["generate_image", "text_to_image", "create_image"] and request.mode != "swarm":
@@ -5913,6 +6208,33 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     is_recall, recall_query = detect_recall_intent(request.message)
     intent = get_intent_from_coral(request.message)
 
+    business_result = _maybe_execute_business_action(request.message)
+    if business_result:
+        assistant_response = business_result.get("response", "")
+        store_conversation_exchange(request, assistant_response, business_result.get("mode_used", "business"), remember)
+
+        async def _business_sse():
+            try:
+                yield f"event: status\ndata: {json.dumps({'request_id': request_id, 'stage': 'Executing business workflow'})}\n\n"
+                yield f"data: {json.dumps({'t': assistant_response})}\n\n"
+                done_payload = {
+                    "ok": True,
+                    "response": assistant_response,
+                    "mode_used": business_result.get("mode_used", "business"),
+                    "model_used": "business",
+                    "business_action": business_result.get("business_action"),
+                }
+                yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+            finally:
+                with active_requests_lock:
+                    active_requests.pop(request_id, None)
+
+        return StreamingResponse(
+            _business_sse(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
+
     # ── Awareness: classify intent with goal + continuation ──────────
     awareness_intent_result = None
     session_id = getattr(request, 'chat_id', None) or request_id
@@ -6378,6 +6700,8 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     swarm_results = []
     swarm_session_id = None
     if mode == "swarm" and not has_images:
+        if _resource_manager is not None:
+            _resource_manager.begin_task("swarm")
         try:
             logger.info("🐝 Swarm mode activated — deploying Boss + specialist agents")
 
@@ -6485,6 +6809,11 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         except Exception as e:
             logger.error(f"Swarm orchestration failed: {e}")
             # Fallback to normal mode
+        finally:
+            if _resource_manager is not None:
+                _resource_manager.end_task("swarm")
+            gc.collect()
+            _flush_gpu_memory()
 
     if 'status_steps' not in locals():
         status_steps = []
@@ -7363,6 +7692,51 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
         elif msg.role == "user":
             user_message = _flatten_openai_content(msg.content)
 
+    business_result = _maybe_execute_business_action(user_message)
+    if business_result:
+        assistant_response = business_result.get("response", "")
+        completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
+        created_time = int(time.time())
+        prompt_tokens = len(user_message.split())
+        completion_tokens = len(assistant_response.split())
+
+        if request.stream:
+            async def _business_openai_stream():
+                stream_response = OpenAIStreamResponse(
+                    id=completion_id,
+                    created=created_time,
+                    model=request.model,
+                    choices=[OpenAIChoice(
+                        index=0,
+                        delta={"role": "assistant", "content": assistant_response},
+                        finish_reason=None,
+                    )],
+                )
+                yield f"data: {json.dumps(stream_response.dict(exclude_none=True))}\n\n"
+                yield "data: [DONE]\n\n"
+
+            return StreamingResponse(
+                _business_openai_stream(),
+                media_type="text/event-stream",
+                headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+            )
+
+        return OpenAIChatCompletionResponse(
+            id=completion_id,
+            created=created_time,
+            model=request.model,
+            choices=[OpenAIChoice(
+                index=0,
+                message={"role": "assistant", "content": assistant_response},
+                finish_reason="stop",
+            )],
+            usage=OpenAIUsage(
+                prompt_tokens=prompt_tokens,
+                completion_tokens=completion_tokens,
+                total_tokens=prompt_tokens + completion_tokens,
+            ),
+        )
+
     full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
 
     if request.stream:
@@ -7621,6 +7995,7 @@ async def generate_image(request: dict):
         - style_preset (str): auto|photo|cinematic|illustration|anime|concept_art
         - comfyui_url (str): Optional ComfyUI server URL
     """
+    prompt_id = None
     try:
         prompt = request.get('prompt', '')
         width = request.get('width', 1024)
@@ -7730,6 +8105,7 @@ async def generate_image(request: dict):
             raise HTTPException(status_code=500, detail="No prompt_id returned from ComfyUI")
         
         logger.info(f"Image generation started, prompt_id: {prompt_id}")
+        _track_image_prompt(prompt_id)
         
         return {
             "status": "generating",
@@ -7749,14 +8125,20 @@ async def generate_image(request: dict):
         
     except requests.RequestException as e:
         logger.error(f"ComfyUI connection error: {e}")
+        if prompt_id:
+            _complete_image_prompt(prompt_id=prompt_id)
         # Reload models since image gen failed
         if _models_unloaded_for_image_gen:
             reload_llm_models_background()
         raise HTTPException(status_code=503, detail="ComfyUI service unavailable. Make sure ComfyUI is running.")
     except HTTPException:
+        if prompt_id:
+            _complete_image_prompt(prompt_id=prompt_id)
         raise
     except Exception as e:
         logger.error(f"Error generating image: {e}")
+        if prompt_id:
+            _complete_image_prompt(prompt_id=prompt_id)
         # Reload models since image gen failed
         if _models_unloaded_for_image_gen:
             reload_llm_models_background()
@@ -7791,6 +8173,8 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                 in_queue = any(item[1] == prompt_id for item in queue_data.get("queue_running", []) + queue_data.get("queue_pending", []))
                 if in_queue:
                     return {"status": "queued", "message": "Image is in queue"}
+
+            _on_image_generation_complete(prompt_id=prompt_id)
             
             return {"status": "not_found", "message": "Prompt not found"}
         
@@ -7875,14 +8259,7 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                             result["saved_to_gallery"] = False
                     
                     # Reload LLM models in background now that image gen is done
-                    if _models_unloaded_for_image_gen:
-                        reload_llm_models_background()
-                        # Post-heavy-task cleanup via memory gate
-                        if memory_gate_instance:
-                            try:
-                                memory_gate_instance.post_heavy_task()
-                            except Exception:
-                                pass
+                    _on_image_generation_complete(prompt_id=prompt_id)
                     
                     # Record provenance
                     if provenance_tracker_instance:
@@ -7903,8 +8280,7 @@ async def image_status(prompt_id: str, auto_save: bool = True):
     except Exception as e:
         logger.error(f"Error checking image status: {e}")
         # On error, still try to reload models if they were unloaded
-        if _models_unloaded_for_image_gen:
-            reload_llm_models_background()
+        _on_image_generation_complete(prompt_id=prompt_id)
         return {"status": "error", "message": str(e)}
 
 @app.get("/proxy-image")
@@ -7985,121 +8361,63 @@ async def generate_video(request: dict):
             steps=request.get("steps"),
             guidance_scale=float(request.get("guidance_scale", 6.0) or 6.0),
             audio_path=(request.get("audio_path") or None),
-            duration=request.get("duration"),
         )
         return result
+    except HTTPException:
+        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Video generation error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+
 @app.get("/video-status/{prompt_id}")
 async def video_status(prompt_id: str):
-    """Check status for an existing video generation job."""
+    """Check the status of a queued video generation job."""
     if not video_service:
         raise HTTPException(status_code=503, detail="Video generation service not available")
+    if not prompt_id:
+        raise HTTPException(status_code=400, detail="prompt_id is required")
     try:
         return video_service.check_video_status(prompt_id)
     except Exception as e:
         logger.error(f"Video status error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-@app.post("/upload-audio")
-async def upload_audio(file: UploadFile = File(...)):
-    """Upload audio file used for video generation or muxing."""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-    try:
-        raw = await file.read()
-        saved = video_service.save_uploaded_audio(raw, file.filename or "audio.mp3")
-        safe_saved = _safe_workspace_path(saved)
-        return {"ok": True, "audio_path": str(safe_saved.relative_to(REPO_ROOT))}
-    except Exception as e:
-        logger.error(f"Audio upload error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/stitch-frames")
-async def stitch_frames(request: dict):
-    """Legacy helper for stitching generated frames into mp4."""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-    prompt_id = (request.get("prompt_id") or "").strip()
-    if not prompt_id:
-        raise HTTPException(status_code=400, detail="prompt_id is required")
-    try:
-        return video_service.stitch_frames_to_video(
-            prompt_id=prompt_id,
-            fps=int(request.get("fps", 8) or 8),
-            audio_path=request.get("audio_path"),
-        )
-    except Exception as e:
-        logger.error(f"Stitch frames error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/mux-video-audio")
-async def mux_video_audio(request: dict):
-    """Mux an existing audio file onto a generated video."""
-    if not video_service:
-        raise HTTPException(status_code=503, detail="Video generation service not available")
-    video_path = (request.get("video_path") or "").strip()
-    audio_path = (request.get("audio_path") or "").strip()
-    if not video_path or not audio_path:
-        raise HTTPException(status_code=400, detail="video_path and audio_path are required")
-    try:
-        safe_video = _safe_workspace_path(video_path)
-        safe_audio = _safe_workspace_path(audio_path)
-        return video_service.mux_audio_to_video(str(safe_video), str(safe_audio))
-    except ValueError as e:
-        raise HTTPException(status_code=403, detail=str(e))
-    except Exception as e:
-        logger.error(f"Mux video/audio error: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# ==================== MUSIC GENERATION ENDPOINTS ====================
 
 @app.post("/generate-music")
-async def generate_music_endpoint(request: dict):
-    """Generate music from a text prompt
-
-    Parameters:
-        - prompt (str): Free-form music description
-        - genre (str): Music genre (e.g. rock, electronic, hip-hop)
-        - mood (str): Mood (e.g. happy, chill, energetic)
-        - instruments (str): Instruments to feature (e.g. guitar, piano)
-        - tempo (str): Tempo description or BPM
-        - style (str): Style (e.g. lo-fi, orchestral, 80s synth)
-        - lyrics (str): Song lyrics for theme extraction
-        - reference_artist (str): Artist for style inspiration
-        - duration (int): Length in seconds (default: 15, max: 60)
-        - melody_audio_path (str): Path to melody audio for conditioning
-    """
+async def generate_music(request: dict):
+    """Generate music from a prompt or structured parameters."""
     if not music_service:
-        raise HTTPException(status_code=503, detail="Music generation service not available. Install audiocraft: pip install audiocraft")
+        raise HTTPException(status_code=503, detail="Music generation service not available")
 
-    # MemoryGate: free VRAM for music generation
-    global _models_unloaded_for_image_gen
-    with _image_gen_lock:
-        if memory_gate_instance:
-            gate_result = memory_gate_instance.pre_heavy_task(
-                required_vram_mb=4000,
-                required_ram_mb=0,
-                reason="music generation (AudioCraft)",
-                allow_cpu_fallback=False,
-            )
-            if not gate_result["ok"]:
-                raise HTTPException(
-                    status_code=507,
-                    detail=gate_result.get("error", {
-                        "message": "Not enough VRAM for music generation",
-                        "action": "unload_and_retry",
-                    }),
-                )
-            _models_unloaded_for_image_gen = True
-        elif not _models_unloaded_for_image_gen:
-            unload_all_llm_models()
-            _models_unloaded_for_image_gen = True
+    if _resource_manager is not None:
+        _resource_manager.begin_task("music_generation")
 
     try:
+        global _models_unloaded_for_image_gen
+        with _image_gen_lock:
+            if memory_gate_instance:
+                gate_result = memory_gate_instance.pre_heavy_task(
+                    required_vram_mb=3000,
+                    required_ram_mb=0,
+                    reason="music generation",
+                    allow_cpu_fallback=False,
+                )
+                if not gate_result["ok"]:
+                    raise HTTPException(
+                        status_code=507,
+                        detail=gate_result.get("error", {
+                            "message": "Not enough VRAM for music generation",
+                            "action": "unload_and_retry",
+                        }),
+                    )
+                _models_unloaded_for_image_gen = True
+            elif not _models_unloaded_for_image_gen:
+                unload_all_llm_models()
+                _models_unloaded_for_image_gen = True
+
         result = await asyncio.to_thread(
             music_service.generate_music,
             prompt=request.get("prompt", ""),
@@ -8114,7 +8432,6 @@ async def generate_music_endpoint(request: dict):
             duration=request.get("duration", 15),
         )
 
-        # Reload LLMs after generation
         if _models_unloaded_for_image_gen:
             reload_llm_models_background()
             if memory_gate_instance:
@@ -8126,27 +8443,24 @@ async def generate_music_endpoint(request: dict):
         if not result.get("ok"):
             raise HTTPException(status_code=500, detail=result.get("error", "Music generation failed"))
 
-        # Record provenance
         if provenance_tracker_instance and result.get("ok"):
             try:
-                d = result.get("data", {})
+                data = result.get("data", {})
                 provenance_tracker_instance.record(
                     action="music_generation",
                     model_used="musicgen",
                     parameters={"prompt": request.get("prompt", ""), "duration": request.get("duration", 15)},
-                    output_artifacts=[d.get("filename", "")],
+                    output_artifacts=[data.get("filename", "")],
                 )
             except Exception:
                 pass
 
-        # Auto-save music to gallery
         try:
-            d = result.get("data", {})
+            data = result.get("data", {})
             music_id = str(uuid.uuid4())[:8]
-            # Determine which file to reference
-            music_filename = d.get("filename", "")
-            if d.get("mp3_path"):
-                music_filename = Path(d["mp3_path"]).name
+            music_filename = data.get("filename", "")
+            if data.get("mp3_path"):
+                music_filename = Path(data["mp3_path"]).name
 
             db = load_gallery_db()
             gallery_entry = {
@@ -8156,8 +8470,8 @@ async def generate_music_endpoint(request: dict):
                 "url": f"/music/{music_filename}",
                 "filename": music_filename,
                 "timestamp": int(time.time()),
-                "duration_seconds": d.get("duration_seconds", 0),
-                "model": d.get("model", "MusicGen"),
+                "duration_seconds": data.get("duration_seconds", 0),
+                "model": data.get("model", "MusicGen"),
                 "settings": {
                     "genre": request.get("genre", ""),
                     "mood": request.get("mood", ""),
@@ -8169,19 +8483,21 @@ async def generate_music_endpoint(request: dict):
             db["images"] = items
             save_gallery_db(db)
             result["saved_to_gallery"] = True
-            logger.info(f"\u2713 Auto-saved music to gallery: {music_filename}")
+            logger.info(f"✓ Auto-saved music to gallery: {music_filename}")
         except Exception as ge:
             logger.error(f"Failed to auto-save music to gallery: {ge}")
             result["saved_to_gallery"] = False
 
         return result
-
     except HTTPException:
         raise
     except Exception as e:
         if _models_unloaded_for_image_gen:
             reload_llm_models_background()
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if _resource_manager is not None:
+            _resource_manager.end_task("music_generation")
 
 @app.get("/music-models")
 async def music_models():
@@ -9905,6 +10221,58 @@ async def system_stats():
     except Exception as e:
         logger.error(f"Error getting system stats: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/system/resource-protocol")
+async def resource_protocol_status():
+    """Inspect idle cleanup state for non-LLM resources."""
+    try:
+        import psutil
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=f"psutil unavailable: {exc}")
+
+    try:
+        cfg = _resource_protocol_config()
+        memory = psutil.virtual_memory()
+        queue_state = _comfyui_queue_snapshot()
+        with _active_image_prompts_lock:
+            tracked_prompt_ids = list(_active_image_prompts.keys())
+        swarm_session_count = 0
+        try:
+            from services.edison_core.swarm_engine import list_sessions
+            swarm_session_count = len(list_sessions())
+        except Exception:
+            swarm_session_count = 0
+
+        return {
+            "config": cfg,
+            "memory": {
+                "total_mb": round(memory.total / (1024 ** 2), 1),
+                "used_mb": round(memory.used / (1024 ** 2), 1),
+                "available_mb": round(memory.available / (1024 ** 2), 1),
+                "percent": memory.percent,
+            },
+            "resource_manager": _resource_manager.snapshot() if _resource_manager is not None else None,
+            "image_generation": {
+                "tracked_prompt_count": len(tracked_prompt_ids),
+                "tracked_prompt_ids": tracked_prompt_ids[:10],
+                "comfyui_queue": queue_state,
+            },
+            "swarm": {
+                "active_session_count": swarm_session_count,
+            },
+            "services": {
+                "llm_fast_loaded": llm_fast is not None,
+                "llm_medium_loaded": llm_medium is not None,
+                "llm_deep_loaded": llm_deep is not None,
+                "video_pipeline_loaded": bool(video_service is not None and getattr(video_service, "_pipe", None) is not None),
+                "music_model_loaded": bool(music_service is not None and getattr(music_service, "_model_loaded", False)),
+                "browser_session_manager_ready": browser_session_manager is not None,
+            },
+        }
+    except Exception as exc:
+        logger.error(f"Error getting resource protocol status: {exc}")
+        raise HTTPException(status_code=500, detail=str(exc))
 
 def should_remember_conversation(message: str) -> Dict:
     """
@@ -12540,8 +12908,10 @@ async def deep_search(request: SearchRequest):
 @app.get("/branding/clients")
 async def branding_list_clients():
     try:
-        db = _load_branding()
-        return {"ok": True, "clients": db.get("clients", [])}
+        store = _get_branding_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="Branding store unavailable")
+        return {"ok": True, "clients": store.list_clients()}
     except HTTPException:
         raise
     except Exception as e:
@@ -12552,95 +12922,50 @@ async def branding_list_clients():
 @app.post("/branding/clients")
 async def branding_create_client(request: dict):
     try:
-        # Ensure all required directories exist with proper permissions
         _ensure_integrations_dir()
-        
-        name = (request.get("name") or "").strip()
-        if not name:
-            raise HTTPException(status_code=400, detail="name is required")
-
-        db = _load_branding()
-        clients = db.get("clients", [])
-        existing = next((c for c in clients if c.get("name", "").lower() == name.lower()), None)
-        if existing:
-            return {"ok": True, "client": existing, "created": False}
-
-        slug = _unique_client_slug(name, clients)
-        dirs = _client_asset_dirs(slug)
-
-        # Ensure parent BRANDING_ROOT exists first with proper error handling.
-        _ensure_directory(BRANDING_ROOT, "branding root directory")
-
-        # Create client-specific subdirectories
-        for d in dirs.values():
-            _ensure_directory(d, f"client directory '{d.name}'")
-
-        entry = {
-            "id": f"client_{uuid.uuid4().hex[:10]}",
-            "name": name,
-            "slug": slug,
-            "created_at": int(time.time()),
-            "notes": str(request.get("notes") or "").strip(),
-            "tags": _normalize_tags(request.get("tags")),
-            "paths": {
-                "base": _workspace_relative(dirs["base"]),
-                "images": _workspace_relative(dirs["images"]),
-                "videos": _workspace_relative(dirs["videos"]),
-                "files": _workspace_relative(dirs["files"]),
-            },
-        }
-        clients.append(entry)
-        db["clients"] = clients
-        _save_branding(db)
-        return {"ok": True, "client": entry, "created": True}
+        store = _get_branding_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="Branding store unavailable")
+        result = store.create_client(request)
+        return {"ok": True, **result}
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
         logger.error(f"Branding create client error: {e}")
         raise HTTPException(status_code=500, detail=f"Could not create client: {e}")
 
 
+@app.put("/branding/clients/{client_id}")
+async def branding_update_client(client_id: str, request: dict):
+    try:
+        store = _get_branding_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="Branding store unavailable")
+        client = store.update_client(client_id, request)
+        if not client:
+            raise HTTPException(status_code=404, detail="Client not found")
+        return {"ok": True, "client": client, "updated": True}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Branding update client error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not update client: {e}")
+
+
 @app.get("/branding/clients/{client_id}/assets")
 async def branding_list_assets(client_id: str):
     try:
-        db = _load_branding()
-        clients = db.get("clients", [])
-        client = next((c for c in clients if c.get("id") == client_id), None)
-        if not client:
-            raise HTTPException(status_code=404, detail="Client not found")
-
-        slug = client.get("slug", "")
-        dirs = _client_asset_dirs(slug)
-
-        def _scan(folder: Path) -> list:
-            if not folder.exists():
-                return []
-            out = []
-            for fp in sorted(folder.rglob("*"), key=lambda p: p.stat().st_mtime if p.exists() else 0, reverse=True):
-                if not fp.is_file():
-                    continue
-                try:
-                    out.append({
-                        "name": fp.name,
-                        "path": _workspace_relative(fp),
-                        "size": fp.stat().st_size,
-                        "mtime": int(fp.stat().st_mtime),
-                    })
-                except Exception:
-                    continue
-            return out[:200]
-
-        return {
-            "ok": True,
-            "client": client,
-            "assets": {
-                "images": _scan(dirs["images"]),
-                "videos": _scan(dirs["videos"]),
-                "files": _scan(dirs["files"]),
-            },
-        }
+        store = _get_branding_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="Branding store unavailable")
+        payload = store.list_assets(client_id)
+        return {"ok": True, **payload}
     except HTTPException:
         raise
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Client not found")
     except Exception as e:
         logger.error(f"Branding list assets error: {e}")
         raise HTTPException(status_code=500, detail=f"Could not load client assets: {e}")
@@ -12649,65 +12974,27 @@ async def branding_list_assets(client_id: str):
 @app.post("/branding/clients/{client_id}/add-existing")
 async def branding_add_existing_asset(client_id: str, request: dict):
     try:
-        # Ensure all required directories exist with proper permissions
         _ensure_integrations_dir()
-        
-        db = _load_branding()
-        clients = db.get("clients", [])
-        client = next((c for c in clients if c.get("id") == client_id), None)
-        if not client:
-            raise HTTPException(status_code=404, detail="Client not found")
-
+        store = _get_branding_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="Branding store unavailable")
         source_path = (request.get("source_path") or "").strip()
-        asset_type = (request.get("asset_type") or "").strip().lower()
-        move_file = bool(request.get("move", False))
         if not source_path:
             raise HTTPException(status_code=400, detail="source_path is required")
-
-        try:
-            safe_src = _safe_workspace_path(source_path)
-        except ValueError as e:
-            raise HTTPException(status_code=403, detail=str(e))
-        if not safe_src.is_file():
-            raise HTTPException(status_code=404, detail=f"File not found: {source_path}")
-
-        ext = safe_src.suffix.lower()
-        if not asset_type:
-            if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif"}:
-                asset_type = "images"
-            elif ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
-                asset_type = "videos"
-            else:
-                asset_type = "files"
-        if asset_type not in {"images", "videos", "files"}:
-            raise HTTPException(status_code=400, detail="asset_type must be one of images, videos, files")
-
-        dirs = _client_asset_dirs(client.get("slug", ""))
-        target_dir = dirs[asset_type]
-
-        # Ensure parent BRANDING_ROOT exists first
-        _ensure_directory(BRANDING_ROOT, "branding root directory")
-
-        # Create asset-type specific directory
-        target_dir = _ensure_directory(target_dir, f"client asset directory '{asset_type}'")
-        target = (target_dir / safe_src.name).resolve(strict=False)
-        if target.exists():
-            target = (target_dir / f"{target.stem}_{uuid.uuid4().hex[:6]}{target.suffix}").resolve(strict=False)
-
-        if move_file:
-            shutil.move(str(safe_src), str(target))
-        else:
-            shutil.copy2(str(safe_src), str(target))
-
-        return {
-            "ok": True,
-            "client_id": client_id,
-            "asset_type": asset_type,
-            "stored_path": _workspace_relative(target),
-            "moved": move_file,
-        }
+        result = store.add_existing_asset(
+            client_id=client_id,
+            source_path=source_path,
+            asset_type=(request.get("asset_type") or "").strip().lower(),
+            move_file=bool(request.get("move", False)),
+        )
+        return {"ok": True, **result}
     except HTTPException:
         raise
+    except ValueError as e:
+        detail = str(e)
+        raise HTTPException(status_code=403 if "Access denied" in detail else 400, detail=detail)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
         logger.error(f"Branding add asset error: {e}")
         raise HTTPException(status_code=500, detail=f"Could not add asset: {e}")
@@ -12718,57 +13005,64 @@ async def branding_upload_asset(client_id: str, file: UploadFile = File(...), as
     """Upload a file directly from the browser into a client's asset folder."""
     try:
         _ensure_integrations_dir()
-
-        db = _load_branding()
-        clients = db.get("clients", [])
-        client = next((c for c in clients if c.get("id") == client_id), None)
-        if not client:
-            raise HTTPException(status_code=404, detail="Client not found")
-
-        filename = (file.filename or "upload").strip()
-        # Sanitize filename - only keep safe characters
-        safe_name = re.sub(r'[^\w.\-]', '_', Path(filename).name)
-        if not safe_name or safe_name.startswith('.'):
-            raise HTTPException(status_code=400, detail="Invalid filename")
-
-        ext = Path(safe_name).suffix.lower()
-        resolved_type = asset_type.strip().lower()
-        if not resolved_type:
-            if ext in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"}:
-                resolved_type = "images"
-            elif ext in {".mp4", ".mov", ".mkv", ".webm", ".avi"}:
-                resolved_type = "videos"
-            else:
-                resolved_type = "files"
-        if resolved_type not in {"images", "videos", "files"}:
-            raise HTTPException(status_code=400, detail="asset_type must be images, videos, or files")
-
-        dirs = _client_asset_dirs(client.get("slug", ""))
-        target_dir = dirs[resolved_type]
-
-        _ensure_directory(BRANDING_ROOT, "branding root directory")
-        target_dir = _ensure_directory(target_dir, f"client asset directory '{resolved_type}'")
-
-        target = (target_dir / safe_name).resolve(strict=False)
-        if target.exists():
-            target = (target_dir / f"{Path(safe_name).stem}_{uuid.uuid4().hex[:6]}{ext}").resolve(strict=False)
-
+        store = _get_branding_store()
+        if store is None:
+            raise HTTPException(status_code=503, detail="Branding store unavailable")
         content = await file.read()
-        target.write_bytes(content)
-
-        return {
-            "ok": True,
-            "client_id": client_id,
-            "asset_type": resolved_type,
-            "filename": target.name,
-            "stored_path": _workspace_relative(target),
-            "size": len(content),
-        }
+        result = store.upload_asset(
+            client_id=client_id,
+            filename=file.filename or "upload",
+            content=content,
+            asset_type=asset_type.strip().lower(),
+        )
+        return {"ok": True, **result}
     except HTTPException:
         raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except FileNotFoundError:
+        raise HTTPException(status_code=404, detail="Client not found")
     except Exception as e:
-        logger.error(f"Branding upload error: {e}")
-        raise HTTPException(status_code=500, detail=f"Upload failed: {e}")
+        logger.error(f"Branding upload asset error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not upload asset: {e}")
+
+
+@app.post("/branding/generate-package")
+async def branding_generate_package(request: BrandingGenerationRequest):
+    try:
+        service = _get_branding_workflow_service()
+        if service is None:
+            raise HTTPException(status_code=503, detail="Branding workflow service unavailable")
+        result = service.generate_brand_package(request)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        detail = str(e)
+        status = 404 if detail in {"Client not found", "Project not found"} else 400
+        raise HTTPException(status_code=status, detail=detail)
+    except Exception as e:
+        logger.error(f"Branding package generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not generate branding package: {e}")
+
+
+@app.post("/marketing/generate-copy")
+async def marketing_generate_copy(request: MarketingCopyRequest):
+    try:
+        service = _get_branding_workflow_service()
+        if service is None:
+            raise HTTPException(status_code=503, detail="Branding workflow service unavailable")
+        result = service.generate_marketing_copy(request)
+        return {"ok": True, **result}
+    except HTTPException:
+        raise
+    except ValueError as e:
+        detail = str(e)
+        status = 404 if detail in {"Client not found", "Project not found"} else 400
+        raise HTTPException(status_code=status, detail=detail)
+    except Exception as e:
+        logger.error(f"Marketing copy generation error: {e}")
+        raise HTTPException(status_code=500, detail=f"Could not generate marketing copy: {e}")
 
 
 # ==================== VIDEO EDITING ====================
@@ -14566,6 +14860,8 @@ async def swarm_direct_message(request: SwarmDirectMessageRequest):
         - agent_name (str): Name of the agent to talk to (e.g. "Designer", "Coder")
         - message (str): Your message to that agent
     """
+    if _resource_manager is not None:
+        _resource_manager.begin_task("swarm")
     try:
         from services.edison_core.swarm_engine import get_session, SwarmEngine
 
@@ -14609,6 +14905,11 @@ async def swarm_direct_message(request: SwarmDirectMessageRequest):
     except Exception as e:
         logger.error(f"Swarm DM error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if _resource_manager is not None:
+            _resource_manager.end_task("swarm")
+        gc.collect()
+        _flush_gpu_memory()
 
 
 @app.post("/swarm/feedback")
@@ -14619,6 +14920,8 @@ async def swarm_user_feedback(request: SwarmFeedbackRequest):
         - session_id (str): Active swarm session ID
         - message (str): Your feedback/direction to the team
     """
+    if _resource_manager is not None:
+        _resource_manager.begin_task("swarm")
     try:
         from services.edison_core.swarm_engine import get_session, SwarmEngine
 
@@ -14660,6 +14963,11 @@ async def swarm_user_feedback(request: SwarmFeedbackRequest):
     except Exception as e:
         logger.error(f"Swarm feedback error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if _resource_manager is not None:
+            _resource_manager.end_task("swarm")
+        gc.collect()
+        _flush_gpu_memory()
 
 
 @app.get("/swarm/agents")

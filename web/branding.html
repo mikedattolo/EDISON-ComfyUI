@@ -195,6 +195,7 @@
       <p>Windows-style explorer for all client-accessible files and branding assets.</p>
     </div>
     <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn" id="projectsBtn">Projects</button>
       <button class="btn" id="videoBtn">Video Editor</button>
       <button class="btn" id="homeBtn">Main Chat</button>
       <button class="btn primary" id="refreshBtn">Refresh</button>
@@ -527,6 +528,7 @@
     });
 
     el('homeBtn').addEventListener('click', () => { window.location.href = '/'; });
+    el('projectsBtn').addEventListener('click', () => { window.location.href = '/projects'; });
     el('videoBtn').addEventListener('click', () => { window.location.href = '/video-editor'; });
     el('refreshBtn').addEventListener('click', async () => {
       await Promise.all([loadClients(), currentPath ? browse(currentPath) : loadRoots()]);

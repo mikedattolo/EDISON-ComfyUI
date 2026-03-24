@@ -1,4 +1,4 @@
-# EDISON Copilot Specification
+# EDISON Copilot Workspace Instructions
 
 # Objective
 Transform the existing EDISON AI assistant into a full-service marketing, branding, fabrication, and content-production platform without losing its identity as an AI assistant similar to ChatGPT.
@@ -150,72 +150,72 @@ Use structured tools/endpoints behind the scenes, but make the user experience f
 1. Preserve and improve conversational AI behavior across all modes.
 2. Ensure natural-language requests can trigger business workflows without requiring the user to navigate manually.
 3. Improve intent routing so EDISON can distinguish:
-  - general conversation
-  - code help
-  - self-debugging/system questions
-  - branding tasks
-  - marketing tasks
-  - fabrication/printing tasks
-  - video tasks
-  - project management tasks
+   - general conversation
+   - code help
+   - self-debugging/system questions
+   - branding tasks
+   - marketing tasks
+   - fabrication/printing tasks
+   - video tasks
+   - project management tasks
 4. Add a unified action planner so the assistant can decompose requests into:
-  - conversation response
-  - required tool calls
-  - file operations
-  - UI updates
-  - project/task updates
+   - conversation response
+   - required tool calls
+   - file operations
+   - UI updates
+   - project/task updates
 5. Keep the assistant responsive even when actions are available; it should still explain, guide, and confirm outcomes clearly.
 
 ---
 
 ## B. Add Internal System Awareness / Self-Inspection
 1. Create an internal registry or capability map describing:
-  - all major pages in `/web`
-  - all major backend endpoints
-  - JSON storage files and schemas
-  - environment variables
-  - available tools/modes
-  - connectors
-  - printing services
-  - branding services
-  - video services
+   - all major pages in `/web`
+   - all major backend endpoints
+   - JSON storage files and schemas
+   - environment variables
+   - available tools/modes
+   - connectors
+   - printing services
+   - branding services
+   - video services
 2. Add backend endpoints or internal helper functions that let the assistant inspect:
-  - available modules
-  - route definitions
-  - system readiness
-  - connector availability
-  - branding/printer/project records
-  - relevant config state
+   - available modules
+   - route definitions
+   - system readiness
+   - connector availability
+   - branding/printer/project records
+   - relevant config state
 3. Add safe code-inspection abilities:
-  - read project files
-  - search for relevant functions/classes/routes
-  - summarize how components work
-  - suggest code changes based on actual files
+   - read project files
+   - search for relevant functions/classes/routes
+   - summarize how components work
+   - suggest code changes based on actual files
 4. Prevent unsafe self-modification by default. Any code-editing capability must be controlled, logged, and reversible.
 
 ---
 
 ## C. Client & Project Management
 1. Extend the branding/client model to include:
-  - business name
-  - contact person
-  - email
-  - phone
-  - website
-  - industry
-  - notes
-  - tags
+   - business name
+   - contact person
+   - email
+   - phone
+   - website
+   - industry
+   - notes
+   - tags
 2. Add a project model with:
-  - client reference
-  - project name
-  - description
-  - service type(s): branding, printing, video, marketing, mixed
-  - due date
-  - status
-  - assets
-  - tasks
-  - approvals
-  - deliverables
+   - client reference
+   - project name
+   - description
+   - service type(s): branding, printing, video, marketing, mixed
+   - due date
+   - status
+   - assets
+   - tasks
+   - approvals
+   - deliverables
 3. Add CRUD APIs under `/api/projects`.
 4. Build a project dashboard UI.
 5. Link projects to branding assets, print jobs, video jobs, and copywriting outputs.
@@ -225,30 +225,30 @@ Use structured tools/endpoints behind the scenes, but make the user experience f
 ## D. Brand Design & Marketing Creation
 1. Add a dedicated brand designer workflow.
 2. Create endpoints for:
-  - logo concept generation
-  - moodboard generation
-  - palette recommendations
-  - typography suggestions
-  - slogan/tagline generation
-  - brand voice generation
-  - style guide generation
+   - logo concept generation
+   - moodboard generation
+   - palette recommendations
+   - typography suggestions
+   - slogan/tagline generation
+   - brand voice generation
+   - style guide generation
 3. Save outputs into client/project folders automatically.
 4. Add approval/revision states for generated branding assets.
 5. Add reusable template rendering for:
-  - business cards
-  - flyers
-  - social posts
-  - posters
-  - banner ads
-  - menus
-  - signage mockups
+   - business cards
+   - flyers
+   - social posts
+   - posters
+   - banner ads
+   - menus
+   - signage mockups
 6. Add copywriting endpoints for:
-  - ad copy
-  - social captions
-  - email campaigns
-  - business descriptions
-  - product copy
-  - website hero text
+   - ad copy
+   - social captions
+   - email campaigns
+   - business descriptions
+   - product copy
+   - website hero text
 7. Make these functions callable from chat with plain English prompts.
 
 ---
@@ -256,21 +256,21 @@ Use structured tools/endpoints behind the scenes, but make the user experience f
 ## E. Fabrication & 3D Printing Expansion
 1. Preserve current printer registration, discovery, and slicing workflows.
 2. Add fabrication-focused tools:
-  - logo/image to SVG cleanup
-  - SVG/PNG to extruded STL
-  - embossed/debossed signage generator
-  - keychain generator
-  - plaque generator
-  - nameplate generator
-  - promotional item generator
+   - logo/image to SVG cleanup
+   - SVG/PNG to extruded STL
+   - embossed/debossed signage generator
+   - keychain generator
+   - plaque generator
+   - nameplate generator
+   - promotional item generator
 3. Add job tracking for:
-  - material
-  - color
-  - quantity
-  - estimated time
-  - estimated cost
-  - machine used
-  - print status
+   - material
+   - color
+   - quantity
+   - estimated time
+   - estimated cost
+   - machine used
+   - print status
 4. Add support for fabrication order management, not just printer control.
 5. Build printable-product presets for business promo use cases.
 
@@ -279,12 +279,12 @@ Use structured tools/endpoints behind the scenes, but make the user experience f
 ## F. Video & Content Production
 1. Preserve existing video editing features.
 2. Expand the video system to support:
-  - project-based clip organization
-  - storyboard generation
-  - shot list generation
-  - script generation
-  - social video planning
-  - promo campaign planning
+   - project-based clip organization
+   - storyboard generation
+   - shot list generation
+   - script generation
+   - social video planning
+   - promo campaign planning
 3. Add optional camera-ingest support for devices like Canon 90D where technically feasible.
 4. Improve the video UI into a production workspace rather than a single-operation tool panel.
 5. Save video outputs and planning docs into the linked client/project.
@@ -294,37 +294,37 @@ Use structured tools/endpoints behind the scenes, but make the user experience f
 ## G. Social / Connector Workflows
 1. Preserve current connector architecture.
 2. Add business-oriented connector types:
-  - Instagram
-  - Facebook
-  - TikTok
-  - LinkedIn
-  - Google Business Profile
-  - email marketing tools if appropriate
+   - Instagram
+   - Facebook
+   - TikTok
+   - LinkedIn
+   - Google Business Profile
+   - email marketing tools if appropriate
 3. Support:
-  - draft post creation
-  - scheduled posting
-  - post status tracking
-  - caption/image pairing
-  - campaign linkage to projects
+   - draft post creation
+   - scheduled posting
+   - post status tracking
+   - caption/image pairing
+   - campaign linkage to projects
 4. Make connector actions available through natural language.
 
 ---
 
 ## H. Workflow Orchestration
 1. Add a unified workflow engine that can coordinate:
-  - chat reasoning
-  - branding generation
-  - marketing copy
-  - printing tasks
-  - video tasks
-  - file movement
-  - project/task updates
+   - chat reasoning
+   - branding generation
+   - marketing copy
+   - printing tasks
+   - video tasks
+   - file movement
+   - project/task updates
 2. When a user gives a complex request, EDISON should:
-  - understand the goal
-  - generate a plan
-  - execute the appropriate steps
-  - report progress
-  - store outputs in the right place
+   - understand the goal
+   - generate a plan
+   - execute the appropriate steps
+   - report progress
+   - store outputs in the right place
 3. Use existing work/swarm/agent patterns where possible instead of rebuilding from scratch.
 
 ---
@@ -332,11 +332,11 @@ Use structured tools/endpoints behind the scenes, but make the user experience f
 ## I. Authentication, Roles, and Business Readiness
 1. Add optional authentication and role support for future multi-user business use.
 2. Roles may include:
-  - admin
-  - designer
-  - fabricator
-  - editor
-  - client-viewer
+   - admin
+   - designer
+   - fabricator
+   - editor
+   - client-viewer
 3. Protect destructive or sensitive actions.
 4. Keep local single-user mode supported.
 
@@ -415,65 +415,3 @@ Provide:
 - documentation for both developers and end users
 
 Focus on making EDISON a true AI-powered business operating system for branding, marketing, fabrication, and promotional production while still preserving and strengthening its core identity as a smart, conversational, code-aware AI assistant.
-# EDISON (Offline) — Build Spec for GitHub Copilot
-
-## Goal
-Create a local/offline AI system called EDISON that:
-- Runs on Ubuntu Server
-- Uses ComfyUI as the UI/orchestrator (port 8188)
-- Runs a local LLM service (edison-core) via FastAPI (port 8811)
-- Runs a local Coral TPU service (edison-coral) via FastAPI (port 8808)
-- Boots automatically using systemd services
-- Exposes a ComfyUI custom node "EDISON Chat" that calls edison-core /chat
-
-## Hardware
-- i5-12600K, 64GB RAM
-- RTX 3090 24GB, RTX 5060 Ti 16GB, RTX 3060 12GB
-- Coral M.2 Edge TPU (B+M Key)
-- Ubuntu Server latest
-- Offline operation: no internet required after setup
-
-## edison-core requirements
-- Python FastAPI server with:
-  - /health endpoint
-  - /chat endpoint that supports mode: auto|chat|reasoning|agent|code
-- Uses llama-cpp-python to load GGUF models:
-  - fast model: qwen2.5-14b-instruct Q4_K_M
-  - deep model: qwen2.5-72b-instruct Q4_K_M
-- Uses Qdrant local storage as vector DB and sentence-transformers for embeddings
-- RAG: if mode is reasoning/agent/code, retrieve top_k chunks and inject into prompt
-- Agent mode (v1): produce a plan, optionally run python tool, then finalize
-- Memory: append (user+assistant) into vector DB unless remember=false
-- Must be robust and not crash if models are missing (provide helpful errors)
-
-## edison-coral requirements
-- Python FastAPI server with:
-  - /health endpoint that reports TPU availability and model presence
-  - /intent endpoint that returns intent label + confidence
-- V1 can use heuristic intent classification
-- V2 should allow EdgeTPU TFLite intent classifier if present (optional)
-- Never attempt to run LLMs on TPU
-
-## ComfyUI custom node requirements
-- Node: "EDISON Chat" with inputs:
-  - text (multiline)
-  - mode enum (auto/chat/reasoning/agent/code)
-  - remember boolean
-- Node calls http://127.0.0.1:8811/chat and returns reply string
-
-## scripts requirements
-- setup_ubuntu.sh: installs python3-venv, pip, git; creates venv; installs requirements; clones ComfyUI and ComfyUI-Manager; creates folders
-- install_coral.sh: installs Coral Edge TPU runtime (gasket-dkms + libedgetpu1-std)
-- enable_services.sh: installs systemd unit files into /etc/systemd/system, enables and starts them, sets repo path /opt/edison, user edison, ownership
-- download_models.py: stub that prints where to place GGUF models (do not redistribute)
-
-## systemd units requirements
-- edison-coral.service: runs edison-coral on 127.0.0.1:8808
-- edison-core.service: runs edison-core on 127.0.0.1:8811 with CUDA_VISIBLE_DEVICES=0,1,2
-- edison-comfyui.service: runs ComfyUI on 0.0.0.0:8188
-- All services restart automatically and start at boot
-
-## Constraints
-- Offline: no web search tools
-- Must run headless on Ubuntu Server
-- Keep code simple, readable, and production-ish (logging, timeouts)

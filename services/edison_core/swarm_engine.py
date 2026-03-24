@@ -163,6 +163,7 @@ class SwarmSession:
     user_interventions: List[Dict[str, Any]] = field(default_factory=list)  # user messages injected mid-swarm
     direct_messages: List[Dict[str, Any]] = field(default_factory=list)     # @agent DMs from user
     created_at: float = field(default_factory=time.time)
+    last_activity_at: float = field(default_factory=time.time)
     # ── Project task & artifact tracking ──
     tasks: List[Dict[str, Any]] = field(default_factory=list)
     artifacts: List[Dict[str, Any]] = field(default_factory=list)
@@ -174,6 +175,7 @@ class SwarmSession:
 
     def add_note(self, text: str, max_items: int = 3):
         """Extract bullet points / sentences from text and add to shared scratchpad."""
+        self.touch()
         if not text:
             return
         lines = [line.strip() for line in text.splitlines() if line.strip()]
@@ -193,6 +195,7 @@ class SwarmSession:
         return "- (empty)"
 
     def add_task(self, title: str, owner: str = "") -> Dict[str, Any]:
+        self.touch()
         self._task_counter += 1
         task = {"id": f"T{self._task_counter}", "title": title, "status": "todo",
                 "owner_agent": owner, "files": [], "notes": ""}
@@ -200,6 +203,7 @@ class SwarmSession:
         return task
 
     def update_task(self, task_id: str, status: str = "", notes: str = ""):
+        self.touch()
         for t in self.tasks:
             if t["id"] == task_id:
                 if status:
@@ -247,6 +251,9 @@ class SwarmSession:
                 return a
         return None
 
+    def touch(self) -> None:
+        self.last_activity_at = time.time()
+
     def to_dict(self) -> dict:
         return {
             "session_id": self.session_id,
@@ -260,6 +267,8 @@ class SwarmSession:
             "user_interventions": len(self.user_interventions),
             "tasks": self.tasks,
             "artifacts": self.artifacts,
+            "created_at": self.created_at,
+            "last_activity_at": self.last_activity_at,
         }
 
 
@@ -317,6 +326,7 @@ class SwarmEngine:
         Returns (session, synthesis_prompt) — the caller streams the synthesis_prompt.
         """
         session = SwarmSession(user_request=user_request)
+        session.touch()
 
         # 1) Select & assign models to agents
         self._select_agents(session, user_request)
@@ -344,6 +354,7 @@ class SwarmEngine:
         synthesis_prompt = self._build_synthesis_prompt(session, file_request)
 
         session.status = "done"
+        session.touch()
         return session, synthesis_prompt
 
     async def handle_direct_message(
@@ -396,6 +407,7 @@ Your response (be specific, personal, address their question):"""
         session.direct_messages.append(result)
         session.conversation.append(result)
         session.add_note(result["response"])
+        session.touch()
 
         return result
 
@@ -413,6 +425,7 @@ Your response (be specific, personal, address their question):"""
             "message": user_feedback,
             "timestamp": time.time(),
         })
+        session.touch()
 
         # All agents respond to user feedback in context of discussion
         responses = []
@@ -1153,28 +1166,71 @@ Instructions:
 # ──────────────────────────────────────────────────────────────────────────────
 
 _active_sessions: Dict[str, SwarmSession] = {}
-_SESSION_TTL = 3600  # 1 hour
+_SESSION_TTL = 900  # 15 minutes
+
+
+def _compact_session(session: SwarmSession, max_conversation_items: int = 24, max_notes: int = 12) -> bool:
+    changed = False
+    if len(session.conversation) > max_conversation_items:
+        session.conversation = session.conversation[-max_conversation_items:]
+        changed = True
+    if len(session.user_interventions) > max_notes:
+        session.user_interventions = session.user_interventions[-max_notes:]
+        changed = True
+    if len(session.direct_messages) > max_notes:
+        session.direct_messages = session.direct_messages[-max_notes:]
+        changed = True
+    if len(session.shared_notes) > max_notes:
+        session.shared_notes = session.shared_notes[-max_notes:]
+        session._shared_note_set = {" ".join(note.split()).lower() for note in session.shared_notes}
+        changed = True
+    if changed:
+        session.touch()
+    return changed
+
+
+def prune_sessions(ttl_seconds: Optional[int] = None, compact_completed: bool = True) -> Dict[str, int]:
+    now = time.time()
+    ttl = max(60, int(ttl_seconds or _SESSION_TTL))
+    removed = 0
+    compacted = 0
+    stale = [
+        key for key, session in _active_sessions.items()
+        if (now - session.last_activity_at) > ttl
+    ]
+    for key in stale:
+        _active_sessions.pop(key, None)
+        removed += 1
+    if compact_completed:
+        for session in _active_sessions.values():
+            if session.status == "done" and _compact_session(session):
+                compacted += 1
+    return {"removed": removed, "compacted": compacted, "active": len(_active_sessions)}
+
+
+def end_session(session_id: str) -> bool:
+    return _active_sessions.pop(session_id, None) is not None
 
 def get_session(session_id: str) -> Optional[SwarmSession]:
+    prune_sessions()
     s = _active_sessions.get(session_id)
-    if s and (time.time() - s.created_at) > _SESSION_TTL:
+    if s and (time.time() - s.last_activity_at) > _SESSION_TTL:
         _active_sessions.pop(session_id, None)
         return None
+    if s:
+        s.touch()
     return s
 
 def register_session(session: SwarmSession):
-    # Prune old sessions
-    now = time.time()
-    stale = [k for k, v in _active_sessions.items() if (now - v.created_at) > _SESSION_TTL]
-    for k in stale:
-        _active_sessions.pop(k, None)
+    prune_sessions()
+    session.touch()
     _active_sessions[session.session_id] = session
 
 def list_sessions() -> List[dict]:
-    now = time.time()
+    prune_sessions()
     return [
         s.to_dict() for s in _active_sessions.values()
-        if (now - s.created_at) <= _SESSION_TTL
+        if (time.time() - s.last_activity_at) <= _SESSION_TTL
     ]
 
 
