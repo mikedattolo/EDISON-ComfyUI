@@ -18,7 +18,10 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import urllib.parse
+import urllib.request
+import zipfile
 from pathlib import Path
 from typing import Iterable
 
@@ -152,12 +155,71 @@ def hf_download(
     wget_download(hf_resolve_url(repo_id, filename), final_path, dry_run=dry_run, auth_token=token)
 
 
+def _github_archive_urls(repo_url: str) -> list[str]:
+    parsed = urllib.parse.urlparse(repo_url)
+    if parsed.netloc.lower() != "github.com":
+        return []
+    parts = [part for part in parsed.path.strip("/").split("/") if part]
+    if len(parts) < 2:
+        return []
+    owner, repo = parts[0], parts[1].removesuffix(".git")
+    return [
+        f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/main",
+        f"https://codeload.github.com/{owner}/{repo}/zip/refs/heads/master",
+    ]
+
+
+def _download_and_extract_zip(url: str, destination: Path, dry_run: bool) -> bool:
+    if dry_run:
+        print(f"DRY RUN download and extract {url} -> {destination}")
+        return True
+
+    ensure_dirs([destination.parent], dry_run=False)
+    with tempfile.TemporaryDirectory(prefix="edison_repo_zip_") as temp_dir:
+        zip_path = Path(temp_dir) / "repo.zip"
+        try:
+            urllib.request.urlretrieve(url, zip_path)
+            with zipfile.ZipFile(zip_path) as archive:
+                top_level = None
+                for member in archive.namelist():
+                    if member.strip():
+                        top_level = member.split("/", 1)[0]
+                        break
+                archive.extractall(temp_dir)
+            if not top_level:
+                return False
+            extracted_root = Path(temp_dir) / top_level
+            if destination.exists():
+                shutil.rmtree(destination)
+            shutil.move(str(extracted_root), str(destination))
+            return True
+        except Exception:
+            return False
+
+
 def clone_or_update(repo_url: str, destination: Path, dry_run: bool) -> None:
+    git_env = os.environ.copy()
+    git_env["GIT_TERMINAL_PROMPT"] = "0"
+    git_env["GIT_ASKPASS"] = "echo"
+
     if destination.exists():
-        run(["git", "pull", "--ff-only"], cwd=destination, dry_run=dry_run)
+        if (destination / ".git").exists():
+            run(["git", "-c", "credential.helper=", "pull", "--ff-only"], cwd=destination, dry_run=dry_run, env=git_env)
+        else:
+            print(f"SKIP existing non-git directory {destination}")
         return
+
     ensure_dirs([destination.parent], dry_run=dry_run)
-    run(["git", "clone", repo_url, str(destination)], dry_run=dry_run)
+    try:
+        run(["git", "-c", "credential.helper=", "clone", repo_url, str(destination)], dry_run=dry_run, env=git_env)
+        return
+    except subprocess.CalledProcessError:
+        archive_urls = _github_archive_urls(repo_url)
+        for url in archive_urls:
+            if _download_and_extract_zip(url, destination, dry_run=dry_run):
+                print(f"Downloaded archive fallback for {repo_url}")
+                return
+        raise
 
 
 def install_vision_bundle(args: argparse.Namespace, summary: list[str]) -> None:
@@ -267,16 +329,7 @@ def install_image_bundle(args: argparse.Namespace, summary: list[str]) -> None:
     else:
         print("NOTE skipping FLUX Fill because no HF token was provided")
 
-    clone_or_update(
-        "https://github.com/kijai/ComfyUI-FLUX-BFL.git",
-        COMFYUI_NODES / "ComfyUI-FLUX-BFL",
-        dry_run=args.dry_run,
-    )
-    flux_req = COMFYUI_NODES / "ComfyUI-FLUX-BFL" / "requirements.txt"
-    if flux_req.exists() or args.dry_run:
-        pip_install(["install", "-r", str(flux_req)], dry_run=args.dry_run)
-
-    summary.append(f"image: installed FLUX {args.flux_variant} stack")
+    summary.append(f"image: installed FLUX {args.flux_variant} stack using built-in ComfyUI loaders")
 
 
 def install_video_bundle(args: argparse.Namespace, summary: list[str]) -> None:
