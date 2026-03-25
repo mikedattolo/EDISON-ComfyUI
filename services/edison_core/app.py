@@ -967,16 +967,55 @@ def _ensure_integrations_dir():
 
 
 def _load_prompts() -> dict:
-    _ensure_integrations_dir()
-    try:
-        return json.loads(PROMPTS_DB.read_text())
-    except Exception:
-        return {"prompts": []}
+    return {"prompts": _load_prompt_store().get("prompts", [])}
 
 
 def _save_prompts(data: dict):
+    store = _load_prompt_store()
+    store["prompts"] = data.get("prompts", [])
+    _save_prompt_store(store)
+
+
+def _normalize_prompt_store(data: Any) -> dict:
+    if not isinstance(data, dict):
+        data = {}
+    data.setdefault("prompts", [])
+    data.setdefault("assistants", [])
+    data.setdefault("automations", [])
+    return data
+
+
+def _load_prompt_store() -> dict:
     _ensure_integrations_dir()
-    PROMPTS_DB.write_text(json.dumps(data, indent=2))
+    try:
+        return _normalize_prompt_store(json.loads(PROMPTS_DB.read_text()))
+    except Exception:
+        return _normalize_prompt_store({})
+
+
+def _save_prompt_store(data: dict):
+    _ensure_integrations_dir()
+    PROMPTS_DB.write_text(json.dumps(_normalize_prompt_store(data), indent=2))
+
+
+def _load_assistants() -> list:
+    return _load_prompt_store().get("assistants", [])
+
+
+def _save_assistants(items: list):
+    store = _load_prompt_store()
+    store["assistants"] = items
+    _save_prompt_store(store)
+
+
+def _load_automations() -> list:
+    return _load_prompt_store().get("automations", [])
+
+
+def _save_automations(items: list):
+    store = _load_prompt_store()
+    store["automations"] = items
+    _save_prompt_store(store)
 
 
 def _load_connectors() -> dict:
@@ -990,6 +1029,125 @@ def _load_connectors() -> dict:
 def _save_connectors(data: dict):
     _ensure_integrations_dir()
     CONNECTORS_DB.write_text(json.dumps(data, indent=2))
+
+
+def _resolve_assistant_profile(assistant_profile_id: Optional[str]) -> Optional[dict]:
+    if not assistant_profile_id:
+        return None
+    target = str(assistant_profile_id).strip()
+    if not target:
+        return None
+    return next((item for item in _load_assistants() if item.get("id") == target and item.get("enabled", True)), None)
+
+
+def _render_automation_template(value: Any, message: str, automation: dict) -> Any:
+    replacements = {
+        "{{message}}": message,
+        "{{user_message}}": message,
+        "{{automation_name}}": automation.get("name", "automation"),
+    }
+    if isinstance(value, str):
+        rendered = value
+        for token, replacement in replacements.items():
+            rendered = rendered.replace(token, replacement)
+        return rendered
+    if isinstance(value, list):
+        return [_render_automation_template(item, message, automation) for item in value]
+    if isinstance(value, dict):
+        return {key: _render_automation_template(item, message, automation) for key, item in value.items()}
+    return value
+
+
+def _find_matching_automation(message: str) -> Optional[dict]:
+    lowered = (message or "").strip().lower()
+    if not lowered:
+        return None
+    for automation in _load_automations():
+        if not automation.get("enabled", True):
+            continue
+        triggers = automation.get("trigger_phrases") or []
+        for trigger in triggers:
+            trigger_text = str(trigger or "").strip().lower()
+            if not trigger_text:
+                continue
+            if lowered == trigger_text or lowered.startswith(f"{trigger_text} ") or trigger_text in lowered:
+                return automation
+    return None
+
+
+def _execute_automation(automation: dict, message: str) -> dict:
+    connector_name = (automation.get("connector_name") or "").strip()
+    if not connector_name:
+        return {"ok": False, "error": "Automation is missing connector_name"}
+
+    db = _load_connectors()
+    connector = next((c for c in db.get("connectors", []) if c.get("name") == connector_name and c.get("enabled", True)), None)
+    if not connector:
+        return {"ok": False, "error": f"Connector '{connector_name}' not found or disabled"}
+
+    method = (automation.get("method") or "GET").upper()
+    path = _render_automation_template(automation.get("path") or "/", message, automation)
+    body = _render_automation_template(automation.get("body_template"), message, automation)
+    connector_result = _call_connector_http(connector, method, path, body)
+    if not connector_result.get("ok"):
+        return {"ok": False, "error": connector_result.get("error") or "Automation request failed", "result": connector_result}
+
+    response_template = automation.get("response_template") or "Automation '{{automation_name}}' completed successfully."
+    rendered_response = _render_automation_template(response_template, message, automation)
+    return {
+        "ok": True,
+        "automation": automation,
+        "connector_result": connector_result,
+        "response": rendered_response,
+    }
+
+
+def _maybe_execute_automation(message: str) -> Optional[dict]:
+    automation = _find_matching_automation(message)
+    if not automation:
+        return None
+
+    try:
+        result = _execute_automation(automation, message)
+    except Exception as e:
+        logger.error(f"Automation '{automation.get('name', 'unknown')}' failed: {e}")
+        return {
+            "response": f"Automation '{automation.get('name', 'unknown')}' failed: {e}",
+            "mode_used": "automation",
+            "model_used": "automation",
+            "automation": {
+                "id": automation.get("id"),
+                "name": automation.get("name"),
+                "ok": False,
+            },
+        }
+
+    connector_result = result.get("connector_result") or {}
+    connector_preview = connector_result.get("body")
+    if isinstance(connector_preview, (dict, list)):
+        connector_preview_text = json.dumps(connector_preview, indent=2)[:1800]
+    else:
+        connector_preview_text = str(connector_preview or "")[:1800]
+
+    detail_suffix = f"\n\nConnector response:\n{connector_preview_text}" if connector_preview_text else ""
+    ok = bool(result.get("ok"))
+    response_text = result.get("response") or f"Automation '{automation.get('name', 'unknown')}' executed."
+    if not ok and result.get("error"):
+        response_text = f"Automation '{automation.get('name', 'unknown')}' failed: {result['error']}"
+
+    return {
+        "response": response_text + detail_suffix,
+        "mode_used": "automation",
+        "model_used": "automation",
+        "automation": {
+            "id": automation.get("id"),
+            "name": automation.get("name"),
+            "connector_name": automation.get("connector_name"),
+            "ok": ok,
+            "method": automation.get("method") or "GET",
+            "path": automation.get("path") or "/",
+        },
+    }
 
 
 def _load_printers() -> dict:
@@ -2411,6 +2569,10 @@ class ChatRequest(BaseModel):
         default=None,
         description="Active swarm session ID for @Agent direct messages"
     )
+    assistant_profile_id: Optional[str] = Field(
+        default=None,
+        description="Optional saved custom assistant profile to apply to this chat"
+    )
 
 class ChatResponse(BaseModel):
     response: str
@@ -2422,6 +2584,7 @@ class ChatResponse(BaseModel):
     search_results_count: Optional[int] = None
     tools_used: Optional[list] = None
     business_action: Optional[dict] = None
+    automation: Optional[dict] = None
     image_generation: Optional[dict] = None
 
 class SearchRequest(BaseModel):
@@ -5594,6 +5757,7 @@ async def chat(request: ChatRequest):
     """Main chat endpoint with mode support"""
     
     logger.info(f"=== Chat request received: '{request.message}' (mode: {request.mode}) ===")
+    assistant_profile = _resolve_assistant_profile(request.assistant_profile_id)
     
     # Check if any model is loaded
     if not llm_fast and not llm_medium and not llm_deep:
@@ -5644,6 +5808,17 @@ async def chat(request: ChatRequest):
             conversation_state_mgr.increment_turn(_chat_session_id)
     except Exception:
         pass
+
+    automation_result = _maybe_execute_automation(request.message)
+    if automation_result:
+        assistant_response = automation_result.get("response", "")
+        store_conversation_exchange(request, assistant_response, automation_result.get("mode_used", "automation"), remember)
+        return ChatResponse(
+            response=assistant_response,
+            mode_used=automation_result.get("mode_used", "automation"),
+            model_used=automation_result.get("model_used", "automation"),
+            automation=automation_result.get("automation"),
+        )
 
     business_result = _maybe_execute_business_action(request.message)
     if business_result:
@@ -6168,6 +6343,7 @@ async def chat(request: ChatRequest):
         realtime_context=rt_context,
         is_file_request=file_requested,
         user_mood=detected_mood,
+        assistant_profile=assistant_profile,
     )
     status_steps = []
 
@@ -6402,6 +6578,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         active_requests[request_id] = {"cancelled": False, "timestamp": time.time()}
     
     logger.info(f"=== Chat stream request received: '{request.message}' (mode: {request.mode}, request_id: {request_id}) ===")
+    assistant_profile = _resolve_assistant_profile(request.assistant_profile_id)
 
     # If models are unloaded for image generation, wait for reload or trigger it
     if _models_unloaded_for_image_gen or (not llm_fast and not llm_medium and not llm_deep):
@@ -6436,6 +6613,33 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     is_recall, recall_query = detect_recall_intent(request.message)
     intent = get_intent_from_coral(request.message)
+
+    automation_result = _maybe_execute_automation(request.message)
+    if automation_result:
+        assistant_response = automation_result.get("response", "")
+        store_conversation_exchange(request, assistant_response, automation_result.get("mode_used", "automation"), remember)
+
+        async def _automation_sse():
+            try:
+                yield f"event: status\ndata: {json.dumps({'request_id': request_id, 'stage': 'Running automation'})}\n\n"
+                yield f"data: {json.dumps({'t': assistant_response})}\n\n"
+                done_payload = {
+                    "ok": True,
+                    "response": assistant_response,
+                    "mode_used": automation_result.get("mode_used", "automation"),
+                    "model_used": automation_result.get("model_used", "automation"),
+                    "automation": automation_result.get("automation"),
+                }
+                yield f"event: done\ndata: {json.dumps(done_payload)}\n\n"
+            finally:
+                with active_requests_lock:
+                    active_requests.pop(request_id, None)
+
+        return StreamingResponse(
+            _automation_sse(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     business_result = _maybe_execute_business_action(request.message)
     if business_result:
@@ -6882,6 +7086,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         realtime_context=rt_context_stream,
         is_file_request=file_requested,
         user_mood=detected_mood,
+        assistant_profile=assistant_profile,
     )
     work_steps = []
     work_step_results = []
@@ -8479,31 +8684,24 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                             img_response = requests.get(fetch_url)
                             
                             if img_response.ok:
-                                # Generate unique ID and save
-                                image_id = str(uuid.uuid4())
                                 extension = filename.split('.')[-1] if '.' in filename else 'png'
-                                saved_filename = f"{image_id}.{extension}"
-                                saved_path = GALLERY_DIR / saved_filename
-                                saved_path.write_bytes(img_response.content)
-                                
-                                # Add to database
-                                db = load_gallery_db()
-                                image_entry = {
-                                    "id": image_id,
-                                    "prompt": prompt_text,
-                                    "url": f"/gallery/image/{saved_filename}",
-                                    "filename": saved_filename,
-                                    "timestamp": int(time.time()),
-                                    "width": 1024,
-                                    "height": 1024,
-                                    "model": "SDXL",
-                                    "settings": {}
-                                }
-                                db["images"].insert(0, image_entry)
-                                save_gallery_db(db)
-                                
+                                image_entry = _save_bytes_to_gallery(
+                                    img_response.content,
+                                    prompt_text,
+                                    {
+                                        "width": 1024,
+                                        "height": 1024,
+                                        "model": "SDXL",
+                                        "settings": {},
+                                        "extension": extension,
+                                    },
+                                )
                                 result["saved_to_gallery"] = True
-                                logger.info(f"✓ Auto-saved image to gallery: {saved_filename}")
+                                result["gallery_image_id"] = image_entry["id"]
+                                result["gallery_image_url"] = image_entry["url"]
+                                result["gallery_filename"] = image_entry["filename"]
+                                result["source_path"] = image_entry["source_path"]
+                                logger.info(f"✓ Auto-saved image to gallery: {image_entry['filename']}")
                             else:
                                 logger.error(f"Failed to fetch image from ComfyUI: {img_response.status_code}")
                                 result["saved_to_gallery"] = False
@@ -8566,6 +8764,31 @@ async def proxy_image(filename: str, subfolder: str = "", type: str = "output"):
         )
     except Exception as e:
         logger.error(f"Error proxying image: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/images/edits/{filename}")
+async def get_edited_image(filename: str):
+    """Serve an edited image from outputs/edits."""
+    try:
+        safe_name = os.path.basename(filename)
+        edits_root = (REPO_ROOT / "outputs" / "edits").resolve()
+        image_path = (edits_root / safe_name).resolve()
+        if not str(image_path).startswith(str(edits_root)):
+            raise HTTPException(status_code=403, detail="Access denied")
+        if not image_path.exists():
+            raise HTTPException(status_code=404, detail="Image not found")
+
+        from fastapi.responses import FileResponse
+        return FileResponse(
+            image_path,
+            media_type=f"image/{safe_name.split('.')[-1]}",
+            headers={"Content-Disposition": f'inline; filename="{safe_name}"'},
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error serving edited image: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
@@ -8824,6 +9047,46 @@ def save_gallery_db(data):
     ensure_gallery_dir()
     GALLERY_DB.write_text(json.dumps(data, indent=2))
 
+def _save_bytes_to_gallery(image_bytes: bytes, prompt: str, settings: Optional[dict] = None) -> dict:
+    """Persist image bytes to the gallery and return the stored entry."""
+    ensure_gallery_dir()
+    normalized_settings = settings or {}
+    image_id = str(uuid.uuid4())
+    extension = normalized_settings.get("extension", "png")
+    saved_filename = f"{image_id}.{extension}"
+    saved_path = GALLERY_DIR / saved_filename
+    saved_path.write_bytes(image_bytes)
+
+    image_entry = {
+        "id": image_id,
+        "prompt": prompt,
+        "url": f"/gallery/image/{saved_filename}",
+        "filename": saved_filename,
+        "timestamp": int(time.time()),
+        "width": normalized_settings.get("width", 1024),
+        "height": normalized_settings.get("height", 1024),
+        "model": normalized_settings.get("model", "SDXL"),
+        "settings": normalized_settings.get("settings", {}),
+        "source_path": str(saved_path),
+    }
+
+    db = load_gallery_db()
+    db.setdefault("images", []).insert(0, image_entry)
+    save_gallery_db(db)
+    return image_entry
+
+
+def _save_path_to_gallery(image_path: str, prompt: str, settings: Optional[dict] = None) -> dict:
+    """Persist an existing image file to the gallery and return the stored entry."""
+    source = Path(image_path)
+    if not source.exists():
+        raise FileNotFoundError(f"Image not found: {image_path}")
+
+    normalized_settings = dict(settings or {})
+    extension = source.suffix.lstrip(".") or normalized_settings.get("extension", "png")
+    normalized_settings["extension"] = extension
+    return _save_bytes_to_gallery(source.read_bytes(), prompt, normalized_settings)
+
 def get_or_create_user_id(request: Request, response: Response) -> str:
     """Get user ID from cookie or create new one"""
     user_id = request.headers.get('X-Edison-User-ID') or request.cookies.get('edison_user_id')
@@ -8942,12 +9205,6 @@ async def save_to_gallery(request: dict):
         if not image_url or not prompt:
             raise HTTPException(status_code=400, detail="image_url and prompt required")
         
-        # Load gallery database
-        db = load_gallery_db()
-        
-        # Generate unique ID
-        image_id = str(uuid.uuid4())[:8]
-        
         # Download and save image to gallery directory
         comfyui_config = config.get("edison", {}).get("comfyui", {})
         comfyui_host = comfyui_config.get("host", "127.0.0.1")
@@ -8970,29 +9227,20 @@ async def save_to_gallery(request: dict):
             response = requests.get(fetch_url)
             
             if response.ok:
-                # Save to gallery directory
                 extension = filename.split('.')[-1] if '.' in filename else 'png'
-                saved_filename = f"{image_id}.{extension}"
-                saved_path = GALLERY_DIR / saved_filename
-                saved_path.write_bytes(response.content)
+                image_entry = _save_bytes_to_gallery(
+                    response.content,
+                    prompt,
+                    {
+                        "width": settings.get("width", 1024),
+                        "height": settings.get("height", 1024),
+                        "model": settings.get("model", "SDXL"),
+                        "settings": settings,
+                        "extension": extension,
+                    },
+                )
                 
-                # Add to database
-                image_entry = {
-                    "id": image_id,
-                    "prompt": prompt,
-                    "url": f"/gallery/image/{saved_filename}",
-                    "filename": saved_filename,
-                    "timestamp": int(time.time()),
-                    "width": settings.get("width", 1024),
-                    "height": settings.get("height", 1024),
-                    "model": settings.get("model", "SDXL"),
-                    "settings": settings
-                }
-                
-                db["images"].insert(0, image_entry)  # Add to beginning
-                save_gallery_db(db)
-                
-                logger.info(f"Saved image {image_id} to gallery")
+                logger.info(f"Saved image {image_entry['id']} to gallery")
                 return {"status": "success", "image": image_entry}
         
         raise HTTPException(status_code=400, detail="Invalid image URL")
@@ -9455,7 +9703,7 @@ async def cleanup_auto_users(request: dict = None):
 
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
                         realtime_context: str = None, is_file_request: bool = False,
-                        user_mood: str = "neutral") -> str:
+                        user_mood: str = "neutral", assistant_profile: Optional[dict] = None) -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
     now = datetime.now()
@@ -9492,6 +9740,16 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
+
+    if assistant_profile:
+        profile_name = assistant_profile.get("name") or "Custom Assistant"
+        profile_description = (assistant_profile.get("description") or "").strip()
+        profile_prompt = (assistant_profile.get("system_prompt") or "").strip()
+        base += f" You are currently acting as the custom assistant '{profile_name}'."
+        if profile_description:
+            base += f" Specialty: {profile_description}."
+        if profile_prompt:
+            base += f" Follow these custom instructions for this conversation: {profile_prompt}"
 
     # Add media generation awareness
     base += (
@@ -12013,6 +12271,7 @@ async def edit_image(request: Request):
         allow_fallback = bool(params.get("allow_fallback", False))
         auto_mask = bool(params.get("auto_mask", True))
         auto_refine = bool(params.get("auto_refine", True))
+        auto_save_gallery = bool(params.get("auto_save_gallery", True))
         comfyui_url = params.get("comfyui_url", "http://127.0.0.1:8188")
         route = _route_image_edit(edit_type, prompt, bool(mask_path))
 
@@ -12126,9 +12385,34 @@ async def edit_image(request: Request):
             except Exception as e:
                 logger.warning(f"Image refinement pass skipped: {e}")
 
+        edit_payload = rec.to_dict()
+        edit_payload["image_url"] = f"/images/edits/{Path(rec.output_path).name}"
+        if auto_save_gallery:
+            try:
+                gallery_entry = _save_path_to_gallery(
+                    rec.output_path,
+                    prompt or "Edited image",
+                    {
+                        "width": params.get("width", 1024),
+                        "height": params.get("height", 1024),
+                        "model": rec.model_used or "SDXL",
+                        "settings": {
+                            "edit_type": route,
+                            "routed_edit_type": route,
+                            "auto_mask_used": auto_mask_used,
+                            "auto_refined": refined,
+                        },
+                    },
+                )
+                edit_payload["gallery_image_id"] = gallery_entry["id"]
+                edit_payload["gallery_image_url"] = gallery_entry["url"]
+                edit_payload["gallery_filename"] = gallery_entry["filename"]
+            except Exception as gallery_error:
+                logger.warning(f"Edited image gallery auto-save failed: {gallery_error}")
+
         return {
             "ok": True,
-            "edit": rec.to_dict(),
+            "edit": edit_payload,
             "routed_edit_type": route,
             "auto_mask_used": auto_mask_used,
             "auto_refined": refined,
@@ -14181,6 +14465,126 @@ async def sandbox_browser_session_close(request: dict):
         raise _browser_error_to_http(e)
 
 
+@app.get("/assistants")
+async def list_assistants():
+    """List saved custom assistant profiles."""
+    items = []
+    for assistant in _load_assistants():
+        items.append({
+            "id": assistant.get("id"),
+            "name": assistant.get("name"),
+            "description": assistant.get("description", ""),
+            "system_prompt": assistant.get("system_prompt", ""),
+            "default_mode": assistant.get("default_mode", "auto"),
+            "starter_prompts": assistant.get("starter_prompts", []),
+            "enabled": assistant.get("enabled", True),
+        })
+    return {"assistants": items}
+
+
+@app.post("/assistants")
+async def upsert_assistant(request: dict):
+    """Create or update a saved custom assistant profile."""
+    name = (request.get("name") or "").strip()
+    system_prompt = (request.get("system_prompt") or "").strip()
+    if not name or not system_prompt:
+        raise HTTPException(status_code=400, detail="name and system_prompt are required")
+
+    items = _load_assistants()
+    assistant_id = (request.get("id") or "").strip() or str(uuid.uuid4())
+    existing = next((item for item in items if item.get("id") == assistant_id), None)
+    payload = {
+        "id": assistant_id,
+        "name": name,
+        "description": (request.get("description") or "").strip(),
+        "system_prompt": system_prompt,
+        "default_mode": (request.get("default_mode") or "auto").strip() or "auto",
+        "starter_prompts": request.get("starter_prompts") or [],
+        "enabled": bool(request.get("enabled", True)),
+        "updated_at": int(time.time()),
+    }
+    if existing:
+        existing.update(payload)
+    else:
+        payload["created_at"] = int(time.time())
+        items.append(payload)
+    _save_assistants(items)
+    return {"ok": True, "assistant": payload}
+
+
+@app.delete("/assistants/{assistant_id}")
+async def delete_assistant(assistant_id: str):
+    items = _load_assistants()
+    kept = [item for item in items if item.get("id") != assistant_id]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="Assistant not found")
+    _save_assistants(kept)
+    return {"ok": True, "deleted": assistant_id}
+
+
+@app.get("/automations")
+async def list_automations():
+    """List saved chat automations."""
+    return {"automations": _load_automations()}
+
+
+@app.post("/automations")
+async def upsert_automation(request: dict):
+    """Create or update a connector-backed automation."""
+    name = (request.get("name") or "").strip()
+    connector_name = (request.get("connector_name") or "").strip()
+    trigger_phrases = [str(item).strip() for item in (request.get("trigger_phrases") or []) if str(item).strip()]
+    if not name or not connector_name or not trigger_phrases:
+        raise HTTPException(status_code=400, detail="name, connector_name, and trigger_phrases are required")
+
+    automation_id = (request.get("id") or "").strip() or str(uuid.uuid4())
+    items = _load_automations()
+    existing = next((item for item in items if item.get("id") == automation_id), None)
+    payload = {
+        "id": automation_id,
+        "name": name,
+        "description": (request.get("description") or "").strip(),
+        "trigger_phrases": trigger_phrases,
+        "connector_name": connector_name,
+        "method": (request.get("method") or "GET").upper(),
+        "path": (request.get("path") or "/").strip() or "/",
+        "body_template": request.get("body_template"),
+        "response_template": (request.get("response_template") or "").strip(),
+        "enabled": bool(request.get("enabled", True)),
+        "updated_at": int(time.time()),
+    }
+    if existing:
+        existing.update(payload)
+    else:
+        payload["created_at"] = int(time.time())
+        items.append(payload)
+    _save_automations(items)
+    return {"ok": True, "automation": payload}
+
+
+@app.post("/automations/run")
+async def run_automation(request: dict):
+    automation_id = (request.get("automation_id") or "").strip()
+    message = (request.get("message") or "Run automation").strip()
+    automation = next((item for item in _load_automations() if item.get("id") == automation_id), None)
+    if not automation:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    result = _execute_automation(automation, message)
+    if not result.get("ok"):
+        raise HTTPException(status_code=400, detail=result.get("error") or "Automation failed")
+    return result
+
+
+@app.delete("/automations/{automation_id}")
+async def delete_automation(automation_id: str):
+    items = _load_automations()
+    kept = [item for item in items if item.get("id") != automation_id]
+    if len(kept) == len(items):
+        raise HTTPException(status_code=404, detail="Automation not found")
+    _save_automations(kept)
+    return {"ok": True, "deleted": automation_id}
+
+
 @app.get("/integrations/connectors")
 async def list_connectors():
     """List configured external API connectors."""
@@ -14301,6 +14705,72 @@ async def quick_connect_connector(request: dict):
             "provider": provider_key,
             "base_url": payload["base_url"],
             "test_path": template.get("test_path"),
+        },
+    }
+
+
+@app.post("/integrations/connectors/easy-connect")
+async def easy_connect_connector(request: dict):
+    """Create a connector with simple auth options instead of raw header JSON."""
+    provider_key = (request.get("provider") or "custom").strip().lower().replace("-", "_")
+    provider_template = CONNECTOR_CATALOG.get(provider_key, {})
+    auth_type = (request.get("auth_type") or provider_template.get("auth") or "bearer").strip().lower()
+    custom_name = (request.get("name") or "").strip()
+    connector_name = custom_name or provider_key or "custom_api"
+    base_url = (request.get("base_url") or provider_template.get("base_url") or "").strip()
+    timeout_sec = int(request.get("timeout_sec", 20) or 20)
+    token = (request.get("token") or request.get("api_key") or "").strip()
+    header_name = (request.get("header_name") or "X-API-Key").strip() or "X-API-Key"
+
+    if auth_type == "oauth2":
+        raise HTTPException(status_code=400, detail="This provider supports one-click Connect. Use the Connect button instead of manual setup.")
+    if not base_url:
+        raise HTTPException(status_code=400, detail="base_url is required")
+
+    headers = {"Accept": "application/json"}
+    headers.update(provider_template.get("extra_headers") or {})
+
+    if auth_type == "bearer":
+        if not token:
+            raise HTTPException(status_code=400, detail="token is required for bearer auth")
+        headers["Authorization"] = f"Bearer {token}"
+    elif auth_type in {"x-api-key", "api-key", "custom-header"}:
+        if not token:
+            raise HTTPException(status_code=400, detail="token is required for API key auth")
+        headers[header_name] = token
+    elif auth_type == "none":
+        pass
+    else:
+        raise HTTPException(status_code=400, detail="Unsupported auth_type. Use bearer, x-api-key, custom-header, or none")
+
+    db = _load_connectors()
+    items = db.get("connectors", [])
+    existing = next((c for c in items if c.get("name") == connector_name), None)
+    payload = {
+        "name": connector_name,
+        "provider": provider_key,
+        "base_url": base_url,
+        "headers": headers,
+        "enabled": bool(request.get("enabled", True)),
+        "timeout_sec": timeout_sec,
+        "scopes": provider_template.get("oauth_scopes", []),
+        "auth_type": auth_type,
+    }
+    if existing:
+        existing.update(payload)
+    else:
+        items.append(payload)
+    db["connectors"] = items
+    _save_connectors(db)
+
+    return {
+        "ok": True,
+        "connector": {
+            "name": connector_name,
+            "provider": provider_key,
+            "base_url": base_url,
+            "auth_type": auth_type,
+            "test_path": request.get("test_path") or provider_template.get("test_path") or "/",
         },
     }
 

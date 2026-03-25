@@ -161,6 +161,13 @@
                     API Connectors
                 </button>
 
+                <button class="sidebar-feature-btn" id="assistantsBtn" title="Custom AI and Automations" onclick="event.stopPropagation(); window.location.href='/assistants';">
+                    <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
+                        <path d="M10 2l2.1 4.3L17 8l-3.5 3.4.8 4.6L10 13.8 5.7 16l.8-4.6L3 8l4.9-1.7z"/>
+                    </svg>
+                    Custom AI
+                </button>
+
                 <button class="sidebar-feature-btn" id="printingBtn" title="3D Printing" onclick="event.stopPropagation(); window.location.href='/printing';">
                     <svg width="20" height="20" viewBox="0 0 20 20" fill="none" stroke="currentColor" stroke-width="1.5">
                         <rect x="4" y="2" width="12" height="5" rx="1"/>
@@ -481,6 +488,15 @@
                             <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
                         </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="assistantProfileId">Custom AI</label>
+                        <select id="assistantProfileId">
+                            <option value="">Default EDISON</option>
+                        </select>
+                        <p class="setting-description">Choose a saved custom assistant for chat behavior, or manage them in the Custom AI studio.</p>
+                        <button type="button" class="btn secondary" onclick="window.location.href='/assistants'" style="margin-top:8px;">Open Custom AI Studio</button>
                     </div>
                     
                     <div class="setting-group">

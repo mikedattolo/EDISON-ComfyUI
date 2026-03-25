@@ -185,6 +185,30 @@
   <div class="cards" id="cards">Loading...</div>
   <div class="status-bar" id="globalStatus"></div>
 
+  <div class="section-label">Simple API Setup</div>
+  <div class="collapsible-body open" id="easyBody" style="display:flex;">
+    <div class="helper" style="margin-bottom:4px;">Use this for APIs that just need a base URL and an API key. You do not need to write headers manually.</div>
+    <select id="easyProv" class="text">
+      <option value="custom">Custom API</option>
+    </select>
+    <input id="easyName" class="text" type="text" placeholder="Connection name (optional)" />
+    <input id="easyBaseUrl" class="text" type="text" placeholder="Base URL, like https://api.example.com/v1" />
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <select id="easyAuthType" class="text" style="flex:1;min-width:180px;">
+        <option value="bearer">Bearer token</option>
+        <option value="x-api-key">X-API-Key header</option>
+        <option value="custom-header">Custom header</option>
+        <option value="none">No auth</option>
+      </select>
+      <input id="easyHeaderName" class="text" type="text" placeholder="Header name (for custom header)" style="flex:1;min-width:180px;" value="X-API-Key" />
+    </div>
+    <input id="easyToken" class="text" type="password" placeholder="API key or token" />
+    <div style="display:flex;gap:8px;">
+      <button class="btn primary" id="easySaveBtn" style="flex:1;" onclick="easySave()">Save Simple Connector</button>
+    </div>
+    <div class="status-bar" id="easyStatus">Most private APIs only need base URL + key. OAuth providers above can use one-click Connect instead.</div>
+  </div>
+
   <!-- Advanced: manual token -->
   <div class="collapsible-head" onclick="toggleSection('advBody','advChev')">
     <h3>⚙ Advanced — Paste API Key / Personal Token</h3>
@@ -344,6 +368,9 @@ async function loadAll() {
 
     const sel = document.getElementById('advProv');
     sel.innerHTML = '<option value="">Choose provider...</option>' +
+      catalog.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
+    const easySel = document.getElementById('easyProv');
+    easySel.innerHTML = '<option value="custom">Custom API</option>' +
       catalog.map(p => `<option value="${p.key}">${p.label}</option>`).join('');
     const tsel = document.getElementById('testConn');
     tsel.innerHTML = '<option value="">Choose connector…</option>' +
@@ -532,6 +559,65 @@ function openAdvanced(key) {
   body.scrollIntoView({ behavior: 'smooth' });
 }
 
+function syncEasyProviderDefaults() {
+  const key = document.getElementById('easyProv').value;
+  const match = catalog.find(p => p.key === key);
+  const baseInput = document.getElementById('easyBaseUrl');
+  const authSelect = document.getElementById('easyAuthType');
+  if (match && match.base_url) {
+    baseInput.value = match.base_url;
+  }
+  if (match && match.auth && match.auth !== 'oauth2') {
+    authSelect.value = match.auth;
+  }
+  if (match && match.auth === 'oauth2') {
+    document.getElementById('easyStatus').textContent = `${match.label} supports one-click Connect above. Use Simple API Setup only if you have a provider-specific token and need a manual fallback.`;
+    document.getElementById('easyStatus').className = 'status-bar warn';
+  } else {
+    document.getElementById('easyStatus').textContent = 'Most private APIs only need base URL + key. OAuth providers above can use one-click Connect instead.';
+    document.getElementById('easyStatus').className = 'status-bar';
+  }
+}
+
+async function easySave() {
+  const provider = document.getElementById('easyProv').value || 'custom';
+  const name = (document.getElementById('easyName').value || '').trim();
+  const base_url = (document.getElementById('easyBaseUrl').value || '').trim();
+  const auth_type = document.getElementById('easyAuthType').value || 'bearer';
+  const token = (document.getElementById('easyToken').value || '').trim();
+  const header_name = (document.getElementById('easyHeaderName').value || '').trim();
+  const status = document.getElementById('easyStatus');
+  if (!base_url) {
+    status.textContent = 'Base URL is required.';
+    status.className = 'status-bar warn';
+    return;
+  }
+  if (auth_type !== 'none' && !token) {
+    status.textContent = 'Token/API key is required for this auth type.';
+    status.className = 'status-bar warn';
+    return;
+  }
+  try {
+    document.getElementById('easySaveBtn').disabled = true;
+    const res = await fetch(`${API}/integrations/connectors/easy-connect`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ provider, name, base_url, auth_type, token, header_name }),
+    });
+    const data = await readJson(res);
+    if (!res.ok) throw new Error(data.detail || 'Failed to save connector');
+    status.textContent = `✓ Saved ${data.connector.name}. Default test path: ${data.connector.test_path || '/'}`;
+    status.className = 'status-bar ok';
+    document.getElementById('easyToken').value = '';
+    await loadAll();
+  } catch (e) {
+    status.textContent = `Error: ${e.message}`;
+    status.className = 'status-bar bad';
+  } finally {
+    document.getElementById('easySaveBtn').disabled = false;
+  }
+}
+
 async function advancedSave() {
   const provider = document.getElementById('advProv').value;
   const token    = (document.getElementById('advToken').value || '').trim();
@@ -589,6 +675,7 @@ async function refresh() {
 }
 
 loadAll();
+document.getElementById('easyProv').addEventListener('change', syncEasyProviderDefaults);
 </script>
 </body>
 </html>

@@ -11,6 +11,7 @@ class EdisonApp {
         this.currentRequestId = null;  // Track current streaming request for cancellation
         this.sidebarCollapsed = false;
         this.lastImagePrompt = null; // Track last image generation prompt for regeneration
+        this.lastGeneratedImage = null;
         this.projectId = localStorage.getItem('edison_project_id') || 'default';
         this.sessionId = localStorage.getItem('edison_session_id') || `session_${Date.now()}`;
         localStorage.setItem('edison_session_id', this.sessionId);
@@ -188,6 +189,7 @@ class EdisonApp {
         this.apiEndpointInput = document.getElementById('apiEndpoint');
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
+        this.assistantProfileSelect = document.getElementById('assistantProfileId');
         this.systemStatus = document.getElementById('systemStatus');
         this.setupCheckBtn = document.getElementById('setupCheckBtn');
         this.setupCheckModal = document.getElementById('setupCheckModal');
@@ -590,10 +592,13 @@ class EdisonApp {
 
             // Check if this is an image generation or regeneration request
             const isImageRequest = this.detectImageGenerationRequest(message);
+            const isImageEditRequest = this.detectImageEditRequest(message);
             const isRegenerateRequest = this.detectImageRegenerationRequest(message);
             
             const allowClientImage = ['auto', 'instant', 'chat'].includes(mode);
-            if ((isImageRequest || isRegenerateRequest) && allowClientImage) {
+            if (isImageEditRequest && allowClientImage) {
+                await this.handleImageEdit(message, assistantMessageEl);
+            } else if ((isImageRequest || isRegenerateRequest) && allowClientImage) {
                 // Determine the prompt to use
                 let promptToUse;
                 
@@ -771,7 +776,8 @@ class EdisonApp {
                 session_id: this.sessionId,
                 images: images.length > 0 ? images : undefined,
                 selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined,
-                swarm_session_id: this.swarmSessionId || undefined
+                swarm_session_id: this.swarmSessionId || undefined,
+                assistant_profile_id: this.settings.assistantProfileId || undefined
             }),
             signal: this.abortController?.signal
         });
@@ -870,7 +876,8 @@ class EdisonApp {
                 session_id: this.sessionId,
                 images: images.length > 0 ? images : undefined,
                 selected_model: this.selectedModel !== 'auto' ? this.selectedModel : undefined,
-                swarm_session_id: this.swarmSessionId || undefined
+                swarm_session_id: this.swarmSessionId || undefined,
+                assistant_profile_id: this.settings.assistantProfileId || undefined
             }),
             signal: this.abortController?.signal
         });
@@ -1667,6 +1674,136 @@ class EdisonApp {
         return message + (promptParts.length > 0 ? ', ' + promptParts.join(', ') : '');
     }
 
+    resetImageConversationState() {
+        this.lastImagePrompt = null;
+        this.lastGeneratedImage = null;
+    }
+
+    normalizeImageContext(context) {
+        if (!context || typeof context !== 'object') {
+            return null;
+        }
+
+        const sourcePath = context.sourcePath || context.source_path;
+        const imageUrl = context.imageUrl || context.image_url || context.galleryImageUrl || context.gallery_image_url;
+        const prompt = context.prompt || context.userPrompt || context.user_prompt || '';
+
+        if (!sourcePath && !imageUrl) {
+            return null;
+        }
+
+        return {
+            prompt,
+            userPrompt: context.userPrompt || context.user_prompt || prompt,
+            sourcePath,
+            imageUrl,
+            galleryImageId: context.galleryImageId || context.gallery_image_id || null,
+            galleryFilename: context.galleryFilename || context.gallery_filename || null,
+            origin: context.origin || 'generated',
+        };
+    }
+
+    applyImageContext(context) {
+        const normalized = this.normalizeImageContext(context);
+        if (!normalized) {
+            return;
+        }
+
+        this.lastGeneratedImage = normalized;
+        this.lastImagePrompt = normalized.prompt || normalized.userPrompt || this.lastImagePrompt;
+    }
+
+    buildImageMessageHtml(imageUrl, prompt, sourceLabel = 'Prompt') {
+        const safePrompt = (prompt || '').replace(/'/g, "\\'");
+        return `
+            <p>✅ Image ready!</p>
+            <div class="generated-image">
+                <img src="${imageUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
+            </div>
+            <div style="margin-top: 10px; padding: 10px 12px; border-radius: 10px; background: rgba(102, 126, 234, 0.08); color: #5b6581; font-size: 13px; line-height: 1.45;">
+                <strong>Edit this image:</strong> reply with changes like “make the background red”, “remove the text”, or “try a flatter logo style”.
+            </div>
+            <div style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
+                <button onclick="downloadImage('${imageUrl}', 'EDISON_${Date.now()}.png')" style="padding: 10px 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 20px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Download Image">
+                    📥
+                </button>
+                <button onclick="regenerateImage('${safePrompt}')" style="padding: 10px 14px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 18px; box-shadow: 0 2px 8px rgba(240, 147, 251, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Regenerate Image">
+                    🔄
+                </button>
+                <span style="color: #888; font-size: 14px;"><strong>${sourceLabel}:</strong> ${prompt}</span>
+            </div>
+        `;
+    }
+
+    detectImageEditRequest(message) {
+        if (!this.lastGeneratedImage?.sourcePath) return false;
+
+        const lowerMessage = message.toLowerCase().trim();
+        if (!lowerMessage) return false;
+        if (this.detectImageGenerationRequest(message)) return false;
+
+        const regenerateOnlyKeywords = [
+            'try again', 'regenerate', 'make another', 'do it again', 'retry',
+            'redo', 'one more', 'again', 'remake', 'recreate', 'generate another',
+            'make a new one', 'new one', 'another one'
+        ];
+        if (regenerateOnlyKeywords.some(keyword => lowerMessage === keyword || lowerMessage.includes(keyword))) {
+            return false;
+        }
+
+        const directEditRequests = [
+            'make the background', 'change the background', 'remove the background', 'change the color',
+            'change the colours', 'change the colors', 'remove the text', 'change the text', 'update the logo',
+            'make it look', 'make it feel', 'clean this up', 'fix the text', 'adjust the font'
+        ];
+        if (directEditRequests.some(keyword => lowerMessage.includes(keyword))) {
+            return true;
+        }
+
+        const conversationalStarts = [
+            /^can you\s+/, /^could you\s+/, /^please\s+/, /^let'?s\s+/, /^i want\s+/, /^i need\s+/, /^we need\s+/,
+            /^it should\s+/, /^it needs\s+/, /^this needs\s+/, /^maybe\s+/, /^what about\s+/
+        ];
+        const editTargets = [
+            'it', 'this', 'image', 'logo', 'background', 'text', 'font', 'layout', 'icon', 'design', 'mark', 'wordmark'
+        ];
+        const editActions = [
+            'change', 'edit', 'modify', 'remove', 'add', 'replace', 'swap', 'update', 'fix', 'clean', 'refine', 'simplify',
+            'flatten', 'brighten', 'darken', 'soften', 'sharpen', 'move', 'resize', 'make', 'turn', 'give', 'use'
+        ];
+        const descriptiveEditWords = [
+            'bolder', 'simpler', 'cleaner', 'flatter', 'modern', 'minimal', 'warmer', 'cooler', 'brighter', 'darker',
+            'bigger', 'smaller', 'thicker', 'thinner', 'centered', 'transparent', 'monochrome'
+        ];
+
+        const isConversationalEdit = conversationalStarts.some(pattern => pattern.test(lowerMessage)) &&
+            editActions.some(action => lowerMessage.includes(action)) &&
+            editTargets.some(target => lowerMessage.includes(target));
+        if (isConversationalEdit) {
+            return true;
+        }
+
+        const isShortDescriptorEdit = lowerMessage.length <= 120 &&
+            editTargets.some(target => lowerMessage.includes(target)) &&
+            descriptiveEditWords.some(word => lowerMessage.includes(word));
+        if (isShortDescriptorEdit) {
+            return true;
+        }
+
+        const editPatterns = [
+            /^with\b/, /^without\b/, /^make it\b/, /^make the\b/, /^make this\b/, /^turn\b/, /^change\b/, /^edit\b/, /^modify\b/,
+            /^remove\b/, /^add\b/, /^replace\b/, /^swap\b/, /^update\b/, /^fix\b/, /^clean up\b/, /^give it\b/, /^set the\b/
+        ];
+        const editKeywords = [
+            'change the', 'change it', 'edit the', 'edit it', 'modify the', 'modify it', 'remove the', 'remove this',
+            'add a', 'add an', 'replace the', 'replace this', 'background', 'logo', 'text', 'font', 'color', 'colour',
+            'style', 'layout', 'bigger', 'smaller', 'more modern', 'cleaner', 'transparent', 'red background'
+        ];
+
+        return editPatterns.some(pattern => pattern.test(lowerMessage)) ||
+            editKeywords.some(keyword => lowerMessage.includes(keyword));
+    }
+
     detectImageRegenerationRequest(message) {
         // Only consider regeneration if we have a previous image prompt
         if (!this.lastImagePrompt) return false;
@@ -1818,31 +1955,23 @@ class EdisonApp {
                 const status = await statusResponse.json();
                 
                 if (status.status === 'completed') {
-                    // Store the prompt for regeneration
-                    this.lastImagePrompt = message;
-                    
-                    // Display the generated image with download and regenerate buttons
                     const fullImageUrl = `${this.settings.apiEndpoint}${status.image_url}`;
-                    const imageHtml = `
-                        <p>✅ Image generated successfully!</p>
-                        <div class="generated-image">
-                            <img src="${fullImageUrl}" alt="Generated image" style="max-width: 100%; border-radius: 8px; margin-top: 10px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);">
-                        </div>
-                        <div style="margin-top: 10px; display: flex; align-items: center; gap: 12px;">
-                            <button onclick="downloadImage('${fullImageUrl}', 'EDISON_${Date.now()}.png')" style="padding: 10px 14px; background: linear-gradient(135deg, #667eea 0%, #764ba2 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 20px; box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Download Image">
-                                📥
-                            </button>
-                            <button onclick="regenerateImage('${imagePrompt.replace(/'/g, "\\'")}')
-" style="padding: 10px 14px; background: linear-gradient(135deg, #f093fb 0%, #f5576c 100%); color: white; border: none; border-radius: 8px; cursor: pointer; font-size: 18px; box-shadow: 0 2px 8px rgba(240, 147, 251, 0.3); transition: transform 0.2s; display: flex; align-items: center; justify-content: center; line-height: 1;" onmouseover="this.style.transform='scale(1.05)'" onmouseout="this.style.transform='scale(1)'" title="Regenerate Image">
-                                🔄
-                            </button>
-                            <span style="color: #888; font-size: 14px;"><strong>Prompt:</strong> ${imagePrompt}</span>
-                        </div>
-                    `;
+                    const imageContext = {
+                        prompt: imagePrompt,
+                        userPrompt: message,
+                        sourcePath: status.source_path || null,
+                        imageUrl: fullImageUrl,
+                        galleryImageId: status.gallery_image_id || null,
+                        galleryFilename: status.gallery_filename || null,
+                        origin: 'generated'
+                    };
+                    const imageHtml = this.buildImageMessageHtml(fullImageUrl, imagePrompt, 'Prompt');
+
+                    this.applyImageContext(imageContext);
                     this.updateMessage(assistantMessageEl, imageHtml, 'image');
                     
                     // Save to chat history with HTML so it persists after refresh
-                    this.saveMessageToChat(message, imageHtml, 'image');
+                    this.saveMessageToChat(message, imageHtml, 'image', { imageContext });
                     
                     break;
                 } else if (status.status === 'error') {
@@ -1876,6 +2005,63 @@ class EdisonApp {
             this.updateMessage(
                 assistantMessageEl,
                 `⚠️ Error generating image: ${error.message}. Make sure ComfyUI is running and FLUX model is installed.`,
+                'error'
+            );
+        }
+    }
+
+    async handleImageEdit(message, assistantMessageEl) {
+        if (!this.lastGeneratedImage?.sourcePath) {
+            this.updateMessage(assistantMessageEl, '⚠️ There is no editable image in the current chat yet. Generate an image first, then ask for changes.', 'error');
+            return;
+        }
+
+        try {
+            this.updateMessage(assistantMessageEl, '🎨 Editing the last image, please wait...', 'image');
+
+            const response = await fetch(`${this.settings.apiEndpoint}/images/edit`, {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json',
+                },
+                body: JSON.stringify({
+                    source_path: this.lastGeneratedImage.sourcePath,
+                    prompt: message,
+                    parameters: {
+                        auto_mask: true,
+                        auto_refine: true,
+                        comfyui_url: this.settings.comfyuiEndpoint,
+                    }
+                })
+            });
+
+            if (!response.ok) {
+                const errorPayload = await response.json().catch(() => ({}));
+                throw new Error(errorPayload.detail || `Image edit failed: ${response.statusText}`);
+            }
+
+            const result = await response.json();
+            const edit = result.edit || {};
+            const imageUrl = edit.image_url ? `${this.settings.apiEndpoint}${edit.image_url}` : this.lastGeneratedImage.imageUrl;
+            const imageContext = {
+                prompt: message,
+                userPrompt: message,
+                sourcePath: edit.output_path || this.lastGeneratedImage.sourcePath,
+                imageUrl,
+                galleryImageId: edit.gallery_image_id || null,
+                galleryFilename: edit.gallery_filename || null,
+                origin: 'edited'
+            };
+            const imageHtml = this.buildImageMessageHtml(imageUrl, message, 'Edit');
+
+            this.applyImageContext(imageContext);
+            this.updateMessage(assistantMessageEl, imageHtml, 'image');
+            this.saveMessageToChat(message, imageHtml, 'image', { imageContext });
+        } catch (error) {
+            console.error('Image edit error:', error);
+            this.updateMessage(
+                assistantMessageEl,
+                `⚠️ Error editing image: ${error.message}.`,
                 'error'
             );
         }
@@ -1965,6 +2151,7 @@ class EdisonApp {
 
     createNewChat() {
         this.closeMobileSidebar();
+        this.resetImageConversationState();
         const chatId = Date.now().toString();
         const chat = {
             id: chatId,
@@ -1985,6 +2172,8 @@ class EdisonApp {
             this.createNewChat();
             return;
         }
+
+        this.resetImageConversationState();
         
         if (!this.currentChatId) {
             this.currentChatId = this.chats[0].id;
@@ -2001,6 +2190,7 @@ class EdisonApp {
     switchChat(chatId) {
         this.closeMobileSidebar();
         this.currentChatId = chatId;
+        this.resetImageConversationState();
         const chat = this.chats.find(c => c.id === chatId);
         if (chat) {
             this.clearMessages();
@@ -2029,6 +2219,7 @@ class EdisonApp {
     }
 
     clearMessages() {
+        this.resetImageConversationState();
         this.messagesContainer.innerHTML = '';
         this.welcomeScreen = document.createElement('div');
         this.welcomeScreen.className = 'welcome-screen';
@@ -2124,6 +2315,12 @@ class EdisonApp {
             // Check if this is an image message with HTML content
             const isImageMessage = msg.mode === 'image' && msg.content.includes('<img src=');
             const messageEl = this.addMessage(msg.role, msg.content, false, isImageMessage);
+            if (msg.role === 'assistant' && msg.mode === 'image' && msg.metadata?.imageContext) {
+                this.applyImageContext(msg.metadata.imageContext);
+                if (this.lastGeneratedImage?.sourcePath) {
+                    messageEl.dataset.imageSourcePath = this.lastGeneratedImage.sourcePath;
+                }
+            }
             if (msg.mode && msg.role === 'assistant') {
                 const modeEl = messageEl.querySelector('.message-mode');
                 modeEl.textContent = msg.mode.toUpperCase();
@@ -2132,13 +2329,13 @@ class EdisonApp {
         });
     }
 
-    saveMessageToChat(userMessage, assistantMessage, mode) {
+    saveMessageToChat(userMessage, assistantMessage, mode, metadata = null) {
         const chat = this.chats.find(c => c.id === this.currentChatId);
         if (!chat) return;
         
         chat.messages.push(
             { role: 'user', content: userMessage },
-            { role: 'assistant', content: assistantMessage, mode: mode }
+            { role: 'assistant', content: assistantMessage, mode: mode, metadata: metadata || undefined }
         );
         
         this.saveChats();
@@ -2172,7 +2369,7 @@ class EdisonApp {
         });
     }
 
-    openSettings() {
+    async openSettings() {
         this.apiEndpointInput.value = this.settings.apiEndpoint;
         this.comfyuiEndpointInput.value = this.settings.comfyuiEndpoint;
         if (this.voiceEndpointInput) {
@@ -2189,6 +2386,10 @@ class EdisonApp {
         if (this.discordWebhookInput) this.discordWebhookInput.value = this.settings.discordWebhook || '';
         if (this.slackWebhookInput) this.slackWebhookInput.value = this.settings.slackWebhook || '';
         if (this.defaultPrinterIdInput) this.defaultPrinterIdInput.value = this.settings.defaultPrinterId || '';
+        if (this.assistantProfileSelect) {
+            await this.loadAssistantProfiles();
+            this.assistantProfileSelect.value = this.settings.assistantProfileId || '';
+        }
         if (this.sandboxAllowedHostsInput) this.sandboxAllowedHostsInput.value = (this.settings.sandboxAllowedHosts || []).join(', ');
         if (this.sandboxAllowAnyHostInput) this.sandboxAllowAnyHostInput.checked = !!this.settings.sandboxAllowAnyHost;
         this.loadRuntimeSettings();
@@ -2426,6 +2627,7 @@ class EdisonApp {
         if (this.discordWebhookInput) this.settings.discordWebhook = this.discordWebhookInput.value.trim();
         if (this.slackWebhookInput) this.settings.slackWebhook = this.slackWebhookInput.value.trim();
         if (this.defaultPrinterIdInput) this.settings.defaultPrinterId = this.defaultPrinterIdInput.value.trim();
+        if (this.assistantProfileSelect) this.settings.assistantProfileId = this.assistantProfileSelect.value || '';
         if (this.sandboxAllowAnyHostInput) this.settings.sandboxAllowAnyHost = !!this.sandboxAllowAnyHostInput.checked;
         if (this.sandboxAllowedHostsInput) {
             this.settings.sandboxAllowedHosts = this.sandboxAllowedHostsInput.value
@@ -2864,6 +3066,7 @@ class EdisonApp {
             discordWebhook: '',
             slackWebhook: '',
             defaultPrinterId: '',
+            assistantProfileId: '',
         };
 
         const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
@@ -2890,6 +3093,22 @@ class EdisonApp {
         // Persist migrated settings
         localStorage.setItem('edison_settings', JSON.stringify(settings));
         return settings;
+    }
+
+    async loadAssistantProfiles() {
+        if (!this.assistantProfileSelect) return;
+        try {
+            const response = await fetch(`${this.settings.apiEndpoint}/assistants`);
+            if (!response.ok) throw new Error('Failed to load assistants');
+            const data = await response.json();
+            const assistants = data.assistants || [];
+            this.assistantProfileSelect.innerHTML = '<option value="">Default EDISON</option>' + assistants
+                .filter(item => item.enabled !== false)
+                .map(item => `<option value="${item.id}">${item.name}</option>`)
+                .join('');
+        } catch (error) {
+            console.warn('Failed to load assistant profiles:', error.message);
+        }
     }
 
     async refreshReadiness() {

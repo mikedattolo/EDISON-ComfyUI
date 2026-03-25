@@ -205,6 +205,16 @@ async def connectors_page():
     return FileResponse(page)
 
 
+@app.get("/assistants")
+async def assistants_page():
+    """Serve custom AI and automations studio page."""
+    page = WEB_DIR / "assistants.html"
+    if not page.exists():
+        logger.error(f"assistants.html not found at {page}")
+        return {"error": "Assistants UI not found"}
+    return FileResponse(page)
+
+
 @app.get("/printing")
 async def printing_page():
     """Serve dedicated 3D printing page."""
