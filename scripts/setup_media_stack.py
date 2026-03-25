@@ -250,14 +250,20 @@ def install_image_bundle(args: argparse.Namespace, summary: list[str]) -> None:
 
     # Install FLUX fill for editing/inpainting when token is available.
     if args.hf_token:
-        hf_download(
-            "black-forest-labs/FLUX.1-Fill-dev",
-            "flux1-fill-dev.safetensors",
-            COMFYUI_MODELS / "checkpoints",
-            dry_run=args.dry_run,
-            token=args.hf_token,
-            require_token=True,
-        )
+        try:
+            hf_download(
+                "black-forest-labs/FLUX.1-Fill-dev",
+                "flux1-fill-dev.safetensors",
+                COMFYUI_MODELS / "checkpoints",
+                dry_run=args.dry_run,
+                token=args.hf_token,
+                require_token=True,
+            )
+        except subprocess.CalledProcessError:
+            print(
+                "NOTE skipping FLUX Fill because Hugging Face returned access denied. "
+                "Accept the model license on Hugging Face or use a token with access if you want inpainting/editing support."
+            )
     else:
         print("NOTE skipping FLUX Fill because no HF token was provided")
 
