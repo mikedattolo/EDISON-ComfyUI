@@ -37,6 +37,14 @@ class SetupError(RuntimeError):
     pass
 
 
+PLACEHOLDER_HINTS = (
+    "your-",
+    "example.com",
+    "placeholder",
+    "changeme",
+)
+
+
 def installer_python() -> str:
     candidates = [
         REPO_ROOT / ".venv" / "bin" / "python",
@@ -195,6 +203,13 @@ def _download_and_extract_zip(url: str, destination: Path, dry_run: bool) -> boo
             return True
         except Exception:
             return False
+
+
+def is_placeholder_value(value: str) -> bool:
+    lowered = (value or "").strip().lower()
+    if not lowered:
+        return False
+    return any(hint in lowered for hint in PLACEHOLDER_HINTS)
 
 
 def clone_or_update(repo_url: str, destination: Path, dry_run: bool) -> None:
@@ -398,6 +413,15 @@ def install_3d_bundle(args: argparse.Namespace, summary: list[str]) -> None:
     repo_url = os.environ.get("EDISON_3D_NODE_REPO", "").strip()
     model_url = os.environ.get("EDISON_3D_MODEL_URL", "").strip()
     model_name = os.environ.get("EDISON_3D_MODEL_NAME", "experimental-3d-model.safetensors").strip()
+
+    if is_placeholder_value(repo_url):
+        print("NOTE skipping custom 3D node clone because EDISON_3D_NODE_REPO is still a placeholder example value")
+        repo_url = ""
+    if is_placeholder_value(model_url):
+        print("NOTE skipping custom 3D model download because EDISON_3D_MODEL_URL is still a placeholder example value")
+        model_url = ""
+    if is_placeholder_value(model_name):
+        model_name = "experimental-3d-model.safetensors"
 
     if repo_url:
         clone_or_update(repo_url, COMFYUI_NODES / Path(repo_url).stem.replace(".git", ""), dry_run=args.dry_run)
