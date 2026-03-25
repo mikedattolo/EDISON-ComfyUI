@@ -213,6 +213,14 @@ button, input, textarea, select {
     gap: 8px;
 }
 
+.chat-history-labels {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-width: 0;
+    flex: 1;
+}
+
 .chat-history-item:hover {
     background: var(--surface-hover);
 }
@@ -229,6 +237,19 @@ button, input, textarea, select {
     white-space: nowrap;
     font-size: 14px;
     color: var(--text-secondary);
+}
+
+.chat-history-badge {
+    flex-shrink: 0;
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.04em;
+    text-transform: uppercase;
+    color: var(--primary);
+    background: rgba(102, 126, 234, 0.12);
+    border: 1px solid rgba(102, 126, 234, 0.2);
+    border-radius: 999px;
+    padding: 3px 8px;
 }
 
 .chat-history-item.active .chat-history-text {
@@ -435,7 +456,7 @@ button, input, textarea, select {
     min-height: 0;
 }
 
-.artifact-header {
+.artifacts-panel .artifact-header {
     display: flex;
     align-items: center;
     justify-content: space-between;
@@ -446,7 +467,29 @@ button, input, textarea, select {
     font-weight: 600;
 }
 
-.artifact-actions button {
+.artifact-header-meta {
+    display: flex;
+    flex-direction: column;
+    gap: 4px;
+    min-width: 0;
+}
+
+.artifact-meta {
+    color: var(--text-secondary);
+    font-size: 12px;
+    font-weight: 500;
+    letter-spacing: 0.02em;
+}
+
+.artifacts-panel .artifact-actions {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+}
+
+.artifacts-panel .artifact-actions button {
     background: transparent;
     border: 1px solid var(--border);
     border-radius: 6px;
@@ -464,9 +507,26 @@ button, input, textarea, select {
     color: var(--primary);
 }
 
-.artifact-actions button:hover {
+.artifacts-panel .artifact-actions button:hover {
     border-color: var(--primary);
     color: var(--primary);
+}
+
+.artifact-tab-btn {
+    min-width: 78px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.artifact-tab-btn.active {
+    background: var(--primary);
+    border-color: var(--primary);
+    color: #fff;
+}
+
+.artifact-tab-btn:disabled {
+    opacity: 0.45;
+    cursor: not-allowed;
 }
 
 .artifact-content {
@@ -475,12 +535,54 @@ button, input, textarea, select {
     background: var(--surface-alt);
     border-radius: 8px;
     padding: 12px;
+    min-height: 360px;
+}
+
+.artifact-pane {
+    width: 100%;
+    height: 100%;
+}
+
+.artifact-preview-pane {
+    display: flex;
+    flex-direction: column;
+}
+
+.artifact-preview-frame {
+    width: 100%;
+    min-height: 520px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: #fff;
+}
+
+.artifact-preview-empty {
+    min-height: 280px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    text-align: center;
+    gap: 8px;
+    color: var(--text-secondary);
+    padding: 24px;
+}
+
+.artifact-preview-empty strong {
+    color: var(--text-primary);
 }
 
 .artifact-content pre {
     margin: 0;
     white-space: pre-wrap;
     word-break: break-word;
+    min-height: 100%;
+}
+
+.artifact-content code {
+    font-size: 13px;
+    line-height: 1.55;
+}
 }
 
 .voice-btn {
@@ -768,6 +870,85 @@ button, input, textarea, select {
     background: none;
     padding: 0;
     color: var(--text-primary);
+}
+
+.tool-timeline {
+    margin: 0 0 14px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--surface);
+    overflow: hidden;
+}
+
+.tool-timeline summary {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    list-style: none;
+    cursor: pointer;
+    padding: 10px 12px;
+    background: var(--surface-hover);
+}
+
+.tool-timeline summary::-webkit-details-marker {
+    display: none;
+}
+
+.tool-timeline-title {
+    font-size: 12px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.05em;
+    color: var(--primary);
+}
+
+.tool-timeline-summary {
+    font-size: 12px;
+    color: var(--text-secondary);
+    text-align: right;
+}
+
+.tool-timeline-list {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
+    padding: 12px;
+}
+
+.tool-step {
+    padding: 10px 12px;
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    background: var(--background);
+}
+
+.tool-step-title-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex-wrap: wrap;
+}
+
+.tool-step-kind {
+    font-size: 11px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--text-secondary);
+}
+
+.tool-step-title {
+    font-size: 13px;
+    font-weight: 600;
+    color: var(--text-primary);
+}
+
+.tool-step-detail {
+    margin-top: 4px;
+    font-size: 12px;
+    line-height: 1.45;
+    color: var(--text-secondary);
 }
 
 .message.assistant.streaming .message-content::after {
@@ -1421,6 +1602,14 @@ button, input, textarea, select {
 .action-btn svg {
     width: 16px;
     height: 16px;
+}
+
+.branch-btn {
+    color: var(--text-secondary);
+}
+
+.branch-btn:hover {
+    color: var(--primary);
 }
 
 /* Delete Chat Button */
@@ -2135,6 +2324,20 @@ button, input, textarea, select {
 
     .artifacts-panel {
         margin-top: 12px;
+    }
+
+    .artifacts-panel .artifact-header {
+        align-items: flex-start;
+        flex-direction: column;
+    }
+
+    .artifacts-panel .artifact-actions {
+        width: 100%;
+        justify-content: flex-start;
+    }
+
+    .artifact-preview-frame {
+        min-height: 320px;
     }
 
     /* Mobile header */
@@ -6317,6 +6520,11 @@ details[open] > summary::after {
 .copy-code-btn:hover {
     background: rgba(255,255,255,0.15);
     color: #fff;
+}
+.copy-code-btn.copied {
+    background: rgba(16, 185, 129, 0.18);
+    border-color: rgba(16, 185, 129, 0.35);
+    color: #d1fae5;
 }
 .code-block-wrapper pre {
     margin: 0;

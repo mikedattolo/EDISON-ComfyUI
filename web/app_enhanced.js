@@ -241,7 +241,14 @@ class EdisonApp {
         // Artifacts panel
         this.artifactsPanel = document.getElementById('artifactsPanel');
         this.artifactTitle = document.getElementById('artifactTitle');
+        this.artifactMeta = document.getElementById('artifactMeta');
         this.artifactCode = document.getElementById('artifactCode');
+        this.artifactPreviewPane = document.getElementById('artifactPreviewPane');
+        this.artifactCodePane = document.getElementById('artifactCodePane');
+        this.artifactPreviewFrame = document.getElementById('artifactPreviewFrame');
+        this.artifactPreviewEmpty = document.getElementById('artifactPreviewEmpty');
+        this.artifactPreviewTab = document.getElementById('artifactPreviewTab');
+        this.artifactCodeTab = document.getElementById('artifactCodeTab');
         this.artifactCopyBtn = document.getElementById('artifactCopyBtn');
         this.artifactDownloadBtn = document.getElementById('artifactDownloadBtn');
         this.artifactCloseBtn = document.getElementById('artifactCloseBtn');
@@ -364,6 +371,12 @@ class EdisonApp {
 
         if (this.artifactCopyBtn) {
             this.artifactCopyBtn.addEventListener('click', () => this.copyArtifact());
+        }
+        if (this.artifactPreviewTab) {
+            this.artifactPreviewTab.addEventListener('click', () => this.setArtifactView('preview'));
+        }
+        if (this.artifactCodeTab) {
+            this.artifactCodeTab.addEventListener('click', () => this.setArtifactView('code'));
         }
         if (this.artifactDownloadBtn) {
             this.artifactDownloadBtn.addEventListener('click', () => this.downloadArtifact());
@@ -632,9 +645,11 @@ class EdisonApp {
                 } else {
                     // Update assistant message
                     this.updateMessage(assistantMessageEl, response.response, response.mode_used);
+                    this.finalizeToolTimeline(assistantMessageEl, response);
                     
                     // Save to chat history
-                    this.saveMessageToChat(message, response.response, response.mode_used);
+                    const toolSummary = this.buildToolSummary(assistantMessageEl);
+                    this.saveMessageToChat(message, response.response, response.mode_used, toolSummary ? { toolSummary } : null);
                     
                     // Generate smart title if first message
                     const chat = this.chats.find(c => c.id === this.currentChatId);
@@ -975,15 +990,18 @@ class EdisonApp {
                                     if (data.files && data.files.length > 0) {
                                         this.displayGeneratedFiles(assistantMessageEl, data.files);
                                     }
-                                    if (data.artifact && data.artifact.content) {
+                                    if (data.artifact && (data.artifact.code || data.artifact.html || data.artifact.content)) {
                                         this.showArtifactPanel(data.artifact);
                                     }
+                                    this.finalizeToolTimeline(assistantMessageEl, data);
                                     this.clearStatus(assistantMessageEl);
                                     
                                     assistantMessageEl.classList.remove('streaming');
                                     
                                     // Save to chat history
-                                    this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode);
+                                    const toolSummary = this.buildToolSummary(assistantMessageEl);
+                                    const metadata = toolSummary ? { toolSummary } : null;
+                                    this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode, metadata);
                                     
                                     // Generate smart title if first message
                                     const chat = this.chats.find(c => c.id === this.currentChatId);
@@ -1046,6 +1064,11 @@ class EdisonApp {
         
         const actionButtons = role === 'user' ? `
             <div class="message-actions">
+                <button class="action-btn branch-btn" title="Branch from here">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M10 2.5a2.5 2.5 0 1 1 1 1.997V6A2 2 0 0 1 9 8H6a1 1 0 0 0-1 1v2.503A2.5 2.5 0 1 1 4 11.5V9a2 2 0 0 1 2-2h3a1 1 0 0 0 1-1V4.497A2.5 2.5 0 0 1 10 2.5z"/>
+                    </svg>
+                </button>
                 <button class="action-btn edit-btn" title="Edit and resubmit">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207 11.207 2.5zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293l6.5-6.5zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
@@ -1054,6 +1077,11 @@ class EdisonApp {
             </div>
         ` : `
             <div class="message-actions">
+                <button class="action-btn branch-btn" title="Branch from here">
+                    <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
+                        <path d="M10 2.5a2.5 2.5 0 1 1 1 1.997V6A2 2 0 0 1 9 8H6a1 1 0 0 0-1 1v2.503A2.5 2.5 0 1 1 4 11.5V9a2 2 0 0 1 2-2h3a1 1 0 0 0 1-1V4.497A2.5 2.5 0 0 1 10 2.5z"/>
+                    </svg>
+                </button>
                 <button class="action-btn copy-btn" title="Copy to clipboard">
                     <svg width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M4 1.5H3a2 2 0 0 0-2 2V14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V3.5a2 2 0 0 0-2-2h-1v1h1a1 1 0 0 1 1 1V14a1 1 0 0 1-1 1H3a1 1 0 0 1-1-1V3.5a1 1 0 0 1 1-1h1v-1z"/>
@@ -1087,8 +1115,14 @@ class EdisonApp {
             <div class="message-content">${isHtml ? content : this.formatMessage(content)}</div>
             ${actionButtons}
         `;
+
+        this.decorateMessageContent(messageEl, content, isHtml);
         
         // Attach event listeners to action buttons
+        const branchBtn = messageEl.querySelector('.branch-btn');
+        if (branchBtn) {
+            branchBtn.addEventListener('click', () => this.branchConversationFromMessage(messageEl));
+        }
         if (role === 'user') {
             const editBtn = messageEl.querySelector('.edit-btn');
             editBtn.addEventListener('click', () => this.editMessage(messageEl, content));
@@ -1260,11 +1294,135 @@ class EdisonApp {
             <span class="status-ring" style="--progress:${progress}%"></span>
             <span class="status-text">${data.stage}${detail}</span>
         `;
+
+        this.appendToolTimelineEvent(assistantMessageEl, {
+            kind: data.kind || 'status',
+            stage: data.stage,
+            detail: data.detail || '',
+            progress,
+        });
     }
 
     clearStatus(assistantMessageEl) {
         const statusEl = assistantMessageEl.querySelector('.message-status');
         if (statusEl) statusEl.remove();
+    }
+
+    ensureToolTimeline(assistantMessageEl) {
+        const contentEl = assistantMessageEl.querySelector('.message-content');
+        if (!contentEl) return null;
+
+        let timeline = contentEl.querySelector('.tool-timeline');
+        if (timeline) return timeline;
+
+        timeline = document.createElement('details');
+        timeline.className = 'tool-timeline';
+        timeline.open = true;
+        timeline.innerHTML = `
+            <summary>
+                <span class="tool-timeline-title">Tool Activity</span>
+                <span class="tool-timeline-summary">Waiting for steps</span>
+            </summary>
+            <div class="tool-timeline-list"></div>
+        `;
+        contentEl.prepend(timeline);
+        return timeline;
+    }
+
+    appendToolTimelineEvent(assistantMessageEl, event) {
+        if (!assistantMessageEl || !event?.stage) return;
+
+        const timeline = this.ensureToolTimeline(assistantMessageEl);
+        if (!timeline) return;
+
+        const list = timeline.querySelector('.tool-timeline-list');
+        const summary = timeline.querySelector('.tool-timeline-summary');
+        if (!list || !summary) return;
+
+        const signature = JSON.stringify({
+            kind: event.kind || '',
+            stage: event.stage,
+            detail: event.detail || ''
+        });
+        const exists = Array.from(list.querySelectorAll('.tool-step')).some(item => item.dataset.signature === signature);
+        if (exists) return;
+
+        const step = document.createElement('div');
+        step.className = 'tool-step';
+        step.dataset.signature = signature;
+        step.innerHTML = `
+            <div class="tool-step-title-row">
+                <span class="tool-step-kind">${this.escapeHtml((event.kind || 'step').toUpperCase())}</span>
+                <span class="tool-step-title">${this.escapeHtml(event.stage)}${typeof event.progress === 'number' && event.progress > 0 ? ` · ${event.progress}%` : ''}</span>
+            </div>
+            ${event.detail ? `<div class="tool-step-detail">${this.escapeHtml(event.detail)}</div>` : ''}
+        `;
+        list.appendChild(step);
+        summary.textContent = `${event.stage}${event.detail ? ` • ${event.detail}` : ''}`;
+    }
+
+    finalizeToolTimeline(assistantMessageEl, payload = {}) {
+        if (Array.isArray(payload.work_step_results)) {
+            payload.work_step_results.forEach(step => {
+                if (step?.title) {
+                    this.appendToolTimelineEvent(assistantMessageEl, {
+                        kind: step.kind || 'work',
+                        stage: step.title,
+                        detail: step.result || ''
+                    });
+                }
+            });
+        }
+
+        if (Array.isArray(payload.swarm_agents) && payload.swarm_agents.length > 0) {
+            this.appendToolTimelineEvent(assistantMessageEl, {
+                kind: 'swarm',
+                stage: 'Swarm collaboration',
+                detail: `${payload.swarm_agents.length} agents contributed`
+            });
+        }
+
+        if (Array.isArray(payload.search_results) && payload.search_results.length > 0) {
+            this.appendToolTimelineEvent(assistantMessageEl, {
+                kind: 'search',
+                stage: 'Search results collected',
+                detail: `${payload.search_results.length} result${payload.search_results.length === 1 ? '' : 's'}`
+            });
+        }
+
+        if (payload.artifact) {
+            this.appendToolTimelineEvent(assistantMessageEl, {
+                kind: 'artifact',
+                stage: 'Artifact prepared',
+                detail: payload.artifact.title || payload.artifact.type || 'ready'
+            });
+        }
+
+        if (Array.isArray(payload.files) && payload.files.length > 0) {
+            this.appendToolTimelineEvent(assistantMessageEl, {
+                kind: 'download',
+                stage: 'Files exported',
+                detail: `${payload.files.length} file${payload.files.length === 1 ? '' : 's'} saved`
+            });
+        }
+    }
+
+    buildToolSummary(assistantMessageEl) {
+        const timeline = assistantMessageEl?.querySelector('.tool-timeline');
+        if (!timeline) return null;
+
+        const steps = Array.from(timeline.querySelectorAll('.tool-step')).map(step => ({
+            kind: step.querySelector('.tool-step-kind')?.textContent?.trim()?.toLowerCase() || 'step',
+            stage: step.querySelector('.tool-step-title')?.textContent?.trim() || '',
+            detail: step.querySelector('.tool-step-detail')?.textContent?.trim() || ''
+        })).filter(step => step.stage);
+
+        return steps.length > 0 ? { steps } : null;
+    }
+
+    restoreToolTimeline(messageEl, toolSummary) {
+        if (!toolSummary || !Array.isArray(toolSummary.steps)) return;
+        toolSummary.steps.forEach(step => this.appendToolTimelineEvent(messageEl, step));
     }
 
     async uploadDocument(file) {
@@ -1316,7 +1474,10 @@ class EdisonApp {
         messageEl.dataset.rawText = content || '';
         
         const contentEl = messageEl.querySelector('.message-content');
+        const toolSummary = this.buildToolSummary(messageEl);
         contentEl.innerHTML = this.formatMessage(content);
+        this.decorateMessageContent(messageEl, content, false);
+        this.restoreToolTimeline(messageEl, toolSummary);
         
         if (mode && mode !== 'error' && mode !== 'stopped') {
             const modeEl = messageEl.querySelector('.message-mode');
@@ -1422,7 +1583,19 @@ class EdisonApp {
         let formatted = content
             // Code blocks
             .replace(/```(\w+)?\n([\s\S]*?)```/g, (match, lang, code) => {
-                return `<pre><code class="language-${lang || 'text'}">${this.escapeHtml(code.trim())}</code></pre>`;
+                const language = (lang || 'text').toLowerCase();
+                const trimmedCode = code.trim();
+                const escapedCode = this.escapeHtml(trimmedCode);
+                const encodedCode = encodeURIComponent(trimmedCode);
+                return `
+                    <div class="code-block-wrapper">
+                        <div class="code-block-header">
+                            <span class="code-lang">${language}</span>
+                            <button class="copy-code-btn" data-code="${encodedCode}" data-language="${language}" title="Copy ${language} code">Copy</button>
+                        </div>
+                        <pre><code class="language-${language}">${escapedCode}</code></pre>
+                    </div>
+                `;
             })
             // Inline code
             .replace(/`([^`]+)`/g, '<code>$1</code>')
@@ -1438,22 +1611,127 @@ class EdisonApp {
         return reasoningHtml + formatted;
     }
 
+    decorateMessageContent(messageEl, rawContent, isHtml = false) {
+        if (!messageEl || isHtml) return;
+
+        const contentEl = messageEl.querySelector('.message-content');
+        if (!contentEl) return;
+
+        const copyCodeButtons = contentEl.querySelectorAll('.copy-code-btn');
+        copyCodeButtons.forEach(btn => {
+            btn.addEventListener('click', async () => {
+                const code = decodeURIComponent(btn.dataset.code || '');
+                try {
+                    await navigator.clipboard.writeText(code);
+                    const originalLabel = btn.textContent;
+                    btn.textContent = 'Copied';
+                    btn.classList.add('copied');
+                    setTimeout(() => {
+                        btn.textContent = originalLabel;
+                        btn.classList.remove('copied');
+                    }, 1500);
+                } catch (error) {
+                    console.error('Failed to copy code block:', error);
+                    this.showNotification('Copy failed');
+                }
+            });
+        });
+    }
+
     showArtifactPanel(artifact) {
         if (!this.artifactsPanel || !artifact) return;
         const title = artifact.title || `${(artifact.type || 'artifact').toUpperCase()} Artifact`;
-        const code = artifact.code || '';
+        const code = artifact.code || artifact.content || '';
+        const type = artifact.type || 'txt';
+        const previewHtml = this.getArtifactPreviewHtml(artifact, code, type);
+        const previewSupported = Boolean(previewHtml);
+
         this.artifactTitle.textContent = title;
         this.artifactCode.textContent = code;
-        this.currentArtifact = { title, code, type: artifact.type || 'txt' };
+        if (this.artifactMeta) {
+            const previewLabel = previewSupported ? 'live preview' : 'code only';
+            this.artifactMeta.textContent = `${type.toUpperCase()} • ${previewLabel}`;
+        }
+
+        if (this.artifactPreviewFrame) {
+            this.artifactPreviewFrame.srcdoc = previewHtml || '';
+        }
+        if (this.artifactPreviewEmpty) {
+            this.artifactPreviewEmpty.style.display = previewSupported ? 'none' : 'flex';
+        }
+
+        this.currentArtifact = {
+            title,
+            code,
+            type,
+            previewHtml,
+            previewSupported
+        };
+
+        this.setArtifactView(previewSupported ? 'preview' : 'code');
 
         this.artifactsPanel.style.display = 'flex';
         const container = document.querySelector('.chat-container');
         if (container) container.classList.add('with-artifacts');
     }
 
+    getArtifactPreviewHtml(artifact, code, type) {
+        if (artifact.html && typeof artifact.html === 'string') {
+            return artifact.html;
+        }
+
+        if (!code || typeof code !== 'string') {
+            return null;
+        }
+
+        if (type === 'html' || type === 'javascript' || type === 'mermaid') {
+            return code;
+        }
+
+        if (type === 'svg') {
+            return `<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body { margin: 0; padding: 24px; display: flex; align-items: center; justify-content: center; min-height: 100vh; background: #f8fafc; }
+        svg { max-width: 100%; height: auto; }
+    </style>
+</head>
+<body>
+${code}
+</body>
+</html>`;
+        }
+
+        return null;
+    }
+
+    setArtifactView(view) {
+        const showPreview = view === 'preview' && this.currentArtifact?.previewSupported;
+
+        if (this.artifactPreviewPane) {
+            this.artifactPreviewPane.style.display = showPreview ? 'flex' : 'none';
+        }
+        if (this.artifactCodePane) {
+            this.artifactCodePane.style.display = showPreview ? 'none' : 'block';
+        }
+        if (this.artifactPreviewTab) {
+            this.artifactPreviewTab.classList.toggle('active', showPreview);
+            this.artifactPreviewTab.disabled = !this.currentArtifact?.previewSupported;
+        }
+        if (this.artifactCodeTab) {
+            this.artifactCodeTab.classList.toggle('active', !showPreview);
+        }
+    }
+
     hideArtifactPanel() {
         if (!this.artifactsPanel) return;
         this.artifactsPanel.style.display = 'none';
+        if (this.artifactPreviewFrame) {
+            this.artifactPreviewFrame.srcdoc = '';
+        }
         const container = document.querySelector('.chat-container');
         if (container) container.classList.remove('with-artifacts');
         this.currentArtifact = null;
@@ -1473,10 +1751,18 @@ class EdisonApp {
             react: 'jsx',
             svg: 'svg',
             mermaid: 'html',
+            javascript: 'html',
             code: 'txt'
         };
         const ext = extMap[this.currentArtifact.type] || 'txt';
-        const blob = new Blob([this.currentArtifact.code], { type: 'text/plain;charset=utf-8' });
+        const mimeMap = {
+            html: 'text/html;charset=utf-8',
+            react: 'text/jsx;charset=utf-8',
+            svg: 'image/svg+xml;charset=utf-8',
+            mermaid: 'text/html;charset=utf-8',
+            javascript: 'text/html;charset=utf-8'
+        };
+        const blob = new Blob([this.currentArtifact.code], { type: mimeMap[this.currentArtifact.type] || 'text/plain;charset=utf-8' });
         const url = URL.createObjectURL(blob);
         const a = document.createElement('a');
         a.href = url;
@@ -2152,12 +2438,13 @@ class EdisonApp {
     createNewChat() {
         this.closeMobileSidebar();
         this.resetImageConversationState();
-        const chatId = Date.now().toString();
+        const chatId = this.generateId('chat');
         const chat = {
             id: chatId,
             title: 'New Chat',
             messages: [],
-            createdAt: new Date().toISOString()
+            createdAt: new Date().toISOString(),
+            timestamp: Date.now()
         };
         
         this.chats.unshift(chat);
@@ -2312,18 +2599,26 @@ class EdisonApp {
         }
         
         messages.forEach(msg => {
+            const normalizedMessage = this.normalizeStoredMessage(msg);
             // Check if this is an image message with HTML content
-            const isImageMessage = msg.mode === 'image' && msg.content.includes('<img src=');
-            const messageEl = this.addMessage(msg.role, msg.content, false, isImageMessage);
-            if (msg.role === 'assistant' && msg.mode === 'image' && msg.metadata?.imageContext) {
-                this.applyImageContext(msg.metadata.imageContext);
+            const isImageMessage = normalizedMessage.mode === 'image' && normalizedMessage.content.includes('<img src=');
+            const messageEl = this.addMessage(normalizedMessage.role, normalizedMessage.content, false, isImageMessage);
+            messageEl.dataset.messageId = normalizedMessage.id;
+            if (normalizedMessage.parentId) {
+                messageEl.dataset.parentId = normalizedMessage.parentId;
+            }
+            if (normalizedMessage.role === 'assistant' && normalizedMessage.mode === 'image' && normalizedMessage.metadata?.imageContext) {
+                this.applyImageContext(normalizedMessage.metadata.imageContext);
                 if (this.lastGeneratedImage?.sourcePath) {
                     messageEl.dataset.imageSourcePath = this.lastGeneratedImage.sourcePath;
                 }
             }
-            if (msg.mode && msg.role === 'assistant') {
+            if (normalizedMessage.role === 'assistant' && normalizedMessage.metadata?.toolSummary) {
+                this.restoreToolTimeline(messageEl, normalizedMessage.metadata.toolSummary);
+            }
+            if (normalizedMessage.mode && normalizedMessage.role === 'assistant') {
                 const modeEl = messageEl.querySelector('.message-mode');
-                modeEl.textContent = msg.mode.toUpperCase();
+                modeEl.textContent = normalizedMessage.mode.toUpperCase();
                 modeEl.style.display = 'inline-block';
             }
         });
@@ -2332,14 +2627,89 @@ class EdisonApp {
     saveMessageToChat(userMessage, assistantMessage, mode, metadata = null) {
         const chat = this.chats.find(c => c.id === this.currentChatId);
         if (!chat) return;
-        
-        chat.messages.push(
-            { role: 'user', content: userMessage },
-            { role: 'assistant', content: assistantMessage, mode: mode, metadata: metadata || undefined }
-        );
+
+        const createdAt = new Date().toISOString();
+        const userEntry = this.createStoredMessage({
+            role: 'user',
+            content: userMessage,
+            createdAt
+        });
+        const assistantEntry = this.createStoredMessage({
+            role: 'assistant',
+            content: assistantMessage,
+            mode,
+            metadata: metadata || undefined,
+            parentId: userEntry.id,
+            createdAt
+        });
+
+        chat.messages.push(userEntry, assistantEntry);
+        chat.timestamp = Date.now();
         
         this.saveChats();
         this.renderChatHistory();
+    }
+
+    createStoredMessage(message) {
+        return {
+            id: message.id || this.generateId('msg'),
+            role: message.role,
+            content: message.content,
+            mode: message.mode,
+            metadata: message.metadata,
+            parentId: message.parentId || null,
+            createdAt: message.createdAt || new Date().toISOString()
+        };
+    }
+
+    normalizeStoredMessage(message) {
+        if (!message || typeof message !== 'object') {
+            return this.createStoredMessage({ role: 'assistant', content: '' });
+        }
+        if (message.id) {
+            return message;
+        }
+        return this.createStoredMessage(message);
+    }
+
+    branchConversationFromMessage(messageEl) {
+        if (!messageEl || !this.currentChatId) return;
+
+        const chat = this.chats.find(c => c.id === this.currentChatId);
+        if (!chat?.messages?.length) return;
+
+        const threadMessages = Array.from(this.messagesContainer.querySelectorAll('.message.user, .message.assistant:not(.swarm-agent)'));
+        const branchIndex = threadMessages.indexOf(messageEl);
+        if (branchIndex < 0) return;
+
+        const branchMessages = chat.messages.slice(0, branchIndex + 1).map(msg => {
+            const normalized = this.normalizeStoredMessage(msg);
+            return {
+                ...normalized,
+                id: this.generateId('msg')
+            };
+        });
+
+        const branchChat = {
+            id: this.generateId('chat'),
+            title: `${chat.title} Branch`,
+            messages: branchMessages,
+            createdAt: new Date().toISOString(),
+            timestamp: Date.now(),
+            branchOf: chat.id
+        };
+
+        this.chats.unshift(branchChat);
+        this.currentChatId = branchChat.id;
+        this.saveChats();
+        this.clearMessages();
+        this.renderMessages(branchChat.messages);
+        this.renderChatHistory();
+        this.showNotification('Created branched conversation');
+    }
+
+    generateId(prefix) {
+        return `${prefix}_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;
     }
 
     renderChatHistory() {
@@ -2353,7 +2723,10 @@ class EdisonApp {
             }
             
             item.innerHTML = `
-                <div class="chat-history-text">${this.escapeHtml(chat.title)}</div>
+                <div class="chat-history-labels">
+                    <div class="chat-history-text">${this.escapeHtml(chat.title)}</div>
+                    ${chat.branchOf ? '<span class="chat-history-badge">Branch</span>' : ''}
+                </div>
                 <button class="delete-chat-btn" title="Delete chat">
                     <svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
                         <path d="M5.5 5.5A.5.5 0 0 1 6 6v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm2.5 0a.5.5 0 0 1 .5.5v6a.5.5 0 0 1-1 0V6a.5.5 0 0 1 .5-.5zm3 .5a.5.5 0 0 0-1 0v6a.5.5 0 0 0 1 0V6z"/>

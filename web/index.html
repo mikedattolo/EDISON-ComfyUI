@@ -303,15 +303,29 @@
 
                 <div class="artifacts-panel" id="artifactsPanel" style="display: none;">
                     <div class="artifact-header">
-                        <span id="artifactTitle">Artifact</span>
+                        <div class="artifact-header-meta">
+                            <span id="artifactTitle">Artifact</span>
+                            <span id="artifactMeta" class="artifact-meta">Preview unavailable</span>
+                        </div>
                         <div class="artifact-actions">
+                            <button id="artifactPreviewTab" class="artifact-tab-btn active" title="Preview">Preview</button>
+                            <button id="artifactCodeTab" class="artifact-tab-btn" title="Code">Code</button>
                             <button id="artifactCopyBtn" title="Copy">📋</button>
                             <button id="artifactDownloadBtn" title="Download">💾</button>
                             <button id="artifactCloseBtn" title="Close">✕</button>
                         </div>
                     </div>
                     <div class="artifact-content">
-                        <pre><code id="artifactCode"></code></pre>
+                        <div id="artifactPreviewPane" class="artifact-pane artifact-preview-pane">
+                            <iframe id="artifactPreviewFrame" class="artifact-preview-frame" sandbox="allow-scripts allow-downloads"></iframe>
+                            <div id="artifactPreviewEmpty" class="artifact-preview-empty" style="display: none;">
+                                <strong>Preview unavailable</strong>
+                                <p>This artifact can still be copied or downloaded.</p>
+                            </div>
+                        </div>
+                        <div id="artifactCodePane" class="artifact-pane artifact-code-pane" style="display: none;">
+                            <pre><code id="artifactCode"></code></pre>
+                        </div>
                     </div>
                 </div>
 
