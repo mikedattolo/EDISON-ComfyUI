@@ -83,3 +83,38 @@ def test_logo_requests_get_stronger_generation_defaults():
     assert "photorealistic" in defaults["negative_prompt"]
     assert "vector-style branding artwork" in enhanced_prompt
     assert "professional vector logo" in enhanced_prompt
+
+
+def test_comfyui_base_url_normalizes_override_scheme_and_host():
+    from services.edison_core.app import _comfyui_base_url
+
+    assert _comfyui_base_url("https://100.67.221.112:8188/") == "https://100.67.221.112:8188"
+    assert _comfyui_base_url("100.67.221.112:8188") == "http://100.67.221.112:8188"
+    assert _comfyui_base_url("http://0.0.0.0:8188") == "http://127.0.0.1:8188"
+
+
+def test_submit_comfyui_prompt_retries_http_on_ssl_mismatch(monkeypatch):
+    import requests
+    from services.edison_core import app as core_app
+
+    calls = []
+
+    class FakeResponse:
+        ok = True
+
+    def fake_post(url, json=None, timeout=0):
+        calls.append(url)
+        if url.startswith("https://"):
+            raise requests.exceptions.SSLError("[SSL: WRONG_VERSION_NUMBER] wrong version number (_ssl.c:1000)")
+        return FakeResponse()
+
+    monkeypatch.setattr(core_app.requests, "post", fake_post)
+
+    response, final_url = core_app._submit_comfyui_prompt({"prompt": {}}, "https://100.67.221.112:8188", timeout=5)
+
+    assert response.ok is True
+    assert final_url == "http://100.67.221.112:8188"
+    assert calls == [
+        "https://100.67.221.112:8188/prompt",
+        "http://100.67.221.112:8188/prompt",
+    ]

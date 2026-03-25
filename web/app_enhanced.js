@@ -148,11 +148,10 @@ class EdisonApp {
         // All API calls go through the web server's reverse proxy (/api/*)
         // so the browser only needs one HTTPS origin (port 8080).
         const origin = window.location.origin;  // e.g. https://host:8080
-        const protocol = window.location.protocol || 'http:';
         const host = window.location.hostname || 'localhost';
         return {
             apiEndpoint: `${origin}/api`,
-            comfyuiEndpoint: `${protocol}//${host}:8188`,
+            comfyuiEndpoint: `http://${host}:8188`,
             voiceEndpoint: `${origin}/api`
         };
     }
@@ -2877,6 +2876,9 @@ class EdisonApp {
         const legacyHost = 'http://192.168.1.26';
         if (settings.apiEndpoint && settings.apiEndpoint.startsWith(legacyHost)) {
             settings.apiEndpoint = defaults.apiEndpoint;
+        }
+        if (settings.comfyuiEndpoint && settings.comfyuiEndpoint.startsWith('https://')) {
+            settings.comfyuiEndpoint = settings.comfyuiEndpoint.replace(/^https:\/\//, 'http://');
         }
         if (settings.comfyuiEndpoint && settings.comfyuiEndpoint.startsWith(legacyHost)) {
             settings.comfyuiEndpoint = defaults.comfyuiEndpoint;

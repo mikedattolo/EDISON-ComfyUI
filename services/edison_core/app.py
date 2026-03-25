@@ -33,6 +33,7 @@ import shlex
 import socket
 import ipaddress
 import mimetypes
+import urllib.parse
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -1181,13 +1182,58 @@ def _normalize_prompt_entry(entry: dict) -> dict:
 
 def _comfyui_base_url(override: Optional[str] = None) -> str:
     if override:
-        return str(override).rstrip("/")
+        raw = str(override).strip()
+        if not raw:
+            return _comfyui_base_url(None)
+        if "://" not in raw:
+            raw = f"http://{raw}"
+        parsed = urllib.parse.urlparse(raw)
+        scheme = (parsed.scheme or "http").lower()
+        host = parsed.hostname or "127.0.0.1"
+        if host in {"0.0.0.0", "::"}:
+            host = "127.0.0.1"
+        port = f":{parsed.port}" if parsed.port else ""
+        return f"{scheme}://{host}{port}"
     comfyui_config = config.get("edison", {}).get("comfyui", {})
     comfyui_host = comfyui_config.get("host", "127.0.0.1")
     if comfyui_host == "0.0.0.0":
         comfyui_host = "127.0.0.1"
     comfyui_port = comfyui_config.get("port", 8188)
     return f"http://{comfyui_host}:{comfyui_port}"
+
+
+def _comfyui_http_fallback_url(base_url: str, exc: Exception) -> Optional[str]:
+    normalized = str(base_url or "").rstrip("/")
+    if not normalized.startswith("https://"):
+        return None
+    detail = str(exc or "").lower()
+    if "wrong version number" not in detail and "unknown protocol" not in detail:
+        return None
+    return "http://" + normalized[len("https://"):]
+
+
+def _submit_comfyui_prompt(workflow: dict, comfyui_url: str, timeout: int = 5) -> tuple[requests.Response, str]:
+    try:
+        response = requests.post(
+            f"{comfyui_url}/prompt",
+            json={"prompt": workflow},
+            timeout=timeout,
+        )
+        return response, comfyui_url
+    except requests.exceptions.SSLError as exc:
+        fallback_url = _comfyui_http_fallback_url(comfyui_url, exc)
+        if not fallback_url:
+            raise
+        logger.warning(
+            "ComfyUI HTTPS failed with SSL mismatch; retrying over HTTP at %s",
+            fallback_url,
+        )
+        response = requests.post(
+            f"{fallback_url}/prompt",
+            json={"prompt": workflow},
+            timeout=timeout,
+        )
+        return response, fallback_url
 
 
 def _readiness_component(
@@ -8265,18 +8311,9 @@ async def generate_image(request: dict):
                 logger.info("Image generation preflight released global models: %s", ", ".join(unloaded_globals))
         
         # Use provided ComfyUI URL or fall back to config
+        comfyui_url = _comfyui_base_url(comfyui_url_override)
         if comfyui_url_override:
-            comfyui_url = comfyui_url_override.rstrip('/')
             logger.info(f"Using provided ComfyUI URL: {comfyui_url}")
-        else:
-            # Get ComfyUI config
-            comfyui_config = config.get("edison", {}).get("comfyui", {})
-            comfyui_host = comfyui_config.get("host", "127.0.0.1")
-            # Never use 0.0.0.0 for client connections
-            if comfyui_host == "0.0.0.0":
-                comfyui_host = "127.0.0.1"
-            comfyui_port = comfyui_config.get("port", 8188)
-            comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
         
         logger.info(f"Connecting to ComfyUI at: {comfyui_url}")
         
@@ -8300,11 +8337,7 @@ async def generate_image(request: dict):
         logger.debug(f"Workflow CFG scale: {workflow['3']['inputs']['cfg']}")
         
         # Submit workflow to ComfyUI
-        response = requests.post(
-            f"{comfyui_url}/prompt",
-            json={"prompt": workflow},
-            timeout=5
-        )
+        response, comfyui_url = _submit_comfyui_prompt(workflow, comfyui_url, timeout=5)
         
         if not response.ok:
             raise HTTPException(status_code=503, detail=f"ComfyUI returned {response.status_code}")
