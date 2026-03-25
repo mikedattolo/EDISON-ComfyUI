@@ -201,17 +201,27 @@ def clone_or_update(repo_url: str, destination: Path, dry_run: bool) -> None:
     git_env = os.environ.copy()
     git_env["GIT_TERMINAL_PROMPT"] = "0"
     git_env["GIT_ASKPASS"] = "echo"
+    safe_dir = str(destination.resolve(strict=False))
 
     if destination.exists():
         if (destination / ".git").exists():
-            run(["git", "-c", "credential.helper=", "pull", "--ff-only"], cwd=destination, dry_run=dry_run, env=git_env)
+            run(
+                ["git", "-c", "credential.helper=", "-c", f"safe.directory={safe_dir}", "pull", "--ff-only"],
+                cwd=destination,
+                dry_run=dry_run,
+                env=git_env,
+            )
         else:
             print(f"SKIP existing non-git directory {destination}")
         return
 
     ensure_dirs([destination.parent], dry_run=dry_run)
     try:
-        run(["git", "-c", "credential.helper=", "clone", repo_url, str(destination)], dry_run=dry_run, env=git_env)
+        run(
+            ["git", "-c", "credential.helper=", "-c", f"safe.directory={safe_dir}", "clone", repo_url, str(destination)],
+            dry_run=dry_run,
+            env=git_env,
+        )
         return
     except subprocess.CalledProcessError:
         archive_urls = _github_archive_urls(repo_url)
