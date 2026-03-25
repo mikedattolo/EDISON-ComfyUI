@@ -274,6 +274,7 @@ try:
     from .business_actions import execute_business_action
     from .projects import ProjectWorkspaceManager
     from .contracts import BrandingGenerationRequest, MarketingCopyRequest
+    from .artifacts import detect_artifact_in_response
     logger.info("✓ Business workflow services loaded")
 except ImportError:
     try:
@@ -282,12 +283,14 @@ except ImportError:
         from business_actions import execute_business_action
         from projects import ProjectWorkspaceManager
         from contracts import BrandingGenerationRequest, MarketingCopyRequest
+        from artifacts import detect_artifact_in_response
         logger.info("✓ Business workflow services loaded (direct import)")
     except ImportError:
         BrandingClientStore = None
         BrandingWorkflowService = None
         execute_business_action = None
         ProjectWorkspaceManager = None
+        detect_artifact_in_response = None
         class BrandingGenerationRequest(BaseModel):
             business_name: str = ""
 
@@ -347,14 +350,12 @@ def _find_writable_dir(*candidates) -> Path:
     fallback.mkdir(parents=True, exist_ok=True)
     return fallback
 
-
 # Helper functions for RAG context management
 def normalize_chunk(text: str) -> str:
     """Normalize chunk text for deduplication by stripping whitespace and collapsing spaces"""
     if isinstance(text, tuple):
         text = text[0]
     return ' '.join(text.strip().split())
-
 
 def merge_chunks(existing: list, new: list, max_total: int = 4, source_name: str = "") -> list:
     """
@@ -5684,6 +5685,9 @@ Current step: {step_title}
 
 Generate the complete content. Use appropriate formatting (markdown for docs, JSON for data, etc.)."""
 
+            if any(kw in step_title.lower() for kw in ["html", "website", "page", "landing", "dashboard", "widget"]):
+                artifact_prompt += "\n\nIf this deliverable is intended for browser rendering, return a complete self-contained HTML document that starts with <!DOCTYPE html> and includes inline <style> and inline <script> as needed. Do not return placeholder text, pseudo-code, import statements for missing local files, or explanatory prose before the document."
+
             lock = get_lock_for_model(llm_model)
             with lock:
                 response = llm_model(
@@ -9769,7 +9773,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
         "chat": base + " Respond conversationally.",
         "reasoning": base + " Think step-by-step and explain clearly.",
         "agent": base + " You can search the web for current information. You can generate music and retrieve real-time data. Provide detailed, accurate answers based on search results and tool outputs.",
-        "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant.",
+        "code": base + " Generate complete, production-quality code with clear structure. Avoid placeholders. Include brief usage notes and edge cases when relevant. When the user asks for HTML, dashboards, landing pages, browser previews, widgets, or UI mockups, return a complete self-contained HTML document with inline CSS and inline JavaScript when needed. Prefer visible styling and working sample content over pseudo-code. Keep explanatory notes outside the code.",
         "work": base + " You are helping with a complex multi-step task. Step execution results are provided below. Synthesize all findings into a clear, actionable response. Reference specific results from each step. Be thorough and detail-oriented."
     }
     
@@ -10379,6 +10383,9 @@ def detect_artifact(response: str) -> dict:
     Detect artifact-worthy content in assistant response
     Returns dict with type, code, and title if artifact detected, else None
     """
+    if detect_artifact_in_response is not None:
+        return detect_artifact_in_response(response)
+
     if not response:
         return None
     

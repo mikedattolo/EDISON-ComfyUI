@@ -19,6 +19,7 @@ class ArtifactDetector:
     HTML_PATTERN = re.compile(r'<!DOCTYPE\s+html|<html[\s>]|<\!--.*?HTML.*?-->', re.IGNORECASE | re.DOTALL)
     SVG_PATTERN = re.compile(r'<svg[\s>].*?</svg>', re.IGNORECASE | re.DOTALL)
     REACT_PATTERN = re.compile(r'import\s+React|from\s+[\'"]react[\'"]|export\s+default\s+function', re.IGNORECASE)
+    JAVASCRIPT_PATTERN = re.compile(r'(?:const|let|var)\s+\w+\s*=|document\.|window\.|addEventListener\(|querySelector\(', re.IGNORECASE)
     MERMAID_PATTERN = re.compile(r'```mermaid\s+(.*?)```', re.DOTALL)
     
     # Code block extraction
@@ -65,6 +66,16 @@ class ArtifactDetector:
                     "id": str(uuid.uuid4())[:8],
                     "title": "React Component",
                     "language": "jsx"
+                }
+
+            # Check for browser JavaScript
+            if lang in ["javascript", "js"] or ArtifactDetector.JAVASCRIPT_PATTERN.search(code):
+                return {
+                    "type": "javascript",
+                    "code": code,
+                    "id": str(uuid.uuid4())[:8],
+                    "title": "JavaScript Preview",
+                    "language": "javascript"
                 }
             
             # Check for SVG
@@ -118,7 +129,7 @@ class ArtifactDetector:
     @staticmethod
     def should_render_artifact(artifact_type: str) -> bool:
         """Check if artifact type should be rendered in frontend"""
-        renderable = ["html", "svg", "mermaid"]
+        renderable = ["html", "svg", "mermaid", "javascript"]
         return artifact_type in renderable
     
     @staticmethod
@@ -168,6 +179,26 @@ class ArtifactDetector:
 </body>
 </html>"""
             return code
+
+        elif artifact_type == "javascript":
+            return f"""<!DOCTYPE html>
+<html>
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        body {{ font-family: system-ui, -apple-system, sans-serif; padding: 20px; line-height: 1.6; background: #f8fafc; color: #0f172a; }}
+        #app, #output {{ min-height: 120px; }}
+    </style>
+</head>
+<body>
+    <div id="app"></div>
+    <div id="output"></div>
+    <script>
+{code}
+    </script>
+</body>
+</html>"""
         
         elif artifact_type == "mermaid":
             return f"""<!DOCTYPE html>
