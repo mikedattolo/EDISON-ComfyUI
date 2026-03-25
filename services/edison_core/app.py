@@ -400,8 +400,66 @@ def merge_chunks(existing: list, new: list, max_total: int = 4, source_name: str
     return merged[:max_total]
 
 
+def _looks_like_followup(user_message: str, conversation_history: Optional[list] = None) -> bool:
+    if not conversation_history:
+        return False
+
+    msg = (user_message or "").strip().lower()
+    if not msg:
+        return False
+
+    referential_terms = [
+        "that", "it", "this", "those", "these", "them", "there", "here",
+        "the same", "again", "instead", "also", "too", "more like", "less like",
+        "make it", "change it", "fix it", "do that", "do this", "use that",
+        "now", "then", "continue", "go on", "try again", "one more",
+    ]
+    followup_openers = [
+        "and ", "also ", "now ", "then ", "instead ", "but ", "so ",
+        "make ", "change ", "fix ", "use ", "add ", "remove ", "update ",
+        "turn ", "convert ", "try ", "keep ", "expand ", "refine ",
+    ]
+
+    if any(term in msg for term in referential_terms):
+        return True
+    if len(msg.split()) <= 12 and any(msg.startswith(prefix) for prefix in followup_openers):
+        return True
+    return False
+
+
+def _infer_contextual_mode_from_history(conversation_history: Optional[list]) -> Optional[str]:
+    if not conversation_history:
+        return None
+
+    recent_text = "\n".join(
+        str(msg.get("content", ""))
+        for msg in conversation_history[-4:]
+        if isinstance(msg, dict)
+    ).lower()
+
+    if not recent_text.strip():
+        return None
+
+    code_signals = [
+        "```", "def ", "function ", "class ", "import ", "from ",
+        "python", "javascript", "typescript", "react", "fastapi", "html", "css",
+        ".py", ".js", ".ts", ".tsx", ".html", ".css", "stack trace", "refactor",
+        "component", "endpoint", "bug", "exception", "traceback",
+    ]
+    search_signals = [
+        "search results", "source:", "looked up", "web search", "according to", "latest news"
+    ]
+
+    if any(signal in recent_text for signal in code_signals):
+        return "code"
+    if any(signal in recent_text for signal in search_signals):
+        return "agent"
+    return "reasoning"
+
+
 def route_mode(user_message: str, requested_mode: str, has_image: bool,
-               coral_intent: Optional[str] = None) -> Dict[str, any]:
+               coral_intent: Optional[str] = None,
+               conversation_history: Optional[list] = None) -> Dict[str, any]:
     """
     Consolidated routing function to determine mode, tools, and model target.
     Single source of truth for all routing logic.
@@ -473,14 +531,24 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             # Rule 4: Heuristic pattern matching
             msg_lower = user_message.lower()
 
-            # Check patterns in priority order
-            work_patterns = ["create a project", "build an app", "design a system", "plan",
-                            "multi-step", "workflow", "organize", "manage",
-                            "help me with", "work on", "collaborate", "break down this"]
+            is_followup = _looks_like_followup(user_message, conversation_history)
+            sticky_mode = _infer_contextual_mode_from_history(conversation_history) if is_followup else None
 
-            code_patterns = ["code", "program", "function", "implement", "script", "write",
-                            "create a", "build", "develop", "algorithm", "class", "method",
-                            "debug", "fix this", "syntax", "refactor"]
+            # Check patterns in priority order
+            work_patterns = [
+                "create a project plan", "project plan", "multi-step workflow", "step-by-step workflow",
+                "break down this task", "organize this project", "workflow for", "execution plan",
+                "task plan", "roadmap", "milestones", "deliverables"
+            ]
+
+            code_patterns = [
+                "write a function", "write a script", "write a class", "write code",
+                "build a component", "react component", "fastapi endpoint", "api route",
+                "python", "javascript", "typescript", "html", "css", "sql", "bash",
+                "regex", "algorithm", "method", "class", "function", "unit test",
+                "debug", "fix this bug", "syntax error", "stack trace", "traceback",
+                "refactor", "code review", "endpoint", "schema", "component"
+            ]
 
             agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
                              "current", "latest", "news about", "information on", "information about",
@@ -522,8 +590,17 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
             has_music = any(pattern in msg_lower for pattern in music_patterns)
 
+            has_code_patterns = any(pattern in msg_lower for pattern in code_patterns)
+            has_work_patterns = any(pattern in msg_lower for pattern in work_patterns)
+
+            # Sticky follow-ups should preserve the prior mode unless the user clearly changes direction.
+            if is_followup and sticky_mode and not has_realtime and not has_music and not has_agent_patterns and not has_code_patterns and not has_work_patterns:
+                mode = sticky_mode
+                tools_allowed = sticky_mode == "agent"
+                reasons.append(f"Follow-up detected → preserving prior context as {sticky_mode} mode")
+
             # Real-time queries get tools enabled for instant data retrieval
-            if has_realtime:
+            elif has_realtime:
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Real-time data query detected → agent mode with tools")
@@ -531,11 +608,11 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Music generation request detected → agent mode with tools")
-            elif any(pattern in msg_lower for pattern in work_patterns):
+            elif has_work_patterns:
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
                 reasons.append("Work patterns detected → work mode with tools")
-            elif any(pattern in msg_lower for pattern in code_patterns):
+            elif has_code_patterns:
                 mode = "code"
                 reasons.append("Code patterns detected → code mode")
             elif has_agent_patterns:
@@ -577,11 +654,14 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             if model_target != "reasoning":
                 model_target = "reasoning"
                 reasons.append(f"Mode '{mode}' requires reasoning model")
-        elif mode in ["work", "swarm"]:
+        elif mode in ["work", "swarm", "code"]:
             if model_target != "deep":
                 model_target = "deep"
-                reasons.append(f"Mode '{mode}' requires deep model")
-        elif mode in ["code", "agent"]:
+                if mode == "code":
+                    reasons.append("Mode 'code' prefers the strongest available coding model")
+                else:
+                    reasons.append(f"Mode '{mode}' requires deep model")
+        elif mode in ["agent"]:
             if model_target != "medium":
                 model_target = "medium"
                 reasons.append(f"Mode '{mode}' requires medium model")
@@ -5859,7 +5939,7 @@ async def chat(request: ChatRequest):
     coral_intent = intent
     
     # Use consolidated routing function
-    routing = route_mode(request.message, request.mode, has_images, coral_intent)
+    routing = route_mode(request.message, request.mode, has_images, coral_intent, request.conversation_history)
     mode = routing["mode"]
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
@@ -6340,6 +6420,7 @@ async def chat(request: ChatRequest):
             logger.info(f"Injected real-time context: {rt_context[:80]}...")
     file_requested = _is_file_request(request.message or "")
     detected_mood = detect_user_mood(request.message or "")
+    repo_code_chunks = _retrieve_repo_code_context(request.message, request.conversation_history) if mode == "code" and not has_images else []
     system_prompt = build_system_prompt(
         mode,
         has_context=len(context_chunks) > 0,
@@ -6369,6 +6450,8 @@ async def chat(request: ChatRequest):
             status_steps.append({"stage": "Searching web"})
     if context_chunks:
         status_steps.append({"stage": "Using memory"})
+    if repo_code_chunks:
+        status_steps.append({"stage": "Inspecting codebase", "detail": ", ".join(item.get("path", "") for item in repo_code_chunks[:2])})
     if mode != "swarm":
         status_steps.append({"stage": "Generating response"})
     
@@ -6416,7 +6499,7 @@ async def chat(request: ChatRequest):
     if has_images:
         full_prompt = (request.message or "").strip() or "Describe in detail what you see in this image."
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, repo_code_chunks=repo_code_chunks)
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
@@ -6526,6 +6609,15 @@ async def chat(request: ChatRequest):
                     )
                 
                 assistant_response = response["choices"][0]["text"].strip()
+
+                assistant_response = _maybe_repair_code_response(
+                    llm,
+                    model_name,
+                    original_mode,
+                    request.message,
+                    assistant_response,
+                    conversation_history=request.conversation_history,
+                )
         
         # Store in memory if auto-detected or requested
         store_conversation_exchange(request, assistant_response, original_mode, remember)
@@ -6756,7 +6848,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     has_images = request.images and len(request.images) > 0
     coral_intent = intent
 
-    routing = route_mode(request.message, request.mode, has_images, coral_intent)
+    routing = route_mode(request.message, request.mode, has_images, coral_intent, request.conversation_history)
     mode = routing["mode"]
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
@@ -7083,6 +7175,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
     file_requested = _is_file_request(request.message or "")
     detected_mood = detect_user_mood(request.message or "")
+    repo_code_chunks = _retrieve_repo_code_context(request.message, request.conversation_history) if mode == "code" and not has_images else []
     system_prompt = build_system_prompt(
         mode,
         has_context=len(context_chunks) > 0,
@@ -7109,7 +7202,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
             full_prompt = f"Context: {context_text}\n\n{full_prompt}"
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, repo_code_chunks=repo_code_chunks)
 
     logger.info(f"Prompt length: {len(full_prompt)} chars")
 
@@ -7129,6 +7222,8 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
                 status_steps.append({"stage": "Searching web"})
         except Exception:
             status_steps.append({"stage": "Searching web"})
+    if repo_code_chunks:
+        status_steps.append({"stage": "Inspecting codebase", "detail": ", ".join(item.get("path", "") for item in repo_code_chunks[:2])})
     if context_chunks:
         status_steps.append({"stage": "Using memory"})
     if mode != "swarm":
@@ -7767,6 +7862,15 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         cleaned_response = _strip_file_blocks(assistant_response)
         # Always deduplicate repeated lines (fixes looping output)
         cleaned_response = _dedupe_repeated_lines(cleaned_response)
+
+        cleaned_response = _maybe_repair_code_response(
+            llm,
+            model_name,
+            original_mode,
+            request.message,
+            cleaned_response,
+            conversation_history=request.conversation_history,
+        )
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
@@ -9871,7 +9975,141 @@ def truncate_text(text: str, max_chars: int = 3000, label: str = "text") -> str:
     return f"{truncated}\n\n[TRUNCATED {label}: {len(text)} chars total]"
 
 
-def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None, wiki_chunks: list = None) -> str:
+def _extract_code_query_terms(user_message: str, conversation_history: Optional[list] = None, limit: int = 8) -> list[str]:
+    text_parts = [user_message or ""]
+    if conversation_history:
+        text_parts.extend(str(msg.get("content", "")) for msg in conversation_history[-3:] if isinstance(msg, dict))
+    text = "\n".join(text_parts)
+
+    file_refs = re.findall(r"[A-Za-z0-9_./-]+\.(?:py|js|ts|tsx|jsx|html|css|json)", text)
+    symbol_refs = re.findall(r"\b[A-Za-z_][A-Za-z0-9_]{2,}\b", text)
+    stopwords = {
+        "the", "and", "for", "with", "that", "this", "from", "into", "your", "have", "make", "need",
+        "please", "could", "would", "should", "about", "there", "their", "them", "then", "also", "only",
+        "code", "file", "files", "help", "want", "using", "used", "just", "like", "what", "when",
+    }
+
+    ordered_terms = []
+    for term in file_refs + symbol_refs:
+        lowered = term.lower()
+        if lowered in stopwords or len(term) < 3:
+            continue
+        if lowered not in {t.lower() for t in ordered_terms}:
+            ordered_terms.append(term)
+        if len(ordered_terms) >= limit:
+            break
+    return ordered_terms
+
+
+def _iter_repo_code_files(max_files: int = 400):
+    allowed_exts = {".py", ".js", ".ts", ".tsx", ".jsx", ".html", ".css", ".json"}
+    roots = [REPO_ROOT / "services", REPO_ROOT / "web", REPO_ROOT / "tests"]
+    yielded = 0
+    for root in roots:
+        if not root.exists():
+            continue
+        for path in root.rglob("*"):
+            if yielded >= max_files:
+                return
+            if not path.is_file() or path.suffix.lower() not in allowed_exts:
+                continue
+            if any(part.startswith(".") for part in path.parts):
+                continue
+            try:
+                if path.stat().st_size > 300_000:
+                    continue
+            except OSError:
+                continue
+            yielded += 1
+            yield path
+
+
+def _extract_code_snippet(text: str, term: str, radius: int = 6, max_lines: int = 18) -> str:
+    lines = text.splitlines()
+    lowered_term = term.lower()
+    for idx, line in enumerate(lines):
+        if lowered_term in line.lower():
+            start = max(0, idx - radius)
+            end = min(len(lines), idx + radius + 1)
+            return "\n".join(lines[start:end])
+    return "\n".join(lines[:max_lines])
+
+
+def _retrieve_repo_code_context(user_message: str, conversation_history: Optional[list] = None, max_snippets: int = 4) -> list[dict]:
+    terms = _extract_code_query_terms(user_message, conversation_history)
+    if not terms:
+        return []
+
+    matches = []
+    explicit_paths = []
+    for term in terms:
+        candidate = (REPO_ROOT / term).resolve() if "." in term or "/" in term else None
+        if candidate and candidate.exists() and candidate.is_file() and str(candidate).startswith(str(REPO_ROOT)):
+            explicit_paths.append((term, candidate))
+
+    seen_paths = set()
+    for term, path in explicit_paths:
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        snippet_term = term
+        lowered_text = text.lower()
+        for candidate_term in terms:
+            lowered_candidate = candidate_term.lower()
+            if candidate_term == term:
+                continue
+            if "." in candidate_term or "/" in candidate_term:
+                continue
+            preferred_markers = [
+                f"def {lowered_candidate}",
+                f"class {lowered_candidate}",
+                f"{lowered_candidate}(",
+            ]
+            if any(marker in lowered_text for marker in preferred_markers):
+                snippet_term = candidate_term
+                break
+            if snippet_term == term and lowered_candidate in lowered_text:
+                snippet_term = candidate_term
+        matches.append({
+            "path": str(path.relative_to(REPO_ROOT)),
+            "score": 100,
+            "snippet": _extract_code_snippet(text, snippet_term)
+        })
+        seen_paths.add(path)
+
+    lowered_terms = [term.lower() for term in terms]
+    for path in _iter_repo_code_files():
+        if path in seen_paths:
+            continue
+        try:
+            text = path.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        lowered_text = text.lower()
+        score = 0
+        best_term = None
+        for term in lowered_terms:
+            if term in path.name.lower():
+                score += 5
+                best_term = best_term or term
+            occurrences = lowered_text.count(term)
+            if occurrences:
+                score += min(occurrences, 4)
+                best_term = best_term or term
+        if score <= 0:
+            continue
+        matches.append({
+            "path": str(path.relative_to(REPO_ROOT)),
+            "score": score,
+            "snippet": _extract_code_snippet(text, best_term or lowered_terms[0])
+        })
+
+    matches.sort(key=lambda item: item["score"], reverse=True)
+    return matches[:max_snippets]
+
+
+def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None, wiki_chunks: list = None, repo_code_chunks: list = None) -> str:
     """Build the complete prompt with context, search results, knowledge chunks, and conversation history"""
     parts = [system_prompt, ""]
     
@@ -9953,11 +10191,153 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
                 parts.append(f"- {truncate_text(item, max_chars=600, label='wiki')}")
         parts.append("")
 
+    if repo_code_chunks:
+        parts.append("RELEVANT CODEBASE CONTEXT:")
+        for item in repo_code_chunks[:4]:
+            path = item.get("path", "unknown")
+            snippet = truncate_text(item.get("snippet", ""), max_chars=900, label="code")
+            parts.append(f"File: {path}\n```\n{snippet}\n```")
+        parts.append("")
+
     user_message = truncate_text(user_message or "", max_chars=2500, label="user message")
     parts.append(f"User: {user_message}")
     parts.append("Assistant:")
     
     return "\n".join(parts)
+
+
+def _is_renderable_code_request(user_message: str, conversation_history: Optional[list] = None) -> bool:
+    combined = " ".join(
+        str((msg or {}).get("content", ""))
+        for msg in (conversation_history or [])[-2:]
+        if isinstance(msg, dict)
+    )
+    text = f"{combined}\n{user_message or ''}".lower()
+    render_terms = [
+        "html",
+        "landing page",
+        "web page",
+        "website",
+        "dashboard",
+        "widget",
+        "browser",
+        "preview",
+        "self-contained",
+        "single file",
+        "one file",
+        "canvas",
+        "interactive",
+        "ui",
+        "interface",
+    ]
+    return any(term in text for term in render_terms)
+
+
+def _response_looks_non_renderable(response: str) -> bool:
+    lowered = (response or "").lower()
+    if not lowered.strip():
+        return True
+    has_html_structure = any(token in lowered for token in ["<!doctype html", "<html", "<body", "```html"])
+    has_browser_code = any(token in lowered for token in ["<script", "document.", "window.", "```javascript", "```js"])
+    has_local_imports = bool(re.search(r"(?:import|require)\s*.*?(?:from\s*)?[\"'][.]{1,2}/", response or "", re.IGNORECASE))
+    refusal_like = any(
+        phrase in lowered
+        for phrase in [
+            "here's a basic structure",
+            "here is a basic structure",
+            "pseudo-code",
+            "pseudocode",
+            "you can save this as",
+            "you would need to",
+            "this is just a template",
+            "for example, you could",
+        ]
+    )
+    return has_local_imports or refusal_like or not (has_html_structure or has_browser_code)
+
+
+def _repair_renderable_code_response(
+    llm,
+    model_name: str,
+    user_message: str,
+    assistant_response: str,
+    conversation_history: Optional[list] = None,
+) -> str:
+    repair_prompt = (
+        "You are repairing a broken coding answer for a browser-rendered artifact.\n"
+        "Return only the final self-contained code, with no explanation.\n"
+        "Requirements:\n"
+        "- Produce a single self-contained HTML document.\n"
+        "- Inline all CSS and JavaScript.\n"
+        "- Do not use external dependencies, local imports, bundlers, or placeholders.\n"
+        "- The page must run directly in a browser sandbox as-is.\n"
+        "- Include polished styling and working behavior that matches the request.\n"
+        "- Do not wrap the answer in Markdown fences.\n\n"
+        f"User request:\n{user_message or ''}\n\n"
+        f"Recent context:\n{json.dumps((conversation_history or [])[-2:], ensure_ascii=True)}\n\n"
+        f"Broken answer to repair:\n{assistant_response or ''}"
+    )
+
+    try:
+        if vllm_enabled:
+            repaired = _vllm_generate(
+                repair_prompt,
+                mode="deep" if model_name in ["deep", "reasoning"] else "fast",
+                max_tokens=2200,
+                temperature=0.2,
+                top_p=0.9,
+            )
+            if repaired:
+                return repaired.strip()
+    except Exception as e:
+        logger.warning(f"vLLM repair pass failed: {e}")
+
+    try:
+        lock = get_lock_for_model(llm)
+        with lock:
+            response = llm(
+                repair_prompt,
+                max_tokens=2200,
+                temperature=0.2,
+                top_p=0.9,
+                repeat_penalty=1.15,
+                frequency_penalty=0.2,
+                presence_penalty=0.0,
+                stop=["User:", "Human:"],
+                echo=False,
+            )
+        return response["choices"][0]["text"].strip()
+    except Exception as e:
+        logger.warning(f"LLM repair pass failed: {e}")
+        return assistant_response
+
+
+def _maybe_repair_code_response(
+    llm,
+    model_name: str,
+    mode: str,
+    user_message: str,
+    assistant_response: str,
+    conversation_history: Optional[list] = None,
+) -> str:
+    if mode != "code":
+        return assistant_response
+    if not _is_renderable_code_request(user_message, conversation_history):
+        return assistant_response
+    if not _response_looks_non_renderable(assistant_response):
+        return assistant_response
+
+    repaired = _repair_renderable_code_response(
+        llm,
+        model_name,
+        user_message,
+        assistant_response,
+        conversation_history=conversation_history,
+    )
+    if repaired and repaired.strip() and repaired.strip() != (assistant_response or "").strip():
+        logger.info("Applied renderable code repair pass")
+        return repaired.strip()
+    return assistant_response
 
 def _artifacts_root() -> Path:
     root = config.get("edison", {}).get("artifacts", {}).get("root", "outputs")

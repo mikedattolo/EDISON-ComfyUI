@@ -972,7 +972,8 @@ class EdisonApp {
                                         return;
                                     }
                                     // Success — normal text response
-                                    this.updateMessage(assistantMessageEl, accumulatedResponse, data.mode_used || mode);
+                                    const finalResponse = data.response || accumulatedResponse;
+                                    this.updateMessage(assistantMessageEl, finalResponse, data.mode_used || mode);
                                     
                                     // Track swarm session for follow-up DMs and intervention
                                     if (data.swarm_session_id) {
@@ -1001,7 +1002,7 @@ class EdisonApp {
                                     // Save to chat history
                                     const toolSummary = this.buildToolSummary(assistantMessageEl);
                                     const metadata = toolSummary ? { toolSummary } : null;
-                                    this.saveMessageToChat(message, accumulatedResponse, data.mode_used || mode, metadata);
+                                    this.saveMessageToChat(message, finalResponse, data.mode_used || mode, metadata);
                                     
                                     // Generate smart title if first message
                                     const chat = this.chats.find(c => c.id === this.currentChatId);
