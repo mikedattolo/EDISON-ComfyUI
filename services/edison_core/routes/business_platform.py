@@ -10,6 +10,7 @@ import yaml
 from fastapi import APIRouter, HTTPException, Query
 
 from ..contracts import ProjectCreateRequest, ProjectUpdateRequest
+from ..model_catalog import build_model_catalog, recommend_models_for_task
 from ..projects import ProjectWorkspaceManager
 from ..system_awareness import build_capability_map
 
@@ -40,6 +41,10 @@ def get_project_manager() -> ProjectWorkspaceManager:
 
 def get_capability_map() -> Dict[str, Any]:
     return build_capability_map(REPO_ROOT, _load_config())
+
+
+def get_model_catalog() -> Dict[str, Any]:
+    return build_model_catalog(REPO_ROOT, _load_config())
 
 
 def _load_json(name: str, default: Dict[str, Any]) -> Dict[str, Any]:
@@ -160,3 +165,12 @@ async def business_overview(limit: int = Query(10, ge=1, le=100)):
 @router.get("/system-awareness/capabilities")
 async def system_awareness_capabilities():
     return {"ok": True, "capabilities": get_capability_map()}
+
+
+@router.get("/system-awareness/models")
+async def system_awareness_models(task: Optional[str] = None):
+    catalog = get_model_catalog()
+    response = {"ok": True, "catalog": catalog}
+    if task:
+        response["recommendation"] = recommend_models_for_task(task, catalog)
+    return response

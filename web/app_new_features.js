@@ -1764,6 +1764,8 @@ console.log('🧊 app_new_features.js v1 loading...');
     let brandingSelectedClientId = null;
     let brandingAssetFilter = 'all';
     let brandingAssetsCache = { images: [], videos: [], files: [] };
+    let brandingRecentMediaCache = [];
+    let videoRecentMediaCache = [];
 
     async function _readJsonResponseSafe(res) {
         const raw = await res.text();
@@ -1788,17 +1790,51 @@ console.log('🧊 app_new_features.js v1 loading...');
         }
     }
 
+    function inferBrandingAssetType(path, kind) {
+        if (kind === 'image') return 'images';
+        if (kind === 'video') return 'videos';
+        if (kind === 'audio' || kind === 'file') return 'files';
+        const lower = String(path || '').toLowerCase();
+        if (/(\.png|\.jpg|\.jpeg|\.gif|\.webp|\.svg)$/.test(lower)) return 'images';
+        if (/(\.mp4|\.mov|\.mkv|\.webm|\.avi)$/.test(lower)) return 'videos';
+        return 'files';
+    }
+
+    function renderRecentMediaList(host, items, onPick, emptyMessage) {
+        if (!host) return;
+        if (!items || !items.length) {
+            host.innerHTML = `<div style="padding:10px;color:var(--text-secondary);font-size:13px;">${emptyMessage}</div>`;
+            return;
+        }
+        host.innerHTML = items.map((item, index) => `
+            <button type="button" class="connector-list-btn" data-recent-index="${index}" style="width:100%;display:flex;justify-content:space-between;gap:8px;margin-bottom:6px;text-align:left;">
+                <span style="min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">${_escapeHtmlUtil(item.name || item.path || 'file')}</span>
+                <span style="opacity:.7;flex-shrink:0;">${_escapeHtmlUtil(item.kind || 'file')}</span>
+            </button>
+        `).join('');
+        host.querySelectorAll('[data-recent-index]').forEach((node) => {
+            node.addEventListener('click', () => {
+                const item = items[Number(node.getAttribute('data-recent-index'))];
+                if (item) onPick(item);
+            });
+        });
+    }
+
     window.toggleBrandingPanel = function() {
         brandingPanelOpen = !brandingPanelOpen;
         setPanelOpen('brandingPanel', brandingPanelOpen);
         if (brandingPanelOpen) {
             window.brandingRefreshClients && window.brandingRefreshClients();
+            window.brandingLoadRecentMedia && window.brandingLoadRecentMedia();
         }
     };
 
     window.toggleVideoEditorPanel = function() {
         videoEditorPanelOpen = !videoEditorPanelOpen;
         setPanelOpen('videoEditorPanel', videoEditorPanelOpen);
+        if (videoEditorPanelOpen) {
+            window.videoLoadRecentMedia && window.videoLoadRecentMedia();
+        }
     };
 
     window.toggleDeepSearchPanel = function() {
@@ -1978,6 +2014,31 @@ console.log('🧊 app_new_features.js v1 loading...');
         listEl.innerHTML = html;
     };
 
+    window.brandingLoadRecentMedia = async function() {
+        const host = document.getElementById('brandingRecentMedia');
+        const statusEl = document.getElementById('brandingStatus');
+        if (!host) return;
+        host.innerHTML = '<div style="padding:10px;color:var(--text-secondary);font-size:13px;">Loading recent media...</div>';
+        try {
+            const res = await fetch(`${API}/video/recent?limit=18&kind=all`);
+            const data = await _readJsonResponseSafe(res);
+            if (!res.ok || !data.ok) {
+                host.innerHTML = `<div style="padding:10px;color:var(--text-secondary);font-size:13px;">${_escapeHtmlUtil(data.detail || data.error || 'Could not load media.')}</div>`;
+                return;
+            }
+            brandingRecentMediaCache = data.items || [];
+            renderRecentMediaList(host, brandingRecentMediaCache, (item) => {
+                const pathInput = document.getElementById('brandingSourcePath');
+                const typeInput = document.getElementById('brandingAssetType');
+                if (pathInput) pathInput.value = item.path || '';
+                if (typeInput) typeInput.value = inferBrandingAssetType(item.path, item.kind);
+                showStatus(statusEl, `✅ Selected media: ${item.path}`, 'success');
+            }, 'No recent media found.');
+        } catch (e) {
+            host.innerHTML = `<div style="padding:10px;color:var(--text-secondary);font-size:13px;">${_escapeHtmlUtil(e.message)}</div>`;
+        }
+    };
+
     window.brandingAttachAsset = async function() {
         const clientId = brandingSelectedClientId;
         const sourcePath = (document.getElementById('brandingSourcePath')?.value || '').trim();
@@ -2002,8 +2063,40 @@ console.log('🧊 app_new_features.js v1 loading...');
             }
             showStatus(statusEl, `✅ Stored: ${data.stored_path}`, 'success');
             await window.brandingLoadAssets(clientId);
+            window.brandingLoadRecentMedia && window.brandingLoadRecentMedia();
         } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
+        }
+    };
+
+    window.videoLoadRecentMedia = async function() {
+        const host = document.getElementById('videoRecentMedia');
+        const statusEl = document.getElementById('videoEditStatus');
+        if (!host) return;
+        host.innerHTML = '<div style="padding:10px;color:var(--text-secondary);font-size:13px;">Loading recent clips...</div>';
+        try {
+            const res = await fetch(`${API}/video/recent?limit=20&kind=video,audio`);
+            const data = await _readJsonResponseSafe(res);
+            if (!res.ok || !data.ok) {
+                host.innerHTML = `<div style="padding:10px;color:var(--text-secondary);font-size:13px;">${_escapeHtmlUtil(data.detail || data.error || 'Could not load recent clips.')}</div>`;
+                return;
+            }
+            videoRecentMediaCache = data.items || [];
+            renderRecentMediaList(host, videoRecentMediaCache, (item) => {
+                if (item.kind === 'audio') {
+                    const audioInput = document.getElementById('videoEditAudioPath');
+                    const opInput = document.getElementById('videoEditOperation');
+                    if (audioInput) audioInput.value = item.path || '';
+                    if (opInput) opInput.value = 'mux_audio';
+                    showStatus(statusEl, `✅ Selected audio track: ${item.path}`, 'success');
+                    return;
+                }
+                const sourceInput = document.getElementById('videoEditSourcePath');
+                if (sourceInput) sourceInput.value = item.path || '';
+                showStatus(statusEl, `✅ Selected video source: ${item.path}`, 'success');
+            }, 'No recent video or audio files found.');
+        } catch (e) {
+            host.innerHTML = `<div style="padding:10px;color:var(--text-secondary);font-size:13px;">${_escapeHtmlUtil(e.message)}</div>`;
         }
     };
 
@@ -2051,7 +2144,10 @@ console.log('🧊 app_new_features.js v1 loading...');
             if (data.output_path) {
                 const srcInput = document.getElementById('brandingSourcePath');
                 if (srcInput) srcInput.value = data.output_path;
+                const videoSourceInput = document.getElementById('videoEditSourcePath');
+                if (videoSourceInput) videoSourceInput.value = data.output_path;
             }
+            window.videoLoadRecentMedia && window.videoLoadRecentMedia();
         } catch (e) {
             showStatus(statusEl, `❌ ${e.message}`, 'error');
             if (resultEl) resultEl.textContent = `Error: ${e.message}`;

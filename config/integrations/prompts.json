@@ -1,0 +1,36 @@
+{
+  "prompts": [
+    {
+      "id": "p_70790ee707",
+      "title": "Test Prompt",
+      "content": "You are a helpful assistant",
+      "tags": [],
+      "created_at": 1773285200,
+      "updated_at": 1773285200
+    },
+    {
+      "id": "p_0ec6045209",
+      "title": "Test Prompt",
+      "content": "You are a helpful assistant",
+      "tags": [],
+      "created_at": 1773285207,
+      "updated_at": 1773285207
+    },
+    {
+      "id": "p_56102d88d6",
+      "title": "Test Prompt",
+      "content": "You are a helpful assistant",
+      "tags": [],
+      "created_at": 1773285215,
+      "updated_at": 1773285215
+    },
+    {
+      "id": "p_0e41f8bacb",
+      "title": "Test Prompt",
+      "content": "You are a helpful assistant",
+      "tags": [],
+      "created_at": 1773285220,
+      "updated_at": 1773285220
+    }
+  ]
+}

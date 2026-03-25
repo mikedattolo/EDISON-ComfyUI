@@ -1,0 +1,24 @@
+{
+  "edit_id": "69477d18-ba28-45ab-a362-cdb4df261908",
+  "source_image_id": null,
+  "source_path": "/tmp/edison-tests/source.png",
+  "edit_type": "img2img_fallback",
+  "edit_prompt": "make it a watercolor illustration",
+  "parameters": {
+    "prompt": "make it a watercolor illustration",
+    "denoise": 0.6,
+    "steps": 18,
+    "seed": null,
+    "sampler_name": "dpmpp_2m",
+    "scheduler": "karras",
+    "cfg": 6.0,
+    "negative_prompt": "",
+    "ckpt_name": "sd_xl_base_1.0.safetensors",
+    "allow_fallback": true,
+    "fallback_reason": "HTTPConnectionPool(host='127.0.0.1', port=8188): Max retries exceeded with url: /upload/image (Caused by NewConnectionError(\"HTTPConnection(host='127.0.0.1', port=8188): Failed to establish a new connection: [Errno 111] Connection refused\"))",
+    "degraded": true
+  },
+  "output_path": "/workspaces/EDISON-ComfyUI/outputs/edits/2344e003-939c-4c23-850f-5f91dc78aca0.png",
+  "timestamp": 1773717366.25633,
+  "model_used": null
+}

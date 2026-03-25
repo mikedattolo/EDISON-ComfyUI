@@ -70,3 +70,71 @@ def test_swarm_session_prune_and_compact():
     assert get_session(stale_session.session_id) is None
 
     end_session(compact_session.session_id)
+
+
+def test_idle_cleanup_unloads_vision_models(monkeypatch):
+    from services.edison_core import app as core_app
+
+    calls = []
+    core_app.llm_vision = object()
+    core_app.llm_vision_code = object()
+    core_app.video_service = None
+    core_app.music_service = None
+
+    monkeypatch.setattr(core_app, "_flush_gpu_memory", lambda: calls.append("flush"))
+
+    result = core_app._cleanup_media_services_for_idle_protocol()
+
+    assert result["vision"] == "unloaded"
+    assert core_app.llm_vision is None
+    assert core_app.llm_vision_code is None
+    assert calls
+
+
+def test_image_completion_reloads_text_models_without_vision(monkeypatch):
+    from services.edison_core import app as core_app
+
+    reload_calls = []
+    monkeypatch.setattr(core_app, "_complete_image_prompt", lambda **kwargs: 1)
+    monkeypatch.setattr(core_app, "memory_gate_instance", None)
+    monkeypatch.setattr(
+        core_app,
+        "reload_llm_models_background",
+        lambda include_vision=False, include_vision_code=False: reload_calls.append(
+            (include_vision, include_vision_code)
+        ),
+    )
+
+    core_app._models_unloaded_for_image_gen = True
+    core_app._on_image_generation_complete(prompt_id="abc123")
+
+    assert reload_calls == [(False, False)]
+
+
+def test_finalize_vision_request_unloads_vision_and_restores_text(monkeypatch):
+    from services.edison_core import app as core_app
+
+    reload_calls = []
+    core_app.llm_fast = None
+    core_app.llm_medium = None
+    core_app.llm_deep = None
+    core_app.llm_reasoning = None
+    core_app.llm_vision = object()
+    core_app.llm_vision_code = object()
+
+    monkeypatch.setattr(core_app, "_flush_gpu_memory", lambda: None)
+    monkeypatch.setattr(core_app.time, "sleep", lambda _seconds: None)
+    monkeypatch.setattr(core_app, "_should_unload_vision_after_use", lambda: True)
+    monkeypatch.setattr(
+        core_app,
+        "reload_llm_models_background",
+        lambda include_vision=False, include_vision_code=False: reload_calls.append(
+            (include_vision, include_vision_code)
+        ),
+    )
+
+    core_app._finalize_vision_request()
+
+    assert core_app.llm_vision is None
+    assert core_app.llm_vision_code is None
+    assert reload_calls == [(False, False)]

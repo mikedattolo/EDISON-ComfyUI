@@ -8,6 +8,8 @@ import json
 import os
 import re
 
+from .model_catalog import build_model_catalog
+
 
 DEFAULT_TOOL_CATEGORIES = {
     "browser": ["open_sandbox_browser", "browser.create_session", "browser.navigate"],
@@ -31,6 +33,7 @@ def build_capability_map(repo_root: Path, config: Dict[str, Any]) -> Dict[str, A
     service_modules = _discover_service_modules(repo_root / "services")
     environment = _discover_environment(config)
     readiness = _discover_readiness(repo_root)
+    model_catalog = build_model_catalog(repo_root, config)
 
     return {
         "summary": {
@@ -38,6 +41,8 @@ def build_capability_map(repo_root: Path, config: Dict[str, Any]) -> Dict[str, A
             "route_count": len(routes),
             "service_module_count": len(service_modules),
             "storage_count": len(storage),
+            "installed_llm_models": model_catalog.get("summary", {}).get("llm_installed", 0),
+            "installed_image_checkpoints": model_catalog.get("summary", {}).get("image_checkpoints_installed", 0),
         },
         "pages": pages,
         "routes": routes,
@@ -47,6 +52,7 @@ def build_capability_map(repo_root: Path, config: Dict[str, Any]) -> Dict[str, A
         "environment": environment,
         "modes": _discover_modes(config),
         "tools": DEFAULT_TOOL_CATEGORIES,
+        "models": model_catalog,
         "readiness": readiness,
     }
 

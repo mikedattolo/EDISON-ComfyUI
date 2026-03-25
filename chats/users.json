@@ -1,0 +1,19 @@
+{
+  "users": [
+    {
+      "id": "8cbca256-dc63-47f1-839d-9a87d184d003",
+      "name": "testuser",
+      "created_at": 1773285200
+    },
+    {
+      "id": "7a1c0b9e-ed23-45f0-af54-fb7415788e2e",
+      "name": "testuser",
+      "created_at": 1773285207
+    },
+    {
+      "id": "d8a01f0e-dde4-4e7c-b1c7-c786b5fd181d",
+      "name": "testuser",
+      "created_at": 1773285215
+    }
+  ]
+}

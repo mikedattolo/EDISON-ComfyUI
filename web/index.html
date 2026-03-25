@@ -677,6 +677,11 @@
                             </label>
                             <button class="feature-generate-btn" onclick="window.brandingAttachAsset && window.brandingAttachAsset()">Attach</button>
                         </div>
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;">
+                            <span style="font-size:12px;color:var(--text-secondary);">Quick pick recent media</span>
+                            <button class="connector-list-btn" onclick="window.brandingLoadRecentMedia && window.brandingLoadRecentMedia()">Refresh</button>
+                        </div>
+                        <div id="brandingRecentMedia" class="branding-assets-table" style="margin-top:8px;max-height:180px;overflow:auto;">Recent files will appear here.</div>
                     </div>
                     <div class="feature-section">
                         <label class="feature-label">Assets (Explorer View)</label>
@@ -704,6 +709,11 @@
             <div class="feature-section">
                 <label class="feature-label">Source Video</label>
                 <input type="text" id="videoEditSourcePath" class="feature-input" placeholder="e.g. outputs/videos/input.mp4">
+                <div style="display:flex;justify-content:space-between;align-items:center;margin-top:10px;gap:8px;">
+                    <span style="font-size:12px;color:var(--text-secondary);">Recent clips and audio</span>
+                    <button class="connector-list-btn" onclick="window.videoLoadRecentMedia && window.videoLoadRecentMedia()">Refresh</button>
+                </div>
+                <div id="videoRecentMedia" class="branding-assets-table" style="margin-top:8px;max-height:180px;overflow:auto;">Recent video and audio files will appear here.</div>
             </div>
             <div class="feature-section">
                 <label class="feature-label">Operation</label>
@@ -1061,7 +1071,7 @@
     <script src="gallery.js?v=13"></script>
     <script src="app_enhanced.js?v=16"></script>
     <script src="app_features.js?v=7"></script>
-    <script src="app_new_features.js?v=6"></script
+    <script src="app_new_features.js?v=7"></script
     <script src="voice_agent_live.js?v=8"></script>
 </body>
 </html>

@@ -1061,7 +1061,8 @@ def _path_under_allowed_roots(candidate: Path, roots: List[Path]) -> bool:
 
 
 def _resolve_media_path(path_str: str) -> Path:
-    candidate = _safe_workspace_path(path_str)
+    path_obj = Path(path_str or ".")
+    candidate = (path_obj if path_obj.is_absolute() else (REPO_ROOT / path_obj)).resolve(strict=False)
     if not _path_under_allowed_roots(candidate, MEDIA_ROOTS):
         raise ValueError("Access denied: media path outside allowed roots")
     return candidate
@@ -1220,6 +1221,52 @@ def _infer_media_kind(path: Path) -> str:
     if ext in {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".svg"}:
         return "image"
     return "file"
+
+
+def _recent_media_items(limit: int = 24, kinds: Optional[set[str]] = None) -> list[dict]:
+    normalized_kinds = {str(kind or "").strip().lower() for kind in (kinds or set()) if str(kind or "").strip()}
+    allowed_kinds = {"video", "audio", "image", "file"}
+    if normalized_kinds:
+        normalized_kinds &= allowed_kinds
+
+    collected = []
+    seen_paths = set()
+    for root in MEDIA_ROOTS:
+        try:
+            resolved_root = root.resolve(strict=False)
+            resolved_root.mkdir(parents=True, exist_ok=True)
+        except Exception:
+            continue
+
+        try:
+            candidates = sorted(
+                (entry for entry in resolved_root.rglob("*") if entry.is_file()),
+                key=lambda entry: entry.stat().st_mtime,
+                reverse=True,
+            )
+        except Exception:
+            candidates = []
+
+        for entry in candidates:
+            if len(collected) >= max(limit * 4, limit):
+                break
+            try:
+                resolved_entry = entry.resolve(strict=False)
+                key = str(resolved_entry)
+                if key in seen_paths:
+                    continue
+                kind = _infer_media_kind(resolved_entry)
+                if normalized_kinds and kind not in normalized_kinds:
+                    continue
+                item = _build_media_item(resolved_entry)
+                item["root"] = _workspace_relative(resolved_root)
+                collected.append(item)
+                seen_paths.add(key)
+            except Exception:
+                continue
+
+    collected.sort(key=lambda item: item.get("mtime", 0), reverse=True)
+    return collected[:limit]
 
 
 def _build_media_item(path: Path) -> dict:
@@ -1618,12 +1665,8 @@ def _complete_image_prompt(prompt_id: Optional[str] = None, mark_all: bool = Fal
 def _on_image_generation_complete(prompt_id: Optional[str] = None, mark_all: bool = False) -> None:
     _complete_image_prompt(prompt_id=prompt_id, mark_all=mark_all)
     if _models_unloaded_for_image_gen:
-        reload_llm_models_background()
-    if memory_gate_instance:
-        try:
-            memory_gate_instance.post_heavy_task()
-        except Exception:
-            pass
+        reload_llm_models_background(include_vision=False, include_vision_code=False)
+    _flush_gpu_memory()
 
 
 def _sync_image_generation_activity() -> Dict[str, Any]:
@@ -1689,6 +1732,12 @@ def _cleanup_media_services_for_idle_protocol() -> Dict[str, Any]:
     except Exception as exc:
         result["music"] = {"error": str(exc)}
 
+    try:
+        unloaded = _unload_vision_models()
+        result["vision"] = "unloaded" if unloaded else "idle"
+    except Exception as exc:
+        result["vision"] = {"error": str(exc)}
+
     gc.collect()
     _flush_gpu_memory()
     result["gc"] = "completed"
@@ -1737,6 +1786,87 @@ def _flush_gpu_memory():
     gc.collect()
 
 
+def _unload_selected_llm_models(
+    *,
+    include_fast: bool = True,
+    include_medium: bool = True,
+    include_deep: bool = True,
+    include_reasoning: bool = True,
+    include_vision: bool = True,
+    include_vision_code: bool = True,
+) -> list[str]:
+    """Drop selected global LLM/VLM references and flush GPU memory."""
+    global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
+    global vision_enabled, vision_unavailable_reason
+
+    unloaded = []
+
+    if include_fast and llm_fast is not None:
+        unloaded.append("fast")
+        llm_fast = None
+    if include_medium and llm_medium is not None:
+        unloaded.append("medium")
+        llm_medium = None
+    if include_deep and llm_deep is not None:
+        unloaded.append("deep")
+        llm_deep = None
+    if include_reasoning and llm_reasoning is not None:
+        unloaded.append("reasoning")
+        llm_reasoning = None
+    if include_vision and llm_vision is not None:
+        unloaded.append("vision")
+        llm_vision = None
+    if include_vision_code and llm_vision_code is not None:
+        unloaded.append("vision_code")
+        llm_vision_code = None
+
+    if include_vision or include_vision_code:
+        vision_enabled = bool(llm_vision is not None)
+        if not vision_enabled and not vision_unavailable_reason:
+            vision_unavailable_reason = "Vision model unloaded and will reload on demand"
+
+    if unloaded:
+        _flush_gpu_memory()
+        time.sleep(0.5)
+        _flush_gpu_memory()
+
+    return unloaded
+
+
+def _should_unload_vision_after_use() -> bool:
+    try:
+        core_config = config.get("edison", {}).get("core", {}) if isinstance(config, dict) else {}
+    except Exception:
+        core_config = {}
+    return bool(core_config.get("vision_unload_after_use", True))
+
+
+def _unload_vision_models() -> list[str]:
+    return _unload_selected_llm_models(
+        include_fast=False,
+        include_medium=False,
+        include_deep=False,
+        include_reasoning=False,
+        include_vision=True,
+        include_vision_code=True,
+    )
+
+
+def _ensure_text_models_after_vision() -> None:
+    if any(model is not None for model in (llm_fast, llm_medium, llm_deep, llm_reasoning)):
+        return
+    reload_llm_models_background(include_vision=False, include_vision_code=False)
+
+
+def _finalize_vision_request() -> None:
+    """Release vision VRAM after a request and restore text chat capacity if needed."""
+    if _should_unload_vision_after_use():
+        unloaded = _unload_vision_models()
+        if unloaded:
+            logger.info("Released vision models after request: %s", ", ".join(unloaded))
+    _ensure_text_models_after_vision()
+
+
 def _vision_vram_preflight(model_label: str = "vision") -> tuple[bool, str]:
     """Block vision inference when GPU0 VRAM is too low for stable CLIP loading."""
     core_config = {}
@@ -1770,31 +1900,8 @@ def _vision_vram_preflight(model_label: str = "vision") -> tuple[bool, str]:
 
 def unload_all_llm_models():
     """Unload all LLM models to free GPU VRAM for image generation"""
-    global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
-    
     logger.info("⏳ Unloading all LLM models to free GPU VRAM for image generation...")
-    
-    unloaded = []
-    for name, ref in [("fast", llm_fast), ("medium", llm_medium), ("deep", llm_deep),
-                       ("reasoning", llm_reasoning), ("vision", llm_vision), ("vision_code", llm_vision_code)]:
-        if ref is not None:
-            unloaded.append(name)
-    
-    # Set all globals to None first (prevents access during cleanup)
-    llm_fast = None
-    llm_medium = None
-    llm_deep = None
-    llm_reasoning = None
-    llm_vision = None
-    llm_vision_code = None
-    
-    # Force garbage collection and flush CUDA caches
-    _flush_gpu_memory()
-    
-    # Small delay to let CUDA release memory
-    time.sleep(1)
-    _flush_gpu_memory()
-    
+    unloaded = _unload_selected_llm_models()
     logger.info(f"✓ Unloaded LLM models: {', '.join(unloaded) if unloaded else 'none were loaded'}")
     return unloaded
 
@@ -1977,7 +2084,7 @@ def _try_load_vision_on_demand() -> bool:
     return False
 
 
-def reload_llm_models_background():
+def reload_llm_models_background(include_vision: bool = False, include_vision_code: bool = False):
     """Reload LLM models in a background thread after image/video generation.
     
     Uses a lock to prevent concurrent reloads, waits for VRAM to be available,
@@ -2027,8 +2134,12 @@ def reload_llm_models_background():
                 if free_mb < MIN_VRAM_MB:
                     logger.warning(f"⚠ VRAM still low ({free_mb:.0f} MiB) after {max_retries} retries, attempting load anyway...")
             
-            logger.info("⏳ Reloading LLM models after media generation...")
-            load_llm_models()
+            logger.info(
+                "⏳ Reloading LLM models after media generation (include_vision=%s, include_vision_code=%s)...",
+                include_vision,
+                include_vision_code,
+            )
+            load_llm_models(include_vision=include_vision, include_vision_code=include_vision_code)
             _models_unloaded_for_image_gen = False
             logger.info("✓ LLM models reloaded successfully")
         except Exception as e:
@@ -2049,19 +2160,86 @@ def _enhance_image_prompt(prompt: str, style_preset: str = "auto") -> str:
         return base
 
     style = (style_preset or "auto").strip().lower()
+    prompt_lower = base.lower()
+    is_logo_request = any(token in prompt_lower for token in [" logo", "logo ", "logo,", "brandmark", "wordmark", "icon mark", "iconmark", "emblem"])
+    if prompt_lower.startswith("logo"):
+        is_logo_request = True
+
     style_suffix = {
         "photo": "photorealistic, detailed textures, natural lighting, high dynamic range",
         "cinematic": "cinematic framing, dramatic lighting, filmic color grading, depth of field",
         "illustration": "digital illustration, clean linework, cohesive color palette, polished shading",
         "anime": "anime style, expressive details, clean cel shading, crisp outlines",
         "concept_art": "concept art, production-ready composition, atmospheric depth",
+        "logo": "professional vector logo, clean silhouette, minimal brand mark, flat graphic design, centered composition, strong negative space, high contrast, print-ready simplicity",
         "auto": "high detail, coherent composition, balanced lighting, sharp focus",
     }
+    if is_logo_request and style == "auto":
+        style = "logo"
     suffix = style_suffix.get(style, style_suffix["auto"])
 
     if len(base.split()) < 8:
         base = f"{base}, subject-centered composition"
+    if is_logo_request:
+        if "vector" not in prompt_lower:
+            base = f"{base}, vector-style branding artwork"
+        base = (
+            f"{base}, isolated logo concept, no mockup, no product photo, "
+            "simple background, readable shape language"
+        )
     return f"{base}, {suffix}"
+
+
+def _image_generation_defaults(
+    prompt: str,
+    style_preset: str,
+    steps: int,
+    guidance_scale: float,
+    negative_prompt: str,
+) -> dict:
+    prompt_lower = (prompt or "").strip().lower()
+    is_logo_request = any(token in prompt_lower for token in [" logo", "logo ", "logo,", "brandmark", "wordmark", "emblem"])
+    if prompt_lower.startswith("logo"):
+        is_logo_request = True
+
+    resolved_style = (style_preset or "auto").strip().lower() or "auto"
+    resolved_steps = int(steps)
+    resolved_guidance = float(guidance_scale)
+    negative_parts = [part.strip() for part in str(negative_prompt or "").split(",") if part.strip()]
+
+    if is_logo_request:
+        if resolved_style == "auto":
+            resolved_style = "logo"
+        resolved_steps = max(resolved_steps, 28)
+        resolved_guidance = max(resolved_guidance, 6.5)
+        negative_parts.extend([
+            "photorealistic",
+            "3d render",
+            "mockup",
+            "cluttered background",
+            "paragraph text",
+            "tiny illegible text",
+            "watermark",
+            "drop shadow",
+            "busy scene",
+        ])
+
+    deduped_negative_parts = []
+    seen_negative_parts = set()
+    for part in negative_parts:
+        key = part.lower()
+        if key in seen_negative_parts:
+            continue
+        seen_negative_parts.add(key)
+        deduped_negative_parts.append(part)
+
+    return {
+        "style_preset": resolved_style,
+        "steps": resolved_steps,
+        "guidance_scale": resolved_guidance,
+        "negative_prompt": ", ".join(deduped_negative_parts),
+        "is_logo_request": is_logo_request,
+    }
 
 
 def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
@@ -4138,7 +4316,7 @@ def check_gpu_availability():
         logger.warning(f"GPU check failed: {e}")
         return False
 
-def load_llm_models():
+def load_llm_models(include_vision: bool = True, include_vision_code: bool = True):
     """Load GGUF models using llama-cpp-python with absolute paths"""
     global llm_fast, llm_medium, llm_deep, llm_reasoning, llm_vision, llm_vision_code
     global vision_enabled, vision_unavailable_reason
@@ -4302,7 +4480,7 @@ def load_llm_models():
     vision_model_name = config.get("edison", {}).get("core", {}).get("vision_model")
     vision_clip_name = config.get("edison", {}).get("core", {}).get("vision_clip")
     
-    if vision_model_name and vision_clip_name:
+    if include_vision and vision_model_name and vision_clip_name:
         vision_model_path = models_path / vision_model_name
         vision_clip_path = models_path / vision_clip_name
         
@@ -4343,13 +4521,15 @@ def load_llm_models():
             vision_unavailable_reason = (
                 "Vision model files are missing. Please download both vision_model and vision_clip into models/llm."
             )
-    else:
+    elif include_vision:
         logger.info("Vision model not configured (image understanding disabled)")
         vision_enabled = False
         vision_unavailable_reason = "Vision model is not configured in config/edison.yaml"
+    else:
+        llm_vision = None
     
     # Try to load vision-to-code model (optional)
-    if vision_code_model_name and vision_code_clip_name:
+    if include_vision_code and vision_code_model_name and vision_code_clip_name:
         vision_code_model_path = models_path / vision_code_model_name
         vision_code_clip_path = models_path / vision_code_clip_name
         if vision_code_model_path.exists() and vision_code_clip_path.exists():
@@ -4379,10 +4559,13 @@ def load_llm_models():
                     break
         else:
             logger.info("Vision-to-code model or CLIP projector not found (optional)")
+    elif not include_vision_code:
+        llm_vision_code = None
 
-    if llm_vision is None and not vision_unavailable_reason:
+    if include_vision and llm_vision is None and not vision_unavailable_reason:
         vision_unavailable_reason = "Vision model did not load"
-    vision_enabled = bool(llm_vision is not None)
+    if include_vision:
+        vision_enabled = bool(llm_vision is not None)
 
     if not llm_fast and not llm_medium and not llm_deep and not llm_reasoning:
         logger.error("⚠ No models loaded. Please place GGUF models in the models/llm/ directory.")
@@ -7389,10 +7572,10 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         # Detect artifacts (HTML, React, SVG, Mermaid, code blocks)
         artifact = detect_artifact(cleaned_response)
 
-        # If vision was used and other models were unloaded, reload them in background
-        if has_images and model_name == "vision":
+        # Vision requests should release their GPU footprint once the response is complete.
+        if has_images and model_name in {"vision", "vision_code"}:
             try:
-                reload_llm_models_background()
+                _finalize_vision_request()
             except Exception:
                 pass
         
@@ -7428,65 +7611,68 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
 @app.post("/vision-to-code")
 async def vision_to_code(image: UploadFile = File(...), requirements: str = ""):
     """Generate code from a UI mockup image using a vision model plus a code-capable model."""
-    vision_model = llm_vision_code or llm_vision
-    if not vision_model:
-        if _try_load_vision_on_demand():
-            vision_model = llm_vision
-        else:
-            raise HTTPException(status_code=503, detail="Vision model not loaded.")
+    try:
+        vision_model = llm_vision_code or llm_vision
+        if not vision_model:
+            if _try_load_vision_on_demand():
+                vision_model = llm_vision
+            else:
+                raise HTTPException(status_code=503, detail="Vision model not loaded.")
 
-    code_model = llm_deep or llm_reasoning or llm_medium or llm_fast
-    if not code_model:
-        raise HTTPException(status_code=503, detail="No text model available for code generation.")
+        code_model = llm_deep or llm_reasoning or llm_medium or llm_fast
+        if not code_model:
+            raise HTTPException(status_code=503, detail="No text model available for code generation.")
 
-    ok_vram, vram_reason = _vision_vram_preflight("vision-to-code")
-    if not ok_vram:
-        raise HTTPException(
-            status_code=503,
-            detail={"success": False, "error": "Vision temporarily unavailable", "hint": vram_reason},
-        )
+        ok_vram, vram_reason = _vision_vram_preflight("vision-to-code")
+        if not ok_vram:
+            raise HTTPException(
+                status_code=503,
+                detail={"success": False, "error": "Vision temporarily unavailable", "hint": vram_reason},
+            )
 
-    img_data = await image.read()
-    img_b64 = base64.b64encode(img_data).decode("ascii")
-    normalized_img = _preprocess_vision_image(img_b64)
-    if not normalized_img:
-        raise HTTPException(status_code=400, detail="Invalid image payload")
+        img_data = await image.read()
+        img_b64 = base64.b64encode(img_data).decode("ascii")
+        normalized_img = _preprocess_vision_image(img_b64)
+        if not normalized_img:
+            raise HTTPException(status_code=400, detail="Invalid image payload")
 
-    layout_prompt = [
-        {
-            "type": "image_url",
-            "image_url": {"url": normalized_img}
-        },
-        {
-            "type": "text",
-            "text": f"Analyze this UI mockup and describe layout, components, and styling. Requirements: {requirements}".strip()
-        }
-    ]
+        layout_prompt = [
+            {
+                "type": "image_url",
+                "image_url": {"url": normalized_img}
+            },
+            {
+                "type": "text",
+                "text": f"Analyze this UI mockup and describe layout, components, and styling. Requirements: {requirements}".strip()
+            }
+        ]
 
-    vision_lock = get_lock_for_model(vision_model)
-    with vision_lock:
-        layout_response = vision_model.create_chat_completion(
-            messages=[{"role": "user", "content": layout_prompt}],
-            max_tokens=800,
-            temperature=0.2,
-            stream=False
-        )
-        layout_text = layout_response["choices"][0]["message"]["content"]
+        vision_lock = get_lock_for_model(vision_model)
+        with vision_lock:
+            layout_response = vision_model.create_chat_completion(
+                messages=[{"role": "user", "content": layout_prompt}],
+                max_tokens=800,
+                temperature=0.2,
+                stream=False
+            )
+            layout_text = layout_response["choices"][0]["message"]["content"]
 
-    code_lock = get_lock_for_model(code_model)
-    with code_lock:
-        code_response = code_model.create_chat_completion(
-            messages=[{
-                "role": "user",
-                "content": f"Generate HTML/CSS/JavaScript for this UI:\n{layout_text}\n\nRequirements: {requirements}".strip()
-            }],
-            max_tokens=1200,
-            temperature=0.4,
-            stream=False
-        )
-        code_text = code_response["choices"][0]["message"]["content"]
+        code_lock = get_lock_for_model(code_model)
+        with code_lock:
+            code_response = code_model.create_chat_completion(
+                messages=[{
+                    "role": "user",
+                    "content": f"Generate HTML/CSS/JavaScript for this UI:\n{layout_text}\n\nRequirements: {requirements}".strip()
+                }],
+                max_tokens=1200,
+                temperature=0.4,
+                stream=False
+            )
+            code_text = code_response["choices"][0]["message"]["content"]
 
-    return {"layout": layout_text, "code": code_text}
+        return {"layout": layout_text, "code": code_text}
+    finally:
+        _finalize_vision_request()
 
 
 @app.post("/vision")
@@ -7558,6 +7744,8 @@ async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe thi
         except Exception as e:
             logger.error(f"Vision streaming failed: {e}")
             yield f"event: error\ndata: {json.dumps({'success': False, 'error': str(e)})}\n\n"
+        finally:
+            _finalize_vision_request()
 
     return StreamingResponse(
         _sse(),
@@ -7875,6 +8063,11 @@ async def openai_stream_completions(
             with active_requests_lock:
                 if request_id in active_requests:
                     del active_requests[request_id]
+            if is_vision_chat:
+                try:
+                    _finalize_vision_request()
+                except Exception:
+                    pass
         
         # Send [DONE] sentinel
         yield "data: [DONE]\n\n"
@@ -7954,6 +8147,12 @@ async def openai_non_stream_completions(
         if is_vision_chat and request.stream:
             raise HTTPException(status_code=400, detail="vision streaming not supported yet")
         raise HTTPException(status_code=500, detail=str(e))
+    finally:
+        if is_vision_chat:
+            try:
+                _finalize_vision_request()
+            except Exception:
+                pass
 
 @app.post("/search", response_model=SearchResponse)
 async def web_search(request: SearchRequest):
@@ -8022,6 +8221,18 @@ async def generate_image(request: dict):
 
         if seed is not None and (not isinstance(seed, int) or seed < 0):
             raise HTTPException(status_code=400, detail="seed must be a non-negative integer")
+
+        defaults = _image_generation_defaults(
+            prompt=prompt,
+            style_preset=style_preset,
+            steps=steps,
+            guidance_scale=guidance_scale,
+            negative_prompt=negative_prompt,
+        )
+        steps = defaults["steps"]
+        guidance_scale = defaults["guidance_scale"]
+        negative_prompt = defaults["negative_prompt"]
+        style_preset = defaults["style_preset"]
         
         logger.info(
             f"Generating image: '{prompt}' ({width}x{height}, steps={steps}, guidance={guidance_scale}, "
@@ -8046,12 +8257,12 @@ async def generate_image(request: dict):
                             "action": "unload_and_retry",
                         }),
                     )
-                _models_unloaded_for_image_gen = True
                 logger.info(f"MemoryGate: ok, freed={gate_result['freed_mb']:.0f}MB")
-            elif not _models_unloaded_for_image_gen:
-                # Legacy fallback
-                unload_all_llm_models()
-                _models_unloaded_for_image_gen = True
+
+            unloaded_globals = unload_all_llm_models()
+            _models_unloaded_for_image_gen = True
+            if unloaded_globals:
+                logger.info("Image generation preflight released global models: %s", ", ".join(unloaded_globals))
         
         # Use provided ComfyUI URL or fall back to config
         if comfyui_url_override:
@@ -8120,6 +8331,15 @@ async def generate_image(request: dict):
                 "scheduler": scheduler,
                 "style_preset": style_preset,
                 "ckpt_name": ckpt_name,
+                "negative_prompt": negative_prompt,
+            },
+            "effective_parameters": {
+                "steps": steps,
+                "guidance_scale": guidance_scale,
+                "style_preset": style_preset,
+                "negative_prompt": negative_prompt,
+                "optimized": defaults["is_logo_request"],
+                "profile": "logo" if defaults["is_logo_request"] else style_preset,
             }
         }
         
@@ -13351,6 +13571,20 @@ async def video_files(path: str = ""):
         raise HTTPException(status_code=500, detail=f"Could not browse media files: {e}")
 
 
+@app.get("/video/recent")
+async def video_recent(limit: int = 24, kind: str = "all"):
+    """Return a compact list of recent files from approved media roots."""
+    try:
+        safe_limit = max(1, min(int(limit), 100))
+        kind_parts = {part.strip().lower() for part in str(kind or "all").split(",") if part.strip()}
+        if not kind_parts or "all" in kind_parts:
+            kind_parts = set()
+        items = _recent_media_items(limit=safe_limit, kinds=kind_parts)
+        return {"ok": True, "items": items}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Could not load recent media: {e}")
+
+
 @app.get("/video/media")
 async def video_media(path: str):
     """Serve media files from approved workspace roots for preview and download."""
@@ -13378,7 +13612,7 @@ async def video_edit(request: dict):
         raise HTTPException(status_code=400, detail="source_path is required")
 
     try:
-        src = _safe_workspace_path(source_path)
+        src = _resolve_media_path(source_path)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
     if not src.is_file():
@@ -13424,7 +13658,7 @@ async def video_edit(request: dict):
         if not audio_path:
             raise HTTPException(status_code=400, detail="audio_path is required for mux_audio")
         try:
-            safe_audio = _safe_workspace_path(audio_path)
+            safe_audio = _resolve_media_path(audio_path)
         except ValueError as e:
             raise HTTPException(status_code=403, detail=str(e))
         if not safe_audio.is_file():
@@ -13514,7 +13748,7 @@ async def video_edit(request: dict):
     return {
         "ok": True,
         "operation": operation,
-        "source_path": str(src.relative_to(REPO_ROOT)),
+        "source_path": _workspace_relative(src),
         "output_path": str(out_path.relative_to(REPO_ROOT)),
         "output_url": f"/video/media?path={_workspace_relative(out_path)}",
         "video_url": f"/video/{out_path.name}",

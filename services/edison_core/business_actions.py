@@ -11,6 +11,7 @@ import re
 from .branding_ops import BrandingWorkflowService
 from .branding_store import BrandingClientStore
 from .contracts import BrandingGenerationRequest, MarketingCopyRequest, ProjectCreateRequest
+from .model_catalog import build_model_catalog, recommend_models_for_task
 from .projects import ProjectWorkspaceManager
 from .system_awareness import build_capability_map
 
@@ -39,6 +40,27 @@ def execute_business_action(
             f"Printing routes include {', '.join(printer_routes[:6]) or 'none detected'}."
         )
         return {"response": response, "mode_used": "business", "business_action": {"type": "capabilities", "summary": capability_map["summary"]}}
+
+    if any(phrase in lowered for phrase in ["what models", "available models", "model catalog", "which model should", "what model should", "product image model", "img2img model", "image to image model", "video model", "music model", "3d model", "mesh model", "text to 3d", "image to 3d"]):
+        catalog = build_model_catalog(repo_root, config)
+        recommendation = recommend_models_for_task(text, catalog)
+        summary = catalog.get("summary", {})
+        first_match = (recommendation.get("matches") or [{}])[0]
+        suggested = ", ".join(first_match.get("suggested_models", [])[:4]) or "no installed match yet"
+        response = (
+            f"EDISON currently sees {summary.get('llm_installed', 0)} local LLMs, "
+            f"{summary.get('image_checkpoints_installed', 0)} ComfyUI image checkpoints, "
+            f"{summary.get('image_loras_installed', 0)} LoRAs, and "
+            f"{summary.get('mesh_model_candidates', 0)} 3D model candidates. "
+            f"Best match for this request: {first_match.get('label', 'general media work')}. "
+            f"Recommended workflows: {', '.join(first_match.get('recommended_workflows', [])) or 'text_to_image'}. "
+            f"Installed model suggestions: {suggested}."
+        )
+        return {
+            "response": response,
+            "mode_used": "business",
+            "business_action": {"type": "model_catalog", "catalog": catalog, "recommendation": recommendation},
+        }
 
     client_match = re.search(r"(?:create|add|make|set up)\s+(?:a\s+)?(?:branding\s+)?client(?:\s+folder)?\s+(?:for\s+)?(.+)$", text, re.IGNORECASE)
     if client_match:
