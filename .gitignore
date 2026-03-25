@@ -1,6 +1,14 @@
 __pycache__/
 *.pyc
 data/*.db
+data/*.db-shm
+data/*.db-wal
+
+chats/users.json
+config/integrations/*.json
+gallery/gallery.json
+models/llm/
+outputs/edits/
 
 venv/
 .venv/
