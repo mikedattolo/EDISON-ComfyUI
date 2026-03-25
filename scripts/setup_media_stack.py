@@ -18,6 +18,7 @@ import os
 import shutil
 import subprocess
 import sys
+import urllib.parse
 from pathlib import Path
 from typing import Iterable
 
@@ -31,6 +32,26 @@ LLM_MODELS_DIR = REPO_ROOT / "models" / "llm"
 
 class SetupError(RuntimeError):
     pass
+
+
+def installer_python() -> str:
+    candidates = [
+        REPO_ROOT / ".venv" / "bin" / "python",
+        REPO_ROOT / "venv" / "bin" / "python",
+    ]
+    for candidate in candidates:
+        if candidate.exists() and os.access(candidate, os.X_OK):
+            return str(candidate)
+    return sys.executable
+
+
+def installer_pip_command() -> list[str]:
+    python_bin = installer_python()
+    if python_bin == sys.executable and sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+        raise SetupError(
+            "No repo virtualenv detected for Python package installs. Run setup_edison.sh first or create /opt/edison/.venv."
+        )
+    return [python_bin, "-m", "pip"]
 
 
 def parse_args() -> argparse.Namespace:
@@ -87,13 +108,9 @@ def run(cmd: list[str], dry_run: bool, cwd: Path | None = None, env: dict[str, s
     subprocess.run(cmd, cwd=str(cwd) if cwd else None, env=env, check=True)
 
 
-def ensure_python_package(package: str, dry_run: bool) -> None:
-    try:
-        __import__(package)
-        return
-    except ImportError:
-        pass
-    run([sys.executable, "-m", "pip", "install", package], dry_run=dry_run)
+def pip_install(args: list[str], dry_run: bool) -> None:
+    cmd = installer_pip_command() + args
+    run(cmd, dry_run=dry_run)
 
 
 def wget_download(url: str, destination: Path, dry_run: bool, auth_token: str | None = None) -> None:
@@ -105,6 +122,12 @@ def wget_download(url: str, destination: Path, dry_run: bool, auth_token: str | 
         cmd.insert(1, f"--header=Authorization: Bearer {auth_token}")
     cmd.append(url)
     run(cmd, dry_run=dry_run)
+
+
+def hf_resolve_url(repo_id: str, filename: str) -> str:
+    encoded_repo = "/".join(urllib.parse.quote(part, safe="") for part in repo_id.split("/"))
+    encoded_file = "/".join(urllib.parse.quote(part, safe="") for part in filename.split("/"))
+    return f"https://huggingface.co/{encoded_repo}/resolve/main/{encoded_file}?download=true"
 
 
 def hf_download(
@@ -125,17 +148,8 @@ def hf_download(
         raise SetupError(
             f"Hugging Face token required for {repo_id}/{filename}. Set HF_TOKEN or pass --hf-token."
         )
-    ensure_python_package("huggingface_hub", dry_run=dry_run)
-    code = (
-        "from huggingface_hub import hf_hub_download;"
-        f"path=hf_hub_download(repo_id={repo_id!r}, filename={filename!r}, local_dir={str(target_dir)!r}, token={token!r}, local_dir_use_symlinks=False);"
-        f"print(path)"
-    )
-    run([sys.executable, "-c", code], dry_run=dry_run)
-    if not dry_run and rename_to:
-        downloaded = target_dir / filename
-        if downloaded.exists() and downloaded != final_path:
-            downloaded.replace(final_path)
+    ensure_dirs([target_dir], dry_run=dry_run)
+    wget_download(hf_resolve_url(repo_id, filename), final_path, dry_run=dry_run, auth_token=token)
 
 
 def clone_or_update(repo_url: str, destination: Path, dry_run: bool) -> None:
@@ -254,7 +268,7 @@ def install_image_bundle(args: argparse.Namespace, summary: list[str]) -> None:
     )
     flux_req = COMFYUI_NODES / "ComfyUI-FLUX-BFL" / "requirements.txt"
     if flux_req.exists() or args.dry_run:
-        run([sys.executable, "-m", "pip", "install", "-r", str(flux_req)], dry_run=args.dry_run)
+        pip_install(["install", "-r", str(flux_req)], dry_run=args.dry_run)
 
     summary.append(f"image: installed FLUX {args.flux_variant} stack")
 
@@ -282,7 +296,7 @@ def install_video_bundle(args: argparse.Namespace, summary: list[str]) -> None:
     )
 
     run(
-        [sys.executable, "-m", "pip", "install", "imageio", "imageio-ffmpeg", "opencv-python-headless"],
+        installer_pip_command() + ["install", "imageio", "imageio-ffmpeg", "opencv-python-headless"],
         dry_run=args.dry_run,
     )
 
@@ -345,6 +359,7 @@ def main() -> int:
     print(f"Repo root: {REPO_ROOT}")
     print(f"LLM dir:   {LLM_MODELS_DIR}")
     print(f"ComfyUI:   {COMFYUI_DIR}")
+    print(f"Python:    {installer_python()}")
 
     summary: list[str] = []
 
