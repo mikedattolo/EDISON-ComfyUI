@@ -85,6 +85,20 @@ edison:
       memory_limit: "1g"
       cpu_quota: 200000
 
+  printing:
+    slicer:
+      # CuraEngine is preferred when the binary exists and a machine definition is configured.
+      # These paths may be absolute or relative to the repository root.
+      cura_definition: "config/cura/definitions/fdmprinter.def.json"
+      cura_profile: "config/cura/profiles/standard.inst.cfg"
+      material_diameter: 1.75
+      currency: "USD"
+      material_cost_per_kg:
+        pla: 25
+        petg: 30
+        abs: 32
+        tpu: 40
+
   artifacts:
     root: "outputs"
     formats:

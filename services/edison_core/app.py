@@ -733,6 +733,7 @@ provenance_tracker_instance = None
 memory_gate_instance = None
 model_manager_v2_instance = None
 printer_manager_instance = None
+slicer_service_instance = None
 skill_loader_instance = None
 
 # Integration stores
@@ -11700,6 +11701,15 @@ def _init_new_subsystems():
         printer_manager_instance = None
         logger.warning(f"⚠ Printer manager init failed: {e}")
 
+    # Slicer service
+    try:
+        from .slicing import SlicerService
+        slicer_service_instance = SlicerService(REPO_ROOT, config=config or {})
+        logger.info("✓ Slicer service initialized")
+    except Exception as e:
+        slicer_service_instance = None
+        logger.warning(f"⚠ Slicer service init failed: {e}")
+
     # Dynamic skill/plugin loader
     if tool_registry is not None:
         try:
@@ -15847,11 +15857,40 @@ async def delete_printer(printer_id: str):
 _SLICE_STATUS: Dict[str, dict] = {}
 
 
-@app.post("/printing/slice")
-async def enqueue_slice_job(request: dict):
-    """Run a slicing job and return status + generated gcode path."""
+def _get_slicer_service():
+    global slicer_service_instance
+    if slicer_service_instance is None:
+        from .slicing import SlicerService
+        slicer_service_instance = SlicerService(REPO_ROOT, config=config or {})
+    return slicer_service_instance
+
+
+def _parse_slicing_options(payload: dict):
+    from .slicing import SlicingOptions
+    return SlicingOptions.from_request(payload)
+
+
+def _validate_slice_model(safe_model: Path):
+    from .slicing import validate_model_path
+    try:
+        validate_model_path(safe_model)
+    except ValueError as e:
+        detail = str(e)
+        status_code = 404 if "not found" in detail.lower() else 400
+        raise HTTPException(status_code=status_code, detail=detail)
+
+
+@app.get("/printing/slicer/capabilities")
+async def get_slicer_capabilities():
+    """Return detected slicer engines and supported structured print options."""
+    service = _get_slicer_service()
+    return {"ok": True, **service.get_capabilities()}
+
+
+@app.post("/printing/slice/estimate")
+async def estimate_slice_job(request: dict):
+    """Estimate duration, material usage, and cost for a slice request."""
     model_path = (request.get("model_path") or "").strip()
-    profile = (request.get("profile") or "0.2mm").strip() or "0.2mm"
     if not model_path:
         raise HTTPException(status_code=400, detail="model_path is required")
 
@@ -15859,8 +15898,37 @@ async def enqueue_slice_job(request: dict):
         safe_model = _safe_workspace_path(model_path)
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
-    if not safe_model.exists() or not safe_model.is_file():
-        raise HTTPException(status_code=404, detail="Model file not found")
+
+    _validate_slice_model(safe_model)
+
+    service = _get_slicer_service()
+    options = _parse_slicing_options(request)
+    estimate = service.estimate(safe_model, options)
+
+    return {
+        "ok": True,
+        "model_path": _workspace_relative(safe_model),
+        "options": options.to_dict(),
+        "estimate": estimate,
+    }
+
+
+@app.post("/printing/slice")
+async def enqueue_slice_job(request: dict):
+    """Run a slicing job and return status + generated gcode path."""
+    model_path = (request.get("model_path") or "").strip()
+    if not model_path:
+        raise HTTPException(status_code=400, detail="model_path is required")
+
+    try:
+        safe_model = _safe_workspace_path(model_path)
+    except ValueError as e:
+        raise HTTPException(status_code=403, detail=str(e))
+    _validate_slice_model(safe_model)
+
+    service = _get_slicer_service()
+    options = _parse_slicing_options(request)
+    profile = options.profile
 
     job_id = f"slice_{uuid.uuid4().hex[:10]}"
     _SLICE_STATUS[job_id] = {
@@ -15868,25 +15936,23 @@ async def enqueue_slice_job(request: dict):
         "status": "running",
         "model_path": _workspace_relative(safe_model),
         "profile": profile,
+        "options": options.to_dict(),
         "created_at": int(time.time()),
     }
 
     gcode_out = safe_model.with_suffix(".gcode")
-    slicer_bin = shutil.which("prusa-slicer") or shutil.which("orca-slicer") or shutil.which("slic3r")
-    if not slicer_bin:
-        _SLICE_STATUS[job_id].update({
-            "status": "failed",
-            "error": "No slicer found (install prusa-slicer, orca-slicer, or slic3r)",
-            "updated_at": int(time.time()),
-        })
-        return {"ok": False, **_SLICE_STATUS[job_id]}
+    try:
+        estimate = service.estimate(safe_model, options)
+        _SLICE_STATUS[job_id]["estimate"] = estimate
+    except Exception:
+        pass
 
-    cmd = [slicer_bin, "--export-gcode", str(safe_model), "--output", str(gcode_out)]
-    res = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
-    if res.returncode != 0 or not gcode_out.exists():
+    try:
+        slice_result = service.slice(safe_model, gcode_out, options)
+    except RuntimeError as e:
         _SLICE_STATUS[job_id].update({
             "status": "failed",
-            "error": (res.stderr or res.stdout or "Slicing failed")[:1200],
+            "error": str(e),
             "updated_at": int(time.time()),
         })
         return {"ok": False, **_SLICE_STATUS[job_id]}
@@ -15894,6 +15960,7 @@ async def enqueue_slice_job(request: dict):
     _SLICE_STATUS[job_id].update({
         "status": "completed",
         "gcode_path": _workspace_relative(gcode_out),
+        "engine": slice_result.get("engine"),
         "updated_at": int(time.time()),
     })
     return {"ok": True, **_SLICE_STATUS[job_id]}
@@ -15914,7 +15981,6 @@ async def slice_and_send_print(request: dict):
     """Slice STL/3MF using local slicer if available, then dispatch to configured printer."""
     model_path = request.get("model_path", "")
     printer_id = request.get("printer_id", "")
-    profile = request.get("profile", "0.2mm")
     if not model_path or not printer_id:
         raise HTTPException(status_code=400, detail="model_path and printer_id are required")
 
@@ -15923,18 +15989,17 @@ async def slice_and_send_print(request: dict):
     except ValueError as e:
         raise HTTPException(status_code=403, detail=str(e))
 
-    if not safe_model.exists():
-        raise HTTPException(status_code=404, detail="Model file not found")
+    _validate_slice_model(safe_model)
+
+    service = _get_slicer_service()
+    options = _parse_slicing_options(request)
+    profile = options.profile
 
     gcode_out = safe_model.with_suffix(".gcode")
-    slicer_bin = shutil.which("prusa-slicer") or shutil.which("orca-slicer")
-    if slicer_bin:
-        cmd = [slicer_bin, "--export-gcode", str(safe_model), "--output", str(gcode_out)]
-        res = subprocess.run(cmd, capture_output=True, text=True, timeout=120)
-        if res.returncode != 0:
-            raise HTTPException(status_code=500, detail=f"Slicing failed: {res.stderr[:1000]}")
-    else:
-        raise HTTPException(status_code=503, detail="No slicer found (install prusa-slicer or orca-slicer)")
+    try:
+        slice_result = service.slice(safe_model, gcode_out, options)
+    except RuntimeError as e:
+        raise HTTPException(status_code=503, detail=str(e))
 
     dispatch = await _execute_tool("send_3d_print", {"printer_id": printer_id, "file_path": str(gcode_out)}, chat_id=None)
     if not dispatch.get("ok"):
@@ -15943,6 +16008,8 @@ async def slice_and_send_print(request: dict):
     return {
         "ok": True,
         "profile": profile,
+        "options": options.to_dict(),
+        "engine": slice_result.get("engine"),
         "gcode": str(gcode_out.relative_to(REPO_ROOT)),
         "dispatch": dispatch,
     }

@@ -193,6 +193,128 @@
       gap: 12px;
     }
 
+    .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 10px;
+    }
+
+    .workbench {
+      display: grid;
+      grid-template-columns: minmax(260px, 1.15fr) minmax(320px, 1.4fr) minmax(260px, 1fr);
+      gap: 12px;
+    }
+
+    .stack {
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .mini-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: linear-gradient(180deg, #fffdf9, #fff2e4);
+    }
+
+    .mini-card strong {
+      display: block;
+      font-size: 12px;
+      color: var(--muted);
+      margin-bottom: 4px;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .metric {
+      font-size: 20px;
+      font-weight: 800;
+      line-height: 1.1;
+    }
+
+    .metric-sub {
+      font-size: 11px;
+      color: var(--muted);
+      margin-top: 4px;
+    }
+
+    .section-label {
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+      color: var(--muted);
+      font-weight: 700;
+    }
+
+    .field-row {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .toggle {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      border: 1px solid var(--line);
+      border-radius: 10px;
+      background: #fff;
+      padding: 9px 10px;
+      font-size: 13px;
+    }
+
+    .toggle input {
+      margin: 0;
+      width: 16px;
+      height: 16px;
+      accent-color: var(--accent);
+    }
+
+    .badge-row {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .badge {
+      border: 1px solid var(--line);
+      background: #fff8f1;
+      border-radius: 999px;
+      padding: 5px 9px;
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .preset-bar {
+      display: grid;
+      grid-template-columns: 1.3fr 1fr;
+      gap: 8px;
+      align-items: end;
+    }
+
+    .preset-actions {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
+    }
+
+    .subtle-box {
+      border: 1px dashed var(--line);
+      border-radius: 10px;
+      padding: 8px 10px;
+      background: rgba(255, 249, 242, 0.75);
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    @media (max-width: 1100px) {
+      .workbench {
+        grid-template-columns: 1fr;
+      }
+    }
+
     @media (max-width: 1260px) {
       .shell { grid-template-columns: 1fr; }
     }
@@ -288,22 +410,109 @@
     <!-- Step 3: Slicing & Sending -->
     <section class="panel">
       <div class="head"><h2>Step 3: Slice & Send to Printer</h2></div>
-      <div class="body grid-2">
-        <div>
-          <div class="head"><h3>Model & Settings</h3></div>
-          <div class="body" style="gap:6px;">
+      <div class="body workbench">
+        <div class="stack">
+          <div class="head"><h3>Printer & Engine</h3></div>
+          <div class="mini-card">
+            <strong>Selected Printer</strong>
+            <div class="metric" id="selectedPrinterMetric">No printer</div>
+            <div class="metric-sub" id="selectedPrinterMeta">Choose a registered printer or just slice locally.</div>
+          </div>
+          <div class="mini-card">
+            <strong>Slicer Engine</strong>
+            <div class="metric" id="slicerEngineMetric">Checking...</div>
+            <div class="metric-sub" id="slicerEngineMeta">Detecting installed slicers.</div>
+          </div>
+          <div class="subtle-box" id="curaConfigStatus">CuraEngine config status will appear here.</div>
+          <div class="status" id="slicerCapabilitiesStatus">Loading slicer capabilities...</div>
+          <div class="badge-row" id="slicerBadges"></div>
+        </div>
+
+        <div class="stack">
+          <div class="head"><h3>Model & Print Setup</h3></div>
+          <div class="body" style="gap:10px; padding:0;">
             <input id="modelPath" class="text" type="text" placeholder="Model file path (e.g. outputs/chair.stl)" />
-            <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Layer height (0.2mm)" />
-            <div class="hint">Supports: STL, 3MF. Requires slicer installed: prusa-slicer, orca-slicer, or slic3r.</div>
-            <button class="btn" id="sliceBtn" style="width:100%;">Slice Model</button>
-            <button class="btn primary" id="sliceSendBtn" style="width:100%;">→ Slice + Send</button>
+
+            <div class="section-label">Preset Library</div>
+            <div class="preset-bar">
+              <select id="printerPresetSelect" class="select"></select>
+              <input id="presetName" class="text" type="text" placeholder="Custom preset name" />
+            </div>
+            <div class="preset-actions">
+              <button class="btn" id="applyPresetBtn">Apply Preset</button>
+              <button class="btn" id="savePresetBtn">Save Current</button>
+              <button class="btn" id="deletePresetBtn">Delete Saved</button>
+            </div>
+            <div class="status" id="presetStatus">Built-in presets adapt to the selected printer type. Saved presets stay in this browser.</div>
+
+            <div class="section-label">Quality Presets</div>
+            <div class="field-row">
+              <select id="qualityPreset" class="select"></select>
+              <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Profile label (0.2mm)" />
+            </div>
+
+            <div class="field-row">
+              <input id="layerHeight" class="text" type="number" min="0.05" max="1" step="0.01" placeholder="Layer height (mm)" />
+              <select id="speedProfile" class="select"></select>
+            </div>
+
+            <div class="section-label">Material & Hardware</div>
+            <div class="field-row">
+              <select id="materialType" class="select"></select>
+              <select id="nozzleSize" class="select">
+                <option value="0.25">0.25 mm nozzle</option>
+                <option value="0.4" selected>0.4 mm nozzle</option>
+                <option value="0.6">0.6 mm nozzle</option>
+                <option value="0.8">0.8 mm nozzle</option>
+              </select>
+            </div>
+
+            <div class="section-label">Structure</div>
+            <div class="field-row">
+              <input id="infillPercent" class="text" type="number" min="0" max="100" step="1" value="20" placeholder="Infill %" />
+              <select id="adhesionType" class="select"></select>
+            </div>
+
+            <label class="toggle"><input id="supportsToggle" type="checkbox" /> Generate supports</label>
+
+            <div class="grid-3">
+              <button class="btn" id="estimateBtn">Estimate Print</button>
+              <button class="btn" id="sliceBtn">Slice Model</button>
+              <button class="btn primary" id="sliceSendBtn">→ Slice + Send</button>
+            </div>
+
             <div class="status" id="sliceStatus">Ready to slice.</div>
+            <div class="hint">CuraEngine is preferred when configured with machine definitions. Otherwise Edison falls back to the next usable slicer.</div>
           </div>
         </div>
 
-        <div>
-          <div class="head"><h3>Slicing Output</h3></div>
-          <div class="body">
+        <div class="stack">
+          <div class="head"><h3>Estimate & Output</h3></div>
+          <div class="grid-3">
+            <div class="mini-card">
+              <strong>Time</strong>
+              <div class="metric" id="estimateTime">--</div>
+              <div class="metric-sub">Estimated duration</div>
+            </div>
+            <div class="mini-card">
+              <strong>Material</strong>
+              <div class="metric" id="estimateMaterial">--</div>
+              <div class="metric-sub">Filament usage</div>
+            </div>
+            <div class="mini-card">
+              <strong>Cost</strong>
+              <div class="metric" id="estimateCost">--</div>
+              <div class="metric-sub">Estimated material cost</div>
+            </div>
+            <div class="mini-card">
+              <strong>Spool</strong>
+              <div class="metric" id="estimateSpool">--</div>
+              <div class="metric-sub">Estimated spool usage</div>
+            </div>
+          </div>
+          <div class="status" id="estimateAssumptions">No estimate calculated yet.</div>
+          <div class="subtle-box" id="estimateBreakdown">No cost or profile breakdown available yet.</div>
+          <div class="body" style="padding:0;">
             <pre id="sliceOutput">Slice results shown here.</pre>
           </div>
         </div>
@@ -313,9 +522,35 @@
 
   <script>
     const API = '/api';
+    const PRESET_STORAGE_KEY = 'edison.printing.presets.v1';
     let printers = [];
     let selectedPrinterId = '';
     let discoveredDevices = [];
+    let slicerCapabilities = null;
+
+    const BUILTIN_PRESETS = {
+      generic: [
+        { id: 'generic-draft', name: 'Generic Draft', quality: 'draft', profile: '0.28mm', layer_height: 0.28, material: 'PLA', infill: 12, supports: false, adhesion: 'skirt', nozzle: '0.4', speed_profile: 'fast' },
+        { id: 'generic-balanced', name: 'Generic Balanced', quality: 'standard', profile: '0.2mm', layer_height: 0.2, material: 'PLA', infill: 20, supports: false, adhesion: 'skirt', nozzle: '0.4', speed_profile: 'balanced' },
+        { id: 'generic-display', name: 'Display Fine', quality: 'fine', profile: '0.12mm', layer_height: 0.12, material: 'PLA', infill: 18, supports: true, adhesion: 'brim', nozzle: '0.4', speed_profile: 'slow' },
+      ],
+      bambulabb1: [
+        { id: 'bambu-speed', name: 'Bambu Speed Prototype', quality: 'draft', profile: '0.28mm', layer_height: 0.28, material: 'PLA', infill: 10, supports: false, adhesion: 'skirt', nozzle: '0.4', speed_profile: 'fast' },
+        { id: 'bambu-product', name: 'Bambu Product Mockup', quality: 'standard', profile: '0.2mm', layer_height: 0.2, material: 'PETG', infill: 18, supports: true, adhesion: 'brim', nozzle: '0.4', speed_profile: 'balanced' },
+      ],
+      bambulabx1: [
+        { id: 'x1-carbon-pla', name: 'X1 Carbon PLA Fine', quality: 'fine', profile: '0.12mm', layer_height: 0.12, material: 'PLA', infill: 15, supports: false, adhesion: 'skirt', nozzle: '0.4', speed_profile: 'balanced' },
+      ],
+      prusa: [
+        { id: 'prusa-functional', name: 'Prusa Functional Part', quality: 'standard', profile: '0.2mm', layer_height: 0.2, material: 'PETG', infill: 28, supports: true, adhesion: 'brim', nozzle: '0.4', speed_profile: 'balanced' },
+      ],
+      creality: [
+        { id: 'creality-budget', name: 'Creality Budget Draft', quality: 'draft', profile: '0.28mm', layer_height: 0.28, material: 'PLA', infill: 10, supports: false, adhesion: 'skirt', nozzle: '0.4', speed_profile: 'fast' },
+      ],
+      octoprint: [
+        { id: 'octoprint-safe', name: 'OctoPrint Safe Queue', quality: 'standard', profile: '0.2mm', layer_height: 0.2, material: 'PLA', infill: 20, supports: false, adhesion: 'skirt', nozzle: '0.4', speed_profile: 'balanced' },
+      ],
+    };
 
     const el = (id) => document.getElementById(id);
 
@@ -329,6 +564,175 @@
       const s = el('sliceStatus');
       s.textContent = msg;
       s.className = `status ${tone}`.trim();
+    }
+
+    function setSlicerCapabilitiesStatus(msg, tone = '') {
+      const s = el('slicerCapabilitiesStatus');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    function setPresetStatus(msg, tone = '') {
+      const s = el('presetStatus');
+      s.textContent = msg;
+      s.className = `status ${tone}`.trim();
+    }
+
+    function currentPrinterType() {
+      const combined = [...printers, ...discoveredDevices];
+      const printer = combined.find((x) => x.id === selectedPrinterId);
+      return (printer?.type || el('printerType').value || 'generic').trim();
+    }
+
+    function loadSavedPresets() {
+      try {
+        return JSON.parse(localStorage.getItem(PRESET_STORAGE_KEY) || '[]');
+      } catch {
+        return [];
+      }
+    }
+
+    function saveSavedPresets(presets) {
+      localStorage.setItem(PRESET_STORAGE_KEY, JSON.stringify(presets));
+    }
+
+    function builtinPresetsForPrinter(printerType) {
+      return [...(BUILTIN_PRESETS[printerType] || []), ...(BUILTIN_PRESETS.generic || [])]
+        .filter((preset, index, arr) => arr.findIndex((item) => item.id === preset.id) === index)
+        .map((preset) => ({ ...preset, source: 'builtin', printer_type: printerType }));
+    }
+
+    function renderPresetLibrary() {
+      const printerType = currentPrinterType();
+      const builtins = builtinPresetsForPrinter(printerType);
+      const saved = loadSavedPresets().filter((preset) => !preset.printer_type || preset.printer_type === printerType || preset.printer_type === 'generic');
+      const options = [
+        '<option value="">Choose a preset...</option>',
+        ...builtins.map((preset) => `<option value="builtin:${preset.id}">${preset.name} • built-in</option>`),
+        ...saved.map((preset) => `<option value="saved:${preset.id}">${preset.name} • saved</option>`),
+      ];
+      el('printerPresetSelect').innerHTML = options.join('');
+    }
+
+    function findPresetByValue(value) {
+      if (!value) return null;
+      const [kind, id] = value.split(':');
+      if (kind === 'builtin') {
+        return builtinPresetsForPrinter(currentPrinterType()).find((preset) => preset.id === id) || null;
+      }
+      if (kind === 'saved') {
+        return loadSavedPresets().find((preset) => preset.id === id) || null;
+      }
+      return null;
+    }
+
+    function applyPreset(preset) {
+      if (!preset) return;
+      el('qualityPreset').value = preset.quality || 'standard';
+      el('sliceProfile').value = preset.profile || '0.2mm';
+      el('layerHeight').value = preset.layer_height ?? '';
+      el('materialType').value = preset.material || 'PLA';
+      el('infillPercent').value = preset.infill ?? 20;
+      el('supportsToggle').checked = Boolean(preset.supports);
+      el('adhesionType').value = preset.adhesion || 'skirt';
+      el('nozzleSize').value = preset.nozzle || '0.4';
+      el('speedProfile').value = preset.speed_profile || 'balanced';
+      setPresetStatus(`Applied preset: ${preset.name}`, 'ok');
+    }
+
+    function setEstimateSummary(estimate) {
+      if (!estimate) {
+        el('estimateTime').textContent = '--';
+        el('estimateMaterial').textContent = '--';
+        el('estimateCost').textContent = '--';
+        el('estimateSpool').textContent = '--';
+        el('estimateAssumptions').textContent = 'No estimate calculated yet.';
+        el('estimateAssumptions').className = 'status';
+        el('estimateBreakdown').textContent = 'No cost or profile breakdown available yet.';
+        return;
+      }
+
+      const minutes = Number(estimate.duration_minutes || 0);
+      const hours = minutes >= 60 ? `${(minutes / 60).toFixed(1)}h` : `${minutes}m`;
+      el('estimateTime').textContent = hours;
+      el('estimateMaterial').textContent = `${estimate.material_grams ?? '--'} g`;
+      const currency = estimate.currency || slicerCapabilities?.currency || 'USD';
+      el('estimateCost').textContent = estimate.estimated_cost != null ? `${currency} ${Number(estimate.estimated_cost).toFixed(2)}` : '--';
+      el('estimateSpool').textContent = estimate.spool_fraction != null ? `${Math.round(Number(estimate.spool_fraction) * 100)}%` : '--';
+
+      const assumptions = estimate.assumptions || {};
+      el('estimateAssumptions').textContent = `Assumptions: ${assumptions.material || 'PLA'}, ${assumptions.infill ?? '--'}% infill, supports ${assumptions.supports ? 'on' : 'off'}, layer ${assumptions.layer_height ?? '--'} mm, nozzle ${assumptions.nozzle ?? '--'} mm, ${assumptions.speed_profile || 'balanced'} speed`;
+      el('estimateAssumptions').className = 'status ok';
+
+      const breakdown = estimate.cost_breakdown || {};
+      el('estimateBreakdown').textContent = `Breakdown: ${breakdown.material_cost_per_kg ?? '--'} ${currency}/kg, ${breakdown.cost_per_gram ?? '--'} ${currency}/g, spool ${breakdown.spool_size_grams ?? 1000} g, adhesion ${assumptions.adhesion || 'skirt'}.`;
+    }
+
+    function collectSliceOptions() {
+      const layerHeightValue = (el('layerHeight').value || '').trim();
+      return {
+        model_path: (el('modelPath').value || '').trim(),
+        profile: (el('sliceProfile').value || '0.2mm').trim(),
+        quality: (el('qualityPreset').value || 'standard').trim(),
+        layer_height: layerHeightValue ? Number(layerHeightValue) : null,
+        material: (el('materialType').value || 'PLA').trim(),
+        infill: Number(el('infillPercent').value || 20),
+        supports: Boolean(el('supportsToggle').checked),
+        adhesion: (el('adhesionType').value || 'skirt').trim(),
+        nozzle: (el('nozzleSize').value || '0.4').trim(),
+        speed_profile: (el('speedProfile').value || 'balanced').trim(),
+      };
+    }
+
+    function updateSelectedPrinterSummary() {
+      const combined = [...printers, ...discoveredDevices];
+      const printer = combined.find((x) => x.id === selectedPrinterId);
+      el('selectedPrinterMetric').textContent = printer ? (printer.name || printer.id) : 'No printer';
+      el('selectedPrinterMeta').textContent = printer ? `${printer.type || 'generic'} • ${printer.host || printer.endpoint || 'unknown host'}` : 'Choose a registered printer or just slice locally.';
+    }
+
+    function renderSlicerCapabilities(capabilities) {
+      slicerCapabilities = capabilities;
+      const active = capabilities?.active_engine || 'none';
+      const preferred = capabilities?.preferred_engine || 'none';
+      el('slicerEngineMetric').textContent = active === 'none' ? 'No usable slicer' : active;
+      el('slicerEngineMeta').textContent = active === preferred ? `Preferred engine active: ${preferred}` : `Preferred: ${preferred} • Using fallback: ${active}`;
+
+      const badges = (capabilities?.engines || []).map((engine) => {
+        const state = engine.usable ? 'usable' : engine.available ? 'needs setup' : 'not installed';
+        return `<span class="badge">${engine.label}: ${state}</span>`;
+      }).join('');
+      el('slicerBadges').innerHTML = badges;
+
+      const curaConfig = capabilities?.cura_config || {};
+      el('curaConfigStatus').textContent = curaConfig.configured
+        ? `CuraEngine config loaded. Definition: ${curaConfig.definition_file || 'unknown'}${curaConfig.profile_file ? ` • Profile: ${curaConfig.profile_file}` : ''}`
+        : 'CuraEngine will need a configured machine definition and optional profile file before Edison can execute it directly.';
+
+      const qualityOptions = capabilities?.quality_presets || ['draft', 'standard', 'fine'];
+      el('qualityPreset').innerHTML = qualityOptions.map((value) => `<option value="${value}">${value}</option>`).join('');
+
+      const materials = capabilities?.materials || ['PLA', 'PETG', 'ABS', 'TPU'];
+      el('materialType').innerHTML = materials.map((value) => `<option value="${value}">${value}</option>`).join('');
+
+      const adhesionTypes = capabilities?.adhesion_types || ['none', 'skirt', 'brim', 'raft'];
+      el('adhesionType').innerHTML = adhesionTypes.map((value) => `<option value="${value}">${value}</option>`).join('');
+
+      const speedProfiles = capabilities?.speed_profiles || ['slow', 'balanced', 'fast'];
+      el('speedProfile').innerHTML = speedProfiles.map((value) => `<option value="${value}">${value}</option>`).join('');
+
+      const defaults = capabilities?.default_options || {};
+      if (defaults.quality) el('qualityPreset').value = defaults.quality;
+      if (defaults.material) el('materialType').value = defaults.material;
+      if (defaults.adhesion) el('adhesionType').value = defaults.adhesion;
+      if (defaults.speed_profile) el('speedProfile').value = defaults.speed_profile;
+      if (defaults.nozzle) el('nozzleSize').value = defaults.nozzle;
+      if (defaults.infill != null) el('infillPercent').value = defaults.infill;
+      if (defaults.supports != null) el('supportsToggle').checked = Boolean(defaults.supports);
+      if (defaults.profile) el('sliceProfile').value = defaults.profile;
+
+      setSlicerCapabilitiesStatus(active === 'none' ? 'No usable slicer detected yet. Install and configure CuraEngine or another slicer.' : `Ready: ${active} available for slicing.`, active === 'none' ? 'warn' : 'ok');
+      renderPresetLibrary();
     }
 
     function setFormStatus(msg, tone = '') {
@@ -372,8 +776,25 @@
           el('printerType').value = p.type || 'generic';
           el('printerHost').value = p.host || '';
           el('printerEndpoint').value = p.endpoint || '';
+          updateSelectedPrinterSummary();
+          renderPresetLibrary();
         });
       });
+
+      updateSelectedPrinterSummary();
+    }
+
+    async function loadSlicerCapabilities() {
+      try {
+        const res = await fetch(`${API}/printing/slicer/capabilities`);
+        const data = await readJson(res);
+        if (!res.ok || !data.ok) throw new Error(data.detail || 'Capability load failed');
+        renderSlicerCapabilities(data);
+      } catch (e) {
+        setSlicerCapabilitiesStatus(`Error: ${e.message}`, 'bad');
+        el('slicerEngineMetric').textContent = 'Unavailable';
+        el('slicerEngineMeta').textContent = 'Capability load failed';
+      }
     }
 
     async function loadPrinters() {
@@ -482,6 +903,7 @@
         await loadPrinters();
         setFormStatus(`✓ Saved: ${data.printer?.name || data.printer?.id}`, 'ok');
         el('printerApiKey').value = '';
+        renderPresetLibrary();
       } catch (e) {
         setFormStatus(`Error: ${e.message}`, 'bad');
       } finally {
@@ -489,9 +911,52 @@
       }
     }
 
+    function applySelectedPreset() {
+      const preset = findPresetByValue(el('printerPresetSelect').value || '');
+      if (!preset) {
+        setPresetStatus('Choose a preset to apply.', 'warn');
+        return;
+      }
+      applyPreset(preset);
+    }
+
+    function saveCurrentPreset() {
+      const name = (el('presetName').value || '').trim();
+      if (!name) {
+        setPresetStatus('Enter a custom preset name first.', 'warn');
+        return;
+      }
+      const presets = loadSavedPresets();
+      const preset = {
+        id: `preset-${Date.now()}`,
+        name,
+        printer_type: currentPrinterType(),
+        ...collectSliceOptions(),
+      };
+      presets.push(preset);
+      saveSavedPresets(presets);
+      renderPresetLibrary();
+      el('presetName').value = '';
+      el('printerPresetSelect').value = `saved:${preset.id}`;
+      setPresetStatus(`Saved preset: ${name}`, 'ok');
+    }
+
+    function deleteSelectedPreset() {
+      const value = el('printerPresetSelect').value || '';
+      if (!value.startsWith('saved:')) {
+        setPresetStatus('Only saved presets can be deleted.', 'warn');
+        return;
+      }
+      const id = value.split(':')[1];
+      const next = loadSavedPresets().filter((preset) => preset.id !== id);
+      saveSavedPresets(next);
+      renderPresetLibrary();
+      setPresetStatus('Deleted saved preset.', 'ok');
+    }
+
     async function sliceModel() {
-      const modelPath = (el('modelPath').value || '').trim();
-      if (!modelPath) {
+      const body = collectSliceOptions();
+      if (!body.model_path) {
         setSliceStatus('Model path is required.', 'warn');
         return;
       }
@@ -499,10 +964,6 @@
       try {
         el('sliceBtn').disabled = true;
         setSliceStatus('Slicing...');
-        const body = {
-          model_path: modelPath,
-          profile: (el('sliceProfile').value || '0.2mm').trim(),
-        };
         const res = await fetch(`${API}/printing/slice`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -511,6 +972,7 @@
         const data = await readJson(res);
         el('sliceOutput').textContent = JSON.stringify(data, null, 2);
         if (!res.ok || !data.ok) throw new Error(data.error || 'Slicing failed');
+        if (data.estimate) setEstimateSummary(data.estimate);
         setSliceStatus(`✓ Complete: ${data.gcode_path || 'G-code ready'}`, 'ok');
       } catch (e) {
         setSliceStatus(`Error: ${e.message}`, 'bad');
@@ -519,13 +981,40 @@
       }
     }
 
+    async function estimateSlice() {
+      const body = collectSliceOptions();
+      if (!body.model_path) {
+        setSliceStatus('Model path is required.', 'warn');
+        return;
+      }
+
+      try {
+        el('estimateBtn').disabled = true;
+        setSliceStatus('Estimating print...', 'warn');
+        const res = await fetch(`${API}/printing/slice/estimate`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(body),
+        });
+        const data = await readJson(res);
+        el('sliceOutput').textContent = JSON.stringify(data, null, 2);
+        if (!res.ok || !data.ok) throw new Error(data.detail || 'Estimate failed');
+        setEstimateSummary(data.estimate);
+        setSliceStatus('✓ Estimate ready.', 'ok');
+      } catch (e) {
+        setSliceStatus(`Error: ${e.message}`, 'bad');
+      } finally {
+        el('estimateBtn').disabled = false;
+      }
+    }
+
     async function sliceAndSend() {
       if (!selectedPrinterId) {
         setSliceStatus('Select a printer first.', 'warn');
         return;
       }
-      const modelPath = (el('modelPath').value || '').trim();
-      if (!modelPath) {
+      const body = collectSliceOptions();
+      if (!body.model_path) {
         setSliceStatus('Model path is required.', 'warn');
         return;
       }
@@ -533,11 +1022,7 @@
       try {
         el('sliceSendBtn').disabled = true;
         setSliceStatus('Slicing and sending...', 'warn');
-        const body = {
-          model_path: modelPath,
-          profile: (el('sliceProfile').value || '0.2mm').trim(),
-          printer_id: selectedPrinterId,
-        };
+        body.printer_id = selectedPrinterId;
         const res = await fetch(`${API}/printing/slice-and-send`, {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
@@ -577,12 +1062,20 @@
     el('scanBtn').addEventListener('click', discoverPrinters);
     el('setupGuideBtn').addEventListener('click', showSetupGuide);
     el('savePrinterBtn').addEventListener('click', savePrinter);
+    el('applyPresetBtn').addEventListener('click', applySelectedPreset);
+    el('savePresetBtn').addEventListener('click', saveCurrentPreset);
+    el('deletePresetBtn').addEventListener('click', deleteSelectedPreset);
+    el('estimateBtn').addEventListener('click', estimateSlice);
     el('sliceBtn').addEventListener('click', sliceModel);
     el('sliceSendBtn').addEventListener('click', sliceAndSend);
     el('statusBtn').addEventListener('click', getPrinterStatus);
+    el('printerType').addEventListener('change', renderPresetLibrary);
 
     // Init
     loadPrinters();
+    loadSlicerCapabilities();
+    updateSelectedPrinterSummary();
+    renderPresetLibrary();
   </script>
 </body>
 </html>
