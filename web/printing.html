@@ -6,18 +6,18 @@
   <title>EDISON 3D Printing</title>
   <style>
     :root {
-      --bg: #fff7ef;
-      --bg-2: #ffe6cf;
+      --bg: #eef2f5;
+      --bg-2: #f7f9fb;
       --panel: #ffffff;
-      --line: #f0c9a4;
-      --ink: #3a2a1c;
-      --muted: #8b6a50;
-      --accent: #e8752b;
-      --accent-2: #c85e1d;
-      --ok: #2f9961;
-      --warn: #bb6c2e;
-      --bad: #b54747;
-      --shadow: 0 12px 30px rgba(127, 69, 24, 0.14);
+      --line: #d9e0e6;
+      --ink: #24323f;
+      --muted: #6d7b88;
+      --accent: #2c7be5;
+      --accent-2: #1f63bf;
+      --ok: #249a6b;
+      --warn: #b8781a;
+      --bad: #cc4b4b;
+      --shadow: 0 10px 28px rgba(34, 57, 82, 0.08);
     }
 
     * { box-sizing: border-box; }
@@ -25,11 +25,11 @@
     body {
       margin: 0;
       color: var(--ink);
-      font-family: "Manrope", "Segoe UI", sans-serif;
+      font-family: "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at 8% 6%, rgba(232, 117, 43, 0.18), transparent 26%),
-        radial-gradient(circle at 94% 8%, rgba(200, 94, 29, 0.12), transparent 20%),
-        linear-gradient(180deg, #fffaf4 0%, #ffeedf 100%);
+        radial-gradient(circle at 10% 8%, rgba(44, 123, 229, 0.1), transparent 24%),
+        radial-gradient(circle at 96% 6%, rgba(70, 132, 180, 0.08), transparent 22%),
+        linear-gradient(180deg, #f9fbfd 0%, #eef3f7 100%);
     }
 
     .topbar {
@@ -37,7 +37,7 @@
       top: 0;
       z-index: 10;
       border-bottom: 1px solid var(--line);
-      background: rgba(255, 248, 240, 0.9);
+      background: rgba(248, 251, 253, 0.92);
       backdrop-filter: blur(10px);
       display: flex;
       justify-content: space-between;
@@ -52,7 +52,7 @@
     .btn {
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: linear-gradient(180deg, #fff, #ffeedf);
+      background: linear-gradient(180deg, #fff, #f4f7fa);
       color: var(--ink);
       padding: 9px 12px;
       font: inherit;
@@ -62,13 +62,20 @@
     }
 
     .btn:hover {
-      border-color: #ef8c45;
+      border-color: #9db8d8;
     }
 
     .btn.primary {
       border-color: transparent;
-      background: linear-gradient(120deg, #ef8c45, #d8671f);
+      background: linear-gradient(120deg, #2c7be5, #1f63bf);
       color: #fff;
+      font-weight: 700;
+    }
+
+    .btn.active {
+      border-color: var(--accent);
+      color: var(--accent);
+      background: rgba(44, 123, 229, 0.08);
       font-weight: 700;
     }
 
@@ -83,6 +90,28 @@
       gap: 12px;
       padding: 12px;
       min-height: calc(100vh - 74px);
+    }
+
+    .cura-shell {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 420px;
+      gap: 14px;
+      padding: 14px;
+      align-items: start;
+      min-height: calc(100vh - 74px);
+    }
+
+    .prepare-column,
+    .dock-column {
+      display: flex;
+      flex-direction: column;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .dock-column {
+      position: sticky;
+      top: 86px;
     }
 
     .panel {
@@ -122,20 +151,20 @@
     .device {
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: #fff8f1;
+      background: #f8fbfd;
       padding: 10px;
       cursor: pointer;
       transition: all 0.2s ease;
     }
 
     .device:hover {
-      border-color: #ef8c45;
-      background: #ffe7d3;
+      border-color: #8bb5e9;
+      background: #eef5fd;
     }
 
     .device.active {
-      border-color: #ef8c45;
-      background: #ffe7d3;
+      border-color: #6ca0e4;
+      background: #edf5ff;
       font-weight: 600;
     }
 
@@ -149,7 +178,7 @@
     .status {
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: #fff9f2;
+      background: #f7fafc;
       color: var(--muted);
       padding: 9px 10px;
       font-size: 12px;
@@ -176,7 +205,7 @@
       margin: 0;
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: #fff7ef;
+      background: #f7fafc;
       padding: 10px;
       font-size: 12px;
       max-height: 200px;
@@ -197,6 +226,211 @@
       display: grid;
       grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
       gap: 10px;
+    }
+
+    .machine-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+      gap: 12px;
+    }
+
+    .stage-panel {
+      min-height: 320px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.2fr) 300px;
+      gap: 14px;
+    }
+
+    .buildplate {
+      position: relative;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: linear-gradient(180deg, #ffffff, #eef4fa);
+      min-height: 280px;
+    }
+
+    .buildplate::before {
+      content: "";
+      position: absolute;
+      inset: 24px;
+      border-radius: 18px;
+      border: 1px solid rgba(82, 112, 146, 0.18);
+      background:
+        linear-gradient(90deg, rgba(114, 144, 178, 0.08) 1px, transparent 1px),
+        linear-gradient(rgba(114, 144, 178, 0.08) 1px, transparent 1px),
+        linear-gradient(180deg, rgba(255, 255, 255, 0.8), rgba(230, 238, 247, 0.75));
+      background-size: 24px 24px, 24px 24px, auto;
+    }
+
+    .buildplate::after {
+      content: "";
+      position: absolute;
+      left: 50%;
+      top: 52%;
+      width: 160px;
+      height: 160px;
+      transform: translate(-50%, -50%) rotate(45deg);
+      border: 1px solid rgba(44, 123, 229, 0.28);
+      background: rgba(44, 123, 229, 0.06);
+      box-shadow: 0 20px 40px rgba(44, 123, 229, 0.12);
+    }
+
+    .stage-overlay {
+      position: relative;
+      z-index: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      height: 100%;
+      padding: 22px;
+    }
+
+    .stage-title {
+      font-size: 18px;
+      font-weight: 700;
+    }
+
+    .stage-note {
+      max-width: 320px;
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.5;
+    }
+
+    .stage-meta {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 10px;
+    }
+
+    .meta-card {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 10px;
+      background: rgba(255, 255, 255, 0.85);
+    }
+
+    .meta-card strong {
+      display: block;
+      color: var(--muted);
+      font-size: 11px;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+      margin-bottom: 4px;
+    }
+
+    .machine-card {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: linear-gradient(180deg, #ffffff, #f5f8fb);
+      padding: 12px;
+    }
+
+    .machine-card h3 {
+      margin: 0 0 8px;
+      font-size: 14px;
+    }
+
+    .mode-toggle {
+      display: inline-grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 6px;
+      padding: 4px;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background: #f4f7fa;
+    }
+
+    .print-setup-panel,
+    .action-panel {
+      overflow: hidden;
+    }
+
+    .setup-summary {
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      padding: 12px;
+      background: linear-gradient(180deg, #fbfdff, #f4f8fc);
+      font-size: 12px;
+      color: var(--muted);
+      line-height: 1.5;
+    }
+
+    .setup-summary strong {
+      color: var(--ink);
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .mode-view {
+      display: none;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .mode-view.active {
+      display: flex;
+    }
+
+    .cura-section {
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    .cura-section .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--line);
+      background: #f8fbfe;
+    }
+
+    .section-head .label {
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .section-head .desc {
+      font-size: 11px;
+      color: var(--muted);
+    }
+
+    .section-body {
+      padding: 12px;
+      display: flex;
+      flex-direction: column;
+      gap: 10px;
+    }
+
+    .pill-note {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      font-size: 11px;
+      color: var(--muted);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      padding: 4px 8px;
+      background: #fff;
+    }
+
+    .action-header {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 10px;
+    }
+
+    .action-buttons {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 8px;
     }
 
     .workbench {
@@ -310,7 +544,19 @@
     }
 
     @media (max-width: 1100px) {
+      .cura-shell {
+        grid-template-columns: 1fr;
+      }
+
+      .dock-column {
+        position: static;
+      }
+
       .workbench {
+        grid-template-columns: 1fr;
+      }
+
+      .stage-panel {
         grid-template-columns: 1fr;
       }
     }
@@ -323,8 +569,8 @@
 <body>
   <header class="topbar">
     <div class="title">
-      <h1>🖨️ 3D Printing Hub</h1>
-      <p>Detect your Bambu Lab or network printers, slice models, and send jobs instantly.</p>
+      <h1>3D Printing Workspace</h1>
+      <p>Machine setup, print settings, and slicing output in a Cura-style workflow.</p>
     </div>
     <div style="display:flex;gap:8px;">
       <button class="btn" id="homeBtn">← Main Chat</button>
@@ -332,162 +578,291 @@
     </div>
   </header>
 
-  <main class="shell">
-    <!-- Step 1: Discover or Add Printer -->
-    <section class="panel">
-      <div class="head">
-        <h2>Step 1: Add Your 3D Printer</h2>
-        <button class="btn primary" id="discoverBtn">🔍 Network Detect</button>
-      </div>
-      <div class="body grid-2">
-        <!-- Discovery options -->
-        <div>
-          <div class="head"><h3>Auto-Detect (Network Scan)</h3></div>
-          <div class="body" style="gap:6px;">
-            <input id="subnet" class="text" type="text" placeholder="Subnet (auto-detected)" />
-            <input id="maxHosts" class="text" type="number" min="16" max="512" value="64" />
-            <button class="btn" id="scanBtn" style="width:100%;">Scan & Find</button>
-            <div id="discoveredList" class="status">Click "Scan & Find" to detect printers on your network.</div>
-          </div>
-        </div>
-
-        <!-- Manual setup for Bambu Lab -->
-        <div>
-          <div class="head"><h3>Setup by Type</h3></div>
-          <div class="body" style="gap:6px;">
-            <select id="quickType" class="select">
-              <option value="">Choose printer type...</option>
-              <option value="bambulabb1">🌸 Bambu Lab B1 / X1 Carbon</option>
-              <option value="octoprint">🐙 OctoPrint</option>
-              <option value="generic">⚙️ Other 3D Printer</option>
-            </select>
-            <button class="btn" id="setupGuideBtn" style="width:100%;">Get Setup Guide</button>
-            <div id="setupInfo" class="status">Select a printer type to see setup steps.</div>
-          </div>
-        </div>
-      </div>
-
-      <!-- Registered Printers List -->
-      <div class="head"><h3>✓ Your Printers</h3></div>
-      <div class="body" id="devices"></div>
-    </section>
-
-    <!-- Step 2: Printer Settings -->
-    <section class="panel">
-      <div class="head"><h2>Step 2: Printer Settings</h2></div>
-      <div class="body grid-2">
-        <div>
-          <div class="head"><h3>Register / Update</h3></div>
-          <div class="body" style="gap:6px;">
-            <input id="printerName" class="text" type="text" placeholder="Printer Name (e.g. Bambu B1)" />
-            <select id="printerType" class="select">
-              <option value="generic">Generic</option>
-              <option value="bambulabb1">Bambu Lab B1</option>
-              <option value="bambulabx1">Bambu Lab X1 Carbon</option>
-              <option value="octoprint">OctoPrint</option>
-              <option value="prusa">Prusa</option>
-              <option value="creality">Creality</option>
-            </select>
-            <input id="printerHost" class="text" type="text" placeholder="IP Address (192.168.1.100)" />
-            <input id="printerEndpoint" class="text" type="text" placeholder="Endpoint (auto)" />
-            <input id="printerApiKey" class="text" type="password" placeholder="API Key (if needed)" />
-            <button class="btn primary" id="savePrinterBtn" style="width:100%;">✓ Save Printer</button>
-            <div class="status" id="formStatus">Fill in details and save your printer.</div>
-          </div>
-        </div>
-
-        <div>
-          <div class="head"><h3>Selected Printer Info</h3></div>
-          <div class="body" style="gap:6px;">
-            <div class="status" id="deviceStatus">No printer selected yet.</div>
-            <button class="btn" id="statusBtn" style="width:100%;">Get Status</button>
-            <pre id="statusOutput">Status will appear here.</pre>
-          </div>
-        </div>
-      </div>
-    </section>
-
-    <!-- Step 3: Slicing & Sending -->
-    <section class="panel">
-      <div class="head"><h2>Step 3: Slice & Send to Printer</h2></div>
-      <div class="body workbench">
-        <div class="stack">
-          <div class="head"><h3>Printer & Engine</h3></div>
-          <div class="mini-card">
-            <strong>Selected Printer</strong>
-            <div class="metric" id="selectedPrinterMetric">No printer</div>
-            <div class="metric-sub" id="selectedPrinterMeta">Choose a registered printer or just slice locally.</div>
-          </div>
-          <div class="mini-card">
-            <strong>Slicer Engine</strong>
-            <div class="metric" id="slicerEngineMetric">Checking...</div>
-            <div class="metric-sub" id="slicerEngineMeta">Detecting installed slicers.</div>
-          </div>
-          <div class="subtle-box" id="curaConfigStatus">CuraEngine config status will appear here.</div>
-          <div class="status" id="slicerCapabilitiesStatus">Loading slicer capabilities...</div>
-          <div class="badge-row" id="slicerBadges"></div>
-        </div>
-
-        <div class="stack">
-          <div class="head"><h3>Model & Print Setup</h3></div>
-          <div class="body" style="gap:10px; padding:0;">
-            <input id="modelPath" class="text" type="text" placeholder="Model file path (e.g. outputs/chair.stl)" />
-
-            <div class="section-label">Preset Library</div>
-            <div class="preset-bar">
-              <select id="printerPresetSelect" class="select"></select>
-              <input id="presetName" class="text" type="text" placeholder="Custom preset name" />
+  <main class="cura-shell">
+    <div class="prepare-column">
+      <section class="panel">
+        <div class="head"><h2>Prepare</h2></div>
+        <div class="body stage-panel">
+          <div class="buildplate">
+            <div class="stage-overlay">
+              <div>
+                <div class="stage-title" id="modelPreviewTitle">Build Plate Preview</div>
+                <div class="stage-note" id="modelPreviewNote">Load or type a model path to prepare slicing. Cura keeps the model stage separate from the print settings panel, so this page now does the same.</div>
+              </div>
+              <div class="stage-meta">
+                <div class="meta-card">
+                  <strong>Model</strong>
+                  <div id="modelPreviewPath">No model selected</div>
+                </div>
+                <div class="meta-card">
+                  <strong>Machine</strong>
+                  <div id="machinePreviewSummary">No machine selected</div>
+                </div>
+              </div>
             </div>
-            <div class="preset-actions">
-              <button class="btn" id="applyPresetBtn">Apply Preset</button>
-              <button class="btn" id="savePresetBtn">Save Current</button>
-              <button class="btn" id="deletePresetBtn">Delete Saved</button>
-            </div>
-            <div class="status" id="presetStatus">Built-in presets adapt to the selected printer type. Saved presets stay in this browser.</div>
+          </div>
 
-            <div class="section-label">Quality Presets</div>
-            <div class="field-row">
-              <select id="qualityPreset" class="select"></select>
-              <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Profile label (0.2mm)" />
+          <div class="stack">
+            <div class="machine-card">
+              <h3>Machine Summary</h3>
+              <div class="mini-card">
+                <strong>Selected Printer</strong>
+                <div class="metric" id="selectedPrinterMetric">No printer</div>
+                <div class="metric-sub" id="selectedPrinterMeta">Choose a registered printer or just slice locally.</div>
+              </div>
             </div>
-
-            <div class="field-row">
-              <input id="layerHeight" class="text" type="number" min="0.05" max="1" step="0.01" placeholder="Layer height (mm)" />
-              <select id="speedProfile" class="select"></select>
+            <div class="machine-card">
+              <h3>Slicer Backend</h3>
+              <div class="mini-card">
+                <strong>Active Engine</strong>
+                <div class="metric" id="slicerEngineMetric">Checking...</div>
+                <div class="metric-sub" id="slicerEngineMeta">Detecting installed slicers.</div>
+              </div>
+              <div class="subtle-box" id="curaConfigStatus">CuraEngine config status will appear here.</div>
+              <div class="status" id="slicerCapabilitiesStatus">Loading slicer capabilities...</div>
+              <div class="badge-row" id="slicerBadges"></div>
             </div>
+          </div>
+        </div>
+      </section>
 
-            <div class="section-label">Material & Hardware</div>
-            <div class="field-row">
-              <select id="materialType" class="select"></select>
-              <select id="nozzleSize" class="select">
-                <option value="0.25">0.25 mm nozzle</option>
-                <option value="0.4" selected>0.4 mm nozzle</option>
-                <option value="0.6">0.6 mm nozzle</option>
-                <option value="0.8">0.8 mm nozzle</option>
+      <section class="panel">
+        <div class="head">
+          <h2>Machine Discovery</h2>
+          <button class="btn primary" id="discoverBtn">Detect Printers</button>
+        </div>
+        <div class="body grid-2">
+          <div class="machine-card">
+            <h3>Network Scan</h3>
+            <div class="body" style="padding:0; gap:8px;">
+              <input id="subnet" class="text" type="text" placeholder="Subnet (auto-detected)" />
+              <input id="maxHosts" class="text" type="number" min="16" max="512" value="64" />
+              <button class="btn" id="scanBtn" style="width:100%;">Scan & Find</button>
+              <div id="discoveredList" class="status">Click "Scan & Find" to detect printers on your network.</div>
+            </div>
+          </div>
+
+          <div class="machine-card">
+            <h3>Printer Setup Guide</h3>
+            <div class="body" style="padding:0; gap:8px;">
+              <select id="quickType" class="select">
+                <option value="">Choose printer type...</option>
+                <option value="bambulabb1">Bambu Lab B1 / X1 Carbon</option>
+                <option value="octoprint">OctoPrint</option>
+                <option value="generic">Other 3D Printer</option>
               </select>
+              <button class="btn" id="setupGuideBtn" style="width:100%;">Get Setup Guide</button>
+              <div id="setupInfo" class="status">Select a printer type to see setup steps.</div>
             </div>
-
-            <div class="section-label">Structure</div>
-            <div class="field-row">
-              <input id="infillPercent" class="text" type="number" min="0" max="100" step="1" value="20" placeholder="Infill %" />
-              <select id="adhesionType" class="select"></select>
-            </div>
-
-            <label class="toggle"><input id="supportsToggle" type="checkbox" /> Generate supports</label>
-
-            <div class="grid-3">
-              <button class="btn" id="estimateBtn">Estimate Print</button>
-              <button class="btn" id="sliceBtn">Slice Model</button>
-              <button class="btn primary" id="sliceSendBtn">→ Slice + Send</button>
-            </div>
-
-            <div class="status" id="sliceStatus">Ready to slice.</div>
-            <div class="hint">CuraEngine is preferred when configured with machine definitions. Otherwise Edison falls back to the next usable slicer.</div>
           </div>
         </div>
+        <div class="body">
+          <div class="action-header">
+            <h3 style="margin:0; font-size:14px;">Available Machines</h3>
+            <span class="pill-note">Cura-style machine selection card list</span>
+          </div>
+          <div class="machine-grid" id="devices"></div>
+        </div>
+      </section>
 
-        <div class="stack">
-          <div class="head"><h3>Estimate & Output</h3></div>
+      <section class="panel">
+        <div class="head"><h2>Machine Configuration</h2></div>
+        <div class="body grid-2">
+          <div class="machine-card">
+            <h3>Register or Update Printer</h3>
+            <div class="body" style="padding:0; gap:8px;">
+              <input id="printerName" class="text" type="text" placeholder="Printer Name (e.g. Bambu B1)" />
+              <select id="printerType" class="select">
+                <option value="generic">Generic</option>
+                <option value="bambulabb1">Bambu Lab B1</option>
+                <option value="bambulabx1">Bambu Lab X1 Carbon</option>
+                <option value="octoprint">OctoPrint</option>
+                <option value="prusa">Prusa</option>
+                <option value="creality">Creality</option>
+              </select>
+              <input id="printerHost" class="text" type="text" placeholder="IP Address (192.168.1.100)" />
+              <input id="printerEndpoint" class="text" type="text" placeholder="Endpoint (auto)" />
+              <input id="printerApiKey" class="text" type="password" placeholder="API Key (if needed)" />
+              <button class="btn primary" id="savePrinterBtn" style="width:100%;">Save Printer</button>
+              <div class="status" id="formStatus">Fill in details and save your printer.</div>
+            </div>
+          </div>
+
+          <div class="machine-card">
+            <h3>Current Machine Status</h3>
+            <div class="body" style="padding:0; gap:8px;">
+              <div class="status" id="deviceStatus">No printer selected yet.</div>
+              <button class="btn" id="statusBtn" style="width:100%;">Get Status</button>
+              <pre id="statusOutput">Status will appear here.</pre>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <aside class="dock-column">
+      <section class="panel print-setup-panel">
+        <div class="head">
+          <h2>Print Settings</h2>
+          <div class="mode-toggle">
+            <button class="btn active" id="recommendedModeBtn">Recommended</button>
+            <button class="btn" id="customModeBtn">Custom</button>
+          </div>
+        </div>
+        <div class="body">
+          <input id="modelPath" class="text" type="text" placeholder="Model file path (e.g. outputs/chair.stl)" />
+          <div class="setup-summary" id="setupSummary">
+            <strong>Profile Summary</strong>
+            Cura-like setup summary will appear here.
+          </div>
+
+          <div class="mode-view active" id="recommendedView">
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Profiles</div>
+                  <div class="desc">Choose a machine-aware preset and base quality profile.</div>
+                </div>
+                <span class="pill-note">Recommended</span>
+              </div>
+              <div class="section-body">
+                <div class="preset-bar">
+                  <select id="printerPresetSelect" class="select"></select>
+                  <button class="btn" id="applyPresetBtn">Apply Preset</button>
+                </div>
+                <select id="qualityPreset" class="select"></select>
+              </div>
+            </div>
+
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Resolution</div>
+                  <div class="desc">Match Cura’s resolution-focused recommended selector.</div>
+                </div>
+              </div>
+              <div class="section-body field-row">
+                <input id="layerHeight" class="text" type="number" min="0.05" max="1" step="0.01" placeholder="Layer height (mm)" />
+                <input id="sliceProfile" class="text" type="text" value="0.2mm" placeholder="Profile label (0.2mm)" />
+              </div>
+            </div>
+
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Strength</div>
+                  <div class="desc">Infill and print intent for part strength.</div>
+                </div>
+              </div>
+              <div class="section-body field-row">
+                <input id="infillPercent" class="text" type="number" min="0" max="100" step="1" value="20" placeholder="Infill %" />
+                <select id="speedProfile" class="select"></select>
+              </div>
+            </div>
+
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Support</div>
+                  <div class="desc">Enable support structures for overhangs.</div>
+                </div>
+              </div>
+              <div class="section-body">
+                <label class="toggle"><input id="supportsToggle" type="checkbox" /> Generate supports</label>
+              </div>
+            </div>
+
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Adhesion</div>
+                  <div class="desc">Add brim or raft for better bed adhesion.</div>
+                </div>
+              </div>
+              <div class="section-body field-row">
+                <select id="adhesionType" class="select"></select>
+                <select id="materialType" class="select"></select>
+              </div>
+            </div>
+          </div>
+
+          <div class="mode-view" id="customView">
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Custom Profile</div>
+                  <div class="desc">Save, apply, and manage custom profile variations.</div>
+                </div>
+                <span class="pill-note">Custom</span>
+              </div>
+              <div class="section-body">
+                <div class="preset-bar">
+                  <select id="customPresetSelect" class="select"></select>
+                  <input id="presetName" class="text" type="text" placeholder="Custom preset name" />
+                </div>
+                <div class="preset-actions">
+                  <button class="btn" id="customApplyPresetBtn">Apply</button>
+                  <button class="btn" id="savePresetBtn">Save Current</button>
+                  <button class="btn" id="deletePresetBtn">Delete Saved</button>
+                </div>
+                <div class="status" id="presetStatus">Built-in presets adapt to the selected printer type. Saved presets stay in this browser.</div>
+              </div>
+            </div>
+
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Materials & Hardware</div>
+                  <div class="desc">Nozzle, material, and speed tuning.</div>
+                </div>
+              </div>
+              <div class="section-body">
+                <div class="field-row">
+                  <select id="customMaterialType" class="select"></select>
+                  <select id="nozzleSize" class="select">
+                    <option value="0.25">0.25 mm nozzle</option>
+                    <option value="0.4" selected>0.4 mm nozzle</option>
+                    <option value="0.6">0.6 mm nozzle</option>
+                    <option value="0.8">0.8 mm nozzle</option>
+                  </select>
+                </div>
+                <div class="field-row">
+                  <select id="customSpeedProfile" class="select"></select>
+                  <select id="customAdhesionType" class="select"></select>
+                </div>
+              </div>
+            </div>
+
+            <div class="cura-section">
+              <div class="section-head">
+                <div>
+                  <div class="label">Fine Controls</div>
+                  <div class="desc">Explicit overrides closer to Cura custom mode.</div>
+                </div>
+              </div>
+              <div class="section-body">
+                <div class="field-row">
+                  <input id="customLayerHeight" class="text" type="number" min="0.05" max="1" step="0.01" placeholder="Layer height (mm)" />
+                  <input id="customInfillPercent" class="text" type="number" min="0" max="100" step="1" value="20" placeholder="Infill %" />
+                </div>
+                <label class="toggle"><input id="customSupportsToggle" type="checkbox" /> Generate supports</label>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section class="panel action-panel">
+        <div class="head"><h2>Slice & Output</h2></div>
+        <div class="body">
+          <div class="action-buttons">
+            <button class="btn" id="estimateBtn">Estimate Print</button>
+            <button class="btn" id="sliceBtn">Slice Model</button>
+            <button class="btn primary" id="sliceSendBtn">Slice + Send</button>
+          </div>
+
+          <div class="status" id="sliceStatus">Ready to slice.</div>
+
           <div class="grid-3">
             <div class="mini-card">
               <strong>Time</strong>
@@ -510,14 +885,13 @@
               <div class="metric-sub">Estimated spool usage</div>
             </div>
           </div>
+
           <div class="status" id="estimateAssumptions">No estimate calculated yet.</div>
           <div class="subtle-box" id="estimateBreakdown">No cost or profile breakdown available yet.</div>
-          <div class="body" style="padding:0;">
-            <pre id="sliceOutput">Slice results shown here.</pre>
-          </div>
+          <pre id="sliceOutput">Slice results shown here.</pre>
         </div>
-      </div>
-    </section>
+      </section>
+    </aside>
   </main>
 
   <script>
@@ -553,6 +927,40 @@
     };
 
     const el = (id) => document.getElementById(id);
+
+    function activeMode() {
+      return el('customView').classList.contains('active') ? 'custom' : 'recommended';
+    }
+
+    function currentPresetSelect() {
+      return activeMode() === 'custom' ? el('customPresetSelect') : el('printerPresetSelect');
+    }
+
+    function syncMirroredFields(sourceId, targetId) {
+      const source = el(sourceId);
+      const target = el(targetId);
+      if (!source || !target) return;
+
+      const sync = () => {
+        if (target.type === 'checkbox') {
+          target.checked = source.checked;
+        } else {
+          target.value = source.value;
+        }
+      };
+
+      source.addEventListener('input', sync);
+      source.addEventListener('change', sync);
+    }
+
+    function setMode(mode) {
+      const recommended = mode !== 'custom';
+      el('recommendedView').classList.toggle('active', recommended);
+      el('customView').classList.toggle('active', !recommended);
+      el('recommendedModeBtn').classList.toggle('active', recommended);
+      el('customModeBtn').classList.toggle('active', !recommended);
+      updateSetupSummary();
+    }
 
     function setDeviceStatus(msg, tone = '') {
       const d = el('deviceStatus');
@@ -612,6 +1020,7 @@
         ...saved.map((preset) => `<option value="saved:${preset.id}">${preset.name} • saved</option>`),
       ];
       el('printerPresetSelect').innerHTML = options.join('');
+      el('customPresetSelect').innerHTML = options.join('');
     }
 
     function findPresetByValue(value) {
@@ -631,13 +1040,43 @@
       el('qualityPreset').value = preset.quality || 'standard';
       el('sliceProfile').value = preset.profile || '0.2mm';
       el('layerHeight').value = preset.layer_height ?? '';
+      el('customLayerHeight').value = preset.layer_height ?? '';
       el('materialType').value = preset.material || 'PLA';
+      el('customMaterialType').value = preset.material || 'PLA';
       el('infillPercent').value = preset.infill ?? 20;
+      el('customInfillPercent').value = preset.infill ?? 20;
       el('supportsToggle').checked = Boolean(preset.supports);
+      el('customSupportsToggle').checked = Boolean(preset.supports);
       el('adhesionType').value = preset.adhesion || 'skirt';
+      el('customAdhesionType').value = preset.adhesion || 'skirt';
       el('nozzleSize').value = preset.nozzle || '0.4';
       el('speedProfile').value = preset.speed_profile || 'balanced';
+      el('customSpeedProfile').value = preset.speed_profile || 'balanced';
+      updateSetupSummary();
       setPresetStatus(`Applied preset: ${preset.name}`, 'ok');
+    }
+
+    function updateSetupSummary() {
+      const mode = activeMode();
+      const material = mode === 'custom' ? el('customMaterialType').value : el('materialType').value;
+      const layerHeight = mode === 'custom' ? el('customLayerHeight').value : el('layerHeight').value;
+      const infill = mode === 'custom' ? el('customInfillPercent').value : el('infillPercent').value;
+      const supports = mode === 'custom' ? el('customSupportsToggle').checked : el('supportsToggle').checked;
+      const adhesion = mode === 'custom' ? el('customAdhesionType').value : el('adhesionType').value;
+      const quality = el('qualityPreset').value || 'standard';
+      const speed = mode === 'custom' ? el('customSpeedProfile').value : el('speedProfile').value;
+      const profile = el('sliceProfile').value || '0.2mm';
+      el('setupSummary').innerHTML = `<strong>${mode === 'custom' ? 'Custom Setup' : 'Recommended Setup'}</strong>${quality} • ${profile} • ${material || 'PLA'} • ${layerHeight || '--'} mm • ${infill || '--'}% infill • supports ${supports ? 'on' : 'off'} • ${adhesion || 'skirt'} • ${speed || 'balanced'} speed`;
+    }
+
+    function updateModelPreview() {
+      const modelPath = (el('modelPath').value || '').trim();
+      el('modelPreviewPath').textContent = modelPath || 'No model selected';
+      el('modelPreviewTitle').textContent = modelPath ? 'Prepared Model' : 'Build Plate Preview';
+      el('modelPreviewNote').textContent = modelPath
+        ? 'Model path is loaded into the prepare stage. Use the dock on the right to tune settings before slicing.'
+        : 'Load or type a model path to prepare slicing. Cura keeps the model stage separate from the print settings panel, so this page now does the same.';
+      el('machinePreviewSummary').textContent = el('selectedPrinterMetric').textContent || 'No machine selected';
     }
 
     function setEstimateSummary(estimate) {
@@ -669,18 +1108,19 @@
     }
 
     function collectSliceOptions() {
-      const layerHeightValue = (el('layerHeight').value || '').trim();
+      const useCustom = activeMode() === 'custom';
+      const layerHeightValue = (useCustom ? el('customLayerHeight').value : el('layerHeight').value || '').trim();
       return {
         model_path: (el('modelPath').value || '').trim(),
         profile: (el('sliceProfile').value || '0.2mm').trim(),
         quality: (el('qualityPreset').value || 'standard').trim(),
         layer_height: layerHeightValue ? Number(layerHeightValue) : null,
-        material: (el('materialType').value || 'PLA').trim(),
-        infill: Number(el('infillPercent').value || 20),
-        supports: Boolean(el('supportsToggle').checked),
-        adhesion: (el('adhesionType').value || 'skirt').trim(),
+        material: (useCustom ? el('customMaterialType').value : el('materialType').value || 'PLA').trim(),
+        infill: Number(useCustom ? el('customInfillPercent').value : el('infillPercent').value || 20),
+        supports: Boolean(useCustom ? el('customSupportsToggle').checked : el('supportsToggle').checked),
+        adhesion: (useCustom ? el('customAdhesionType').value : el('adhesionType').value || 'skirt').trim(),
         nozzle: (el('nozzleSize').value || '0.4').trim(),
-        speed_profile: (el('speedProfile').value || 'balanced').trim(),
+        speed_profile: (useCustom ? el('customSpeedProfile').value : el('speedProfile').value || 'balanced').trim(),
       };
     }
 
@@ -689,6 +1129,7 @@
       const printer = combined.find((x) => x.id === selectedPrinterId);
       el('selectedPrinterMetric').textContent = printer ? (printer.name || printer.id) : 'No printer';
       el('selectedPrinterMeta').textContent = printer ? `${printer.type || 'generic'} • ${printer.host || printer.endpoint || 'unknown host'}` : 'Choose a registered printer or just slice locally.';
+      el('machinePreviewSummary').textContent = printer ? `${printer.name || printer.id} • ${printer.type || 'generic'}` : 'No machine selected';
     }
 
     function renderSlicerCapabilities(capabilities) {
@@ -714,25 +1155,35 @@
 
       const materials = capabilities?.materials || ['PLA', 'PETG', 'ABS', 'TPU'];
       el('materialType').innerHTML = materials.map((value) => `<option value="${value}">${value}</option>`).join('');
+      el('customMaterialType').innerHTML = materials.map((value) => `<option value="${value}">${value}</option>`).join('');
 
       const adhesionTypes = capabilities?.adhesion_types || ['none', 'skirt', 'brim', 'raft'];
       el('adhesionType').innerHTML = adhesionTypes.map((value) => `<option value="${value}">${value}</option>`).join('');
+      el('customAdhesionType').innerHTML = adhesionTypes.map((value) => `<option value="${value}">${value}</option>`).join('');
 
       const speedProfiles = capabilities?.speed_profiles || ['slow', 'balanced', 'fast'];
       el('speedProfile').innerHTML = speedProfiles.map((value) => `<option value="${value}">${value}</option>`).join('');
+      el('customSpeedProfile').innerHTML = speedProfiles.map((value) => `<option value="${value}">${value}</option>`).join('');
 
       const defaults = capabilities?.default_options || {};
       if (defaults.quality) el('qualityPreset').value = defaults.quality;
       if (defaults.material) el('materialType').value = defaults.material;
+      if (defaults.material) el('customMaterialType').value = defaults.material;
       if (defaults.adhesion) el('adhesionType').value = defaults.adhesion;
+      if (defaults.adhesion) el('customAdhesionType').value = defaults.adhesion;
       if (defaults.speed_profile) el('speedProfile').value = defaults.speed_profile;
+      if (defaults.speed_profile) el('customSpeedProfile').value = defaults.speed_profile;
       if (defaults.nozzle) el('nozzleSize').value = defaults.nozzle;
       if (defaults.infill != null) el('infillPercent').value = defaults.infill;
+      if (defaults.infill != null) el('customInfillPercent').value = defaults.infill;
       if (defaults.supports != null) el('supportsToggle').checked = Boolean(defaults.supports);
+      if (defaults.supports != null) el('customSupportsToggle').checked = Boolean(defaults.supports);
       if (defaults.profile) el('sliceProfile').value = defaults.profile;
+      if (defaults.layer_height != null) el('customLayerHeight').value = defaults.layer_height;
 
       setSlicerCapabilitiesStatus(active === 'none' ? 'No usable slicer detected yet. Install and configure CuraEngine or another slicer.' : `Ready: ${active} available for slicing.`, active === 'none' ? 'warn' : 'ok');
       renderPresetLibrary();
+      updateSetupSummary();
     }
 
     function setFormStatus(msg, tone = '') {
@@ -912,7 +1363,7 @@
     }
 
     function applySelectedPreset() {
-      const preset = findPresetByValue(el('printerPresetSelect').value || '');
+      const preset = findPresetByValue(currentPresetSelect().value || '');
       if (!preset) {
         setPresetStatus('Choose a preset to apply.', 'warn');
         return;
@@ -938,11 +1389,13 @@
       renderPresetLibrary();
       el('presetName').value = '';
       el('printerPresetSelect').value = `saved:${preset.id}`;
+      el('customPresetSelect').value = `saved:${preset.id}`;
+      updateSetupSummary();
       setPresetStatus(`Saved preset: ${name}`, 'ok');
     }
 
     function deleteSelectedPreset() {
-      const value = el('printerPresetSelect').value || '';
+      const value = currentPresetSelect().value || '';
       if (!value.startsWith('saved:')) {
         setPresetStatus('Only saved presets can be deleted.', 'warn');
         return;
@@ -1063,6 +1516,7 @@
     el('setupGuideBtn').addEventListener('click', showSetupGuide);
     el('savePrinterBtn').addEventListener('click', savePrinter);
     el('applyPresetBtn').addEventListener('click', applySelectedPreset);
+    el('customApplyPresetBtn').addEventListener('click', applySelectedPreset);
     el('savePresetBtn').addEventListener('click', saveCurrentPreset);
     el('deletePresetBtn').addEventListener('click', deleteSelectedPreset);
     el('estimateBtn').addEventListener('click', estimateSlice);
@@ -1070,11 +1524,36 @@
     el('sliceSendBtn').addEventListener('click', sliceAndSend);
     el('statusBtn').addEventListener('click', getPrinterStatus);
     el('printerType').addEventListener('change', renderPresetLibrary);
+    el('recommendedModeBtn').addEventListener('click', () => setMode('recommended'));
+    el('customModeBtn').addEventListener('click', () => setMode('custom'));
+    el('modelPath').addEventListener('input', updateModelPreview);
+
+    ['qualityPreset', 'sliceProfile', 'layerHeight', 'infillPercent', 'supportsToggle', 'adhesionType', 'materialType', 'speedProfile', 'customLayerHeight', 'customInfillPercent', 'customSupportsToggle', 'customAdhesionType', 'customMaterialType', 'customSpeedProfile'].forEach((id) => {
+      const node = el(id);
+      if (!node) return;
+      node.addEventListener('input', updateSetupSummary);
+      node.addEventListener('change', updateSetupSummary);
+    });
+
+    syncMirroredFields('materialType', 'customMaterialType');
+    syncMirroredFields('customMaterialType', 'materialType');
+    syncMirroredFields('adhesionType', 'customAdhesionType');
+    syncMirroredFields('customAdhesionType', 'adhesionType');
+    syncMirroredFields('speedProfile', 'customSpeedProfile');
+    syncMirroredFields('customSpeedProfile', 'speedProfile');
+    syncMirroredFields('layerHeight', 'customLayerHeight');
+    syncMirroredFields('customLayerHeight', 'layerHeight');
+    syncMirroredFields('infillPercent', 'customInfillPercent');
+    syncMirroredFields('customInfillPercent', 'infillPercent');
+    syncMirroredFields('supportsToggle', 'customSupportsToggle');
+    syncMirroredFields('customSupportsToggle', 'supportsToggle');
 
     // Init
     loadPrinters();
     loadSlicerCapabilities();
     updateSelectedPrinterSummary();
+    updateModelPreview();
+    updateSetupSummary();
     renderPresetLibrary();
   </script>
 </body>
