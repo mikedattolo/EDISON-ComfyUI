@@ -35,6 +35,70 @@ import ipaddress
 import mimetypes
 import urllib.parse
 
+# ── EDISON Runtime Layer ──────────────────────────────────────────────────────
+# These modules extract business logic from route handlers into reusable components.
+from services.edison_core.runtime.routing_runtime import (
+    route as runtime_route,
+    route_mode as runtime_route_mode,
+    RoutingDecision,
+    looks_like_followup as runtime_looks_like_followup,
+)
+from services.edison_core.runtime.tool_runtime import (
+    TOOL_REGISTRY as RUNTIME_TOOL_REGISTRY,
+    validate_and_normalize_tool_call as runtime_validate_tool_call,
+    extract_tool_payload_from_text as runtime_extract_tool_payload,
+    run_tool_loop as runtime_run_tool_loop,
+    ToolLoopResult,
+    ToolEvent,
+    TOOL_LOOP_MAX_STEPS as RUNTIME_TOOL_LOOP_MAX_STEPS,
+)
+from services.edison_core.runtime.context_runtime import (
+    assemble_context as runtime_assemble_context,
+    get_summary as runtime_get_summary,
+    update_summary as runtime_update_summary,
+)
+from services.edison_core.runtime.task_runtime import (
+    create_task as runtime_create_task,
+    get_active_task_for_chat as runtime_get_active_task,
+    TaskState,
+)
+from services.edison_core.runtime.artifact_runtime import (
+    register_artifact as runtime_register_artifact,
+    get_artifacts_for_chat as runtime_get_artifacts_for_chat,
+    artifact_refs_for_context as runtime_artifact_refs,
+)
+from services.edison_core.runtime.workspace_runtime import (
+    ensure_default_workspace,
+    get_workspace,
+    Workspace,
+)
+from services.edison_core.runtime.model_runtime import (
+    ModelResolver,
+    get_resolver as get_model_resolver,
+    configure_from_yaml as configure_model_profiles,
+)
+from services.edison_core.runtime.quality_runtime import (
+    check_response_quality,
+    clean_response as runtime_clean_response,
+    format_trust_signals,
+)
+from services.edison_core.runtime.response_runtime import (
+    ChatPipelineResponse,
+    format_openai_response,
+    format_openai_stream_chunk,
+    format_openai_stream_done,
+    format_native_sse_token,
+    format_native_sse_status,
+    format_native_sse_done,
+    openai_messages_to_prompt,
+    flatten_openai_content,
+)
+from services.edison_core.runtime.chat_runtime import (
+    ChatPipelineInput,
+    ChatPipelineCallbacks,
+    run_pipeline,
+)
+
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
 # We run a dedicated daemon thread with its own event queue.
@@ -401,284 +465,30 @@ def merge_chunks(existing: list, new: list, max_total: int = 4, source_name: str
 
 
 def _looks_like_followup(user_message: str, conversation_history: Optional[list] = None) -> bool:
-    if not conversation_history:
-        return False
-
-    msg = (user_message or "").strip().lower()
-    if not msg:
-        return False
-
-    referential_terms = [
-        "that", "it", "this", "those", "these", "them", "there", "here",
-        "the same", "again", "instead", "also", "too", "more like", "less like",
-        "make it", "change it", "fix it", "do that", "do this", "use that",
-        "now", "then", "continue", "go on", "try again", "one more",
-    ]
-    followup_openers = [
-        "and ", "also ", "now ", "then ", "instead ", "but ", "so ",
-        "make ", "change ", "fix ", "use ", "add ", "remove ", "update ",
-        "turn ", "convert ", "try ", "keep ", "expand ", "refine ",
-    ]
-
-    if any(term in msg for term in referential_terms):
-        return True
-    if len(msg.split()) <= 12 and any(msg.startswith(prefix) for prefix in followup_openers):
-        return True
-    return False
+    """Delegate to runtime routing module."""
+    return runtime_looks_like_followup(user_message, conversation_history)
 
 
 def _infer_contextual_mode_from_history(conversation_history: Optional[list]) -> Optional[str]:
-    if not conversation_history:
-        return None
-
-    recent_text = "\n".join(
-        str(msg.get("content", ""))
-        for msg in conversation_history[-4:]
-        if isinstance(msg, dict)
-    ).lower()
-
-    if not recent_text.strip():
-        return None
-
-    code_signals = [
-        "```", "def ", "function ", "class ", "import ", "from ",
-        "python", "javascript", "typescript", "react", "fastapi", "html", "css",
-        ".py", ".js", ".ts", ".tsx", ".html", ".css", "stack trace", "refactor",
-        "component", "endpoint", "bug", "exception", "traceback",
-    ]
-    search_signals = [
-        "search results", "source:", "looked up", "web search", "according to", "latest news"
-    ]
-
-    if any(signal in recent_text for signal in code_signals):
-        return "code"
-    if any(signal in recent_text for signal in search_signals):
-        return "agent"
-    return "reasoning"
+    """Delegate to runtime routing module."""
+    from services.edison_core.runtime.routing_runtime import infer_contextual_mode
+    return infer_contextual_mode(conversation_history)
 
 
 def route_mode(user_message: str, requested_mode: str, has_image: bool,
                coral_intent: Optional[str] = None,
                conversation_history: Optional[list] = None) -> Dict[str, any]:
     """
-    Consolidated routing function to determine mode, tools, and model target.
-    Single source of truth for all routing logic.
+    Consolidated routing function — delegates to runtime.routing_runtime.
+    Returns a plain dict for backward compatibility.
     """
-    reasons = []
-    mode = requested_mode
-    tools_allowed = False
-    model_target = "fast"
-
-    # Rule 1: If has_image, always use image mode (highest priority)
-    if has_image:
-        mode = "image"
-        model_target = "vision"
-        reasons.append("Image input detected → image mode with vision model")
-    # Rule 2: If requested_mode is not "auto", respect it
-    elif requested_mode != "auto":
-        reasons.append(f"User explicitly requested mode: {requested_mode}")
-        mode = requested_mode
-
-        # Map frontend-specific modes to backend modes
-        if mode == "instant":
-            mode = "chat"  # Instant maps to fast chat
-            model_target = "fast"
-            reasons.append("Instant mode → fast chat model")
-        elif mode == "swarm":
-            # Swarm uses multiple agents with deep model
-            tools_allowed = True
-            model_target = "deep"
-            reasons.append("Swarm mode → multi-agent collaboration with deep model")
-        elif mode == "work":
-            # Work mode uses step-by-step execution with deep model
-            tools_allowed = True
-            model_target = "deep"
-            reasons.append("Work mode → step-by-step execution with deep model and tools")
-        elif mode == "agent":
-            tools_allowed = True
-            model_target = "medium"
-            reasons.append("Agent mode → tool-using assistant with medium model")
-        elif mode == "thinking":
-            mode = "reasoning"
-            model_target = "reasoning"
-            reasons.append("Thinking mode → reasoning model")
-        elif mode == "reasoning":
-            model_target = "reasoning"
-            reasons.append("Reasoning mode → reasoning model")
-    else:
-        # Rule 3: Check coral_intent for specific routing
-        if coral_intent:
-            if coral_intent in ["generate_image", "text_to_image", "create_image"]:
-                mode = "image"
-                model_target = "vision"
-                reasons.append(f"Coral intent '{coral_intent}' → image mode with vision model")
-            elif coral_intent in ["generate_music", "text_to_music", "create_music", "make_music", "compose_music"]:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append(f"Coral intent '{coral_intent}' → agent mode for music generation")
-            elif coral_intent in ["code", "write", "implement", "debug"]:
-                mode = "code"
-                reasons.append(f"Coral intent '{coral_intent}' → code mode")
-            elif coral_intent in ["agent", "search", "web", "research"]:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append(f"Coral intent '{coral_intent}' → agent mode with tools")
-            else:
-                # Map other intents to chat
-                mode = "chat"
-                reasons.append(f"Coral intent '{coral_intent}' → chat mode")
-        else:
-            # Rule 4: Heuristic pattern matching
-            msg_lower = user_message.lower()
-
-            is_followup = _looks_like_followup(user_message, conversation_history)
-            sticky_mode = _infer_contextual_mode_from_history(conversation_history) if is_followup else None
-
-            # Check patterns in priority order
-            work_patterns = [
-                "create a project plan", "project plan", "multi-step workflow", "step-by-step workflow",
-                "break down this task", "organize this project", "workflow for", "execution plan",
-                "task plan", "roadmap", "milestones", "deliverables"
-            ]
-
-            code_patterns = [
-                "write a function", "write a script", "write a class", "write code",
-                "build a component", "react component", "fastapi endpoint", "api route",
-                "python", "javascript", "typescript", "html", "css", "sql", "bash",
-                "regex", "algorithm", "method", "class", "function", "unit test",
-                "debug", "fix this bug", "syntax error", "stack trace", "traceback",
-                "refactor", "code review", "endpoint", "schema", "component"
-            ]
-
-            agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
-                             "current", "latest", "news about", "information on", "information about",
-                             "tell me about", "research", "browse", "what's happening",
-                             "recent", "today", "this week", "this month", "this year",
-                             "2025", "2026", "2027", "now", "currently", "look up",
-                             "find out", "check", "what is happening", "what happened",
-                             "who is", "where is", "when is", "show me", "get me",
-                             "look for", "search for", "find information"]
-
-            # Real-time data patterns (time, date, weather, news)
-            realtime_patterns = ["what time", "current time", "the time", "what's the time",
-                                "whats the time", "what date", "today's date", "todays date",
-                                "what day is it", "what is today", "the date",
-                                "weather in", "weather for", "forecast", "temperature in",
-                                "is it raining", "is it cold", "is it hot", "is it snowing",
-                                "today's news", "todays news", "latest news", "top news",
-                                "news today", "headlines", "breaking news", "what's in the news",
-                                "news about"]
-
-            # Music generation patterns
-            music_patterns = ["make music", "create music", "generate music",
-                             "make a song", "create a song", "generate a song",
-                             "compose", "make a beat", "produce music",
-                             "music like", "song about", "write a song",
-                             "make me a song", "generate a beat", "music from",
-                             "make me music", "create a beat", "lo-fi", "lofi",
-                             "hip hop beat", "hip-hop beat", "edm", "make a track",
-                             "generate song", "generate beat", "play me",
-                             "sing me", "beat for", "instrumental",
-                             "background music", "soundtrack"]
-
-            reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
-                                 "understand", "break down", "elaborate", "clarify", "reasoning",
-                                 "think through", "step by step", "logic", "rationale"]
-
-            # Check if agent patterns match (for enabling web search)
-            has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
-            has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
-            has_music = any(pattern in msg_lower for pattern in music_patterns)
-
-            has_code_patterns = any(pattern in msg_lower for pattern in code_patterns)
-            has_work_patterns = any(pattern in msg_lower for pattern in work_patterns)
-
-            # Sticky follow-ups should preserve the prior mode unless the user clearly changes direction.
-            if is_followup and sticky_mode and not has_realtime and not has_music and not has_agent_patterns and not has_code_patterns and not has_work_patterns:
-                mode = sticky_mode
-                tools_allowed = sticky_mode == "agent"
-                reasons.append(f"Follow-up detected → preserving prior context as {sticky_mode} mode")
-
-            # Real-time queries get tools enabled for instant data retrieval
-            elif has_realtime:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Real-time data query detected → agent mode with tools")
-            elif has_music:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Music generation request detected → agent mode with tools")
-            elif has_work_patterns:
-                mode = "work"
-                tools_allowed = True  # Work mode can use tools
-                reasons.append("Work patterns detected → work mode with tools")
-            elif has_code_patterns:
-                mode = "code"
-                reasons.append("Code patterns detected → code mode")
-            elif has_agent_patterns:
-                mode = "agent"
-                tools_allowed = True
-                reasons.append("Agent patterns detected → agent mode with tools")
-            elif any(pattern in msg_lower for pattern in reasoning_patterns):
-                mode = "reasoning"
-                # Enable tools for reasoning if agent patterns also present
-                if has_agent_patterns:
-                    tools_allowed = True
-                    reasons.append("Reasoning with search patterns → tools enabled")
-                else:
-                    reasons.append("Reasoning patterns detected → reasoning mode")
-            else:
-                # Default to chat
-                mode = "chat"
-                words = len(msg_lower.split())
-                has_question = '?' in user_message
-
-                # Enable tools even in chat mode if agent patterns detected
-                if has_agent_patterns:
-                    tools_allowed = True
-                    reasons.append("Search request in chat → tools enabled")
-
-                if words > 15 or has_question:
-                    mode = "reasoning"
-                    reasons.append("Complex/question-based message → reasoning mode")
-                else:
-                    reasons.append("No patterns matched → default chat mode")
-
-    if mode == "reasoning" and model_target == "fast":
-        model_target = "reasoning"
-        reasons.append("Auto reasoning → reasoning model")
-
-    # Determine model target based on selected mode unless already pinned
-    if model_target != "vision":
-        if mode in ["reasoning"]:
-            if model_target != "reasoning":
-                model_target = "reasoning"
-                reasons.append(f"Mode '{mode}' requires reasoning model")
-        elif mode in ["work", "swarm", "code"]:
-            if model_target != "deep":
-                model_target = "deep"
-                if mode == "code":
-                    reasons.append("Mode 'code' prefers the strongest available coding model")
-                else:
-                    reasons.append(f"Mode '{mode}' requires deep model")
-        elif mode in ["agent"]:
-            if model_target != "medium":
-                model_target = "medium"
-                reasons.append(f"Mode '{mode}' requires medium model")
-        else:
-            if model_target != "fast":
-                model_target = "fast"
-                reasons.append(f"Mode '{mode}' uses fast model")
-
-    # Log routing decision once
-    logger.info(f"ROUTING: mode={mode}, model={model_target}, tools={tools_allowed}, reasons={reasons}")
-
-    return {
-        "mode": mode,
-        "tools_allowed": tools_allowed,
-        "model_target": model_target,
-        "reasons": reasons
-    }
+    return runtime_route_mode(
+        user_message=user_message,
+        requested_mode=requested_mode,
+        has_image=has_image,
+        coral_intent=coral_intent,
+        conversation_history=conversation_history,
+    )
 
 
 # Global state
@@ -2697,184 +2507,10 @@ class HealthResponse(BaseModel):
     vision_enabled: bool = False
     vision_error: Optional[str] = None
 
-# Structured tool registry for agent/work modes
-TOOL_REGISTRY = {
-    "web_search": {
-        "args": {
-            "query": {"type": str, "required": True},
-            "max_results": {"type": int, "required": False, "default": 5}
-        }
-    },
-    "rag_search": {
-        "args": {
-            "query": {"type": str, "required": True},
-            "limit": {"type": int, "required": False, "default": 3},
-            "global": {"type": bool, "required": False, "default": False}
-        }
-    },
-    "knowledge_search": {
-        "args": {
-            "query": {"type": str, "required": True},
-            "limit": {"type": int, "required": False, "default": 4},
-            "include_web_search": {"type": bool, "required": False, "default": False}
-        }
-    },
-    "generate_image": {
-        "args": {
-            "prompt": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 1024},
-            "height": {"type": int, "required": False, "default": 1024},
-            "steps": {"type": int, "required": False, "default": 20},
-            "guidance_scale": {"type": float, "required": False, "default": 3.5}
-        }
-    },
-    "system_stats": {
-        "args": {}
-    },
-    "execute_python": {
-        "args": {
-            "code": {"type": str, "required": True},
-            "packages": {"type": str, "required": False, "default": ""},
-            "description": {"type": str, "required": False, "default": ""}
-        }
-    },
-    "read_file": {
-        "args": {
-            "path": {"type": str, "required": True}
-        }
-    },
-    "list_files": {
-        "args": {
-            "directory": {"type": str, "required": False, "default": "/opt/edison/gallery"}
-        }
-    },
-    "analyze_csv": {
-        "args": {
-            "file_path": {"type": str, "required": True},
-            "operation": {"type": str, "required": True}
-        }
-    },
-    "get_current_time": {
-        "args": {
-            "timezone": {"type": str, "required": False, "default": "local"}
-        }
-    },
-    "get_weather": {
-        "args": {
-            "location": {"type": str, "required": True}
-        }
-    },
-    "get_news": {
-        "args": {
-            "topic": {"type": str, "required": False, "default": "top news today"},
-            "max_results": {"type": int, "required": False, "default": 8}
-        }
-    },
-    "generate_music": {
-        "args": {
-            "prompt": {"type": str, "required": True},
-            "genre": {"type": str, "required": False, "default": ""},
-            "mood": {"type": str, "required": False, "default": ""},
-            "duration": {"type": int, "required": False, "default": 15}
-        }
-    },
-    "call_external_api": {
-        "args": {
-            "connector": {"type": str, "required": True},
-            "path": {"type": str, "required": False, "default": "/"},
-            "method": {"type": str, "required": False, "default": "GET"},
-            "body": {"type": str, "required": False, "default": ""}
-        }
-    },
-    "open_sandbox_browser": {
-        "args": {
-            "url": {"type": str, "required": True}
-        }
-    },
-    "browser.observe": {
-        "args": {
-            "session_id": {"type": str, "required": True}
-        }
-    },
-    "browser.get_text": {
-        "args": {
-            "session_id": {"type": str, "required": True}
-        }
-    },
-    "browser.navigate": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "url": {"type": str, "required": True}
-        }
-    },
-    "browser.click": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "x": {"type": int, "required": True},
-            "y": {"type": int, "required": True},
-            "button": {"type": str, "required": False, "default": "left"},
-            "click_count": {"type": int, "required": False, "default": 1}
-        }
-    },
-    "browser.type": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "text": {"type": str, "required": True},
-            "delay_ms": {"type": int, "required": False, "default": 10}
-        }
-    },
-    "browser.find_element": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "selector": {"type": str, "required": True}
-        }
-    },
-    "browser.click_by_text": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "text": {"type": str, "required": True}
-        }
-    },
-    "browser.fill_form": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "fields": {"type": dict, "required": True}
-        }
-    },
-    "browser.press": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "key": {"type": str, "required": True}
-        }
-    },
-    "browser.scroll": {
-        "args": {
-            "session_id": {"type": str, "required": True},
-            "delta_x": {"type": int, "required": False, "default": 0},
-            "delta_y": {"type": int, "required": True}
-        }
-    },
-    "browser.create_session": {
-        "args": {
-            "url": {"type": str, "required": True},
-            "width": {"type": int, "required": False, "default": 1280},
-            "height": {"type": int, "required": False, "default": 800}
-        }
-    },
-    "write_file": {
-        "args": {
-            "path": {"type": str, "required": True},
-            "content": {"type": str, "required": True}
-        }
-    },
-    "summarize_url": {
-        "args": {
-            "url": {"type": str, "required": True}
-        }
-    }
-}
+# Structured tool registry — canonical copy lives in runtime.tool_runtime
+TOOL_REGISTRY = RUNTIME_TOOL_REGISTRY
 
-TOOL_LOOP_MAX_STEPS = 8
+TOOL_LOOP_MAX_STEPS = RUNTIME_TOOL_LOOP_MAX_STEPS
 TOOL_CALL_TIMEOUT_SEC = 45
 STREAM_MAX_SECONDS = 180
 STREAM_MAX_OUTPUT_CHARS = 24000
@@ -2886,117 +2522,13 @@ def _coerce_int(val):
 
 
 def _validate_and_normalize_tool_call(payload: dict):
-    """Validate tool call JSON strictly against registry schema."""
-    if not isinstance(payload, dict):
-        return False, "Payload must be an object", None, None
-    if set(payload.keys()) != {"tool", "args"}:
-        return False, "Payload must contain exactly 'tool' and 'args' keys", None, None
-
-    tool_name = payload.get("tool")
-    args = payload.get("args")
-
-    if not isinstance(tool_name, str):
-        return False, "'tool' must be a string", None, None
-    if tool_name not in TOOL_REGISTRY:
-        return False, f"Unknown tool '{tool_name}'", tool_name, None
-    if not isinstance(args, dict):
-        return False, "'args' must be an object", tool_name, None
-
-    schema = TOOL_REGISTRY[tool_name]["args"]
-    normalized = {}
-    for arg_name, meta in schema.items():
-        if arg_name in args:
-            value = args[arg_name]
-            expected_type = meta["type"]
-            if expected_type is int and not _coerce_int(value):
-                return False, f"{arg_name} must be int", tool_name, None
-            if expected_type is float and not isinstance(value, (int, float)):
-                return False, f"{arg_name} must be float", tool_name, None
-            if expected_type is bool and not isinstance(value, bool):
-                return False, f"{arg_name} must be bool", tool_name, None
-            if expected_type is str and not isinstance(value, str):
-                return False, f"{arg_name} must be string", tool_name, None
-            if expected_type is dict and not isinstance(value, dict):
-                return False, f"{arg_name} must be object", tool_name, None
-            if expected_type is list and not isinstance(value, list):
-                return False, f"{arg_name} must be array", tool_name, None
-            normalized[arg_name] = value
-        else:
-            if meta.get("required"):
-                return False, f"Missing required arg '{arg_name}'", tool_name, None
-            if "default" in meta:
-                normalized[arg_name] = meta["default"]
-
-    # Drop unknown args but keep validation strict to registry
-    return True, None, tool_name, normalized
+    """Delegate to runtime.tool_runtime — thin wrapper for backward compat."""
+    return runtime_validate_tool_call(payload)
 
 
 def _extract_tool_payload_from_text(raw_output: str) -> Optional[dict]:
-    """Extract a JSON object for tool calls from noisy LLM output.
-
-    Handles pure JSON, markdown code fences, prose-wrapped JSON,
-    trailing commas, and single-quoted JSON (common LLM output quirks).
-    Returns the first parsed dict payload or None.
-    """
-    if not isinstance(raw_output, str):
-        return None
-    text = raw_output.strip()
-    if not text:
-        return None
-
-    def _try_parse(s: str) -> Optional[dict]:
-        """Try parsing JSON with progressive tolerance for LLM quirks."""
-        # Strict parse first
-        try:
-            obj = json.loads(s)
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            pass
-        # Fix trailing commas: ,} or ,]
-        cleaned = re.sub(r',\s*([}\]])', r'\1', s)
-        if cleaned != s:
-            try:
-                obj = json.loads(cleaned)
-                return obj if isinstance(obj, dict) else None
-            except Exception:
-                pass
-        # Fix single-quoted keys/values (common LLM mistake)
-        try:
-            import ast
-            obj = ast.literal_eval(s)
-            return obj if isinstance(obj, dict) else None
-        except Exception:
-            pass
-        return None
-
-    # 1) Direct parse first.
-    result = _try_parse(text)
-    if result:
-        return result
-
-    # 2) Try fenced code block content first.
-    fenced_match = re.search(r"```(?:json)?\s*(\{[\s\S]*?\})\s*```", text, re.IGNORECASE)
-    if fenced_match:
-        result = _try_parse(fenced_match.group(1))
-        if result:
-            return result
-
-    # 3) Scan for balanced JSON objects and parse the first valid one.
-    for start in (i for i, ch in enumerate(text) if ch == "{"):
-        depth = 0
-        for i in range(start, len(text)):
-            ch = text[i]
-            if ch == "{":
-                depth += 1
-            elif ch == "}":
-                depth -= 1
-                if depth == 0:
-                    candidate = text[start:i + 1]
-                    result = _try_parse(candidate)
-                    if result:
-                        return result
-                    break  # This balanced block didn't parse; move to next opening brace
-    return None
+    """Delegate to runtime.tool_runtime — thin wrapper for backward compat."""
+    return runtime_extract_tool_payload(raw_output)
 
 
 def _summarize_tool_result(tool_name: str, result: dict) -> str:
@@ -3246,6 +2778,15 @@ async def _execute_tool(tool_name: str, args: dict, chat_id: Optional[str]):
                 )
                 if result.get("ok"):
                     d = result["data"]
+                    from services.edison_core.runtime.artifact_runtime import register_artifact
+                    register_artifact(
+                        artifact_type="audio",
+                        title=f"Music: {args.get('prompt', '')[:60]}",
+                        chat_id=chat_id or "",
+                        path=d.get("file_path", ""),
+                        summary=f"Generated {d.get('duration_seconds', 0)}s audio ({d.get('model', 'MusicGen')})",
+                        tags=["music", args.get("genre", ""), args.get("mood", "")],
+                    )
                     return {
                         "ok": True,
                         "trigger": "generate_music",
@@ -3690,6 +3231,228 @@ plt.show()
                     return {"ok": False, "error": f"Failed to load URL: {result.get('error', 'unknown')}"}
             except Exception as e:
                 return {"ok": False, "error": f"URL summarization failed: {str(e)}"}
+
+        if tool_name == "create_task":
+            objective = args.get("objective", "").strip()
+            task_chat_id = args.get("chat_id", "").strip() or chat_id or ""
+            if not objective:
+                return {"ok": False, "error": "Task objective is required"}
+            task = runtime_create_task(objective=objective, chat_id=task_chat_id)
+            return {"ok": True, "data": {"task_id": task.task_id, "objective": task.objective, "status": task.status}}
+
+        if tool_name == "list_tasks":
+            from services.edison_core.runtime.task_runtime import list_tasks as _list_tasks
+            status_filter = args.get("status", "").strip() or None
+            tasks = _list_tasks(status=status_filter)
+            return {"ok": True, "data": [{"task_id": t.task_id, "objective": t.objective, "status": t.status} for t in tasks]}
+
+        if tool_name == "complete_task":
+            from services.edison_core.runtime.task_runtime import complete_task as _complete_task
+            task_id = args.get("task_id", "").strip()
+            if not task_id:
+                return {"ok": False, "error": "task_id is required"}
+            completed = _complete_task(task_id)
+            if completed:
+                return {"ok": True, "data": {"task_id": completed.task_id, "status": completed.status}}
+            return {"ok": False, "error": f"Task '{task_id}' not found"}
+
+        # ── Domain tools: Branding ───────────────────────────────────
+        if tool_name == "generate_brand_package":
+            service = _get_branding_workflow_service()
+            if service is None:
+                return {"ok": False, "error": "Branding workflow service unavailable"}
+            try:
+                req = BrandingGenerationRequest(
+                    business_name=args.get("business_name", ""),
+                    industry=args.get("industry", ""),
+                    audience=args.get("audience", ""),
+                    tone=args.get("tone", "confident"),
+                    client_id=args.get("client_id") or None,
+                    project_id=args.get("project_id") or None,
+                )
+                result = await asyncio.to_thread(service.generate_brand_package, req)
+                # Register artifact
+                from services.edison_core.runtime.artifact_runtime import register_artifact
+                register_artifact(
+                    artifact_type="brand_brief",
+                    title=f"Brand Package: {req.business_name}",
+                    chat_id=chat_id or "",
+                    project_id=req.project_id or "",
+                    path=result.get("workspace", ""),
+                    summary=f"Brand package generated for {req.business_name}",
+                    tags=["branding", req.business_name],
+                )
+                return {"ok": True, "trigger": "generate_brand_package", "data": result}
+            except Exception as e:
+                return {"ok": False, "error": f"Brand package generation failed: {e}"}
+
+        if tool_name == "generate_marketing_copy":
+            service = _get_branding_workflow_service()
+            if service is None:
+                return {"ok": False, "error": "Branding workflow service unavailable"}
+            try:
+                copy_types_raw = args.get("copy_types", "ad_copy,social_captions")
+                copy_types_list = [ct.strip() for ct in copy_types_raw.split(",") if ct.strip()]
+                valid_types = {"ad_copy", "social_captions", "email_campaign", "business_description", "product_copy", "website_hero_text"}
+                copy_types_list = [ct for ct in copy_types_list if ct in valid_types] or ["ad_copy"]
+                req = MarketingCopyRequest(
+                    business_name=args.get("business_name", ""),
+                    industry=args.get("industry", ""),
+                    audience=args.get("audience", ""),
+                    tone=args.get("tone", "confident"),
+                    copy_types=copy_types_list,
+                    client_id=args.get("client_id") or None,
+                    project_id=args.get("project_id") or None,
+                )
+                result = await asyncio.to_thread(service.generate_marketing_copy, req)
+                from services.edison_core.runtime.artifact_runtime import register_artifact
+                register_artifact(
+                    artifact_type="marketing_copy",
+                    title=f"Marketing Copy: {req.business_name}",
+                    chat_id=chat_id or "",
+                    project_id=req.project_id or "",
+                    path=result.get("workspace", ""),
+                    summary=f"Marketing copy ({', '.join(copy_types_list)}) for {req.business_name}",
+                    tags=["marketing", req.business_name],
+                )
+                return {"ok": True, "trigger": "generate_marketing_copy", "data": result}
+            except Exception as e:
+                return {"ok": False, "error": f"Marketing copy generation failed: {e}"}
+
+        if tool_name == "create_branding_client":
+            store = _get_branding_store()
+            if store is None:
+                return {"ok": False, "error": "Branding store unavailable"}
+            try:
+                client_data = {
+                    "name": args.get("name", ""),
+                    "industry": args.get("industry", ""),
+                    "contact_person": args.get("contact_person", ""),
+                    "email": args.get("email", ""),
+                    "phone": args.get("phone", ""),
+                    "website": args.get("website", ""),
+                    "notes": args.get("notes", ""),
+                }
+                result = store.create_client(client_data)
+                return {"ok": True, "data": result, "message": f"Client '{args.get('name')}' created"}
+            except Exception as e:
+                return {"ok": False, "error": f"Client creation failed: {e}"}
+
+        if tool_name == "list_branding_clients":
+            store = _get_branding_store()
+            if store is None:
+                return {"ok": False, "error": "Branding store unavailable"}
+            clients = store.list_clients()
+            return {"ok": True, "data": {"clients": clients, "count": len(clients)}}
+
+        # ── Domain tools: Video ──────────────────────────────────────
+        if tool_name == "generate_video":
+            try:
+                prompt = args.get("prompt", "").strip()
+                if not prompt:
+                    return {"ok": False, "error": "Video prompt is required"}
+                # Submit to the /generate-video pipeline
+                import httpx
+                async with httpx.AsyncClient(timeout=5.0) as client:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{config.get('port', 8811)}/generate-video",
+                        json={
+                            "prompt": prompt,
+                            "duration": args.get("duration", 6),
+                            "width": args.get("width", 720),
+                            "height": args.get("height", 480),
+                        },
+                    )
+                    data = resp.json()
+                if data.get("ok") or data.get("prompt_id"):
+                    from services.edison_core.runtime.artifact_runtime import register_artifact
+                    register_artifact(
+                        artifact_type="video",
+                        title=f"Video: {prompt[:60]}",
+                        chat_id=chat_id or "",
+                        summary=prompt,
+                        tags=["video"],
+                        metadata={"prompt_id": data.get("prompt_id", "")},
+                    )
+                    return {"ok": True, "trigger": "generate_video", "message": "Video generation started", "data": data}
+                return {"ok": False, "error": data.get("error", "Video generation failed")}
+            except Exception as e:
+                return {"ok": False, "error": f"Video generation failed: {e}"}
+
+        # ── Domain tools: Projects ───────────────────────────────────
+        if tool_name == "create_project":
+            pm = _get_project_manager()
+            if pm is None:
+                return {"ok": False, "error": "Project manager unavailable"}
+            try:
+                from services.edison_core.contracts import ProjectCreateRequest as _PCR
+                svc_types_raw = args.get("service_types", "")
+                svc_types = [s.strip() for s in svc_types_raw.split(",") if s.strip()] if svc_types_raw else []
+                req = _PCR(
+                    name=args.get("name", ""),
+                    description=args.get("description", "") or None,
+                    client_id=args.get("client_id") or None,
+                    service_types=svc_types or [],
+                )
+                project = pm.create_project(req)
+                project_dict = project.model_dump() if hasattr(project, "model_dump") else project.dict()
+                from services.edison_core.runtime.artifact_runtime import register_artifact
+                register_artifact(
+                    artifact_type="project",
+                    title=f"Project: {args.get('name', '')}",
+                    chat_id=chat_id or "",
+                    project_id=project_dict.get("project_id", ""),
+                    summary=args.get("description", ""),
+                    tags=["project"] + svc_types,
+                )
+                return {"ok": True, "data": project_dict, "message": f"Project '{args.get('name')}' created"}
+            except Exception as e:
+                return {"ok": False, "error": f"Project creation failed: {e}"}
+
+        if tool_name == "list_projects":
+            pm = _get_project_manager()
+            if pm is None:
+                return {"ok": False, "error": "Project manager unavailable"}
+            try:
+                status_filter = args.get("status", "").strip() or None
+                projects = pm.list_projects(status=status_filter)
+                data = [p.model_dump() if hasattr(p, "model_dump") else p.dict() for p in projects]
+                return {"ok": True, "data": {"projects": data, "count": len(data)}}
+            except Exception as e:
+                return {"ok": False, "error": f"Failed to list projects: {e}"}
+
+        # ── Domain tools: Fabrication ────────────────────────────────
+        if tool_name == "slice_model":
+            try:
+                file_path = args.get("file_path", "").strip()
+                if not file_path:
+                    return {"ok": False, "error": "file_path is required"}
+                import httpx
+                async with httpx.AsyncClient(timeout=120.0) as client:
+                    resp = await client.post(
+                        f"http://127.0.0.1:{config.get('port', 8811)}/printing/slice",
+                        json={
+                            "file_path": file_path,
+                            "layer_height": args.get("layer_height", 0.2),
+                            "infill": args.get("infill", 20),
+                            "supports": args.get("supports", False),
+                        },
+                    )
+                    data = resp.json()
+                if data.get("ok") or data.get("job_id"):
+                    from services.edison_core.runtime.artifact_runtime import register_artifact
+                    register_artifact(
+                        artifact_type="print_job",
+                        title=f"Slice: {Path(file_path).name}",
+                        chat_id=chat_id or "",
+                        summary=f"Slicing {file_path} at {args.get('layer_height', 0.2)}mm",
+                        tags=["fabrication", "slicing"],
+                        metadata={"job_id": data.get("job_id", ""), "file_path": file_path},
+                    )
+                    return {"ok": True, "trigger": "slice_model", "message": "Slicing job started", "data": data}
+                return {"ok": False, "error": data.get("error", "Slicing failed")}
+            except Exception as e:
+                return {"ok": False, "error": f"Slicing failed: {e}"}
 
         return {"ok": False, "error": f"Unhandled tool '{tool_name}'"}
     except Exception as e:
@@ -5227,6 +4990,21 @@ except Exception as e:
     except Exception:
         logger.warning(f"⚠ Business platform routes not available: {e}")
 
+# ── System awareness & project management routers ────────────────────
+try:
+    from services.edison_core.api_system_awareness import router as awareness_router
+    app.include_router(awareness_router)
+    logger.info("✓ System awareness routes registered")
+except Exception as e:
+    logger.warning(f"⚠ System awareness routes not available: {e}")
+
+try:
+    from services.edison_core.api_projects import router as projects_router
+    app.include_router(projects_router)
+    logger.info("✓ Project/client management routes registered")
+except Exception as e:
+    logger.warning(f"⚠ Project/client management routes not available: {e}")
+
 @app.post("/rag/search")
 async def rag_search(request: dict):
     """Search RAG memory for relevant context"""
@@ -5576,6 +5354,28 @@ def store_conversation_exchange(request: ChatRequest, assistant_response: str, m
             logger.info(f"Stored user message, assistant response, and {facts_stored} facts with chat_id {chat_id}")
         else:
             logger.info(f"Stored user message and assistant response with chat_id {chat_id}")
+
+        # Update runtime conversation summary (rolling summary for context budget)
+        try:
+            existing = runtime_get_summary(chat_id)
+            prev_text = existing.summary_text if existing else ""
+            turn_count = (existing.turn_count if existing else 0) + 1
+            # Build compact rolling summary: keep last ~600 chars + new turn
+            user_short = (request.message or "")[:150].strip()
+            asst_short = (assistant_response or "")[:200].strip()
+            new_turn = f"Turn {turn_count}: User asked about '{user_short}'. Assistant replied: {asst_short}"
+            # Keep rolling summary under budget by trimming old turns
+            combined = f"{prev_text}\n{new_turn}".strip()
+            if len(combined) > 1500:
+                combined = combined[-1500:]
+            runtime_update_summary(
+                chat_id=chat_id,
+                summary_text=combined,
+                turn_count=turn_count,
+            )
+        except Exception as e:
+            logger.debug(f"Runtime summary update skipped: {e}")
+
     except Exception as e:
         logger.warning(f"Memory storage failed: {e}")
 
@@ -6339,6 +6139,8 @@ async def chat(request: ChatRequest):
             learn_thread = threading.Thread(target=async_learn, daemon=True)
             learn_thread.start()
         
+        # Runtime quality cleanup
+        assistant_response = runtime_clean_response(assistant_response)
         return {
             "response": assistant_response,
             "mode_used": original_mode,
@@ -6500,7 +6302,7 @@ async def chat(request: ChatRequest):
     if has_images:
         full_prompt = (request.message or "").strip() or "Describe in detail what you see in this image."
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, repo_code_chunks=repo_code_chunks)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, repo_code_chunks=repo_code_chunks, chat_id=getattr(request, 'chat_id', None))
     
     # Debug: Log the prompt being sent
     logger.info(f"Prompt length: {len(full_prompt)} chars")
@@ -6644,6 +6446,8 @@ async def chat(request: ChatRequest):
             learn_thread = threading.Thread(target=async_learn, daemon=True)
             learn_thread.start()
         
+        # Runtime quality cleanup
+        assistant_response = runtime_clean_response(assistant_response)
         # Build response with work mode metadata
         response_data = {
             "response": assistant_response,
@@ -7203,7 +7007,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             context_text = "\n\n".join([chunk[0] if isinstance(chunk, tuple) else chunk for chunk in context_chunks])
             full_prompt = f"Context: {context_text}\n\n{full_prompt}"
     else:
-        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, repo_code_chunks=repo_code_chunks)
+        full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, repo_code_chunks=repo_code_chunks, chat_id=getattr(request, 'chat_id', None))
 
     logger.info(f"Prompt length: {len(full_prompt)} chars")
 
@@ -7587,7 +7391,7 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                 steps_context.append(step_info)
             steps_text = "\n\n".join(steps_context)
             system_prompt += f"\n\nCompleted Task Steps:\n{steps_text}\n\nSynthesize all step results into a clear, comprehensive response. Reference specific findings from each step."
-            full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
+            full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks, chat_id=getattr(request, 'chat_id', None))
         
         assistant_response = ""
         client_disconnected = False
@@ -7873,6 +7677,9 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             conversation_history=request.conversation_history,
         )
 
+        # Runtime quality cleanup — close unclosed code fences, strip leaked tool JSON
+        cleaned_response = runtime_clean_response(cleaned_response)
+
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
         # Learn from exchange (async background) - skip in high-memory scenarios
@@ -7938,7 +7745,17 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                 _finalize_vision_request()
             except Exception:
                 pass
-        
+
+        # Build trust signals for the frontend
+        _trust = format_trust_signals(
+            search_performed=bool(search_results),
+            memory_used=bool(context_chunks),
+            browser_used=False,
+            artifact_created=bool(artifact),
+            code_executed=any(s.get("tool") == "execute_python" for s in (work_step_results or []) if isinstance(s, dict)),
+            uncertain="I'm not sure" in cleaned_response or "I don't know" in cleaned_response,
+        )
+
         done_payload = {
             "ok": True,
             "mode_used": original_mode,
@@ -7950,7 +7767,8 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             "search_results": search_results if search_results else [],
             "response": cleaned_response,
             "artifact": artifact,
-            "files": generated_files
+            "files": generated_files,
+            "trust_signals": _trust,
         }
         # Cleanup
         with active_requests_lock:
@@ -8230,15 +8048,18 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
     if not llm:
         raise HTTPException(status_code=503, detail="No suitable model available")
 
-    # Convert OpenAI messages to internal prompt format
-    system_prompt = "You are a helpful assistant."
-    user_message = ""
-
-    for msg in request.messages:
-        if msg.role == "system":
-            system_prompt = _flatten_openai_content(msg.content)
-        elif msg.role == "user":
-            user_message = _flatten_openai_content(msg.content)
+    # Convert OpenAI messages to internal prompt format — preserves full history
+    system_prompt, conv_history, last_user_msg, _has_imgs = openai_messages_to_prompt(
+        [{"role": m.role, "content": _flatten_openai_content(m.content)} for m in request.messages]
+    )
+    # Build full prompt from preserved history
+    history_lines = []
+    for turn in conv_history:
+        role_label = turn["role"].capitalize()
+        history_lines.append(f"{role_label}: {turn['content']}")
+    full_prompt = f"{system_prompt}\n\n" + "\n".join(history_lines) + "\nAssistant:"
+    # Extract the last user message for business-action check
+    user_message = last_user_msg
 
     business_result = _maybe_execute_business_action(user_message)
     if business_result:
@@ -8484,6 +8305,8 @@ async def openai_non_stream_completions(
                 assistant_response = response["choices"][0]["text"].strip()
                 prompt_tokens = len((full_prompt or "").split())
 
+        # Runtime quality cleanup
+        assistant_response = runtime_clean_response(assistant_response)
         completion_tokens = len(assistant_response.split())
 
         return OpenAIChatCompletionResponse(
@@ -10110,7 +9933,7 @@ def _retrieve_repo_code_context(user_message: str, conversation_history: Optiona
     return matches[:max_snippets]
 
 
-def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None, wiki_chunks: list = None, repo_code_chunks: list = None) -> str:
+def build_full_prompt(system_prompt: str, user_message: str, context_chunks: list, search_results: list = None, conversation_history: list = None, wiki_chunks: list = None, repo_code_chunks: list = None, chat_id: str = None) -> str:
     """Build the complete prompt with context, search results, knowledge chunks, and conversation history"""
     parts = [system_prompt, ""]
     
@@ -10125,6 +9948,31 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
             elif role == "assistant":
                 parts.append(f"Assistant: {content}")
         parts.append("")
+
+    # Add runtime conversation summary (rolling compressed context from earlier turns)
+    if chat_id:
+        try:
+            summary = runtime_get_summary(chat_id)
+            if summary and summary.summary_text and summary.summary_text.strip():
+                parts.append("CONVERSATION SUMMARY (earlier turns):")
+                parts.append(truncate_text(summary.summary_text, max_chars=600, label="summary"))
+                parts.append("")
+        except Exception:
+            pass
+
+        # Add active task context if any
+        try:
+            active_task = runtime_get_active_task(chat_id)
+            if active_task:
+                parts.append("ACTIVE TASK:")
+                parts.append(f"Objective: {active_task.objective}")
+                if active_task.completed_steps:
+                    parts.append(f"Completed: {', '.join(active_task.completed_steps[:3])}")
+                if active_task.pending_steps:
+                    parts.append(f"Remaining: {', '.join(active_task.pending_steps[:3])}")
+                parts.append("")
+        except Exception:
+            pass
     
     # Add web search results if available (with prompt injection hardening)
     if search_results:

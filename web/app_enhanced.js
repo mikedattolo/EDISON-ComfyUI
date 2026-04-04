@@ -997,6 +997,11 @@ class EdisonApp {
                                     this.finalizeToolTimeline(assistantMessageEl, data);
                                     this.clearStatus(assistantMessageEl);
                                     
+                                    // Display trust signals (search, memory, browser, etc.)
+                                    if (data.trust_signals && data.trust_signals.length > 0) {
+                                        this.renderTrustSignals(assistantMessageEl, data.trust_signals);
+                                    }
+                                    
                                     assistantMessageEl.classList.remove('streaming');
                                     
                                     // Save to chat history
@@ -1307,6 +1312,34 @@ class EdisonApp {
     clearStatus(assistantMessageEl) {
         const statusEl = assistantMessageEl.querySelector('.message-status');
         if (statusEl) statusEl.remove();
+    }
+
+    renderTrustSignals(assistantMessageEl, signals) {
+        if (!assistantMessageEl || !signals || signals.length === 0) return;
+        const contentEl = assistantMessageEl.querySelector('.message-content');
+        if (!contentEl) return;
+
+        // Remove any existing trust signal bar
+        const existing = contentEl.querySelector('.trust-signals');
+        if (existing) existing.remove();
+
+        const bar = document.createElement('div');
+        bar.className = 'trust-signals';
+
+        const iconMap = {
+            search: '🔍', memory: '🧠', browser: '🌐', artifact: '📎',
+            code: '⚙️', uncertain: '⚠️',
+        };
+
+        signals.forEach(sig => {
+            const badge = document.createElement('span');
+            badge.className = `trust-badge trust-${sig.type || 'info'}`;
+            badge.title = sig.detail || sig.label || '';
+            badge.textContent = `${iconMap[sig.type] || 'ℹ️'} ${sig.label || sig.type}`;
+            bar.appendChild(badge);
+        });
+
+        contentEl.appendChild(bar);
     }
 
     ensureToolTimeline(assistantMessageEl) {
