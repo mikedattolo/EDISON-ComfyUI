@@ -113,6 +113,26 @@ REASONING_PATTERNS = [
     "think through", "step by step", "logic", "rationale",
 ]
 
+BUSINESS_PATTERNS = [
+    "list my project", "list project", "my project", "show project",
+    "create a project", "create project", "new project",
+    "create a client", "create client", "new client",
+    "list client", "my client", "show client",
+    "branding client", "brand package", "brand brief",
+    "generate a brand", "generate brand", "marketing copy",
+    "generate marketing", "branding for", "brand for",
+    "logo concept", "logo for", "slogan for", "tagline for",
+    "moodboard", "mood board", "style guide for",
+    "palette for", "color palette", "typography for",
+    "create a task", "list task", "my task", "complete task",
+    "slice model", "slice the", "3d print", "print job",
+    "fabricat", "keychain", "plaque", "nameplate",
+    "generate video", "make a video", "create a video",
+    "ad copy", "social caption", "email campaign",
+    "business card", "flyer for", "menu for",
+    "signage", "promo", "campaign",
+]
+
 BROWSER_PATTERNS = [
     "go to", "open the website", "visit the page", "navigate to",
     "browse to", "click on", "fill out the form", "log into",
@@ -271,6 +291,7 @@ def route(
     has_work = _match_any(msg_lower, WORK_PATTERNS)
     has_browser = _match_any(msg_lower, BROWSER_PATTERNS)
     has_artifact = _match_any(msg_lower, ARTIFACT_PATTERNS)
+    has_business = _match_any(msg_lower, BUSINESS_PATTERNS)
 
     d.browser_needed = has_browser
     d.artifact_likely = has_artifact
@@ -287,6 +308,11 @@ def route(
         d.model_target = "medium"
         d.confidence = 0.85
         d.reasons.append("Real-time data query → agent mode")
+    elif has_business:
+        d.mode, d.tools_allowed = "agent", True
+        d.model_target = "medium"
+        d.confidence = 0.85
+        d.reasons.append("Business/project/branding request → agent mode")
     elif has_music:
         d.mode, d.tools_allowed = "agent", True
         d.model_target = "medium"

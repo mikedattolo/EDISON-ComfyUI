@@ -6840,3 +6840,38 @@ details[open] > summary::after {
 .trust-badge.trust-artifact { background: rgba(251,146,60,0.12); color: #fb923c; }
 .trust-badge.trust-code { background: rgba(236,72,153,0.12); color: #f472b6; }
 .trust-badge.trust-uncertain { background: rgba(250,204,21,0.12); color: #fbbf24; }
+
+/* ── Prompt suggestion chips ────────────────────────────────────── */
+.prompt-suggestions {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin-top: 12px;
+    justify-content: center;
+}
+
+.prompt-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 8px 16px;
+    border-radius: 20px;
+    border: 1px solid var(--border, rgba(255,255,255,0.12));
+    background: var(--surface-2, rgba(255,255,255,0.04));
+    color: var(--text-secondary, #ccc);
+    font-size: 13px;
+    cursor: pointer;
+    transition: all 0.2s ease;
+    white-space: nowrap;
+}
+
+.prompt-chip:hover {
+    background: var(--accent, rgba(59,130,246,0.15));
+    border-color: var(--accent-border, rgba(59,130,246,0.4));
+    color: var(--text-primary, #fff);
+    transform: translateY(-1px);
+}
+
+.prompt-chip:active {
+    transform: translateY(0);
+}

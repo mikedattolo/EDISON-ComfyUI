@@ -547,3 +547,23 @@ def test_total_tool_count():
     register_printer_tools()
     # Base (original) + task (3) + branding (4) + video (1) + project (2) + fabrication (1) + printer (3) = many
     assert len(TOOL_REGISTRY) >= 35, f"Expected >=35 tools, got {len(TOOL_REGISTRY)}"
+
+
+# ── Routing fix tests ────────────────────────────────────────────────
+
+def test_business_queries_route_to_agent_mode():
+    """Business/project queries must route to agent mode with tools_allowed."""
+    from services.edison_core.runtime.routing_runtime import route
+    test_cases = [
+        "List my projects",
+        "Create a branding client called Adoro Pizza",
+        "Generate a brand package for Adoro Pizza",
+        "Create a project called Summer Campaign",
+        "Generate marketing copy for a tech startup",
+        "List my clients",
+        "Slice the model for 3d printing",
+    ]
+    for msg in test_cases:
+        d = route(msg, "auto", has_image=False)
+        assert d.tools_allowed, f"'{msg}' should have tools_allowed=True, got mode={d.mode}"
+        assert d.mode == "agent", f"'{msg}' should route to agent, got {d.mode}"
