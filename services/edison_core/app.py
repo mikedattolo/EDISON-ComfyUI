@@ -98,6 +98,14 @@ from services.edison_core.runtime.chat_runtime import (
     ChatPipelineCallbacks,
     run_pipeline,
 )
+from services.edison_core.runtime.workflow_engine import (
+    plan_from_message as workflow_plan_from_message,
+    plan_workflow as workflow_plan_from_steps,
+    workflow_step_to_work_step,
+    summarize_workflow,
+    WorkflowPlan,
+    StepKind,
+)
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -3454,6 +3462,64 @@ plt.show()
             except Exception as e:
                 return {"ok": False, "error": f"Slicing failed: {e}"}
 
+        # ── Domain tools: Social media ───────────────────────────────
+        if tool_name == "create_social_post":
+            try:
+                platform = (args.get("platform") or "").strip().lower()
+                caption = (args.get("caption") or "").strip()
+                if not platform or not caption:
+                    return {"ok": False, "error": "platform and caption are required"}
+                from services.edison_core.api_social import create_post, SocialPostDraft
+                draft = SocialPostDraft(
+                    platform=platform,
+                    caption=caption,
+                    post_type=args.get("post_type", "image"),
+                    hashtags=args.get("hashtags", []),
+                    campaign_name=args.get("campaign_name"),
+                )
+                result = await create_post(draft)
+                if result.get("ok"):
+                    from services.edison_core.runtime.artifact_runtime import register_artifact
+                    register_artifact(
+                        artifact_type="social_post",
+                        title=f"Social post: {platform}",
+                        chat_id=chat_id or "",
+                        summary=caption[:200],
+                        tags=["social", platform],
+                        metadata={"post_id": result["post"]["id"], "platform": platform},
+                    )
+                return result
+            except Exception as e:
+                return {"ok": False, "error": f"Social post creation failed: {e}"}
+
+        if tool_name == "schedule_social_post":
+            try:
+                post_id = (args.get("post_id") or "").strip()
+                scheduled_at = (args.get("scheduled_at") or "").strip()
+                if not post_id or not scheduled_at:
+                    return {"ok": False, "error": "post_id and scheduled_at are required"}
+                from services.edison_core.api_social import schedule_post, SocialPostSchedule
+                schedule = SocialPostSchedule(
+                    scheduled_at=scheduled_at,
+                    timezone=args.get("timezone", "UTC"),
+                )
+                result = await schedule_post(post_id, schedule)
+                return result
+            except Exception as e:
+                return {"ok": False, "error": f"Social post scheduling failed: {e}"}
+
+        if tool_name == "list_social_posts":
+            try:
+                from services.edison_core.api_social import list_posts
+                result = await list_posts(
+                    platform=args.get("platform"),
+                    status=args.get("status"),
+                    campaign=args.get("campaign"),
+                )
+                return {"ok": True, **result}
+            except Exception as e:
+                return {"ok": False, "error": f"Failed to list social posts: {e}"}
+
         return {"ok": False, "error": f"Unhandled tool '{tool_name}'"}
     except Exception as e:
         return {"ok": False, "error": str(e)}
@@ -3543,6 +3609,9 @@ async def run_structured_tool_loop(llm, user_message: str, context_note: str, mo
         "create_project(name:str,description:str,client_id:str,service_types:str) — create a project workspace, "
         "list_projects(status:str) — list all projects with optional status filter, "
         "slice_model(file_path:str,layer_height:float,infill:int,supports:bool) — slice a 3D model for printing. "
+        "create_social_post(platform:str,caption:str,post_type:str,hashtags:list,campaign_name:str) — create a draft social media post (instagram, facebook, tiktok, linkedin, google_business), "
+        "schedule_social_post(post_id:str,scheduled_at:str,timezone:str) — schedule a social post for future publishing, "
+        "list_social_posts(platform:str,status:str,campaign:str) — list social media posts with optional filters, "
         "IMPORTANT: When the user asks about their projects, clients, tasks, or branding assets, ALWAYS use the appropriate tool (list_projects, list_branding_clients, list_tasks, etc.) to get real data. NEVER make up or hallucinate project names, client names, or task details. "
         "When the user asks to navigate within a website, click through pages, open blog posts, or inspect multiple pages on the same site, use browser.create_session and the browser.* session tools. "
         "Use open_sandbox_browser only for single-page inspection. "
@@ -5017,6 +5086,27 @@ try:
 except Exception as e:
     logger.warning(f"⚠ Project/client management routes not available: {e}")
 
+try:
+    from services.edison_core.api_social import router as social_router
+    app.include_router(social_router)
+    logger.info("✓ Social media connector routes registered")
+except Exception as e:
+    logger.warning(f"⚠ Social media connector routes not available: {e}")
+
+try:
+    from services.edison_core.api_auth import router as auth_router
+    app.include_router(auth_router)
+    logger.info("✓ Authentication routes registered")
+except Exception as e:
+    logger.warning(f"⚠ Authentication routes not available: {e}")
+
+try:
+    from services.edison_core.api_help import router as help_router
+    app.include_router(help_router)
+    logger.info("✓ Help/documentation routes registered")
+except Exception as e:
+    logger.warning(f"⚠ Help/documentation routes not available: {e}")
+
 @app.post("/rag/search")
 async def rag_search(request: dict):
     """Search RAG memory for relevant context"""
@@ -5397,6 +5487,9 @@ def _plan_work_steps(message: str, llm_model, has_image: bool = False, project_i
     Use the LLM to break a task into actionable steps, then classify each step
     using the orchestration brain. Returns a list of WorkStep dicts.
     Capped at 7 steps maximum.
+
+    For business-domain requests (branding, marketing, fabrication, video, projects),
+    the workflow engine plans directly without an LLM round-trip.
     """
     # Short-circuit: trivially simple messages don't need multi-step planning
     stripped = message.strip().rstrip('?!.')
@@ -5413,6 +5506,16 @@ def _plan_work_steps(message: str, llm_model, has_image: bool = False, project_i
             "search_results": [],
             "elapsed_ms": None
         }]
+
+    # Try the workflow engine first for business-domain requests
+    try:
+        wf_plan = workflow_plan_from_message(message, project_id=project_id)
+        # If workflow engine found multiple steps or a specific tool, use it
+        if len(wf_plan.steps) > 1 or (wf_plan.steps and wf_plan.steps[0].tool_name):
+            logger.info(f"Workflow engine planned {len(wf_plan.steps)} steps for: {message[:80]}")
+            return [workflow_step_to_work_step(s) for s in wf_plan.steps]
+    except Exception as e:
+        logger.debug(f"Workflow engine plan skipped: {e}")
 
     task_analysis_prompt = f"""You are a task planning assistant. Break down this request into 3-7 clear, actionable steps.
 

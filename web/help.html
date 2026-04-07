@@ -1,0 +1,363 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON Help &amp; Documentation</title>
+  <style>
+    :root {
+      --bg: #f5efe4;
+      --panel: rgba(255, 250, 243, 0.94);
+      --ink: #2f241c;
+      --muted: #6b5a4f;
+      --line: rgba(132, 104, 77, 0.18);
+      --accent: #b24c2e;
+      --accent-2: #7e2f1b;
+      --shadow: 0 18px 40px rgba(92, 61, 37, 0.12);
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; min-height: 100vh;
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      color: var(--ink);
+      background:
+        radial-gradient(circle at 12% 8%, rgba(178, 76, 46, 0.18), transparent 28%),
+        radial-gradient(circle at 88% 12%, rgba(234, 179, 8, 0.16), transparent 24%),
+        linear-gradient(180deg, #fffaf4 0%, #f3eadc 100%);
+    }
+    .topbar {
+      position: sticky; top: 0; z-index: 20;
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 16px 20px;
+      background: rgba(255, 247, 237, 0.9);
+      border-bottom: 1px solid var(--line);
+      backdrop-filter: blur(10px);
+    }
+    .topbar h1 { margin: 0; font-size: 24px; }
+    .topbar p { margin: 4px 0 0; color: var(--muted); font-size: 13px; }
+    .actions { display: flex; gap: 8px; }
+    .btn {
+      border: 1px solid var(--line); border-radius: 12px; padding: 10px 14px;
+      background: linear-gradient(180deg, #fffdf9, #f8eadb);
+      color: var(--ink); font: inherit; cursor: pointer;
+    }
+    .btn.primary {
+      border-color: transparent;
+      background: linear-gradient(135deg, var(--accent), var(--accent-2));
+      color: #fff; font-weight: 700;
+    }
+    .shell { max-width: 900px; margin: 0 auto; padding: 20px; }
+    .search-bar {
+      width: 100%; border: 1px solid var(--line); border-radius: 14px;
+      padding: 14px 16px; font: inherit; background: #fff;
+      margin-bottom: 20px; font-size: 15px;
+    }
+    .section {
+      background: var(--panel); border: 1px solid var(--line);
+      border-radius: 18px; box-shadow: var(--shadow);
+      margin-bottom: 16px; overflow: hidden;
+    }
+    .section-head {
+      padding: 16px; border-bottom: 1px solid var(--line);
+      cursor: pointer; display: flex; justify-content: space-between; align-items: center;
+    }
+    .section-head h2 { margin: 0; font-size: 16px; }
+    .section-head .tag {
+      background: rgba(178,76,46,0.12); color: var(--accent-2);
+      padding: 4px 10px; border-radius: 999px; font-size: 11px; font-weight: 700;
+    }
+    .section-body { padding: 16px; display: none; }
+    .section.open .section-body { display: block; }
+    .section-body p { margin: 0 0 10px; line-height: 1.6; }
+    .section-body ul { margin: 6px 0 12px; padding-left: 20px; }
+    .section-body li { margin-bottom: 6px; line-height: 1.5; }
+    .section-body code {
+      background: rgba(178,76,46,0.08); padding: 2px 6px;
+      border-radius: 6px; font-size: 13px;
+    }
+    .example {
+      background: #fff7ed; border: 1px solid var(--line);
+      border-radius: 12px; padding: 12px; margin: 8px 0;
+      font-size: 13px; color: var(--muted);
+    }
+    .example strong { color: var(--ink); }
+    .status { font-size: 12px; color: var(--muted); text-align: center; padding: 20px; }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>EDISON Help</h1>
+      <p>Reference guide for all features, tools, and workflows.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="location.href='/'">Back to Chat</button>
+      <button class="btn" onclick="location.href='/projects'">Projects</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <input id="search" class="search-bar" placeholder="Search help topics..." />
+
+    <div id="helpSections"></div>
+    <div class="status" id="statusLine">Loading help content...</div>
+  </main>
+
+  <script>
+    const helpTopics = [
+      {
+        title: "Chat &amp; Conversation",
+        tag: "Core",
+        content: `
+          <p>EDISON is a conversational AI assistant. Type anything in the chat box and press Enter.</p>
+          <ul>
+            <li>General questions, research, brainstorming, writing</li>
+            <li>Follow-up questions maintain context across the conversation</li>
+            <li>Supports multiple modes: instant, chat, reasoning, thinking, code, agent, swarm, work</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "What are some marketing strategies for a pizza restaurant?"</div>
+          <div class="example"><strong>Try:</strong> "Explain the difference between branding and marketing"</div>
+        `
+      },
+      {
+        title: "Chat Modes",
+        tag: "Core",
+        content: `
+          <p>Select a mode from the dropdown or let EDISON auto-detect the best mode:</p>
+          <ul>
+            <li><strong>Auto</strong> — EDISON picks the best mode based on your message</li>
+            <li><strong>Instant</strong> — Fast, short replies for quick questions</li>
+            <li><strong>Chat</strong> — Standard conversational mode</li>
+            <li><strong>Reasoning</strong> — Deep analytical thinking for complex problems</li>
+            <li><strong>Thinking</strong> — Step-by-step chain-of-thought reasoning</li>
+            <li><strong>Code</strong> — Optimized for programming help</li>
+            <li><strong>Agent</strong> — Tool-using mode with web search, file operations, and more</li>
+            <li><strong>Work</strong> — Multi-step task execution with progress tracking</li>
+            <li><strong>Swarm</strong> — Multiple AI agents collaborate on complex tasks</li>
+          </ul>
+        `
+      },
+      {
+        title: "Branding &amp; Design",
+        tag: "Business",
+        content: `
+          <p>Create complete brand packages through chat or the dedicated branding page.</p>
+          <ul>
+            <li>Logo concept generation</li>
+            <li>Color palette recommendations</li>
+            <li>Typography suggestions</li>
+            <li>Slogan and tagline generation</li>
+            <li>Moodboard and style guide creation</li>
+            <li>Brand voice definition</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Generate a branding package for Adoro Pizza, a family Italian restaurant"</div>
+          <div class="example"><strong>Try:</strong> "Create 5 logo concepts for a tech startup called NovaByte"</div>
+          <p>Visit <a href="/branding">/branding</a> for the dedicated branding workspace.</p>
+        `
+      },
+      {
+        title: "Marketing &amp; Copywriting",
+        tag: "Business",
+        content: `
+          <p>Generate marketing copy, campaign plans, and promotional content.</p>
+          <ul>
+            <li>Ad copy for digital platforms</li>
+            <li>Social media captions with hashtags</li>
+            <li>Email campaign drafts</li>
+            <li>Business descriptions and taglines</li>
+            <li>Website hero text</li>
+            <li>Product marketing copy</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Write marketing copy for a new coffee shop grand opening"</div>
+          <div class="example"><strong>Try:</strong> "Generate 10 Instagram captions for a fitness brand"</div>
+        `
+      },
+      {
+        title: "Social Media Posting",
+        tag: "Business",
+        content: `
+          <p>Draft, schedule, and manage social media posts across platforms.</p>
+          <ul>
+            <li>Supported platforms: Instagram, Facebook, TikTok, LinkedIn, Google Business</li>
+            <li>Create draft posts with captions and hashtags</li>
+            <li>Schedule posts for future publishing</li>
+            <li>Track post status (draft, scheduled, published)</li>
+            <li>Organize posts by campaign</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Create a social post for Instagram about our new summer menu"</div>
+          <div class="example"><strong>Try:</strong> "Schedule the post for next Friday at 2 PM"</div>
+        `
+      },
+      {
+        title: "Project Management",
+        tag: "Business",
+        content: `
+          <p>Organize work into clients and projects with task tracking.</p>
+          <ul>
+            <li>Create and manage clients with business details</li>
+            <li>Create projects linked to clients</li>
+            <li>Track tasks, assets, and deliverables per project</li>
+            <li>Service types: branding, printing, video, marketing, mixed</li>
+            <li>Project statuses: planned, active, in_review, approved, completed</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Create a project called Summer Campaign for Adoro Pizza"</div>
+          <div class="example"><strong>Try:</strong> "List my projects"</div>
+          <p>Visit <a href="/projects">/projects</a> for the dedicated project dashboard.</p>
+        `
+      },
+      {
+        title: "3D Printing &amp; Fabrication",
+        tag: "Fabrication",
+        content: `
+          <p>Manage 3D printers, slice models, and track print jobs.</p>
+          <ul>
+            <li>Printer registration and status monitoring</li>
+            <li>Model slicing with custom parameters</li>
+            <li>Print job tracking (material, color, time, cost)</li>
+            <li>Logo/image to SVG/STL conversion</li>
+            <li>Keychain, plaque, nameplate, and signage generators</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Slice the model at 0.15mm layer height with 30% infill"</div>
+          <p>Visit <a href="/printing">/printing</a> for the dedicated printing workspace.</p>
+        `
+      },
+      {
+        title: "Video Production",
+        tag: "Creative",
+        content: `
+          <p>Plan and produce video content with AI assistance.</p>
+          <ul>
+            <li>Storyboard generation</li>
+            <li>Shot list creation</li>
+            <li>Script writing</li>
+            <li>Social video planning</li>
+            <li>Promo campaign planning</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Create a storyboard for a 30-second pizza commercial"</div>
+          <p>Visit <a href="/video-editor">/video-editor</a> for the video editing workspace.</p>
+        `
+      },
+      {
+        title: "Image Generation",
+        tag: "Creative",
+        content: `
+          <p>Generate images using AI models directly from chat.</p>
+          <ul>
+            <li>Describe what you want to see and EDISON will generate it</li>
+            <li>Supports various styles and aspect ratios</li>
+            <li>Generated images appear in the gallery</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Generate an image of a cozy Italian restaurant interior"</div>
+        `
+      },
+      {
+        title: "Web Search &amp; Research",
+        tag: "Tools",
+        content: `
+          <p>Search the web for current information and research topics.</p>
+          <ul>
+            <li>Deep search mode for thorough research</li>
+            <li>Automatic citation of sources</li>
+            <li>Website summarization (paste a URL)</li>
+            <li>Browser automation for interactive sites</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Search for the latest trends in restaurant marketing 2026"</div>
+          <div class="example"><strong>Try:</strong> "Summarize https://example.com"</div>
+        `
+      },
+      {
+        title: "Connectors &amp; Integrations",
+        tag: "System",
+        content: `
+          <p>Connect EDISON to external services and APIs.</p>
+          <ul>
+            <li>GitHub, Google, Slack, Notion, Dropbox, Discord</li>
+            <li>Custom API connectors with token/OAuth support</li>
+            <li>Social media platform connectors</li>
+          </ul>
+          <p>Visit <a href="/connectors">/connectors</a> to manage connections.</p>
+        `
+      },
+      {
+        title: "Workflow Orchestration",
+        tag: "Advanced",
+        content: `
+          <p>For complex multi-step requests, EDISON automatically plans and executes workflows.</p>
+          <ul>
+            <li>Compound requests are decomposed into typed steps</li>
+            <li>Steps can combine branding, marketing, fabrication, video, and project management</li>
+            <li>Progress is tracked and reported</li>
+            <li>Outputs are saved to the appropriate project/folder</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "Make a branding package for Adoro Pizza and generate marketing copy for their social media campaign"</div>
+        `
+      },
+      {
+        title: "Authentication &amp; Roles",
+        tag: "System",
+        content: `
+          <p>Optional multi-user authentication with role-based access.</p>
+          <ul>
+            <li>Roles: admin, designer, fabricator, editor, client_viewer</li>
+            <li>Disabled by default — enable with <code>EDISON_AUTH_ENABLED=true</code></li>
+            <li>First registered user automatically gets admin role</li>
+            <li>Local single-user mode always supported</li>
+          </ul>
+          <p>API endpoints: <code>/api/auth/status</code>, <code>/api/auth/register</code>, <code>/api/auth/login</code></p>
+        `
+      },
+      {
+        title: "System Diagnostics",
+        tag: "System",
+        content: `
+          <p>EDISON can inspect and reason about its own system.</p>
+          <ul>
+            <li>View system readiness and loaded models</li>
+            <li>Check available routes and endpoints</li>
+            <li>Inspect configuration and storage</li>
+            <li>Troubleshoot connector and service issues</li>
+          </ul>
+          <div class="example"><strong>Try:</strong> "What's the current system status?"</div>
+          <div class="example"><strong>Try:</strong> "Which endpoints handle printing?"</div>
+          <p>API: <code>/api/system/capabilities</code>, <code>/api/system/readiness</code></p>
+        `
+      },
+    ];
+
+    function renderSections(filter = '') {
+      const container = document.getElementById('helpSections');
+      container.innerHTML = '';
+      const q = filter.toLowerCase();
+      const matches = helpTopics.filter(t =>
+        !q || t.title.toLowerCase().includes(q) || t.content.toLowerCase().includes(q) || t.tag.toLowerCase().includes(q)
+      );
+      if (!matches.length) {
+        container.innerHTML = '<div class="status">No topics match your search.</div>';
+        return;
+      }
+      matches.forEach((topic, i) => {
+        const section = document.createElement('div');
+        section.className = `section${i === 0 && !q ? ' open' : ''}`;
+        section.innerHTML = `
+          <div class="section-head">
+            <h2>${topic.title}</h2>
+            <span class="tag">${topic.tag}</span>
+          </div>
+          <div class="section-body">${topic.content}</div>
+        `;
+        section.querySelector('.section-head').addEventListener('click', () => {
+          section.classList.toggle('open');
+        });
+        container.appendChild(section);
+      });
+    }
+
+    document.getElementById('search').addEventListener('input', (e) => {
+      renderSections(e.target.value);
+    });
+
+    renderSections();
+    document.getElementById('statusLine').textContent = `${helpTopics.length} help topics available.`;
+  </script>
+</body>
+</html>

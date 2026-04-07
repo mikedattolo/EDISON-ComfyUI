@@ -224,6 +224,16 @@ async def printing_page():
         return {"error": "Printing UI not found"}
     return FileResponse(page)
 
+
+@app.get("/help")
+async def help_page():
+    """Serve user-facing help and documentation page."""
+    page = WEB_DIR / "help.html"
+    if not page.exists():
+        logger.error(f"help.html not found at {page}")
+        return {"error": "Help page not found"}
+    return FileResponse(page)
+
 @app.get("/styles.css")
 async def styles():
     """Serve CSS file"""

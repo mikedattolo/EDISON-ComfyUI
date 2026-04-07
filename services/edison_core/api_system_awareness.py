@@ -97,8 +97,23 @@ _CAPABILITY_MAP: Dict[str, Dict[str, Any]] = {
             "routing_runtime", "tool_runtime", "context_runtime", "task_runtime",
             "artifact_runtime", "workspace_runtime", "model_runtime",
             "quality_runtime", "response_runtime", "chat_runtime",
-            "search_runtime", "browser_runtime",
+            "search_runtime", "browser_runtime", "workflow_engine",
         ],
+    },
+    "social": {
+        "description": "Social media post drafting, scheduling, and campaign management",
+        "endpoints": ["/api/social/posts", "/api/social/posts/{id}/schedule", "/api/social/platforms", "/api/social/stats"],
+        "storage_file": "config/integrations/social_posts.json",
+    },
+    "auth": {
+        "description": "Optional user authentication and role-based access control",
+        "endpoints": ["/api/auth/status", "/api/auth/register", "/api/auth/login", "/api/auth/me"],
+        "storage_file": "config/auth/users.json",
+    },
+    "help": {
+        "description": "User-facing help and documentation with searchable topic index",
+        "endpoints": ["/api/help", "/api/help/{topic_id}"],
+        "frontend_page": "help.html",
     },
 }
 

@@ -83,8 +83,9 @@ class ProjectCreate(BaseModel):
         description="branding, printing, video, marketing, mixed"
     )
     due_date: Optional[str] = None
-    status: str = Field(default="planning", description="planning, active, review, completed, archived")
+    status: str = Field(default="planned", description="planned, active, in_review, approved, completed, archived")
     tags: List[str] = Field(default_factory=list)
+    notes: Optional[str] = None
 
 
 class ProjectUpdate(BaseModel):
@@ -153,7 +154,7 @@ async def create_client(body: ClientCreate):
     clients.append(client)
     _save_json(CLIENTS_FILE, clients)
     logger.info(f"Created client: {client['id']} ({body.business_name})")
-    return {"client": client}
+    return {"ok": True, "client": client}
 
 
 @router.get("/api/clients/{client_id}")
@@ -240,6 +241,7 @@ async def create_project(body: ProjectCreate):
         "due_date": body.due_date,
         "status": body.status,
         "tags": body.tags,
+        "notes": body.notes or "",
         "tasks": [],
         "assets": [],
         "deliverables": [],
@@ -249,7 +251,8 @@ async def create_project(body: ProjectCreate):
     projects.append(project)
     _save_json(PROJECTS_FILE, projects)
     logger.info(f"Created project: {project['id']} ({body.name})")
-    return {"project": project}
+    # Include project_id alias for frontend consistency with business_overview
+    return {"ok": True, "project": {**project, "project_id": project["id"]}}
 
 
 @router.get("/api/projects/{project_id}")
@@ -408,3 +411,133 @@ async def list_assets(project_id: str):
         raise HTTPException(status_code=404, detail="Project not found")
     assets = project.get("assets", [])
     return {"assets": assets, "total": len(assets)}
+
+
+# ── Dashboard endpoints ────────────────────────────────────────────────────────
+
+BRANDING_DB = REPO_ROOT / "config" / "integrations" / "branding.json"
+CONNECTORS_DB = REPO_ROOT / "config" / "integrations" / "connectors.json"
+PRINTERS_DB = REPO_ROOT / "config" / "integrations" / "printers.json"
+
+
+def _load_integration_json(fpath: Path) -> dict:
+    """Load an integration JSON file, returning empty dict on failure."""
+    if not fpath.exists():
+        return {}
+    try:
+        data = json.loads(fpath.read_text(encoding="utf-8"))
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+@router.get("/api/business/overview")
+async def business_overview():
+    """Dashboard overview: clients, projects, counts, capability summary."""
+    clients_raw = _load_json(CLIENTS_FILE)
+    projects_raw = _load_json(PROJECTS_FILE)
+    connectors = _load_integration_json(CONNECTORS_DB)
+    printers = _load_integration_json(PRINTERS_DB)
+
+    # Count projects per client
+    projects_by_client: Dict[str, int] = {}
+    for p in projects_raw:
+        cid = p.get("client_id")
+        if cid:
+            projects_by_client[cid] = projects_by_client.get(cid, 0) + 1
+
+    clients = []
+    for c in clients_raw:
+        clients.append({
+            "id": c.get("id"),
+            "name": c.get("business_name") or c.get("name"),
+            "slug": c.get("slug"),
+            "industry": c.get("industry", ""),
+            "project_count": projects_by_client.get(c.get("id"), 0),
+            "tags": c.get("tags", []),
+            "paths": c.get("paths", {}),
+        })
+
+    # Enrich projects with client names
+    client_map = {c.get("id"): c.get("business_name") or c.get("name") for c in clients_raw}
+    projects = []
+    for p in projects_raw:
+        projects.append({
+            **p,
+            "project_id": p.get("id"),
+            "client_name": client_map.get(p.get("client_id"), ""),
+        })
+    projects.sort(key=lambda x: x.get("created_at", 0), reverse=True)
+
+    return {
+        "ok": True,
+        "clients": clients,
+        "projects": projects[:50],
+        "counts": {
+            "clients": len(clients),
+            "projects": len(projects_raw),
+            "connectors": len(connectors.get("connectors", [])),
+            "printers": len(printers.get("printers", [])),
+        },
+        "capabilities": {
+            "page_count": 8,
+            "route_count": 50,
+            "service_module_count": 12,
+            "storage_count": 4,
+        },
+    }
+
+
+@router.get("/api/projects/{project_id}/status")
+async def get_project_status(project_id: str):
+    """Detailed project status with task/deliverable/asset counts and paths."""
+    projects = _load_json(PROJECTS_FILE)
+    project = next((p for p in projects if p.get("id") == project_id), None)
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+
+    tasks = project.get("tasks", [])
+    deliverables = project.get("deliverables", [])
+    assets = project.get("assets", [])
+
+    # Look up client name
+    client_name = ""
+    if project.get("client_id"):
+        clients = _load_json(CLIENTS_FILE)
+        client = next((c for c in clients if c.get("id") == project.get("client_id")), None)
+        if client:
+            client_name = client.get("business_name") or client.get("name", "")
+
+    return {
+        "ok": True,
+        "status": {
+            "project_id": project.get("id"),
+            "name": project.get("name"),
+            "status": project.get("status", "planned"),
+            "client_name": client_name,
+            "client_id": project.get("client_id"),
+            "service_types": project.get("service_types", []),
+            "due_date": project.get("due_date"),
+            "description": project.get("description", ""),
+            "notes": project.get("notes", ""),
+            "tags": project.get("tags", []),
+            "task_counts": {
+                "total": len(tasks),
+                "completed": len([t for t in tasks if t.get("status") == "done"]),
+                "in_progress": len([t for t in tasks if t.get("status") == "in_progress"]),
+                "pending": len([t for t in tasks if t.get("status") == "pending"]),
+            },
+            "deliverable_counts": {
+                "total": len(deliverables),
+                "approved": len([d for d in deliverables if d.get("status") == "approved"]),
+            },
+            "asset_count": len(assets),
+            "paths": {
+                "root": f"config/projects/{project.get('id')}",
+                "assets": f"config/projects/{project.get('id')}/assets",
+                "deliverables": f"config/projects/{project.get('id')}/deliverables",
+            },
+            "created_at": project.get("created_at"),
+            "updated_at": project.get("updated_at"),
+        },
+    }

@@ -18,6 +18,7 @@ The runtime layer provides:
 - browser_runtime: Browser session management and agent execution
 - model_runtime: Task-aware model selection and fallback
 - quality_runtime: Lightweight response quality/review pass
+- workflow_engine: Unified workflow orchestration for business operations
 """
 
 __all__ = [
@@ -33,4 +34,5 @@ __all__ = [
     "browser_runtime",
     "model_runtime",
     "quality_runtime",
+    "workflow_engine",
 ]

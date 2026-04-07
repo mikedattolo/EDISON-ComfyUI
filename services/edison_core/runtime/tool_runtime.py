@@ -297,12 +297,39 @@ FABRICATION_TOOLS = {
     },
 }
 
+SOCIAL_TOOLS = {
+    "create_social_post": {
+        "args": {
+            "platform": {"type": str, "required": True},
+            "caption": {"type": str, "required": True},
+            "post_type": {"type": str, "required": False, "default": "image"},
+            "hashtags": {"type": list, "required": False, "default": []},
+            "campaign_name": {"type": str, "required": False},
+        }
+    },
+    "schedule_social_post": {
+        "args": {
+            "post_id": {"type": str, "required": True},
+            "scheduled_at": {"type": str, "required": True},
+            "timezone": {"type": str, "required": False, "default": "UTC"},
+        }
+    },
+    "list_social_posts": {
+        "args": {
+            "platform": {"type": str, "required": False},
+            "status": {"type": str, "required": False},
+            "campaign": {"type": str, "required": False},
+        }
+    },
+}
+
 # Auto-register all domain tools
 TOOL_REGISTRY.update(TASK_TOOLS)
 TOOL_REGISTRY.update(BRANDING_TOOLS)
 TOOL_REGISTRY.update(VIDEO_TOOLS)
 TOOL_REGISTRY.update(PROJECT_TOOLS)
 TOOL_REGISTRY.update(FABRICATION_TOOLS)
+TOOL_REGISTRY.update(SOCIAL_TOOLS)
 
 
 def register_tool(name: str, schema: dict) -> None:

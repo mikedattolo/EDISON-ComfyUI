@@ -567,3 +567,230 @@ def test_business_queries_route_to_agent_mode():
         d = route(msg, "auto", has_image=False)
         assert d.tools_allowed, f"'{msg}' should have tools_allowed=True, got mode={d.mode}"
         assert d.mode == "agent", f"'{msg}' should route to agent, got {d.mode}"
+
+
+# ── api_projects module tests ─────────────────────────────────────────
+
+def test_api_projects_pydantic_models():
+    """Validate ProjectCreate / ClientCreate model defaults and fields."""
+    from services.edison_core.api_projects import ProjectCreate, ClientCreate
+    p = ProjectCreate(name="Test Project")
+    assert p.status == "planned"
+    assert p.notes is None
+    assert p.service_types == ["mixed"]
+
+    c = ClientCreate(business_name="Test Corp")
+    assert c.tags == []
+    assert c.email is None
+
+
+def test_api_projects_storage_helpers(tmp_path, monkeypatch):
+    """_load_json / _save_json should roundtrip correctly."""
+    import services.edison_core.api_projects as proj
+
+    fake_file = tmp_path / "items.json"
+    fake_file.write_text("[]", encoding="utf-8")
+    assert proj._load_json(fake_file) == []
+
+    proj._save_json(fake_file, [{"id": "1", "name": "X"}])
+    loaded = proj._load_json(fake_file)
+    assert len(loaded) == 1
+    assert loaded[0]["name"] == "X"
+
+
+def test_api_projects_storage_handles_corrupt(tmp_path):
+    """_load_json should return [] on corrupt JSON."""
+    import services.edison_core.api_projects as proj
+
+    bad_file = tmp_path / "bad.json"
+    bad_file.write_text("{not valid", encoding="utf-8")
+    assert proj._load_json(bad_file) == []
+
+
+def test_api_projects_overview_endpoint_shape():
+    """business_overview endpoint should return expected structure."""
+    import asyncio
+    import services.edison_core.api_projects as proj
+    from pathlib import Path as P
+    import tempfile, shutil
+
+    # Use a temp directory for storage
+    td = tempfile.mkdtemp()
+    orig_dir = proj.PROJECTS_DIR
+    orig_clients = proj.CLIENTS_FILE
+    orig_projects = proj.PROJECTS_FILE
+    try:
+        proj.PROJECTS_DIR = P(td)
+        proj.CLIENTS_FILE = P(td) / "clients.json"
+        proj.PROJECTS_FILE = P(td) / "projects.json"
+        proj.CLIENTS_FILE.write_text("[]")
+        proj.PROJECTS_FILE.write_text("[]")
+
+        result = asyncio.new_event_loop().run_until_complete(proj.business_overview())
+        assert result["ok"] is True
+        assert "clients" in result
+        assert "projects" in result
+        assert "counts" in result
+        for key in ("clients", "projects", "connectors", "printers"):
+            assert key in result["counts"]
+    finally:
+        proj.PROJECTS_DIR = orig_dir
+        proj.CLIENTS_FILE = orig_clients
+        proj.PROJECTS_FILE = orig_projects
+        shutil.rmtree(td, ignore_errors=True)
+
+
+# ── Workflow engine tests ──────────────────────────────────────────────
+
+def test_workflow_classify_step_branding():
+    from services.edison_core.runtime.workflow_engine import classify_step, StepKind
+    assert classify_step("Generate a branding package with logo concepts") == StepKind.BRANDING
+    assert classify_step("Create marketing copy for email campaign") == StepKind.MARKETING
+    assert classify_step("Prepare the STL file for 3d printing") == StepKind.FABRICATION
+    assert classify_step("Create a storyboard for the promo video") == StepKind.VIDEO
+    assert classify_step("Hello how are you today") == StepKind.LLM
+
+
+def test_workflow_plan_from_message_single():
+    from services.edison_core.runtime.workflow_engine import plan_from_message, StepKind
+    plan = plan_from_message("List my projects")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].tool_name == "list_projects"
+    assert plan.steps[0].kind == StepKind.PROJECT
+
+
+def test_workflow_plan_from_message_compound():
+    from services.edison_core.runtime.workflow_engine import plan_from_message
+    plan = plan_from_message("Make a branding package for Adoro Pizza and generate marketing copy for their menu")
+    assert len(plan.steps) >= 2
+    kinds = [s.kind.value for s in plan.steps]
+    assert "branding" in kinds
+    assert "marketing" in kinds
+
+
+def test_workflow_plan_from_message_fallback():
+    from services.edison_core.runtime.workflow_engine import plan_from_message, StepKind
+    plan = plan_from_message("What's the weather like in New York?")
+    assert len(plan.steps) == 1
+    assert plan.steps[0].kind == StepKind.LLM
+
+
+def test_workflow_step_to_work_step():
+    from services.edison_core.runtime.workflow_engine import WorkflowStep, StepKind, workflow_step_to_work_step
+    ws = WorkflowStep(id=1, title="Generate brand", kind=StepKind.BRANDING, tool_name="generate_brand_package")
+    d = workflow_step_to_work_step(ws)
+    assert d["kind"] == "llm"  # business kinds map to base llm kind
+    assert d["tool_name"] == "generate_brand_package"
+    assert d["id"] == 1
+
+
+def test_workflow_plan_serialization():
+    from services.edison_core.runtime.workflow_engine import plan_from_message
+    plan = plan_from_message("Create a branding client called Test Corp")
+    d = plan.to_dict()
+    assert "workflow_id" in d
+    assert "steps" in d
+    assert d["step_count"] >= 1
+
+
+def test_workflow_summarize():
+    from services.edison_core.runtime.workflow_engine import plan_from_message, summarize_workflow
+    plan = plan_from_message("List my projects")
+    plan.steps[0].status = "completed"
+    summary = summarize_workflow(plan)
+    assert "✅" in summary
+    assert "1/1" in summary
+
+
+# ── Social media module tests ─────────────────────────────────────────
+
+def test_social_platforms_registry():
+    from services.edison_core.api_social import SOCIAL_PLATFORMS
+    assert "instagram" in SOCIAL_PLATFORMS
+    assert "facebook" in SOCIAL_PLATFORMS
+    assert "tiktok" in SOCIAL_PLATFORMS
+    assert "linkedin" in SOCIAL_PLATFORMS
+    assert "google_business" in SOCIAL_PLATFORMS
+
+
+def test_social_post_draft_model():
+    from services.edison_core.api_social import SocialPostDraft
+    draft = SocialPostDraft(platform="instagram", caption="Test caption")
+    assert draft.post_type == "image"
+    assert draft.hashtags == []
+
+
+def test_social_tools_in_registry():
+    from services.edison_core.runtime.tool_runtime import TOOL_REGISTRY
+    assert "create_social_post" in TOOL_REGISTRY
+    assert "schedule_social_post" in TOOL_REGISTRY
+    assert "list_social_posts" in TOOL_REGISTRY
+
+
+def test_social_routing():
+    from services.edison_core.runtime.routing_runtime import route
+    d = route("Create a social post for Instagram", "auto", has_image=False)
+    assert d.tools_allowed
+    assert d.mode == "agent"
+
+
+# ── Auth module tests ─────────────────────────────────────────────────
+
+def test_auth_password_hashing():
+    from services.edison_core.api_auth import _hash_password, _verify_password
+    hash_hex, salt = _hash_password("test_password_123")
+    assert _verify_password("test_password_123", hash_hex, salt)
+    assert not _verify_password("wrong_password", hash_hex, salt)
+
+
+def test_auth_status_endpoint():
+    import asyncio
+    from services.edison_core.api_auth import auth_status
+    result = asyncio.new_event_loop().run_until_complete(auth_status())
+    assert "auth_enabled" in result
+    assert "roles" in result
+    assert "admin" in result["roles"]
+
+
+# ── Help module tests ─────────────────────────────────────────────────
+
+def test_help_topics_exist():
+    from services.edison_core.api_help import HELP_TOPICS
+    assert len(HELP_TOPICS) >= 10
+    ids = [t["id"] for t in HELP_TOPICS]
+    assert "chat" in ids
+    assert "branding" in ids
+    assert "social" in ids
+    assert "projects" in ids
+
+
+def test_help_search():
+    import asyncio
+    from services.edison_core.api_help import get_help
+    result = asyncio.new_event_loop().run_until_complete(get_help(q="branding"))
+    assert result["total"] > 0
+    assert result["topics"][0]["id"] == "branding"
+
+
+def test_help_category_filter():
+    import asyncio
+    from services.edison_core.api_help import get_help
+    result = asyncio.new_event_loop().run_until_complete(get_help(category="business"))
+    assert result["total"] > 0
+    assert all(t["category"] == "business" for t in result["topics"])
+
+
+# ── Workflow engine social step tests ─────────────────────────────────
+
+def test_workflow_classify_social():
+    from services.edison_core.runtime.workflow_engine import classify_step, StepKind
+    assert classify_step("Create a social post for Instagram") == StepKind.SOCIAL
+    assert classify_step("Schedule a social post for next Friday") == StepKind.SOCIAL
+
+
+def test_workflow_social_tool_selection():
+    from services.edison_core.runtime.workflow_engine import WorkflowStep, StepKind, select_tool_for_step
+    ws = WorkflowStep(id=1, title="Create social post", kind=StepKind.SOCIAL)
+    assert select_tool_for_step(ws) == "create_social_post"
+    ws2 = WorkflowStep(id=2, title="Schedule the post", kind=StepKind.SOCIAL)
+    assert select_tool_for_step(ws2) == "schedule_social_post"

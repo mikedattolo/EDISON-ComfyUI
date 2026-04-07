@@ -131,6 +131,10 @@ BUSINESS_PATTERNS = [
     "ad copy", "social caption", "email campaign",
     "business card", "flyer for", "menu for",
     "signage", "promo", "campaign",
+    "social post", "post to instagram", "post to facebook", "post to tiktok",
+    "post to linkedin", "schedule post", "schedule a post", "draft post",
+    "social media", "social campaign", "list posts", "list social",
+    "publish post", "content calendar",
 ]
 
 BROWSER_PATTERNS = [
