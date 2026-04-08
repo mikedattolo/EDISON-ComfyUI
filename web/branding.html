@@ -485,7 +485,19 @@
         el('assetRows').innerHTML = '<tr><td colspan="3">No assets attached yet.</td></tr>';
         return;
       }
-      el('assetRows').innerHTML = rows.map((r) => `<tr><td>${r.name}</td><td>${r.kind}</td><td>${fmtBytes(r.size)}</td></tr>`).join('');
+      el('assetRows').innerHTML = rows.map((r) => `<tr data-path="${r.path || ''}" style="cursor:pointer;" title="Click to select: ${r.path || r.name}"><td>${r.name}</td><td>${r.kind}</td><td>${fmtBytes(r.size)}</td></tr>`).join('');
+      el('assetRows').querySelectorAll('tr[data-path]').forEach((row) => {
+        row.addEventListener('click', () => {
+          const p = row.getAttribute('data-path') || '';
+          if (p) {
+            el('attachPath').value = p;
+            selectedFilePath = p;
+            el('assetRows').querySelectorAll('tr').forEach(r => r.classList.remove('sel'));
+            row.classList.add('sel');
+            setStatus(`Selected: ${p}`, 'ok');
+          }
+        });
+      });
     }
 
     async function attachAsset() {
