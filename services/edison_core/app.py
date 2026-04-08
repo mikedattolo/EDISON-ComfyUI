@@ -14057,6 +14057,11 @@ async def system_diagnostics():
             "llm_deep_loaded": llm_deep is not None,
             "tool_registry_count": len(TOOL_REGISTRY),
         },
+        "video_tools": {
+            "ffmpeg": bool(shutil.which("ffmpeg")),
+            "ffprobe": bool(shutil.which("ffprobe")),
+            "whisper": bool(shutil.which("whisper")),
+        },
     }
 
 
@@ -14317,7 +14322,7 @@ async def video_media(path: str):
     return FileResponse(str(target), media_type=media_type, filename=target.name)
 
 @app.post("/video/edit")
-async def video_edit(request: dict):
+def video_edit(request: dict):
     """
     Edit existing video files using ffmpeg operations.
     Supported operations: trim, mute, resize, fps, mux_audio, auto_captions, auto_edit.
@@ -14334,7 +14339,12 @@ async def video_edit(request: dict):
     if not src.is_file():
         raise HTTPException(status_code=404, detail=f"Video not found: {source_path}")
 
-    ffmpeg_bin = shutil.which("ffmpeg") or "ffmpeg"
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise HTTPException(
+            status_code=503,
+            detail="ffmpeg is not installed or not on PATH. Install it with: apt install ffmpeg",
+        )
     outputs_dir = REPO_ROOT / "outputs" / "videos"
     outputs_dir.mkdir(parents=True, exist_ok=True)
 
@@ -14347,28 +14357,40 @@ async def video_edit(request: dict):
         output_name += ".mp4"
     out_path = outputs_dir / output_name
 
-    cmd = [ffmpeg_bin, "-y", "-i", str(src)]
+    cmd = [ffmpeg_bin, "-y"]
     if operation == "trim":
         start = float(request.get("start_seconds", 0) or 0)
         end = request.get("end_seconds")
         duration = None
         if end is not None:
             end = float(end)
-            duration = max(0.1, end - start)
+            if end <= start:
+                raise HTTPException(status_code=400, detail=f"end_seconds ({end}) must be greater than start_seconds ({start})")
+            duration = end - start
+        # Fast seek: -ss before -i uses keyframe seeking (much faster for long files)
         if start > 0:
             cmd.extend(["-ss", str(start)])
+        cmd.extend(["-i", str(src)])
         if duration is not None:
             cmd.extend(["-t", str(duration)])
-        cmd.extend(["-c:v", "libx264", "-c:a", "aac", str(out_path)])
+        cmd.extend(["-c:v", "libx264", "-c:a", "aac", "-avoid_negative_ts", "make_zero", str(out_path)])
     elif operation == "mute":
-        cmd.extend(["-c:v", "copy", "-an", str(out_path)])
+        cmd.extend(["-i", str(src), "-c:v", "copy", "-an", str(out_path)])
     elif operation == "resize":
-        width = int(request.get("width") or 1280)
-        height = int(request.get("height") or 720)
-        cmd.extend(["-vf", f"scale={width}:{height}", "-c:v", "libx264", "-c:a", "aac", str(out_path)])
+        width = int(request.get("width") if request.get("width") is not None else 1280)
+        height = int(request.get("height") if request.get("height") is not None else 720)
+        if width < 16 or height < 16:
+            raise HTTPException(status_code=400, detail="Width and height must be at least 16 pixels")
+        cmd.extend([
+            "-i", str(src),
+            "-vf", f"scale={width}:{height}:force_original_aspect_ratio=decrease,pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,format=yuv420p",
+            "-c:v", "libx264", "-c:a", "aac", str(out_path),
+        ])
     elif operation == "fps":
-        fps = int(request.get("fps") or 24)
-        cmd.extend(["-filter:v", f"fps={fps}", "-c:v", "libx264", "-c:a", "aac", str(out_path)])
+        fps = int(request.get("fps") if request.get("fps") is not None else 24)
+        if fps < 1 or fps > 240:
+            raise HTTPException(status_code=400, detail="FPS must be between 1 and 240")
+        cmd.extend(["-i", str(src), "-filter:v", f"fps={fps}", "-c:v", "libx264", "-c:a", "aac", str(out_path)])
     elif operation == "mux_audio":
         audio_path = (request.get("audio_path") or "").strip()
         if not audio_path:
@@ -14379,7 +14401,7 @@ async def video_edit(request: dict):
             raise HTTPException(status_code=403, detail=str(e))
         if not safe_audio.is_file():
             raise HTTPException(status_code=404, detail=f"Audio file not found: {audio_path}")
-        cmd.extend(["-i", str(safe_audio), "-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)])
+        cmd.extend(["-i", str(src), "-i", str(safe_audio), "-c:v", "copy", "-c:a", "aac", "-shortest", str(out_path)])
     elif operation == "auto_captions":
         language = (request.get("language") or "en").strip() or "en"
         burn_in = bool(request.get("burn_in", True))
@@ -14400,11 +14422,12 @@ async def video_edit(request: dict):
 
         if burn_in:
             subtitle_filter = f"subtitles='{_escape_ffmpeg_subtitles_path(srt_path)}'"
-            cmd.extend(["-vf", subtitle_filter, "-c:v", "libx264", "-c:a", "aac", str(out_path)])
+            cmd.extend(["-i", str(src), "-vf", subtitle_filter, "-c:v", "libx264", "-c:a", "aac", str(out_path)])
         else:
-            cmd.extend(["-c:v", "copy", "-c:a", "copy", str(out_path)])
+            cmd.extend(["-i", str(src), "-c:v", "copy", "-c:a", "copy", str(out_path)])
         request["_captions_path"] = _workspace_relative(srt_path)
     elif operation == "auto_edit":
+        cmd.extend(["-i", str(src)])
         # Practical one-click preset: remove tiny start/end padding, normalize audio, and deliver 720p MP4.
         trim_start = float(request.get("trim_start", 0.4) or 0.0)
         trim_end = float(request.get("trim_end", 0.4) or 0.0)

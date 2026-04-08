@@ -99,6 +99,25 @@
       font-weight: 800;
     }
 
+    .btn.primary:disabled,
+    .btn.primary.rendering {
+      opacity: 0.6;
+      cursor: not-allowed;
+      pointer-events: none;
+    }
+
+    .kbd {
+      display: inline-block;
+      padding: 1px 5px;
+      border: 1px solid var(--border);
+      border-radius: 4px;
+      background: rgba(255,255,255,0.06);
+      color: var(--muted);
+      font-size: 10px;
+      font-family: monospace;
+      vertical-align: middle;
+    }
+
     .shell {
       display: grid;
       grid-template-columns: 320px minmax(0, 1fr) 340px;
@@ -674,11 +693,11 @@
 
           <div class="transport">
             <div class="transport-left">
-              <button class="btn" id="rewindBtn">-1s</button>
-              <button class="btn" id="playPauseBtn">Play / Pause</button>
-              <button class="btn" id="forwardBtn">+1s</button>
-              <button class="btn" id="setInBtn">Mark In</button>
-              <button class="btn" id="setOutBtn">Mark Out</button>
+              <button class="btn" id="rewindBtn" title="Rewind 1s (J)">-1s</button>
+              <button class="btn" id="playPauseBtn" title="Play/Pause (Space)">Play / Pause</button>
+              <button class="btn" id="forwardBtn" title="Forward 1s (L)">+1s</button>
+              <button class="btn" id="setInBtn" title="Mark in point (I)">Mark In</button>
+              <button class="btn" id="setOutBtn" title="Mark out point (O)">Mark Out</button>
             </div>
             <div class="transport-right">
               <button class="btn" id="playheadTrimBtn">Trim Around Playhead</button>
@@ -784,7 +803,7 @@
               </div>
               <div class="field full">
                 <label for="audioPath">External audio path</label>
-                <input class="text-input" id="audioPath" type="text" placeholder="/workspaces/EDISON-ComfyUI/outputs/music/example.mp3" />
+                <input class="text-input" id="audioPath" type="text" placeholder="Click an audio file in the browser to fill this" />
               </div>
               <div class="field">
                 <label for="captionLanguage">Caption language</label>
@@ -796,6 +815,10 @@
                   <option value="true">Yes</option>
                   <option value="false">No (create sidecar captions)</option>
                 </select>
+              </div>
+              <div class="field full">
+                <label for="outputName">Output file name (optional)</label>
+                <input class="text-input" id="outputName" type="text" placeholder="Auto-generated if blank" />
               </div>
             </div>
             <div class="preset-row" style="margin-top:10px;">
@@ -964,7 +987,17 @@
           const entry = historyEntries[Number(button.getAttribute('data-history-index'))];
           if (!entry) return;
           selectedFile = entry.output_path;
+          selectedFileItem = {
+            name: (entry.output_path || '').split('/').pop(),
+            path: entry.output_path,
+            type: 'file',
+            extension: '.mp4',
+            size_bytes: 0,
+            mtime: Date.now() / 1000,
+            preview_url: entry.output_url,
+          };
           document.getElementById('currentFileLabel').textContent = entry.output_path;
+          updateClipFacts(selectedFileItem);
           if (entry.output_url) {
             previewEl.src = `${API}${entry.output_url}`;
             previewEl.load();
@@ -1098,12 +1131,17 @@
         const memory = data.memory || {};
         const workspace = data.workspace || {};
         const services = data.services || {};
+        const videoTools = data.video_tools || {};
         document.getElementById('diagRam').textContent = Number.isFinite(memory.ram_available_mb) ? `${(memory.ram_available_mb / 1024).toFixed(1)} GB` : '--';
         document.getElementById('diagVram').textContent = Number.isFinite(memory.total_vram_free_mb) ? `${(memory.total_vram_free_mb / 1024).toFixed(1)} GB` : '--';
+        const toolStatus = ['ffmpeg', 'ffprobe', 'whisper'].map(t => `${t}: ${videoTools[t] ? '✓' : '✗'}`).join(' • ');
         document.getElementById('diagWorkspace').textContent = workspace.probe?.can_read_sample_file
-          ? `Workspace readable. Probe: ${workspace.probe.sample_file}`
-          : 'Workspace probe not confirmed.';
+          ? `Workspace readable. Tools: ${toolStatus}`
+          : `Workspace probe not confirmed. Tools: ${toolStatus}`;
         document.getElementById('diagModels').textContent = `Fast: ${services.llm_fast_loaded ? 'on' : 'off'} • Deep: ${services.llm_deep_loaded ? 'on' : 'off'} • Tools: ${services.tool_registry_count || 0}`;
+        if (!videoTools.ffmpeg) {
+          setStatus('Warning: ffmpeg not found. Video editing operations will fail. Install with: apt install ffmpeg', 'warn');
+        }
       } catch (error) {
         document.getElementById('diagWorkspace').textContent = `Diagnostics unavailable: ${error.message}`;
         document.getElementById('diagModels').textContent = 'Could not reach self-diagnostics endpoint.';
@@ -1115,6 +1153,9 @@
         source_path: selectedFile,
         operation: selectedOperation,
       };
+      const outputName = (document.getElementById('outputName').value || '').trim();
+      if (outputName) payload.output_name = outputName;
+
       if (selectedOperation === 'trim') {
         payload.start_seconds = Number(document.getElementById('startSeconds').value || 0);
         payload.end_seconds = Number(document.getElementById('endSeconds').value || 0);
@@ -1135,6 +1176,23 @@
       return payload;
     }
 
+    function validatePayload(payload) {
+      if (!payload.source_path) return 'Choose a source file before rendering an edit.';
+      if (payload.operation === 'trim') {
+        if (payload.end_seconds <= payload.start_seconds) return `Out point (${payload.end_seconds}s) must be after in point (${payload.start_seconds}s).`;
+      }
+      if (payload.operation === 'resize') {
+        if (!payload.width || !payload.height || payload.width < 16 || payload.height < 16) return 'Width and height must be at least 16 pixels.';
+      }
+      if (payload.operation === 'fps') {
+        if (!payload.fps || payload.fps < 1 || payload.fps > 240) return 'FPS must be between 1 and 240.';
+      }
+      if (payload.operation === 'mux_audio') {
+        if (!payload.audio_path) return 'Select an audio file first. Browse the media tree and click an audio file.';
+      }
+      return null;
+    }
+
     async function runEdit() {
       if (!selectedFile) {
         setStatus('Choose a source file before rendering an edit.', 'warn');
@@ -1146,37 +1204,64 @@
       }
 
       const payload = getPayload();
-      setStatus(`Rendering ${selectedOperation} operation...`, 'warn');
-
-      const res = await fetch(`${API}/video/edit`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload),
-      });
-      const data = await readJson(res);
-      if (!res.ok || !data.ok) {
-        setStatus(data.detail || data.error || 'Video edit failed.', 'err');
+      const validationError = validatePayload(payload);
+      if (validationError) {
+        setStatus(validationError, 'warn');
         return;
       }
 
-      historyEntries.unshift(data);
-      historyEntries = historyEntries.slice(0, 12);
-      renderHistory();
+      const renderBtn = document.getElementById('runEditBtn');
+      const originalLabel = renderBtn.textContent;
+      renderBtn.textContent = 'Rendering...';
+      renderBtn.classList.add('rendering');
+      renderBtn.disabled = true;
+      setStatus(`Rendering ${selectedOperation} operation... This may take a moment.`, 'warn');
 
-      if (data.output_url) {
-        previewEl.src = `${API}${data.output_url}`;
-        previewEl.load();
-        emptyPreviewEl.classList.add('hidden');
-      }
-      if (data.output_path) {
-        selectedFile = data.output_path;
-        document.getElementById('currentFileLabel').textContent = data.output_path;
-      }
+      try {
+        const res = await fetch(`${API}/video/edit`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(payload),
+        });
+        const data = await readJson(res);
+        if (!res.ok || !data.ok) {
+          setStatus(data.detail || data.error || 'Video edit failed.', 'err');
+          return;
+        }
 
-      const captionsLine = data.captions_path ? `\nCaptions: ${data.captions_path}` : '';
-      setStatus(`Render complete.\nOperation: ${data.operation}\nOutput: ${data.output_path}${captionsLine}`, 'ok');
-      if (currentPath) {
-        loadDirectory(currentPath).catch(() => {});
+        historyEntries.unshift(data);
+        historyEntries = historyEntries.slice(0, 12);
+        renderHistory();
+
+        if (data.output_url) {
+          previewEl.src = `${API}${data.output_url}`;
+          previewEl.load();
+          emptyPreviewEl.classList.add('hidden');
+        }
+        if (data.output_path) {
+          selectedFile = data.output_path;
+          selectedFileItem = {
+            name: data.output_path.split('/').pop(),
+            path: data.output_path,
+            type: 'file',
+            extension: '.mp4',
+            size_bytes: 0,
+            mtime: Date.now() / 1000,
+            preview_url: data.output_url,
+          };
+          document.getElementById('currentFileLabel').textContent = data.output_path;
+          updateClipFacts(selectedFileItem);
+        }
+
+        const captionsLine = data.captions_path ? `\nCaptions: ${data.captions_path}` : '';
+        setStatus(`Render complete.\nOperation: ${data.operation}\nOutput: ${data.output_path}${captionsLine}`, 'ok');
+        if (currentPath) {
+          loadDirectory(currentPath).catch(() => {});
+        }
+      } finally {
+        renderBtn.textContent = originalLabel;
+        renderBtn.classList.remove('rendering');
+        renderBtn.disabled = false;
       }
     }
 
@@ -1261,6 +1346,8 @@
         if (preset.length !== 2) return;
         document.getElementById('widthInput').value = preset[0];
         document.getElementById('heightInput').value = preset[1];
+        selectedOperation = 'resize';
+        updateOperationUI();
         setStatus(`Resize preset loaded: ${preset[0]} x ${preset[1]}`, 'ok');
       });
     });
@@ -1291,6 +1378,40 @@
       document.getElementById('timeLabel').textContent = '00:00.0 / 00:00.0';
       emptyPreviewEl.classList.remove('hidden');
       updateTimelineVisual();
+    });
+
+    // Keyboard shortcuts  (only when not focused on an input)
+    document.addEventListener('keydown', (e) => {
+      const tag = (e.target.tagName || '').toLowerCase();
+      if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+
+      switch (e.key.toLowerCase()) {
+        case ' ':
+          e.preventDefault();
+          if (previewEl.paused) previewEl.play().catch(() => {});
+          else previewEl.pause();
+          break;
+        case 'j':
+          previewEl.currentTime = Math.max(0, Number(previewEl.currentTime || 0) - 1);
+          break;
+        case 'k':
+          if (previewEl.paused) previewEl.play().catch(() => {});
+          else previewEl.pause();
+          break;
+        case 'l':
+          previewEl.currentTime = Math.min(Number(previewEl.duration || 0), Number(previewEl.currentTime || 0) + 1);
+          break;
+        case 'i':
+          document.getElementById('startSeconds').value = Number(previewEl.currentTime || 0).toFixed(1);
+          updateTimelineVisual();
+          setStatus('In point set at ' + Number(previewEl.currentTime || 0).toFixed(1) + 's', 'ok');
+          break;
+        case 'o':
+          document.getElementById('endSeconds').value = Number(previewEl.currentTime || 0).toFixed(1);
+          updateTimelineVisual();
+          setStatus('Out point set at ' + Number(previewEl.currentTime || 0).toFixed(1) + 's', 'ok');
+          break;
+      }
     });
 
     (async function init() {
