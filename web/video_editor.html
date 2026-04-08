@@ -1140,7 +1140,7 @@
           : `Workspace probe not confirmed. Tools: ${toolStatus}`;
         document.getElementById('diagModels').textContent = `Fast: ${services.llm_fast_loaded ? 'on' : 'off'} • Deep: ${services.llm_deep_loaded ? 'on' : 'off'} • Tools: ${services.tool_registry_count || 0}`;
         if (!videoTools.ffmpeg) {
-          setStatus('Warning: ffmpeg not found. Video editing operations will fail. Install with: apt install ffmpeg', 'warn');
+          document.getElementById('diagWorkspace').textContent += ' ⚠ ffmpeg not detected — editing will fail until installed.';
         }
       } catch (error) {
         document.getElementById('diagWorkspace').textContent = `Diagnostics unavailable: ${error.message}`;

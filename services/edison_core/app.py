@@ -762,6 +762,17 @@ MEDIA_ROOTS = [
     BRANDING_ROOT,
 ]
 
+def _find_binary(name: str) -> str | None:
+    """Locate a binary by name, checking PATH then common install locations."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for d in ("/usr/bin", "/usr/local/bin", "/opt/homebrew/bin", "/snap/bin"):
+        p = os.path.join(d, name)
+        if os.path.isfile(p) and os.access(p, os.X_OK):
+            return p
+    return None
+
 CONNECTOR_CATALOG = {
     "github": {
         "label": "GitHub",
@@ -14058,9 +14069,9 @@ async def system_diagnostics():
             "tool_registry_count": len(TOOL_REGISTRY),
         },
         "video_tools": {
-            "ffmpeg": bool(shutil.which("ffmpeg")),
-            "ffprobe": bool(shutil.which("ffprobe")),
-            "whisper": bool(shutil.which("whisper")),
+            "ffmpeg": bool(_find_binary("ffmpeg")),
+            "ffprobe": bool(_find_binary("ffprobe")),
+            "whisper": bool(_find_binary("whisper")),
         },
     }
 
@@ -14339,7 +14350,7 @@ def video_edit(request: dict):
     if not src.is_file():
         raise HTTPException(status_code=404, detail=f"Video not found: {source_path}")
 
-    ffmpeg_bin = shutil.which("ffmpeg")
+    ffmpeg_bin = _find_binary("ffmpeg")
     if not ffmpeg_bin:
         raise HTTPException(
             status_code=503,
