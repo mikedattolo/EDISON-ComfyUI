@@ -225,6 +225,7 @@
       </div>
       <div class="panel-body">
         <div id="pathBar" class="pathbar">Loading...</div>
+        <div id="fileBrowserStatus" class="status" style="display:none;margin-bottom:8px;"></div>
         <input id="filter" class="text" type="text" placeholder="Filter file names" style="margin-bottom:8px;" />
         <div style="max-height:560px;overflow:auto;border-radius:10px;">
           <table>
@@ -301,7 +302,15 @@
 
     async function readJson(res) {
       const raw = await res.text();
-      try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
+      try { return raw ? JSON.parse(raw) : {}; } catch { return { ok: false, detail: raw || 'Invalid response' }; }
+    }
+
+    function setFileBrowserStatus(msg, tone) {
+      const fb = el('fileBrowserStatus');
+      if (!msg) { fb.style.display = 'none'; return; }
+      fb.textContent = msg;
+      fb.className = `status ${tone || ''}`.trim();
+      fb.style.display = 'block';
     }
 
     function fmtBytes(v) {
@@ -383,12 +392,13 @@
       const rows = fileRows();
       const host = el('fileRows');
       if (!rows.length) {
-        host.innerHTML = '<tr><td colspan="4">No files found.</td></tr>';
+        host.innerHTML = '<tr><td colspan="4" style="color:var(--muted);padding:18px 9px;">This directory is empty. Try navigating to a different root.</td></tr>';
         return;
       }
+      setFileBrowserStatus('', '');
       host.innerHTML = rows.map((item) => {
         const kind = item.type === 'directory' ? 'Folder' : (item.kind || 'File');
-        return `<tr data-path="${item.path}" data-type="${item.type}" class="${item.path === selectedFilePath ? 'sel' : ''}">
+        return `<tr data-path="${item.path}" data-type="${item.type}" class="${item.path === selectedFilePath ? 'sel' : ''}" style="cursor:pointer;">
           <td>${item.type === 'directory' ? '📁 ' : '📄 '}${item.name}</td>
           <td>${kind}</td>
           <td>${item.type === 'directory' ? '-' : fmtBytes(item.size_bytes)}</td>
@@ -398,35 +408,51 @@
 
       host.querySelectorAll('tr[data-path]').forEach((row) => {
         row.addEventListener('click', () => {
-          selectedFilePath = row.getAttribute('data-path') || '';
+          const path = row.getAttribute('data-path') || '';
+          const type = row.getAttribute('data-type') || '';
+          if (type === 'directory') {
+            browse(path).catch((e) => {
+              setStatus(e.message, 'warn');
+              setFileBrowserStatus(e.message, 'warn');
+            });
+            return;
+          }
+          selectedFilePath = path;
           if (selectedFilePath) el('attachPath').value = selectedFilePath;
           renderFiles();
-        });
-        row.addEventListener('dblclick', () => {
-          if ((row.getAttribute('data-type') || '') !== 'directory') return;
-          const next = row.getAttribute('data-path') || '';
-          browse(next).catch((e) => setStatus(e.message, 'warn'));
         });
       });
     }
 
     async function loadRoots() {
+      setFileBrowserStatus('Loading media roots...', '');
       const res = await fetch(`${API}/video/files`);
       const data = await readJson(res);
-      if (!res.ok || !data.ok) throw new Error(data.detail || 'Unable to load roots');
+      if (!res.ok || !data.ok) {
+        const msg = data.detail || data.error || 'Unable to load roots. Is the EDISON core service running?';
+        setFileBrowserStatus(msg, 'warn');
+        throw new Error(msg);
+      }
       currentPath = '';
       currentItems = (data.roots || []).map((r) => ({ ...r, extension: '', size_bytes: 0, mtime: 0 }));
       el('pathBar').textContent = 'Media Roots';
+      setFileBrowserStatus('', '');
       renderFiles();
     }
 
     async function browse(path) {
+      setFileBrowserStatus('Loading...', '');
       const res = await fetch(`${API}/video/files?path=${encodeURIComponent(path || '')}`);
       const data = await readJson(res);
-      if (!res.ok || !data.ok) throw new Error(data.detail || 'Unable to open folder');
+      if (!res.ok || !data.ok) {
+        const msg = data.detail || data.error || 'Unable to open folder';
+        setFileBrowserStatus(msg, 'warn');
+        throw new Error(msg);
+      }
       currentPath = data.path || path;
       currentItems = data.items || [];
       el('pathBar').textContent = currentPath;
+      setFileBrowserStatus('', '');
       renderFiles();
     }
 
@@ -543,10 +569,19 @@
 
     (async function init() {
       try {
-        await Promise.all([loadClients(), loadRoots()]);
-        setStatus('Branding explorer ready.', 'ok');
+        const results = await Promise.allSettled([loadClients(), loadRoots()]);
+        const failures = results.filter((r) => r.status === 'rejected');
+        if (failures.length === results.length) {
+          setStatus('Could not connect to EDISON core. Check that the service is running, then click Refresh.', 'warn');
+          setFileBrowserStatus('Could not load files. Click Refresh or Roots to retry.', 'warn');
+        } else if (failures.length) {
+          setStatus('Partial load: ' + failures.map((f) => f.reason?.message || 'unknown error').join('; '), 'warn');
+        } else {
+          setStatus('Branding explorer ready.', 'ok');
+        }
       } catch (e) {
         setStatus(e.message || 'Initialization failed', 'warn');
+        setFileBrowserStatus(e.message || 'Failed to load. Click Refresh to retry.', 'warn');
       }
     })();
   </script>

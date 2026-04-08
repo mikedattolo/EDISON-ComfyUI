@@ -639,6 +639,7 @@
         </div>
         <div class="panel-body media-bin">
           <div class="breadcrumbs" id="crumbs">Loading roots...</div>
+          <div class="status" id="fileBrowserStatus" style="display:none;margin-bottom:6px;font-size:12px;"></div>
           <input class="search-input" id="fileSearchInput" type="text" placeholder="Filter clips, audio, client files..." />
           <div class="small-copy">Roots include rendered videos, client folders, music outputs, and uploaded audio.</div>
           <div class="file-list" id="fileList"></div>
@@ -973,6 +974,13 @@
       });
     }
 
+    function setFileBrowserStatus(msg, tone) {
+      if (!msg) { fileBrowserStatusEl.style.display = 'none'; return; }
+      fileBrowserStatusEl.textContent = msg;
+      fileBrowserStatusEl.className = `status ${tone || ''}`.trim();
+      fileBrowserStatusEl.style.display = 'block';
+    }
+
     function renderFileList(items) {
       const query = (fileSearchInputEl.value || '').trim().toLowerCase();
       const filtered = query
@@ -980,9 +988,10 @@
         : items;
 
       if (!filtered.length) {
-        fileListEl.innerHTML = '<div class="empty-state">No files match the current filter.</div>';
+        fileListEl.innerHTML = '<div class="empty-state">This directory is empty. Navigate to a different folder or check that media files exist in the outputs, uploads, or gallery directories.</div>';
         return;
       }
+      setFileBrowserStatus('', '');
 
       fileListEl.innerHTML = filtered.map((item) => {
         const kind = item.type === 'directory'
@@ -1049,27 +1058,35 @@
     }
 
     async function loadRoots() {
+      setFileBrowserStatus('Loading media roots...', '');
       const res = await fetch(`${API}/video/files`);
       const data = await readJson(res);
       if (!res.ok || !data.ok) {
-        throw new Error(data.detail || 'Failed to load media roots');
+        const msg = data.detail || data.error || 'Failed to load media roots. Is the EDISON core service running?';
+        setFileBrowserStatus(msg, 'err');
+        throw new Error(msg);
       }
       currentRoots = data.roots || [];
       currentPath = '';
       currentItems = currentRoots.map((root) => ({ ...root, type: 'directory', extension: '', size_bytes: 0, mtime: 0 }));
       crumbsEl.textContent = 'Media Roots';
+      setFileBrowserStatus('', '');
       renderFileList(currentItems);
     }
 
     async function loadDirectory(path) {
+      setFileBrowserStatus('Loading...', '');
       const res = await fetch(`${API}/video/files?path=${encodeURIComponent(path || '')}`);
       const data = await readJson(res);
       if (!res.ok || !data.ok) {
-        throw new Error(data.detail || 'Failed to load directory');
+        const msg = data.detail || data.error || 'Failed to load directory';
+        setFileBrowserStatus(msg, 'err');
+        throw new Error(msg);
       }
       currentPath = data.path || path;
       currentItems = data.items || [];
       crumbsEl.textContent = currentPath;
+      setFileBrowserStatus('', '');
       renderFileList(currentItems);
     }
 
@@ -1280,10 +1297,17 @@
       renderHistory();
       updateTimelineVisual();
       try {
-        await Promise.all([loadRoots(), loadDiagnostics()]);
-        setStatus('Video editor ready. Browse media roots, preview a source clip, and render edits from the inspector.', 'ok');
+        const results = await Promise.allSettled([loadRoots(), loadDiagnostics()]);
+        const rootResult = results[0];
+        if (rootResult.status === 'rejected') {
+          setStatus('Could not load media roots. Is the EDISON core service running? Click Roots or Refresh to retry.', 'err');
+          setFileBrowserStatus('Could not load media. Click Roots to retry.', 'err');
+        } else {
+          setStatus('Video editor ready. Browse media roots, preview a source clip, and render edits from the inspector.', 'ok');
+        }
       } catch (error) {
         setStatus(error.message, 'err');
+        setFileBrowserStatus(error.message || 'Failed to load. Click Roots to retry.', 'err');
       }
     })();
   </script>

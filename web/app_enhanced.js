@@ -997,11 +997,6 @@ class EdisonApp {
                                     this.finalizeToolTimeline(assistantMessageEl, data);
                                     this.clearStatus(assistantMessageEl);
                                     
-                                    // Display trust signals (search, memory, browser, etc.)
-                                    if (data.trust_signals && data.trust_signals.length > 0) {
-                                        this.renderTrustSignals(assistantMessageEl, data.trust_signals);
-                                    }
-                                    
                                     assistantMessageEl.classList.remove('streaming');
                                     
                                     // Save to chat history
@@ -1312,34 +1307,6 @@ class EdisonApp {
     clearStatus(assistantMessageEl) {
         const statusEl = assistantMessageEl.querySelector('.message-status');
         if (statusEl) statusEl.remove();
-    }
-
-    renderTrustSignals(assistantMessageEl, signals) {
-        if (!assistantMessageEl || !signals || signals.length === 0) return;
-        const contentEl = assistantMessageEl.querySelector('.message-content');
-        if (!contentEl) return;
-
-        // Remove any existing trust signal bar
-        const existing = contentEl.querySelector('.trust-signals');
-        if (existing) existing.remove();
-
-        const bar = document.createElement('div');
-        bar.className = 'trust-signals';
-
-        const iconMap = {
-            search: '🔍', memory: '🧠', browser: '🌐', artifact: '📎',
-            code: '⚙️', uncertain: '⚠️',
-        };
-
-        signals.forEach(sig => {
-            const badge = document.createElement('span');
-            badge.className = `trust-badge trust-${sig.type || 'info'}`;
-            badge.title = sig.detail || sig.label || '';
-            badge.textContent = `${iconMap[sig.type] || 'ℹ️'} ${sig.label || sig.type}`;
-            bar.appendChild(badge);
-        });
-
-        contentEl.appendChild(bar);
     }
 
     ensureToolTimeline(assistantMessageEl) {
@@ -2621,38 +2588,8 @@ ${code}
                     <p>Upload, browse, and manage files on the server</p>
                 </div>
             </div>
-
-            <h3 class="welcome-section-title">✨ Try asking</h3>
-            <div class="prompt-suggestions">
-                <button class="prompt-chip" data-prompt="Create a branding client called Adoro Pizza">🏪 Create a branding client called Adoro Pizza</button>
-                <button class="prompt-chip" data-prompt="Generate a brand package for Adoro Pizza">🎨 Generate a brand package for Adoro Pizza</button>
-                <button class="prompt-chip" data-prompt="Create a project called Summer Campaign">📋 Create a project called Summer Campaign</button>
-                <button class="prompt-chip" data-prompt="List my projects">📂 List my projects</button>
-                <button class="prompt-chip" data-prompt="Generate marketing copy for a tech startup">📝 Generate marketing copy for a tech startup</button>
-                <button class="prompt-chip" data-prompt="Search the web for latest AI news">🔍 Search the web for latest AI news</button>
-                <button class="prompt-chip" data-prompt="Generate an image of a sunset over mountains">🖼️ Generate an image of a sunset over mountains</button>
-                <button class="prompt-chip" data-prompt="Write a Python function to sort a list">💻 Write a Python function to sort a list</button>
-            </div>
         `;
         this.messagesContainer.appendChild(this.welcomeScreen);
-
-        // Wire up prompt suggestion chips
-        this.welcomeScreen.querySelectorAll('.prompt-chip').forEach(chip => {
-            chip.addEventListener('click', () => {
-                const prompt = chip.getAttribute('data-prompt');
-                if (this.messageInput) {
-                    this.messageInput.value = prompt;
-                    this.messageInput.focus();
-                    this.messageInput.dispatchEvent(new Event('input', { bubbles: true }));
-                }
-                // Auto-send
-                if (this.sendMessage) {
-                    this.sendMessage();
-                } else if (this.handleSubmit) {
-                    this.handleSubmit();
-                }
-            });
-        });
     }
 
     renderMessages(messages) {
