@@ -1309,7 +1309,9 @@ def _resolve_media_path(path_str: str) -> Path:
     return candidate
 
 
-def _workspace_relative(path: Path) -> str:
+def _workspace_relative(path) -> str:
+    if path is None:
+        return ""
     try:
         return str(path.resolve(strict=False).relative_to(REPO_ROOT.resolve(strict=False)))
     except Exception:
@@ -14389,6 +14391,11 @@ async def video_edit(request: dict):
             raise HTTPException(
                 status_code=503,
                 detail=f"Auto captions unavailable. Install whisper CLI for this feature. Details: {e}",
+            )
+        if srt_path is None:
+            raise HTTPException(
+                status_code=503,
+                detail="Auto captions unavailable: whisper CLI not found. Install it with: pip install openai-whisper",
             )
 
         if burn_in:
