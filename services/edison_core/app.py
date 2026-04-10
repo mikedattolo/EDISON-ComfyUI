@@ -735,11 +735,13 @@ model_manager_v2_instance = None
 printer_manager_instance = None
 slicer_service_instance = None
 skill_loader_instance = None
+node_manager_instance = None
 
 # Integration stores
 INTEGRATIONS_DIR = REPO_ROOT / "config" / "integrations"
 CONNECTORS_DB = INTEGRATIONS_DIR / "connectors.json"
 PRINTERS_DB = INTEGRATIONS_DIR / "printers.json"
+NODES_DB = INTEGRATIONS_DIR / "nodes.json"
 PROMPTS_DB = INTEGRATIONS_DIR / "prompts.json"
 BRANDING_DB = INTEGRATIONS_DIR / "branding.json"
 BRANDING_ROOT = _find_writable_dir(
@@ -11714,6 +11716,15 @@ def _init_new_subsystems():
         printer_manager_instance = None
         logger.warning(f"⚠ Printer manager init failed: {e}")
 
+    # Node manager
+    try:
+        from .nodes import NodeManager
+        node_manager_instance = NodeManager(NODES_DB)
+        logger.info("✓ Node manager initialized")
+    except Exception as e:
+        node_manager_instance = None
+        logger.warning(f"⚠ Node manager init failed: {e}")
+
     # Slicer service
     try:
         from .slicing import SlicerService
@@ -16222,6 +16233,137 @@ async def list_swarm_agent_catalog():
         }
     except Exception as e:
         return {"agents": [], "error": str(e)}
+
+
+# ═══════════════════════════════════════════════════════════════════════════
+# Node Management Endpoints
+# ═══════════════════════════════════════════════════════════════════════════
+
+@app.get("/nodes")
+@app.get("/nodes/list")
+async def list_nodes():
+    """List all registered worker nodes."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    node_manager_instance.mark_stale()
+    return {"success": True, **node_manager_instance.list_nodes()}
+
+
+@app.get("/nodes/{node_id}")
+async def get_node(node_id: str):
+    """Get details for a specific node."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    try:
+        node = node_manager_instance.get_node(node_id)
+        return {"success": True, "node": node}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/nodes/register")
+async def register_node(request: dict):
+    """Register or update a worker node (called by node agents)."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    try:
+        node = node_manager_instance.register_node(request)
+        return {"success": True, "node": node}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.post("/nodes/{node_id}/heartbeat")
+async def node_heartbeat(node_id: str, request: dict = None):
+    """Heartbeat from a node agent to stay online."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    try:
+        result = node_manager_instance.heartbeat(node_id, request)
+        # Return any pending tasks for this node
+        pending = node_manager_instance.get_pending_tasks(node_id)
+        return {"success": True, **result, "pending_tasks": pending}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/nodes/{node_id}")
+async def remove_node(node_id: str):
+    """Remove a registered node."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    result = node_manager_instance.remove_node(node_id)
+    return {"success": True, **result}
+
+
+@app.post("/nodes/discover")
+async def discover_nodes(request: dict = None):
+    """Scan the LAN for EDISON node agents."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    req = request or {}
+    subnet = str(req.get("subnet", "")).strip()
+    timeout_sec = float(req.get("timeout_sec", 0.3) or 0.3)
+    max_hosts = int(req.get("max_hosts", 64) or 64)
+    try:
+        result = await asyncio.to_thread(
+            node_manager_instance.discover_nodes, subnet, timeout_sec, max_hosts
+        )
+        return {"success": True, **result}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/nodes/{node_id}/command")
+async def send_node_command(node_id: str, request: dict):
+    """Send a command to a specific node agent."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    command = request.get("command", "")
+    params = request.get("params", {})
+    if not command:
+        raise HTTPException(status_code=400, detail="command is required")
+    try:
+        result = await asyncio.to_thread(
+            node_manager_instance.send_command, node_id, command, params
+        )
+        return {"success": True, **result}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/nodes/{node_id}/task")
+async def submit_node_task(node_id: str, request: dict):
+    """Submit a task to a specific node."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    task_type = request.get("task_type", "")
+    payload = request.get("payload", {})
+    if not task_type:
+        raise HTTPException(status_code=400, detail="task_type is required")
+    try:
+        task = node_manager_instance.submit_task(node_id, task_type, payload)
+        return {"success": True, "task": task}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.post("/nodes/tasks/{task_id}/update")
+async def update_node_task(task_id: str, request: dict):
+    """Update a task's status and result (called by node agents)."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    status = request.get("status", "")
+    result = request.get("result")
+    if not status:
+        raise HTTPException(status_code=400, detail="status is required")
+    try:
+        task = node_manager_instance.update_task(task_id, status, result)
+        return {"success": True, "task": task}
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
 
 
 if __name__ == "__main__":
