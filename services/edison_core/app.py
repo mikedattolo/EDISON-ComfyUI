@@ -11642,7 +11642,7 @@ def _init_new_subsystems():
     global planner_instance, self_evaluator, coral_plugin_registry
     global file_store_instance, image_editor_instance, file_editor_instance
     global provenance_tracker_instance, memory_gate_instance, model_manager_v2_instance
-    global printer_manager_instance, skill_loader_instance
+    global printer_manager_instance, node_manager_instance, slicer_service_instance, skill_loader_instance
 
     # Unified job store
     try:
