@@ -2,7 +2,7 @@
 
 edison:
   core:
-    host: "127.0.0.1"
+    host: "0.0.0.0"
     port: 8811
     models_path: "models/llm"
     fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"

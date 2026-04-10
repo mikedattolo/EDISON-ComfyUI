@@ -474,7 +474,21 @@ class EdisonNodeAgent:
         name: str = "",
         role: str = "general",
     ):
-        self.server_url = f"http://{server_host}:{server_port}"
+        # Normalize server URL — handle cases like "192.168.1.20:8811" or "http://192.168.1.20"
+        host = server_host.strip()
+        if host.startswith("http://") or host.startswith("https://"):
+            # Already has scheme — strip it to parse
+            scheme_end = host.index("://") + 3
+            scheme = host[:scheme_end]
+            rest = host[scheme_end:]
+        else:
+            scheme = "http://"
+            rest = host
+        # If host already includes a port, use it; otherwise append server_port
+        if ":" in rest:
+            self.server_url = f"{scheme}{rest}"
+        else:
+            self.server_url = f"{scheme}{rest}:{server_port}"
         self.agent_port = agent_port
         self.node_id = get_or_create_node_id()
         self.name = name or f"{platform.node()}"
