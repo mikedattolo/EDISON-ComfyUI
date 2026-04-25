@@ -21,13 +21,16 @@ class EdisonApp {
         this.modelSelector = null;
         this.modelSelect = null;
         this.bestVlm = null;
-        this.supportedModes = new Set(['auto', 'instant', 'thinking', 'chat', 'reasoning', 'code', 'agent', 'swarm', 'work']);
+        this.supportedModes = new Set(['auto', 'instant', 'thinking', 'chat', 'reasoning', 'builder', 'research', 'safety', 'code', 'agent', 'swarm', 'work']);
         this.modeDescriptions = {
             auto: 'Auto picks the best strategy for your request.',
             instant: 'Instant is optimized for quick answers with minimal latency.',
             thinking: 'Thinking uses deeper reasoning for complex multi-step problems.',
             chat: 'Chat is balanced for natural conversation and everyday help.',
             reasoning: 'Reasoning focuses on explicit step-by-step analysis.',
+            builder: 'Builder plans and executes structured multi-step workflows.',
+            research: 'Research prioritizes external lookup and evidence gathering.',
+            safety: 'Safety constrains behavior for high-risk or ambiguous requests.',
             code: 'Code is specialized for coding, debugging, and implementation tasks.',
             agent: 'Agent can use tools for multi-step task execution.',
             swarm: 'Swarm coordinates multiple specialist agents in parallel.',
@@ -145,6 +148,35 @@ class EdisonApp {
         return `edison_chats_${resolvedUserId}`;
     }
 
+    getDraftStorageKey(chatId = null) {
+        const resolvedUserId = this.userId || 'default';
+        const resolvedChatId = chatId || this.currentChatId || 'default';
+        return `edison_draft_${resolvedUserId}_${resolvedChatId}`;
+    }
+
+    saveDraft() {
+        if (!this.messageInput || !this.currentChatId) return;
+        const value = this.messageInput.value || '';
+        const key = this.getDraftStorageKey();
+        if (!value.trim()) {
+            localStorage.removeItem(key);
+            return;
+        }
+        localStorage.setItem(key, value.slice(0, 4000));
+    }
+
+    restoreDraft(chatId = null) {
+        if (!this.messageInput) return;
+        const key = this.getDraftStorageKey(chatId);
+        const draft = localStorage.getItem(key) || '';
+        this.messageInput.value = draft;
+        this.handleInputChange();
+    }
+
+    clearDraft(chatId = null) {
+        localStorage.removeItem(this.getDraftStorageKey(chatId));
+    }
+
     getDefaultEndpoints() {
         // All API calls go through the web server's reverse proxy (/api/*)
         // so the browser only needs one HTTPS origin (port 8080).
@@ -179,6 +211,8 @@ class EdisonApp {
         this.modeButtons = document.querySelectorAll('.mode-btn');
         this.modeHelp = document.getElementById('modeHelp');
         this.moduleAvailabilityBar = document.getElementById('moduleAvailabilityBar');
+        this.quickActionButtons = document.querySelectorAll('.quick-action-btn');
+        this.scrollToBottomBtn = document.getElementById('scrollToBottomBtn');
         
         // Settings modal
         this.settingsModal = document.getElementById('settingsModal');
@@ -189,6 +223,7 @@ class EdisonApp {
         this.apiEndpointInput = document.getElementById('apiEndpoint');
         this.comfyuiEndpointInput = document.getElementById('comfyuiEndpoint');
         this.defaultModeSelect = document.getElementById('defaultMode');
+        this.thinkingDepthSelect = document.getElementById('thinkingDepth');
         this.assistantProfileSelect = document.getElementById('assistantProfileId');
         this.systemStatus = document.getElementById('systemStatus');
         this.setupCheckBtn = document.getElementById('setupCheckBtn');
@@ -260,6 +295,13 @@ class EdisonApp {
         this.messageInput.addEventListener('keydown', (e) => this.handleKeyDown(e));
         this.sendBtn.addEventListener('click', () => this.sendMessage());
         this.stopBtn.addEventListener('click', () => this.stopGeneration());
+        this.messagesContainer.addEventListener('scroll', () => this.updateScrollToBottomVisibility());
+        if (this.scrollToBottomBtn) {
+            this.scrollToBottomBtn.addEventListener('click', () => this.scrollToBottom(true));
+        }
+        this.quickActionButtons.forEach((btn) => {
+            btn.addEventListener('click', () => this.applyQuickAction(btn.dataset.prompt || ''));
+        });
         
         // Mode selector
         this.modeButtons.forEach(btn => {
@@ -438,15 +480,29 @@ class EdisonApp {
 
         // @Agent mention autocomplete (only in swarm-related context)
         this.handleSwarmAutocomplete(text);
+        this.saveDraft();
     }
 
     handleKeyDown(e) {
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'j') {
+            e.preventDefault();
+            this.scrollToBottom(true);
+            return;
+        }
         if (e.key === 'Enter' && !e.shiftKey) {
             e.preventDefault();
             if (!this.sendBtn.disabled) {
                 this.sendMessage();
             }
         }
+    }
+
+    applyQuickAction(prompt) {
+        if (!prompt) return;
+        const text = this.messageInput.value.trim();
+        this.messageInput.value = text ? `${text}\n\n${prompt}` : prompt;
+        this.messageInput.focus();
+        this.handleInputChange();
     }
 
     setMode(mode) {
@@ -561,6 +617,7 @@ class EdisonApp {
         
         // Clear input
         this.messageInput.value = '';
+        this.clearDraft(this.currentChatId);
         this.handleInputChange();
         
         // Prepare request
@@ -785,6 +842,7 @@ class EdisonApp {
             body: JSON.stringify({
                 message: enhancedMessage,
                 mode: mode,
+                thinking_depth: this.settings.thinkingDepth || 'balanced',
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
                 project_id: this.projectId,
@@ -885,6 +943,7 @@ class EdisonApp {
             body: JSON.stringify({
                 message: enhancedMessage,
                 mode: mode,
+                thinking_depth: this.settings.thinkingDepth || 'balanced',
                 remember: null,  // Auto-detected by backend
                 conversation_history: conversationHistory,
                 project_id: this.projectId,
@@ -1822,10 +1881,20 @@ ${code}
         return div.innerHTML;
     }
 
-    scrollToBottom() {
+    scrollToBottom(force = false) {
         requestAnimationFrame(() => {
-            this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+            const nearBottom = this.messagesContainer.scrollHeight - (this.messagesContainer.scrollTop + this.messagesContainer.clientHeight) < 120;
+            if (force || nearBottom || this.isStreaming) {
+                this.messagesContainer.scrollTop = this.messagesContainer.scrollHeight;
+            }
+            this.updateScrollToBottomVisibility();
         });
+    }
+
+    updateScrollToBottomVisibility() {
+        if (!this.scrollToBottomBtn || !this.messagesContainer) return;
+        const remaining = this.messagesContainer.scrollHeight - (this.messagesContainer.scrollTop + this.messagesContainer.clientHeight);
+        this.scrollToBottomBtn.classList.toggle('visible', remaining > 220);
     }
 
     async generateChatTitle(chat, firstMessage, firstResponse) {
@@ -2453,6 +2522,7 @@ ${code}
         this.saveChats();
         this.renderChatHistory();
         this.clearMessages();
+        this.restoreDraft(chatId);
     }
 
     loadCurrentChat() {
@@ -2471,6 +2541,7 @@ ${code}
         if (chat) {
             this.renderMessages(chat.messages);
         }
+        this.restoreDraft(this.currentChatId);
         
         this.renderChatHistory();
     }
@@ -2483,6 +2554,7 @@ ${code}
         if (chat) {
             this.clearMessages();
             this.renderMessages(chat.messages);
+            this.restoreDraft(chat.id);
             this.renderChatHistory();
         }
     }
@@ -2751,6 +2823,7 @@ ${code}
         }
         const safeDefaultMode = this.supportedModes.has(this.settings.defaultMode) ? this.settings.defaultMode : 'auto';
         this.defaultModeSelect.value = safeDefaultMode;
+        if (this.thinkingDepthSelect) this.thinkingDepthSelect.value = this.settings.thinkingDepth || 'balanced';
         
         // Populate user ID field
         if (this.userIdInput) {
@@ -3010,6 +3083,7 @@ ${code}
                 .filter(Boolean);
         }
         this.settings.defaultMode = this.defaultModeSelect.value;
+        if (this.thinkingDepthSelect) this.settings.thinkingDepth = this.thinkingDepthSelect.value || 'balanced';
 
         try {
             await fetch(`${this.settings.apiEndpoint}/sandbox/config`, {
@@ -3433,6 +3507,7 @@ ${code}
         const defaults = {
             ...this.getDefaultEndpoints(),
             defaultMode: 'auto',
+            thinkingDepth: 'balanced',
             streamResponses: true,
             syntaxHighlight: true,
             sandboxAllowAnyHost: false,
