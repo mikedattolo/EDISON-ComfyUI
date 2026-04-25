@@ -409,6 +409,7 @@ button, input, textarea, select {
     margin: 0 auto;
     min-height: 0;
     height: 100%;
+    position: relative;
 }
 
 .chat-container.with-artifacts {
@@ -1103,6 +1104,57 @@ button, input, textarea, select {
     flex-wrap: wrap;
     gap: 6px;
     margin-top: 8px;
+}
+
+.quick-actions {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    margin-top: 10px;
+    margin-bottom: 8px;
+}
+
+.quick-action-btn {
+    border: 1px solid var(--border);
+    background: var(--surface-hover);
+    color: var(--text-secondary);
+    padding: 6px 10px;
+    border-radius: 999px;
+    font-size: 12px;
+    cursor: pointer;
+    transition: var(--transition);
+}
+
+.quick-action-btn:hover {
+    border-color: var(--primary);
+    color: var(--text-primary);
+    transform: translateY(-1px);
+}
+
+.scroll-to-bottom-btn {
+    position: absolute;
+    right: 16px;
+    bottom: 130px;
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--text-primary);
+    border-radius: 999px;
+    padding: 8px 12px;
+    font-size: 12px;
+    font-weight: 600;
+    cursor: pointer;
+    box-shadow: 0 8px 24px rgba(0, 0, 0, 0.2);
+    opacity: 0;
+    transform: translateY(8px);
+    pointer-events: none;
+    transition: var(--transition);
+    z-index: 8;
+}
+
+.scroll-to-bottom-btn.visible {
+    opacity: 1;
+    transform: translateY(0);
+    pointer-events: auto;
 }
 
 .availability-chip {
@@ -2415,6 +2467,22 @@ button, input, textarea, select {
     .mode-selector {
         padding-bottom: 8px;
         margin-bottom: 10px;
+    }
+
+    .quick-actions {
+        gap: 6px;
+    }
+
+    .quick-action-btn {
+        padding: 6px 9px;
+        font-size: 11px;
+    }
+
+    .scroll-to-bottom-btn {
+        right: 12px;
+        bottom: 118px;
+        padding: 7px 10px;
+        font-size: 11px;
     }
 
     .send-btn {
