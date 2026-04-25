@@ -6489,6 +6489,7 @@ async def chat(request: ChatRequest):
             logger.info(f"Injected real-time context: {rt_context[:80]}...")
     file_requested = _is_file_request(request.message or "")
     detected_mood = detect_user_mood(request.message or "")
+    preferred_language = _infer_response_language(request.message, request.conversation_history)
     repo_code_chunks = _retrieve_repo_code_context(request.message, request.conversation_history) if mode == "code" and not has_images else []
     system_prompt = build_system_prompt(
         mode,
@@ -6498,6 +6499,7 @@ async def chat(request: ChatRequest):
         is_file_request=file_requested,
         user_mood=detected_mood,
         assistant_profile=assistant_profile,
+        preferred_language=preferred_language,
     )
     status_steps = []
 
@@ -7251,6 +7253,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
     file_requested = _is_file_request(request.message or "")
     detected_mood = detect_user_mood(request.message or "")
+    preferred_language = _infer_response_language(request.message, request.conversation_history)
     repo_code_chunks = _retrieve_repo_code_context(request.message, request.conversation_history) if mode == "code" and not has_images else []
     system_prompt = build_system_prompt(
         mode,
@@ -7260,6 +7263,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         is_file_request=file_requested,
         user_mood=detected_mood,
         assistant_profile=assistant_profile,
+        preferred_language=preferred_language,
     )
     work_steps = []
     work_step_results = []
@@ -9885,9 +9889,41 @@ async def cleanup_auto_users(request: dict = None):
     return {"success": True, "removed": len(removed), "remaining": len(remaining)}
 
 
+def _infer_response_language(user_message: str, conversation_history: Optional[list] = None) -> str:
+    """
+    Infer the preferred response language from explicit user request + recent context.
+    Defaults to English to avoid accidental language drift.
+    """
+    text = " ".join(filter(None, [
+        str(user_message or ""),
+        " ".join(str(msg.get("content", "")) for msg in (conversation_history or [])[-4:] if isinstance(msg, dict)),
+    ])).lower()
+
+    explicit_map = [
+        (("in english", "english only", "respond in english"), "English"),
+        (("in chinese", "in mandarin", "respond in chinese"), "Chinese"),
+        (("in spanish", "respond in spanish"), "Spanish"),
+        (("in french", "respond in french"), "French"),
+        (("in german", "respond in german"), "German"),
+        (("in japanese", "respond in japanese"), "Japanese"),
+    ]
+    for patterns, language in explicit_map:
+        if any(p in text for p in patterns):
+            return language
+
+    # If the user is actively typing in CJK, mirror that unless overridden above.
+    cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    ascii_letters = len(re.findall(r"[a-z]", text))
+    if cjk_chars > 10 and cjk_chars > ascii_letters:
+        return "Chinese"
+
+    return "English"
+
+
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
                         realtime_context: str = None, is_file_request: bool = False,
-                        user_mood: str = "neutral", assistant_profile: Optional[dict] = None) -> str:
+                        user_mood: str = "neutral", assistant_profile: Optional[dict] = None,
+                        preferred_language: str = "English") -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
     now = datetime.now()
@@ -9924,6 +9960,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
+    base += f" Reply in {preferred_language} unless the user explicitly asks for another language."
 
     if assistant_profile:
         profile_name = assistant_profile.get("name") or "Custom Assistant"
