@@ -459,7 +459,8 @@ def _infer_contextual_mode_from_history(conversation_history: Optional[list]) ->
 
 def route_mode(user_message: str, requested_mode: str, has_image: bool,
                coral_intent: Optional[str] = None,
-               conversation_history: Optional[list] = None) -> Dict[str, any]:
+               conversation_history: Optional[list] = None,
+               thinking_depth: Optional[str] = None) -> Dict[str, any]:
     """
     Consolidated routing function to determine mode, tools, and model target.
     Single source of truth for all routing logic.
@@ -489,6 +490,21 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             tools_allowed = True
             model_target = "deep"
             reasons.append("Swarm mode → multi-agent collaboration with deep model")
+        elif mode == "builder":
+            mode = "work"
+            tools_allowed = True
+            model_target = "deep"
+            reasons.append("Builder mode → work orchestration with deep model and tools")
+        elif mode == "research":
+            mode = "agent"
+            tools_allowed = True
+            model_target = "medium"
+            reasons.append("Research mode → agent workflow with tools and evidence focus")
+        elif mode == "safety":
+            mode = "chat"
+            model_target = "fast"
+            tools_allowed = False
+            reasons.append("Safety mode → constrained direct-response mode")
         elif mode == "work":
             # Work mode uses step-by-step execution with deep model
             tools_allowed = True
@@ -584,6 +600,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
+            safety_patterns = [
+                "explosive", "bomb", "malware", "ransomware", "steal", "phishing",
+                "bypass", "evade", "fraud", "counterfeit", "weapon", "harm someone",
+            ]
 
             # Check if agent patterns match (for enabling web search)
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
@@ -592,6 +612,7 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
 
             has_code_patterns = any(pattern in msg_lower for pattern in code_patterns)
             has_work_patterns = any(pattern in msg_lower for pattern in work_patterns)
+            has_safety_risk = any(pattern in msg_lower for pattern in safety_patterns)
 
             # Sticky follow-ups should preserve the prior mode unless the user clearly changes direction.
             if is_followup and sticky_mode and not has_realtime and not has_music and not has_agent_patterns and not has_code_patterns and not has_work_patterns:
@@ -600,6 +621,11 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 reasons.append(f"Follow-up detected → preserving prior context as {sticky_mode} mode")
 
             # Real-time queries get tools enabled for instant data retrieval
+            elif has_safety_risk:
+                mode = "chat"
+                tools_allowed = False
+                model_target = "fast"
+                reasons.append("Potentially risky request detected → safer constrained mode")
             elif has_realtime:
                 mode = "agent"
                 tools_allowed = True
@@ -669,6 +695,22 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             if model_target != "fast":
                 model_target = "fast"
                 reasons.append(f"Mode '{mode}' uses fast model")
+
+    # Optional deliberate-thinking override
+    if thinking_depth in {"fast", "balanced", "deep"} and model_target != "vision":
+        if thinking_depth == "fast":
+            model_target = "fast"
+            if mode in {"reasoning", "work"}:
+                mode = "chat"
+            reasons.append("Thinking depth override: fast")
+        elif thinking_depth == "balanced":
+            if model_target == "deep":
+                model_target = "medium"
+            reasons.append("Thinking depth override: balanced")
+        elif thinking_depth == "deep":
+            if mode in {"chat", "agent", "code"}:
+                model_target = "deep"
+            reasons.append("Thinking depth override: deep")
 
     # Log routing decision once
     logger.info(f"ROUTING: mode={mode}, model={model_target}, tools={tools_allowed}, reasons={reasons}")
@@ -2634,9 +2676,13 @@ def create_flux_workflow(prompt: str, width: int = 1024, height: int = 1024,
 # Request/Response models
 class ChatRequest(BaseModel):
     message: str = Field(..., description="User message")
-    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant"] = Field(
+    mode: Literal["auto", "chat", "reasoning", "thinking", "agent", "code", "work", "swarm", "instant", "builder", "research", "safety"] = Field(
         default="auto", 
         description="Interaction mode"
+    )
+    thinking_depth: Optional[Literal["fast", "balanced", "deep"]] = Field(
+        default=None,
+        description="Optional reasoning budget override"
     )
     remember: Optional[bool] = Field(
         default=None, 
@@ -5955,7 +6001,14 @@ async def chat(request: ChatRequest):
     coral_intent = intent
     
     # Use consolidated routing function
-    routing = route_mode(request.message, request.mode, has_images, coral_intent, request.conversation_history)
+    routing = route_mode(
+        request.message,
+        request.mode,
+        has_images,
+        coral_intent,
+        request.conversation_history,
+        request.thinking_depth,
+    )
     mode = routing["mode"]
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
@@ -6436,6 +6489,7 @@ async def chat(request: ChatRequest):
             logger.info(f"Injected real-time context: {rt_context[:80]}...")
     file_requested = _is_file_request(request.message or "")
     detected_mood = detect_user_mood(request.message or "")
+    preferred_language = _infer_response_language(request.message, request.conversation_history)
     repo_code_chunks = _retrieve_repo_code_context(request.message, request.conversation_history) if mode == "code" and not has_images else []
     system_prompt = build_system_prompt(
         mode,
@@ -6445,6 +6499,7 @@ async def chat(request: ChatRequest):
         is_file_request=file_requested,
         user_mood=detected_mood,
         assistant_profile=assistant_profile,
+        preferred_language=preferred_language,
     )
     status_steps = []
 
@@ -6864,7 +6919,14 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
     has_images = request.images and len(request.images) > 0
     coral_intent = intent
 
-    routing = route_mode(request.message, request.mode, has_images, coral_intent, request.conversation_history)
+    routing = route_mode(
+        request.message,
+        request.mode,
+        has_images,
+        coral_intent,
+        request.conversation_history,
+        request.thinking_depth,
+    )
     mode = routing["mode"]
     tools_allowed = routing["tools_allowed"]
     model_target = routing["model_target"]
@@ -7191,6 +7253,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
             logger.info(f"Injected real-time context (stream): {rt_context_stream[:80]}...")
     file_requested = _is_file_request(request.message or "")
     detected_mood = detect_user_mood(request.message or "")
+    preferred_language = _infer_response_language(request.message, request.conversation_history)
     repo_code_chunks = _retrieve_repo_code_context(request.message, request.conversation_history) if mode == "code" and not has_images else []
     system_prompt = build_system_prompt(
         mode,
@@ -7200,6 +7263,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
         is_file_request=file_requested,
         user_mood=detected_mood,
         assistant_profile=assistant_profile,
+        preferred_language=preferred_language,
     )
     work_steps = []
     work_step_results = []
@@ -9825,9 +9889,41 @@ async def cleanup_auto_users(request: dict = None):
     return {"success": True, "removed": len(removed), "remaining": len(remaining)}
 
 
+def _infer_response_language(user_message: str, conversation_history: Optional[list] = None) -> str:
+    """
+    Infer the preferred response language from explicit user request + recent context.
+    Defaults to English to avoid accidental language drift.
+    """
+    text = " ".join(filter(None, [
+        str(user_message or ""),
+        " ".join(str(msg.get("content", "")) for msg in (conversation_history or [])[-4:] if isinstance(msg, dict)),
+    ])).lower()
+
+    explicit_map = [
+        (("in english", "english only", "respond in english"), "English"),
+        (("in chinese", "in mandarin", "respond in chinese"), "Chinese"),
+        (("in spanish", "respond in spanish"), "Spanish"),
+        (("in french", "respond in french"), "French"),
+        (("in german", "respond in german"), "German"),
+        (("in japanese", "respond in japanese"), "Japanese"),
+    ]
+    for patterns, language in explicit_map:
+        if any(p in text for p in patterns):
+            return language
+
+    # If the user is actively typing in CJK, mirror that unless overridden above.
+    cjk_chars = len(re.findall(r"[\u4e00-\u9fff]", text))
+    ascii_letters = len(re.findall(r"[a-z]", text))
+    if cjk_chars > 10 and cjk_chars > ascii_letters:
+        return "Chinese"
+
+    return "English"
+
+
 def build_system_prompt(mode: str, has_context: bool = False, has_search: bool = False,
                         realtime_context: str = None, is_file_request: bool = False,
-                        user_mood: str = "neutral", assistant_profile: Optional[dict] = None) -> str:
+                        user_mood: str = "neutral", assistant_profile: Optional[dict] = None,
+                        preferred_language: str = "English") -> str:
     """Build system prompt based on mode"""
     from datetime import datetime
     now = datetime.now()
@@ -9864,6 +9960,7 @@ def build_system_prompt(mode: str, has_context: bool = False, has_search: bool =
     
     # Add conversation awareness instruction
     base += " Pay attention to the conversation history - if the user asks a follow-up question using pronouns like 'that', 'it', 'this', 'her', or refers to something previously discussed, use the conversation context to understand what they're referring to. Be conversationally aware and maintain context across messages."
+    base += f" Reply in {preferred_language} unless the user explicitly asks for another language."
 
     if assistant_profile:
         profile_name = assistant_profile.get("name") or "Custom Assistant"

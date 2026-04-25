@@ -352,6 +352,18 @@
                                 <span class="mode-icon">🧠</span>
                                 <span class="mode-label">Reasoning</span>
                             </button>
+                            <button class="mode-btn" data-mode="builder" title="Structured multi-step execution">
+                                <span class="mode-icon">🧱</span>
+                                <span class="mode-label">Builder</span>
+                            </button>
+                            <button class="mode-btn" data-mode="research" title="Evidence-first research mode">
+                                <span class="mode-icon">🔎</span>
+                                <span class="mode-label">Research</span>
+                            </button>
+                            <button class="mode-btn" data-mode="safety" title="Constrained safe-response mode">
+                                <span class="mode-icon">🛡️</span>
+                                <span class="mode-label">Safety</span>
+                            </button>
                             <button class="mode-btn" data-mode="code" title="Code assistance">
                                 <span class="mode-icon">💻</span>
                                 <span class="mode-label">Code</span>
@@ -371,6 +383,12 @@
                         </div>
                         <div class="mode-help" id="modeHelp">Auto selects the best mode for your request.</div>
                         <div class="module-availability-bar" id="moduleAvailabilityBar"></div>
+                        <div class="quick-actions" id="quickActions">
+                            <button class="quick-action-btn" data-prompt="Summarize this clearly in bullet points.">Summarize</button>
+                            <button class="quick-action-btn" data-prompt="Turn this into an actionable plan with steps, owners, and timeline.">Plan</button>
+                            <button class="quick-action-btn" data-prompt="Research this and include the best available sources with dates.">Research</button>
+                            <button class="quick-action-btn" data-prompt="Rewrite this to sound more concise and professional.">Rewrite</button>
+                        </div>
                         
                         <div class="input-area">
                             <input type="file" id="fileInput" multiple style="display: none;" accept="*/*" />
@@ -436,6 +454,7 @@
                         </div>
                     </div>
                 </div>
+                <button id="scrollToBottomBtn" class="scroll-to-bottom-btn" title="Jump to latest messages">↓ Latest</button>
             </div>
         </main>
 
@@ -497,11 +516,24 @@
                             <option value="thinking">Thinking (Extended Reasoning)</option>
                             <option value="chat">Chat (14B Fast)</option>
                             <option value="reasoning">Reasoning (QwQ-32B)</option>
+                            <option value="builder">Builder (Structured execution)</option>
+                            <option value="research">Research (Tool-driven lookup)</option>
+                            <option value="safety">Safety (Constrained responses)</option>
                             <option value="code">Code Assistant</option>
                             <option value="agent">Agent Mode</option>
                             <option value="work">Work (Multi-Step)</option>
                             <option value="swarm">Swarm (Parallel Agents)</option>
                         </select>
+                    </div>
+
+                    <div class="setting-group">
+                        <label for="thinkingDepth">Thinking Depth</label>
+                        <select id="thinkingDepth">
+                            <option value="balanced">Balanced (Recommended)</option>
+                            <option value="fast">Fast (Lower latency)</option>
+                            <option value="deep">Deep (Higher quality)</option>
+                        </select>
+                        <p class="setting-description">Controls reasoning budget for chat calls without changing your selected mode.</p>
                     </div>
 
                     <div class="setting-group">
