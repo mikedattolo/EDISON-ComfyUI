@@ -852,6 +852,8 @@
 
   <script>
     const API = '/api';
+    const EDITOR_PREFS_KEY = 'edison_video_editor_prefs_v1';
+    const EDITOR_HISTORY_KEY = 'edison_video_editor_history_v1';
     const previewEl = document.getElementById('preview');
     const emptyPreviewEl = document.getElementById('emptyPreview');
     const fileListEl = document.getElementById('fileList');
@@ -871,6 +873,54 @@
     let selectedFileItem = null;
     let selectedOperation = 'trim';
     let historyEntries = [];
+
+    function saveEditorPrefs() {
+      const payload = {
+        search: fileSearchInputEl.value || '',
+        selectedOperation,
+        startSeconds: document.getElementById('startSeconds').value || '',
+        endSeconds: document.getElementById('endSeconds').value || '',
+        width: document.getElementById('widthInput').value || '',
+        height: document.getElementById('heightInput').value || '',
+        fps: document.getElementById('fpsInput').value || '',
+        audioPath: document.getElementById('audioPath').value || '',
+        captionLanguage: document.getElementById('captionLanguage').value || 'en',
+        captionBurnIn: document.getElementById('captionBurnIn').value || 'true',
+      };
+      try { localStorage.setItem(EDITOR_PREFS_KEY, JSON.stringify(payload)); } catch {}
+    }
+
+    function persistHistory() {
+      try { localStorage.setItem(EDITOR_HISTORY_KEY, JSON.stringify(historyEntries.slice(0, 12))); } catch {}
+    }
+
+    function restorePersistedEditorState() {
+      try {
+        const rawPrefs = localStorage.getItem(EDITOR_PREFS_KEY);
+        if (rawPrefs) {
+          const prefs = JSON.parse(rawPrefs);
+          if (typeof prefs.search === 'string') fileSearchInputEl.value = prefs.search;
+          if (typeof prefs.selectedOperation === 'string') selectedOperation = prefs.selectedOperation;
+          ['startSeconds', 'endSeconds', 'widthInput', 'heightInput', 'fpsInput', 'audioPath', 'captionLanguage', 'captionBurnIn'].forEach((id) => {
+            const keyMap = {
+              widthInput: 'width',
+              heightInput: 'height',
+              fpsInput: 'fps',
+            };
+            const key = keyMap[id] || id;
+            const v = prefs[key];
+            if (v !== undefined && document.getElementById(id)) document.getElementById(id).value = v;
+          });
+        }
+      } catch {}
+      try {
+        const rawHistory = localStorage.getItem(EDITOR_HISTORY_KEY);
+        if (rawHistory) {
+          const parsed = JSON.parse(rawHistory);
+          if (Array.isArray(parsed)) historyEntries = parsed;
+        }
+      } catch {}
+    }
 
     function setStatus(message, tone = '') {
       statusEl.textContent = message;
@@ -1022,7 +1072,9 @@
         : items;
 
       if (!filtered.length) {
-        fileListEl.innerHTML = '<div class="empty-state">This directory is empty. Navigate to a different folder or check that media files exist in the outputs, uploads, or gallery directories.</div>';
+        fileListEl.innerHTML = query
+          ? `<div class="empty-state">No media matches "${query}". Try a different keyword or clear the filter.</div>`
+          : '<div class="empty-state">This directory is empty. Navigate to a different folder or check that media files exist in the outputs, uploads, or gallery directories.</div>';
         return;
       }
       setFileBrowserStatus('', '');
@@ -1231,6 +1283,7 @@
 
         historyEntries.unshift(data);
         historyEntries = historyEntries.slice(0, 12);
+        persistHistory();
         renderHistory();
 
         if (data.output_url) {
@@ -1331,11 +1384,13 @@
     });
 
     fileSearchInputEl.addEventListener('input', () => renderFileList(currentItems));
+    fileSearchInputEl.addEventListener('input', saveEditorPrefs);
 
     document.querySelectorAll('#opButtons .operation-card').forEach((card) => {
       card.addEventListener('click', () => {
         selectedOperation = card.getAttribute('data-op') || 'trim';
         updateOperationUI();
+        saveEditorPrefs();
         setStatus(`Operation selected: ${selectedOperation}`, 'ok');
       });
     });
@@ -1353,8 +1408,13 @@
     });
 
     ['startSeconds', 'endSeconds'].forEach((id) => {
-      document.getElementById(id).addEventListener('input', updateTimelineVisual);
+      document.getElementById(id).addEventListener('input', () => {
+        updateTimelineVisual();
+        saveEditorPrefs();
+      });
     });
+    ['widthInput', 'heightInput', 'fpsInput', 'audioPath', 'captionLanguage', 'captionBurnIn', 'outputName']
+      .forEach((id) => document.getElementById(id).addEventListener('input', saveEditorPrefs));
 
     timelineScrubberEl.addEventListener('input', () => {
       previewEl.currentTime = Number(timelineScrubberEl.value || 0);
@@ -1411,10 +1471,19 @@
           updateTimelineVisual();
           setStatus('Out point set at ' + Number(previewEl.currentTime || 0).toFixed(1) + 's', 'ok');
           break;
+        case '/':
+          e.preventDefault();
+          fileSearchInputEl.focus();
+          break;
+        case 'r':
+          e.preventDefault();
+          runEdit().catch((err) => setStatus(err.message, 'err'));
+          break;
       }
     });
 
     (async function init() {
+      restorePersistedEditorState();
       updateOperationUI();
       renderHistory();
       updateTimelineVisual();

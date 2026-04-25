@@ -182,6 +182,7 @@
 
 <main class="shell">
   <div class="section-label">Available Integrations</div>
+  <input id="providerSearch" class="text" type="text" placeholder="Filter providers (github, slack, drive...)" style="margin-bottom:10px;" />
   <div class="cards" id="cards">Loading...</div>
   <div class="status-bar" id="globalStatus"></div>
 
@@ -280,6 +281,7 @@
 
 <script>
 const API = '/api';
+const TESTER_PREFS_KEY = 'edison_connector_tester_prefs_v1';
 let catalog    = [];
 let connectors = [];
 let devicePollTimer = null;
@@ -326,7 +328,15 @@ function getConn(key) {
 function renderCards() {
   const host = document.getElementById('cards');
   if (!catalog.length) { host.innerHTML = '<div style="color:var(--muted)">No providers available.</div>'; return; }
-  host.innerHTML = catalog.map(p => {
+  const query = (document.getElementById('providerSearch').value || '').trim().toLowerCase();
+  const visible = query
+    ? catalog.filter((p) => `${p.key} ${p.label} ${DESC[p.key] || ''}`.toLowerCase().includes(query))
+    : catalog;
+  if (!visible.length) {
+    host.innerHTML = '<div class="status-bar warn">No providers match your filter.</div>';
+    return;
+  }
+  host.innerHTML = visible.map(p => {
     const conn = isConnected(p.key);
     const icon = ICONS[p.key] || '🔌';
     const desc = DESC[p.key] || p.auth || '';
@@ -592,6 +602,14 @@ async function easySave() {
     status.className = 'status-bar warn';
     return;
   }
+  try {
+    const parsed = new URL(base_url);
+    if (!/^https?:$/.test(parsed.protocol)) throw new Error('protocol');
+  } catch {
+    status.textContent = 'Base URL must be a valid http(s) URL (example: https://api.example.com/v1).';
+    status.className = 'status-bar warn';
+    return;
+  }
   if (auth_type !== 'none' && !token) {
     status.textContent = 'Token/API key is required for this auth type.';
     status.className = 'status-bar warn';
@@ -651,6 +669,9 @@ async function runApiCall() {
     method: document.getElementById('testMeth').value,
     path: document.getElementById('testPath').value || undefined,
   };
+  try {
+    localStorage.setItem(TESTER_PREFS_KEY, JSON.stringify({ method: body.method, path: body.path || '' }));
+  } catch {}
   const raw = document.getElementById('testBody').value.trim();
   if (raw) { try { body.body = JSON.parse(raw); } catch(e) { document.getElementById('testOut').textContent = `Bad JSON: ${e.message}`; return; } }
   try {
@@ -676,6 +697,16 @@ async function refresh() {
 
 loadAll();
 document.getElementById('easyProv').addEventListener('change', syncEasyProviderDefaults);
+document.getElementById('providerSearch').addEventListener('input', renderCards);
+(function restoreTesterPrefs() {
+  try {
+    const raw = localStorage.getItem(TESTER_PREFS_KEY);
+    if (!raw) return;
+    const prefs = JSON.parse(raw);
+    if (prefs.method) document.getElementById('testMeth').value = prefs.method;
+    if (typeof prefs.path === 'string') document.getElementById('testPath').value = prefs.path;
+  } catch {}
+})();
 </script>
 </body>
 </html>
