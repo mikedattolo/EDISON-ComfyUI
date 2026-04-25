@@ -218,7 +218,17 @@
           <div class="metric"><div class="label">Printers</div><div class="value" id="printerCount">0</div></div>
         </div>
         <div class="status" id="capabilitySummary">Loading capability summary...</div>
-        <input id="projectSearch" class="field" placeholder="Filter projects by name, client, or tag" />
+        <div class="grid-2">
+          <input id="projectSearch" class="field" placeholder="Filter projects by name, client, or tag" />
+          <select id="projectStatusFilter" class="select">
+            <option value="">All statuses</option>
+            <option value="planned">Planned</option>
+            <option value="active">Active</option>
+            <option value="in_review">In Review</option>
+            <option value="approved">Approved</option>
+            <option value="completed">Completed</option>
+          </select>
+        </div>
         <div id="projectsList" class="list"></div>
       </div>
     </section>
@@ -233,6 +243,7 @@
   </main>
 
   <script>
+    const DRAFT_KEY = 'edison_projects_draft_v1';
     const state = {
       clients: [],
       projects: [],
@@ -254,6 +265,41 @@
         .filter(Boolean);
     }
 
+    function collectDraft() {
+      return {
+        projectName: byId('projectName').value,
+        projectDescription: byId('projectDescription').value,
+        clientSelect: byId('clientSelect').value,
+        dueDate: byId('dueDate').value,
+        statusSelect: byId('statusSelect').value,
+        serviceTypes: byId('serviceTypes').value,
+        projectTags: byId('projectTags').value,
+        projectNotes: byId('projectNotes').value,
+      };
+    }
+
+    function saveDraft() {
+      try {
+        localStorage.setItem(DRAFT_KEY, JSON.stringify(collectDraft()));
+      } catch {}
+    }
+
+    function restoreDraft() {
+      try {
+        const raw = localStorage.getItem(DRAFT_KEY);
+        if (!raw) return;
+        const draft = JSON.parse(raw);
+        Object.entries(draft).forEach(([key, value]) => {
+          const el = byId(key);
+          if (el && typeof value === 'string') el.value = value;
+        });
+      } catch {}
+    }
+
+    function clearDraft() {
+      try { localStorage.removeItem(DRAFT_KEY); } catch {}
+    }
+
     async function readJson(response) {
       const raw = await response.text();
       try { return raw ? JSON.parse(raw) : {}; } catch { return { detail: raw || 'Invalid response' }; }
@@ -272,13 +318,15 @@
 
     function renderProjects() {
       const query = byId('projectSearch').value.trim().toLowerCase();
+      const statusFilter = byId('projectStatusFilter').value;
       const host = byId('projectsList');
       host.innerHTML = '';
       const filtered = state.projects.filter((project) => {
         const haystack = [project.name, project.description || '', project.client_name || '', ...(project.tags || [])]
           .join(' ')
           .toLowerCase();
-        return !query || haystack.includes(query);
+        const statusMatch = !statusFilter || (project.status || 'planned') === statusFilter;
+        return statusMatch && (!query || haystack.includes(query));
       });
       if (!filtered.length) {
         host.innerHTML = '<div class="status">No projects match the current filter.</div>';
@@ -300,7 +348,14 @@
     async function selectProject(projectId) {
       state.selectedProjectId = projectId;
       renderProjects();
-      const response = await fetch(`/api/projects/${projectId}/status`);
+      let response;
+      try {
+        response = await fetch(`/api/projects/${projectId}/status`);
+      } catch (err) {
+        byId('projectDetail').textContent = `Could not load project status: ${err.message}`;
+        byId('pathCards').innerHTML = '';
+        return;
+      }
       const payload = await readJson(response);
       if (!response.ok || !payload.ok) {
         byId('projectDetail').textContent = payload.detail || 'Could not load project status.';
@@ -327,7 +382,13 @@
     }
 
     async function loadOverview() {
-      const response = await fetch('/api/business/overview');
+      let response;
+      try {
+        response = await fetch('/api/business/overview');
+      } catch (err) {
+        byId('capabilitySummary').textContent = `Could not load business overview: ${err.message}`;
+        return;
+      }
       const payload = await readJson(response);
       if (!response.ok || !payload.ok) {
         byId('capabilitySummary').textContent = payload.detail || 'Could not load business overview.';
@@ -363,6 +424,15 @@
         setFormStatus('Project name is required.', 'error');
         return;
       }
+      if (body.due_date) {
+        const dueDate = new Date(`${body.due_date}T00:00:00`);
+        const today = new Date();
+        today.setHours(0, 0, 0, 0);
+        if (dueDate < today) {
+          setFormStatus('Due date cannot be in the past.', 'error');
+          return;
+        }
+      }
       const response = await fetch('/api/projects', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -379,6 +449,7 @@
       byId('serviceTypes').value = '';
       byId('projectTags').value = '';
       byId('projectNotes').value = '';
+      clearDraft();
       await loadOverview();
       state.selectedProjectId = payload.project.project_id;
       await selectProject(payload.project.project_id);
@@ -387,9 +458,13 @@
     byId('refreshBtn').addEventListener('click', loadOverview);
     byId('createProjectBtn').addEventListener('click', createProject);
     byId('projectSearch').addEventListener('input', renderProjects);
+    byId('projectStatusFilter').addEventListener('change', renderProjects);
     byId('chatBtn').addEventListener('click', () => { window.location.href = '/'; });
     byId('brandingBtn').addEventListener('click', () => { window.location.href = '/branding'; });
+    ['projectName', 'projectDescription', 'clientSelect', 'dueDate', 'statusSelect', 'serviceTypes', 'projectTags', 'projectNotes']
+      .forEach((id) => byId(id).addEventListener('input', saveDraft));
 
+    restoreDraft();
     loadOverview();
   </script>
 </body>

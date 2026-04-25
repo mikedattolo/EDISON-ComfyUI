@@ -747,6 +747,10 @@ Areas for contribution:
 
 ---
 
+## Edison Improvement Notes
+
+- See `MYTHOS_INSPIRED_EDISON_IMPROVEMENTS.md` for a practical roadmap of model-agnostic upgrades (routing, tool reliability, memory controls, evals, and evidence-first responses).
+
 ## License
 
 MIT License - see [LICENSE](LICENSE) file for details
@@ -836,6 +840,10 @@ EDISON-ComfyUI/
     └── custom_nodes/
         └── edison_nodes/  # EDISON custom node
 ```
+
+## Edison Improvement Notes
+
+- See `MYTHOS_INSPIRED_EDISON_IMPROVEMENTS.md` for a practical roadmap of model-agnostic upgrades (routing, tool reliability, memory controls, evals, and evidence-first responses).
 
 ## License
 
