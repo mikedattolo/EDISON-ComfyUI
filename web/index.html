@@ -994,6 +994,22 @@
 
             <!-- Storage Overview (hidden until auth) -->
             <div class="fm-authed-content" id="fmAuthedContent" style="display:none;">
+                <div class="fm-workspace-strip">
+                    <div class="fm-workspace-copy">
+                        <span class="fm-workspace-kicker">Files workspace</span>
+                        <strong>Browse drives, inspect generated assets, and jump back into the right business workflow.</strong>
+                        <p>Use search inside the current folder, double-click editable text files to open the built-in editor, and jump back to branding, projects, or video without losing context.</p>
+                    </div>
+                    <div class="fm-workspace-actions">
+                        <button class="fm-btn fm-btn-ghost" onclick="window.fmNavigate && window.fmNavigate('')">Root</button>
+                        <button class="fm-btn fm-btn-ghost" onclick="window.fmRefreshCurrent && window.fmRefreshCurrent()">Refresh</button>
+                        <button class="fm-btn fm-btn-ghost" onclick="window.fmFocusSearch && window.fmFocusSearch()">Search</button>
+                        <button class="fm-btn fm-btn-link" onclick="location.href='/branding'">Branding</button>
+                        <button class="fm-btn fm-btn-link" onclick="location.href='/projects'">Projects</button>
+                        <button class="fm-btn fm-btn-link" onclick="location.href='/video-editor'">Video</button>
+                    </div>
+                </div>
+
                 <div class="fm-storage-section" id="fmStorageSection">
                     <h3 class="fm-section-title">💾 Storage Drives</h3>
                     <div class="fm-drives" id="fmDrives">

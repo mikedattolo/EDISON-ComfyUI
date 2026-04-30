@@ -1273,6 +1273,17 @@ console.log('🧊 app_new_features.js v1 loading...');
         if (passEl) passEl.value = '';
     };
 
+    window.fmRefreshCurrent = function() {
+        window.fmNavigate(fmCurrentPath || '');
+    };
+
+    window.fmFocusSearch = function() {
+        const input = document.getElementById('fmSearch');
+        if (!input) return;
+        input.focus();
+        input.select();
+    };
+
     function fmHeaders() {
         return { 'X-FM-Token': fmAuthToken };
     }
