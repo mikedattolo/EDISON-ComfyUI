@@ -5512,6 +5512,37 @@ async def reload_models_endpoint():
 @app.get("/models/status")
 async def models_status():
     """Check which LLM models are currently loaded"""
+    core_config = _get_core_config()
+    slot_refs = {
+        "fast": llm_fast,
+        "medium": llm_medium,
+        "deep": llm_deep,
+        "reasoning": llm_reasoning,
+        "vision": llm_vision,
+        "vision_code": llm_vision_code,
+    }
+    configured_models = {
+        "fast": core_config.get("fast_model"),
+        "medium": core_config.get("medium_model"),
+        "deep": core_config.get("deep_model"),
+        "reasoning": core_config.get("reasoning_model"),
+        "vision": core_config.get("vision_model"),
+        "vision_code": core_config.get("vision_code_model"),
+    }
+
+    slot_details = {}
+    for slot_name, model_ref in slot_refs.items():
+        shared_with = [
+            other_name
+            for other_name, other_ref in slot_refs.items()
+            if other_name != slot_name and model_ref is not None and other_ref is model_ref
+        ]
+        slot_details[slot_name] = {
+            "loaded": model_ref is not None,
+            "configured_model": configured_models.get(slot_name),
+            "shared_with": shared_with,
+        }
+
     return {
         "models_unloaded_for_image_gen": _models_unloaded_for_image_gen,
         "fast": llm_fast is not None,
@@ -5519,7 +5550,9 @@ async def models_status():
         "deep": llm_deep is not None,
         "reasoning": llm_reasoning is not None,
         "vision": llm_vision is not None,
-        "vision_code": llm_vision_code is not None
+        "vision_code": llm_vision_code is not None,
+        "configured_models": configured_models,
+        "slots": slot_details,
     }
 
 def get_lock_for_model(model) -> threading.Lock:
