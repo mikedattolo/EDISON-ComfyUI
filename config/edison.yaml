@@ -5,10 +5,13 @@ edison:
     host: "0.0.0.0"
     port: 8811
     models_path: "models/llm"
-    fast_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
-    medium_model: "qwen2.5-coder-32b-instruct-q4_k_m.gguf"
-    deep_model: "qwen2.5-72b-instruct-q4_k_m.gguf"
-    reasoning_model: "qwen2.5-coder-32b-instruct-q4_k_m.gguf"
+    # Primary text model: use 32B Instruct as the default assistant model.
+    fast_model: "qwen2.5-32b-instruct-q4_k_m.gguf"
+    # Light fallback for lower-VRAM or degraded startup conditions.
+    medium_model: "qwen2.5-14b-instruct-q4_k_m.gguf"
+    # Keep deep/reasoning mapped to the same primary 32B model to avoid treating 72B as the default path.
+    deep_model: "qwen2.5-32b-instruct-q4_k_m.gguf"
+    reasoning_model: "qwen2.5-32b-instruct-q4_k_m.gguf"
     vision_model: "llava-v1.6-mistral-7b-q4_k_m.gguf"  # Best available VLM (default)
     vision_clip: "llava-v1.6-mistral-7b-mmproj-q4_0.gguf"  # CLIP projector for vision
     vision_code_model: "Qwen2-VL-7B-Instruct-Q4_K_M.gguf"
@@ -16,7 +19,7 @@ edison:
     # Context window settings
     n_ctx: 4096
     context_window: 131072
-    fast_n_ctx: 4096
+    fast_n_ctx: 8192
     medium_n_ctx: 4096
     deep_n_ctx: 8192
     reasoning_n_ctx: 8192

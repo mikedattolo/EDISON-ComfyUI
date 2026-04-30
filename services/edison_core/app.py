@@ -4139,8 +4139,10 @@ def load_config():
                         "host": "127.0.0.1",
                         "port": 8811,
                         "models_path": "models/llm",
-                        "fast_model": "qwen2.5-14b-instruct-q4_k_m.gguf",
-                        "deep_model": "qwen2.5-72b-instruct-q4_k_m.gguf"
+                        "fast_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
+                        "medium_model": "qwen2.5-14b-instruct-q4_k_m.gguf",
+                        "deep_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
+                        "reasoning_model": "qwen2.5-32b-instruct-q4_k_m.gguf"
                     },
                     "coral": {
                         "host": "127.0.0.1",
@@ -4686,9 +4688,9 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
     models_path = REPO_ROOT / models_rel_path
     
     core_config = _get_core_config()
-    fast_model_name = core_config.get("fast_model", "qwen2.5-14b-instruct-q4_k_m.gguf")
-    medium_model_name = core_config.get("medium_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
-    deep_model_name = core_config.get("deep_model", "qwen2.5-72b-instruct-q4_k_m.gguf")
+    fast_model_name = core_config.get("fast_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
+    medium_model_name = core_config.get("medium_model", "qwen2.5-14b-instruct-q4_k_m.gguf")
+    deep_model_name = core_config.get("deep_model", "qwen2.5-32b-instruct-q4_k_m.gguf")
     reasoning_model_name = core_config.get("reasoning_model")
     vision_code_model_name = core_config.get("vision_code_model")
     vision_code_clip_name = core_config.get("vision_code_clip")
@@ -4727,6 +4729,17 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
     if use_flash_attn:
         common_kwargs["use_flash_attn"] = True
         common_kwargs["flash_attn_recompute"] = flash_attn_recompute
+
+    loaded_model_specs: dict[tuple[str, int, int], tuple[object, str]] = {}
+
+    def _get_loaded_alias(model_name: Optional[str], n_ctx: int, n_gpu_layers: int):
+        if not model_name:
+            return None
+        return loaded_model_specs.get((model_name, int(n_ctx), int(n_gpu_layers)))
+
+    def _remember_loaded_model(model_name: Optional[str], n_ctx: int, n_gpu_layers: int, model_ref, slot_name: str):
+        if model_name and model_ref is not None:
+            loaded_model_specs[(model_name, int(n_ctx), int(n_gpu_layers))] = (model_ref, slot_name)
     
     logger.info(f"Looking for models in: {models_path}")
     
@@ -4744,19 +4757,19 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
             )
             logger.info("✓ Fast model loaded successfully")
             fast_loaded = True
+            _remember_loaded_model(fast_model_name, fast_n_ctx, fast_n_gpu_layers, llm_fast, "fast")
         except Exception as e:
             logger.error(f"Failed to load fast model: {e}")
     else:
         logger.warning(f"Fast model not found at {fast_model_path}")
     
-    # If fast model failed (likely OOM), skip larger models
-    if not fast_loaded:
-        logger.warning("⚠ Fast model failed to load — skipping medium/deep models (insufficient VRAM)")
-        return
-    
     # Try to load medium model (e.g., 32B - fallback for deep mode)
     medium_model_path = models_path / medium_model_name
-    if medium_model_path.exists():
+    medium_alias = _get_loaded_alias(medium_model_name, medium_n_ctx, medium_n_gpu_layers)
+    if medium_alias:
+        llm_medium = medium_alias[0]
+        logger.info(f"✓ Medium model aliased to {medium_alias[1]} model: {medium_model_name}")
+    elif medium_model_path.exists():
         # Pre-check: estimate if enough total VRAM across all GPUs
         total_free_mb = sum(_get_gpu_free_vram_mb(i) for i in range(3))
         file_size_gb = medium_model_path.stat().st_size / (1024**3)
@@ -4775,6 +4788,7 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
                     **common_kwargs
                 )
                 logger.info("✓ Medium model loaded successfully")
+                _remember_loaded_model(medium_model_name, medium_n_ctx, medium_n_gpu_layers, llm_medium, "medium")
             except Exception as e:
                 llm_medium = None
                 logger.warning(f"Failed to load medium model: {e}")
@@ -4783,7 +4797,11 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
     
     # Try to load deep model (e.g., 72B)
     deep_model_path = models_path / deep_model_name
-    if deep_model_path.exists():
+    deep_alias = _get_loaded_alias(deep_model_name, deep_n_ctx, deep_n_gpu_layers)
+    if deep_alias:
+        llm_deep = deep_alias[0]
+        logger.info(f"✓ Deep model aliased to {deep_alias[1]} model: {deep_model_name}")
+    elif deep_model_path.exists():
         # Pre-check VRAM
         total_free_mb = sum(_get_gpu_free_vram_mb(i) for i in range(3))
         file_size_gb = deep_model_path.stat().st_size / (1024**3)
@@ -4802,6 +4820,7 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
                     **common_kwargs
                 )
                 logger.info("✓ Deep model loaded successfully")
+                _remember_loaded_model(deep_model_name, deep_n_ctx, deep_n_gpu_layers, llm_deep, "deep")
             except Exception as e:
                 llm_deep = None
                 logger.warning(f"Failed to load deep model (will fall back to medium or fast model): {e}")
@@ -4812,7 +4831,11 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
     # Try to load reasoning model (optional)
     if reasoning_model_name:
         reasoning_model_path = models_path / reasoning_model_name
-        if reasoning_model_path.exists():
+        reasoning_alias = _get_loaded_alias(reasoning_model_name, reasoning_n_ctx, reasoning_n_gpu_layers)
+        if reasoning_alias:
+            llm_reasoning = reasoning_alias[0]
+            logger.info(f"✓ Reasoning model aliased to {reasoning_alias[1]} model: {reasoning_model_name}")
+        elif reasoning_model_path.exists():
             try:
                 logger.info(f"Loading reasoning model: {reasoning_model_path}")
                 llm_reasoning = Llama(
@@ -4822,11 +4845,20 @@ def load_llm_models(include_vision: bool = True, include_vision_code: bool = Tru
                     **common_kwargs
                 )
                 logger.info("✓ Reasoning model loaded successfully")
+                _remember_loaded_model(reasoning_model_name, reasoning_n_ctx, reasoning_n_gpu_layers, llm_reasoning, "reasoning")
             except Exception as e:
                 llm_reasoning = None
                 logger.warning(f"Failed to load reasoning model: {e}")
         else:
             logger.info(f"Reasoning model not found at {reasoning_model_path} (optional)")
+
+    if not llm_fast:
+        if llm_deep:
+            llm_fast = llm_deep
+            logger.warning("⚠ Fast model unavailable — using deep model as primary fallback")
+        elif llm_medium:
+            llm_fast = llm_medium
+            logger.warning("⚠ Fast model unavailable — using medium model as primary fallback")
 
     # Try to load vision model (VLM)
     vision_model_name = config.get("edison", {}).get("core", {}).get("vision_model")
@@ -8218,6 +8250,8 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
         "gpt-3.5-turbo": "fast",
         "gpt-4": "deep",
         "qwen2.5-14b": "fast",
+        "qwen2.5-32b": "deep",
+        "qwen2.5-32b-instruct": "deep",
         "qwen2.5-72b": "deep",
         "fast": "fast",
         "medium": "medium",

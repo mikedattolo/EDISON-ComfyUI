@@ -94,13 +94,17 @@ fi
 # Check 6: LLM Models
 echo "[6/12] LLM Models"
 MODELS_FOUND=0
+[ -f "$REPO_ROOT/models/llm/qwen2.5-32b-instruct-q4_k_m.gguf" ] && ((MODELS_FOUND++))
 [ -f "$REPO_ROOT/models/llm/qwen2.5-14b-instruct-q4_k_m.gguf" ] && ((MODELS_FOUND++))
-[ -f "$REPO_ROOT/models/llm/qwen2.5-72b-instruct-q4_k_m.gguf" ] && ((MODELS_FOUND++))
 
 if [ $MODELS_FOUND -eq 2 ]; then
-    check_pass "Both LLM models found (fast + deep)"
+    check_pass "Primary and fallback LLM models found (32B + 14B)"
 elif [ $MODELS_FOUND -eq 1 ]; then
-    check_warn "Only 1 LLM model found" "Place GGUF models in $REPO_ROOT/models/llm/"
+    if [ -f "$REPO_ROOT/models/llm/qwen2.5-32b-instruct-q4_k_m.gguf" ]; then
+        check_pass "Primary 32B model found" "Fallback 14B model is optional but recommended"
+    else
+        check_warn "Only fallback 14B model found" "Install qwen2.5-32b-instruct-q4_k_m.gguf for the recommended setup"
+    fi
 else
     check_warn "No LLM models found" "Download GGUF models to $REPO_ROOT/models/llm/"
 fi

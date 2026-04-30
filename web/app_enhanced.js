@@ -43,6 +43,7 @@ class EdisonApp {
         this.swarmAutocompleteVisible = false;
         
         this.initializeElements();
+            this.hydrateWelcomeScreen();
         this.attachEventListeners();
         this.checkSystemStatus();
         this.refreshReadiness();
@@ -290,6 +291,10 @@ class EdisonApp {
     }
 
     attachEventListeners() {
+        if (this.messagesContainer) {
+            this.messagesContainer.addEventListener('click', (e) => this.handleWelcomeActionClick(e));
+        }
+
         // Message input
         this.messageInput.addEventListener('input', () => this.handleInputChange());
         this.messageInput.addEventListener('keydown', (e) => this.handleKeyDown(e));
@@ -431,6 +436,210 @@ class EdisonApp {
         this.settingsModal.addEventListener('click', (e) => {
             if (e.target === this.settingsModal) this.closeSettings();
         });
+    }
+
+    hydrateWelcomeScreen() {
+        if (this.welcomeScreen) {
+            this.welcomeScreen.innerHTML = this.getWelcomeScreenMarkup();
+        }
+    }
+
+    getWelcomeScreenMarkup() {
+        return `
+            <div class="welcome-shell">
+                <section class="welcome-hero">
+                    <div class="welcome-hero-copy">
+                        <span class="welcome-kicker">EDISON workspace</span>
+                        <h2>One AI control room for chat, files, branding, media, fabrication, and client work.</h2>
+                        <p>EDISON works best when chat is the front door and the specialized workspaces are one click away. Start in the right mode, launch into the right tab, and keep the whole workflow in one system.</p>
+
+                        <div class="welcome-action-grid">
+                            <button class="welcome-prompt-btn" type="button" data-welcome-mode="agent" data-welcome-prompt="Create a full branding package for a restaurant called Adoro Pizza, including logo directions, palette, slogan, and a client project structure.">
+                                <strong>Launch a brand package</strong>
+                                <span>Agent mode · client-ready deliverables</span>
+                            </button>
+                            <button class="welcome-prompt-btn" type="button" data-welcome-mode="work" data-welcome-prompt="Plan a promo video campaign for a restaurant launch, including storyboard, shot list, social cutdowns, and deliverables timeline.">
+                                <strong>Plan a promo video</strong>
+                                <span>Work mode · timeline + deliverables</span>
+                            </button>
+                            <button class="welcome-prompt-btn" type="button" data-welcome-mode="code" data-welcome-prompt="Audit the EDISON codebase for the highest-impact UI and UX issues in the main chat, branding, projects, video, printing, and connectors workspaces.">
+                                <strong>Audit the product</strong>
+                                <span>Code mode · UX and architecture review</span>
+                            </button>
+                            <button class="welcome-prompt-btn" type="button" data-welcome-mode="agent" data-welcome-prompt="Turn a logo into a fabrication plan with SVG cleanup, a printable keychain STL, signage options, and a queued print checklist.">
+                                <strong>Prepare a fabrication job</strong>
+                                <span>Agent mode · printing + 3D deliverables</span>
+                            </button>
+                        </div>
+
+                        <div class="welcome-mini-stats">
+                            <div class="welcome-stat-card">
+                                <strong>9</strong>
+                                <span>chat modes</span>
+                            </div>
+                            <div class="welcome-stat-card">
+                                <strong>8</strong>
+                                <span>dedicated workspaces</span>
+                            </div>
+                            <div class="welcome-stat-card">
+                                <strong>Local</strong>
+                                <span>files + model control</span>
+                            </div>
+                            <div class="welcome-stat-card">
+                                <strong>Live</strong>
+                                <span>agents, nodes, and tools</span>
+                            </div>
+                        </div>
+                    </div>
+
+                    <aside class="welcome-panel">
+                        <div class="welcome-panel-head">
+                            <span>Workspace map</span>
+                            <strong>Move from conversation into execution</strong>
+                        </div>
+                        <div class="welcome-destination-grid">
+                            <button class="welcome-destination-card" type="button" data-welcome-action="files">
+                                <strong>Files</strong>
+                                <span>Open the server file manager without leaving chat.</span>
+                            </button>
+                            <a class="welcome-destination-card" href="/branding">
+                                <strong>Branding</strong>
+                                <span>Clients, assets, style systems, and campaign prep.</span>
+                            </a>
+                            <a class="welcome-destination-card" href="/projects">
+                                <strong>Projects</strong>
+                                <span>Delivery tracking, tasks, approvals, and client scope.</span>
+                            </a>
+                            <a class="welcome-destination-card" href="/video-editor">
+                                <strong>Video</strong>
+                                <span>Clip browsing, edit operations, and export control.</span>
+                            </a>
+                            <a class="welcome-destination-card" href="/printing">
+                                <strong>3D Printing</strong>
+                                <span>Machine setup, slicing, and fabrication workflows.</span>
+                            </a>
+                            <a class="welcome-destination-card" href="/connectors">
+                                <strong>Connectors</strong>
+                                <span>Platforms, posting hooks, and external services.</span>
+                            </a>
+                            <a class="welcome-destination-card" href="/assistants">
+                                <strong>Custom AI</strong>
+                                <span>Specialized assistants, automations, and reusable flows.</span>
+                            </a>
+                            <a class="welcome-destination-card" href="/nodes">
+                                <strong>Nodes</strong>
+                                <span>Remote workstations, Rhino workers, and distributed jobs.</span>
+                            </a>
+                        </div>
+                    </aside>
+                </section>
+
+                <h3 class="welcome-section-title">Mode lineup</h3>
+                <div class="capabilities">
+                    <div class="capability-card">
+                        <div class="capability-icon">🔮</div>
+                        <h3>Auto</h3>
+                        <p>Routes each request to the best mode so general chat stays fast.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">⚡</div>
+                        <h3>Instant</h3>
+                        <p>Use for quick lookups, short rewrites, and lightweight requests.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">💬</div>
+                        <h3>Chat</h3>
+                        <p>Natural conversation mode for day-to-day assistance and planning.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🧠</div>
+                        <h3>Reasoning</h3>
+                        <p>Structured step-by-step analysis for harder decisions and tradeoffs.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">💻</div>
+                        <h3>Code</h3>
+                        <p>Best for debugging, implementation, architecture, and audits.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🤖</div>
+                        <h3>Agent</h3>
+                        <p>Tool-using execution when work needs multiple steps and artifacts.</p>
+                    </div>
+                </div>
+
+                <h3 class="welcome-section-title">Operational workspaces</h3>
+                <div class="capabilities">
+                    <div class="capability-card">
+                        <div class="capability-icon">🧱</div>
+                        <h3>Projects</h3>
+                        <p>Turn chat requests into scoped client work with tasks and due dates.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🎨</div>
+                        <h3>Branding</h3>
+                        <p>Organize client assets and move from ideas into reusable brand systems.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🎬</div>
+                        <h3>Video Edit</h3>
+                        <p>Browse media, inspect clips, and run production edits from one place.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🖨️</div>
+                        <h3>3D Print</h3>
+                        <p>Prepare fabrication jobs, machine settings, and slice outputs faster.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🔌</div>
+                        <h3>Connectors</h3>
+                        <p>Keep external services, social channels, and automation hooks aligned.</p>
+                    </div>
+                    <div class="capability-card">
+                        <div class="capability-icon">🛰️</div>
+                        <h3>Nodes</h3>
+                        <p>Use remote hardware for CAD, Rhino, GPU tasks, and distributed work.</p>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    handleWelcomeActionClick(event) {
+        const promptButton = event.target.closest('[data-welcome-prompt]');
+        if (promptButton) {
+            event.preventDefault();
+            this.applyWelcomePrompt(
+                promptButton.getAttribute('data-welcome-prompt') || '',
+                promptButton.getAttribute('data-welcome-mode') || 'auto'
+            );
+            return;
+        }
+
+        const actionNode = event.target.closest('[data-welcome-action]');
+        if (!actionNode) return;
+
+        event.preventDefault();
+        this.runWelcomeAction(actionNode.getAttribute('data-welcome-action') || '');
+    }
+
+    applyWelcomePrompt(prompt, mode) {
+        if (!prompt) return;
+        this.setMode(mode || 'auto');
+        this.messageInput.value = prompt;
+        this.handleInputChange();
+        this.messageInput.focus();
+        this.messageInput.setSelectionRange(this.messageInput.value.length, this.messageInput.value.length);
+    }
+
+    runWelcomeAction(action) {
+        if (action === 'files') {
+            if (typeof window.toggleFileManager === 'function') {
+                window.toggleFileManager();
+            } else {
+                this.showNotification('File manager is not ready yet');
+            }
+        }
     }
 
     toggleSidebar() {
@@ -2584,83 +2793,7 @@ ${code}
         this.welcomeScreen = document.createElement('div');
         this.welcomeScreen.className = 'welcome-screen';
         this.welcomeScreen.id = 'welcomeScreen';
-        this.welcomeScreen.innerHTML = `
-            <h2>Welcome to EDISON</h2>
-            <p>Your offline AI assistant for conversations, code, and creative tasks</p>
-            
-            <h3 class="welcome-section-title">💡 Modes</h3>
-            <div class="capabilities">
-                <div class="capability-card">
-                    <div class="capability-icon">🔮</div>
-                    <h3>Auto</h3>
-                    <p>Automatically detects your intent and picks the best mode</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">⚡</div>
-                    <h3>Instant</h3>
-                    <p>Ultra-fast responses for quick questions and simple tasks</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">💬</div>
-                    <h3>Chat</h3>
-                    <p>Natural conversations with fast responses using the 14B model</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">🧠</div>
-                    <h3>Reasoning</h3>
-                    <p>Deep analysis and step-by-step reasoning with the QwQ-32B model</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">🧩</div>
-                    <h3>Thinking</h3>
-                    <p>Extended reasoning with the powerful 72B model for complex problems</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">💻</div>
-                    <h3>Code</h3>
-                    <p>Write, debug, and explain code in multiple languages</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">🤖</div>
-                    <h3>Agent</h3>
-                    <p>Execute complex multi-step tasks with tool-using capabilities</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">🕸️</div>
-                    <h3>Swarm</h3>
-                    <p>Parallel specialized agents collaborate on complex tasks</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">🖥️</div>
-                    <h3>Work</h3>
-                    <p>Task visualization and structured project workflows</p>
-                </div>
-            </div>
-
-            <h3 class="welcome-section-title">🚀 Features</h3>
-            <div class="capabilities">
-                <div class="capability-card">
-                    <div class="capability-icon">🎨</div>
-                    <h3>Image Generation</h3>
-                    <p>Create images from text prompts using FLUX models</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">📐</div>
-                    <h3>3D Models</h3>
-                    <p>Generate 3D models from text descriptions</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">🖼️</div>
-                    <h3>Gallery</h3>
-                    <p>Browse and manage all your generated images</p>
-                </div>
-                <div class="capability-card">
-                    <div class="capability-icon">📁</div>
-                    <h3>File Manager</h3>
-                    <p>Upload, browse, and manage files on the server</p>
-                </div>
-            </div>
-        `;
+        this.welcomeScreen.innerHTML = this.getWelcomeScreenMarkup();
         this.messagesContainer.appendChild(this.welcomeScreen);
     }
 
