@@ -27,11 +27,37 @@
 body.light-theme {
     --background: #f5f5f7;
     --surface: #ffffff;
+    --surface-alt: #f6f8fb;
     --surface-hover: #f0f0f0;
     --border: #e5e5e5;
     --text-primary: #1a1a1a;
     --text-secondary: #666666;
     --text-tertiary: #999999;
+}
+
+body.light-theme {
+    background:
+        radial-gradient(circle at 8% 12%, rgba(24, 181, 143, 0.10), transparent 24%),
+        radial-gradient(circle at 86% 4%, rgba(255, 154, 68, 0.10), transparent 20%),
+        linear-gradient(180deg, #f8fbff 0%, var(--background) 48%, #eef4fa 100%);
+}
+
+body.light-theme .workspace,
+body.light-theme .workspace-page,
+body.light-theme .ws-page-card,
+body.light-theme .ws-shell,
+body.light-theme .ws-shell-card,
+body.light-theme .chat-main,
+body.light-theme .chat-window,
+body.light-theme .message-content {
+    color: var(--text-primary);
+}
+
+body.light-theme input,
+body.light-theme textarea,
+body.light-theme select {
+    color: var(--text-primary);
+    background: var(--surface);
 }
 
 /* Color Themes */

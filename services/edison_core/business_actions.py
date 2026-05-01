@@ -331,9 +331,11 @@ def _maybe_execute_node_model_action(
 
 
 def _parse_model_request(lowered: str) -> Optional[Dict[str, Optional[str]]]:
+    normalized = re.sub(r"[^a-z0-9]+", "", lowered)
     if not any(verb in lowered for verb in _MODEL_REQUEST_VERBS):
         return None
-    if not any(hint in lowered for hint in _MODEL_REQUEST_HINTS):
+    hint_matches = any(hint in lowered for hint in _MODEL_REQUEST_HINTS) or "3d" in normalized
+    if not hint_matches:
         return None
     for shape, aliases in _PROCEDURAL_MODEL_ALIASES.items():
         for alias in aliases:

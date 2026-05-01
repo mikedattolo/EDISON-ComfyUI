@@ -379,6 +379,14 @@ body.ws-shell-enabled .ws-page-hero {
     background: linear-gradient(135deg, #f4fbff, #c9f3e5);
 }
 
+body.light-theme {
+    --ws-shell-text: #102033;
+    --ws-shell-muted: #4a6078;
+    --ws-shell-border: rgba(16, 32, 51, 0.14);
+    --ws-shell-glass: rgba(255, 255, 255, 0.88);
+    --ws-shell-glass-strong: rgba(255, 255, 255, 0.96);
+}
+
 body.ws-shell-enabled .topbar {
     top: calc(var(--ws-shell-height) + 10px);
 }
