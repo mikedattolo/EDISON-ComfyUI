@@ -151,6 +151,77 @@ async def reverse_proxy(request: Request, path: str):
         )
 
 
+# ── External proxy for /nodes/* (node agent registration/heartbeat) ───
+# Allows remote node agents to reach core API through the public port 8080
+# without exposing the core directly on 0.0.0.0.
+
+@app.api_route("/nodes/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
+async def proxy_nodes(request: Request, path: str):
+    """Proxy /nodes/* requests to Edison Core on localhost (for remote node agents)."""
+    return await _proxy_to_core(request, f"nodes/{path}")
+
+
+async def _proxy_to_core(request: Request, core_path: str):
+    """Shared reverse-proxy helper — forwards to Core API at /{core_path}."""
+    if not HAS_HTTPX:
+        return Response(content='{"error":"httpx not installed"}', status_code=503,
+                        media_type="application/json")
+
+    client = _get_client()
+    url = f"/{core_path}"
+    params = dict(request.query_params)
+    body = await request.body()
+
+    fwd = {}
+    for k, v in request.headers.items():
+        if k.lower() not in _HOP_HEADERS:
+            fwd[k] = v
+
+    is_stream = ("stream" in core_path.lower() or
+                 request.headers.get("accept") == "text/event-stream")
+
+    try:
+        if is_stream:
+            req = client.build_request(
+                method=request.method, url=url, params=params,
+                headers=fwd, content=body if body else None,
+            )
+            resp = await client.send(req, stream=True)
+
+            async def stream_body():
+                try:
+                    async for chunk in resp.aiter_raw():
+                        yield chunk
+                finally:
+                    await resp.aclose()
+
+            resp_headers = dict(resp.headers)
+            resp_headers.pop("transfer-encoding", None)
+            resp_headers.pop("content-length", None)
+            return StreamingResponse(stream_body(), status_code=resp.status_code,
+                                     headers=resp_headers)
+        else:
+            resp = await client.request(
+                method=request.method, url=url, params=params,
+                headers=fwd, content=body if body else None,
+            )
+            resp_headers = dict(resp.headers)
+            for h in ("transfer-encoding", "content-encoding", "content-length"):
+                resp_headers.pop(h, None)
+            return Response(content=resp.content, status_code=resp.status_code,
+                            headers=resp_headers)
+    except httpx.ConnectError:
+        return Response(
+            content='{"error":"Edison Core API is not running (localhost:8811)"}',
+            status_code=502, media_type="application/json",
+        )
+    except httpx.ReadTimeout:
+        return Response(
+            content='{"error":"Edison Core API timed out"}',
+            status_code=504, media_type="application/json",
+        )
+
+
 # ═══════════════════════════════════════════════════════════════════════
 # STATIC FILE ROUTES
 # ═══════════════════════════════════════════════════════════════════════

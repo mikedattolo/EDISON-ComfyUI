@@ -771,7 +771,7 @@ class EdisonNodeAgent:
     def __init__(
         self,
         server_host: str,
-        server_port: int = 8811,
+        server_port: int = 8080,
         agent_port: int = DEFAULT_AGENT_PORT,
         name: str = "",
         role: str = "general",
@@ -997,8 +997,8 @@ Examples:
         help="IP address or hostname of the main EDISON server",
     )
     parser.add_argument(
-        "--server-port", type=int, default=8811,
-        help="EDISON server port (default: 8811)",
+        "--server-port", type=int, default=8080,
+        help="EDISON server port (default: 8080 — the EDISON web proxy)",
     )
     parser.add_argument(
         "--port", type=int, default=DEFAULT_AGENT_PORT,
