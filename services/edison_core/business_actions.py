@@ -402,8 +402,33 @@ def _dispatch_node_model_request(
     payload: Dict[str, Any],
     preferred_software: list[str],
 ) -> Dict[str, Any]:
-    if hasattr(node_manager, "dispatch_command"):
-        return node_manager.dispatch_command(target_node["id"], "rhino_script", payload)
+    if hasattr(node_manager, "delegate_task"):
+        queued_result = node_manager.delegate_task(
+            task_description=text,
+            task_type="rhino_script",
+            payload=payload,
+            required_capabilities=["cad", "3d-modeling"],
+            preferred_software=preferred_software,
+            node_id=target_node["id"],
+        )
+        if queued_result.get("ok"):
+            queued_result["status"] = "queued"
+            return queued_result
+
+    if hasattr(node_manager, "submit_task"):
+        try:
+            task = node_manager.submit_task(target_node["id"], "rhino_script", payload)
+            return {
+                "ok": True,
+                "status": "queued",
+                "node": {
+                    "id": target_node["id"],
+                    "name": target_node.get("name"),
+                },
+                "task": task,
+            }
+        except Exception as exc:
+            queued_result = {"ok": False, "error": str(exc)}
 
     if hasattr(node_manager, "send_command"):
         try:
@@ -414,26 +439,11 @@ def _dispatch_node_model_request(
             direct_result["status"] = "completed"
             return direct_result
 
-    if not hasattr(node_manager, "delegate_task"):
-        return direct_result if 'direct_result' in locals() else {"ok": False, "error": "Node manager does not support task delegation"}
-
-    queued_result = node_manager.delegate_task(
-        task_description=text,
-        task_type="rhino_script",
-        payload=payload,
-        required_capabilities=["cad", "3d-modeling"],
-        preferred_software=preferred_software,
-        node_id=target_node["id"],
-    )
-    if queued_result.get("ok"):
-        queued_result["status"] = "queued"
-        return queued_result
-
     direct_error = (direct_result.get("error") if 'direct_result' in locals() else "") or "unknown transport error"
-    queued_error = queued_result.get("error") or "unknown queue error"
+    queued_error = (queued_result.get("error") if 'queued_result' in locals() else "") or "unknown queue error"
     return {
         "ok": False,
-        "error": f"Direct dispatch failed ({direct_error}) and queue fallback failed ({queued_error})",
+        "error": f"Queued dispatch failed ({queued_error}) and direct dispatch failed ({direct_error})",
     }
 
 

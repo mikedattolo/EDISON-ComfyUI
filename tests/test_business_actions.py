@@ -277,7 +277,84 @@ def test_business_actions_falls_back_to_queued_node_task_when_direct_dispatch_fa
     assert action["business_action"]["type"] == "node_model_request"
     assert action["business_action"]["ok"] is True
     assert action["business_action"]["status"] == "queued"
-    assert node_manager.commands[0]["command"] == "rhino_script"
     assert node_manager.delegations[0]["task_type"] == "rhino_script"
     assert node_manager.delegations[0]["node_id"] == "cad-laptop"
     assert action["business_action"]["task"]["id"] == "task_queued_123"
+
+
+def test_business_actions_prefers_queue_for_rhino_model_jobs(tmp_path):
+    from services.edison_core.branding_store import BrandingClientStore
+    from services.edison_core.business_actions import execute_business_action
+    from services.edison_core.projects import ProjectWorkspaceManager
+
+    class FakeNodeManager:
+        def __init__(self):
+            self.commands = []
+            self.delegations = []
+
+        def mark_stale(self):
+            return None
+
+        def list_nodes(self):
+            return {
+                "nodes": [
+                    {
+                        "id": "cad-laptop",
+                        "name": "CAD-Laptop",
+                        "status": "online",
+                        "capabilities": ["cad", "3d-modeling", "rhino"],
+                        "software": {"rhino": {"version": "7"}},
+                    }
+                ]
+            }
+
+        def find_best_node_for_task(self, task_description, required_capabilities=None, preferred_software=None):
+            return self.list_nodes()["nodes"][0]
+
+        def send_command(self, node_id, command, params=None):
+            self.commands.append({"node_id": node_id, "command": command, "params": params or {}})
+            return {"ok": True, "node_id": node_id, "response": {"ok": True}}
+
+        def delegate_task(self, task_description, task_type, payload, required_capabilities=None, preferred_software=None, node_id=None):
+            task = {"id": "task_queued_456", "node_id": node_id, "task_type": task_type, "payload": payload, "status": "pending"}
+            self.delegations.append({
+                "task_description": task_description,
+                "task_type": task_type,
+                "payload": payload,
+                "required_capabilities": required_capabilities,
+                "preferred_software": preferred_software,
+                "node_id": node_id,
+            })
+            return {"ok": True, "node": self.list_nodes()["nodes"][0], "task": task}
+
+    repo_root = tmp_path / "repo"
+    branding_root = repo_root / "outputs" / "clients"
+    branding_db = repo_root / "config" / "integrations" / "branding.json"
+    branding_db.parent.mkdir(parents=True, exist_ok=True)
+
+    store = BrandingClientStore(
+        repo_root=repo_root,
+        branding_root=branding_root,
+        branding_db_path=branding_db,
+        media_roots=[repo_root / "outputs"],
+    )
+    manager = ProjectWorkspaceManager(
+        repo_root=repo_root,
+        config={"projects": {"root": "outputs"}, "modes": {"chat": {}, "work": {}}},
+        branding_db_path=branding_db,
+    )
+    node_manager = FakeNodeManager()
+
+    action = execute_business_action(
+        message="Edison generate a 3d model of a vase in rhino 3d on cad laptop",
+        repo_root=repo_root,
+        config={"projects": {"root": "outputs"}, "modes": {"chat": {}, "work": {}}},
+        branding_store=store,
+        project_manager=manager,
+        node_manager=node_manager,
+    )
+
+    assert action is not None
+    assert action["business_action"]["status"] == "queued"
+    assert node_manager.delegations[0]["task_type"] == "rhino_script"
+    assert node_manager.commands == []
