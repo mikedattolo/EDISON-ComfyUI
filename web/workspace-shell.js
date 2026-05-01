@@ -402,61 +402,7 @@
         const currentPath = normalizePath(window.location.pathname);
         const currentPage = resolvePage(currentPath);
 
-        document.body.classList.add('ws-shell-enabled');
         document.body.dataset.wsPage = currentPage.key;
-
-        const rail = document.createElement('div');
-        rail.className = 'ws-shell-rail';
-        rail.innerHTML = [
-            '<div class="ws-shell-inner">',
-            '<a class="ws-shell-brand" href="/">',
-            '<span class="ws-shell-brand-mark">E</span>',
-            '<span class="ws-shell-brand-copy">',
-            '<strong>EDISON Workspace</strong>',
-            '<span>Chat, files, branding, projects, media, fabrication, and automation in one flow</span>',
-            '</span>',
-            '</a>',
-            '<nav class="ws-shell-nav" aria-label="Workspace navigation">',
-            renderNav(currentPage.key),
-            '</nav>',
-            '<div class="ws-shell-tools">',
-            '<button class="ws-shell-tool" type="button" data-ws-action="file-manager">',
-            '<span class="ws-shell-tool-icon">F</span><span>Files</span>',
-            '</button>',
-            '<button class="ws-shell-tool primary" type="button" data-ws-action="new-chat">',
-            '<span class="ws-shell-tool-icon">+</span><span>New Chat</span>',
-            '</button>',
-            '</div>',
-            '</div>'
-        ].join('');
-
-        rail.addEventListener('click', function (event) {
-            const control = event.target.closest('[data-ws-action]');
-            if (!control) return;
-
-            const action = control.getAttribute('data-ws-action');
-            if (action === 'file-manager') {
-                if (currentPage.key === 'chat') {
-                    if (!openFileManager()) {
-                        waitForAction('file-manager', 0);
-                    }
-                } else {
-                    window.location.href = '/?panel=file-manager';
-                }
-            }
-
-            if (action === 'new-chat') {
-                if (currentPage.key === 'chat') {
-                    if (!createNewChat()) {
-                        waitForAction('new-chat', 0);
-                    }
-                } else {
-                    window.location.href = '/?new=1';
-                }
-            }
-        });
-
-        document.body.prepend(rail);
         if (currentPage.key !== 'chat') {
             const topbar = document.querySelector('.topbar');
             if (topbar && !document.querySelector('.ws-workspace-ribbon')) {
