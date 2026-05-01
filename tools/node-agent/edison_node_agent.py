@@ -355,6 +355,11 @@ class RhinoController:
         """Open a Grasshopper definition."""
         if not self.available or self._rhino is None:
             return {"ok": False, "error": "Rhino is not connected"}
+        gh_path = os.path.expandvars(os.path.expanduser(str(gh_path or "").strip()))
+        if not gh_path:
+            return {"ok": False, "error": "Grasshopper definition path is required"}
+        if not Path(gh_path).exists():
+            return {"ok": False, "error": f"Grasshopper definition not found: {gh_path}"}
         try:
             self._rhino.RunScript(f'-_Grasshopper _Open "{gh_path}"', 0)
             return {"ok": True, "definition": gh_path}
@@ -620,7 +625,21 @@ class TaskExecutor:
     def _handle_rhino_grasshopper(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.rhino is None or not self.rhino.available:
             return {"ok": False, "error": "Rhino is not connected on this node"}
-        return self.rhino.run_grasshopper_definition(payload.get("gh_path", ""))
+        gh_path = (
+            payload.get("gh_path")
+            or payload.get("filepath")
+            or payload.get("path")
+            or payload.get("definition")
+            or payload.get("definition_path")
+            or payload.get("file")
+            or ""
+        )
+        if not str(gh_path).strip():
+            return {
+                "ok": False,
+                "error": "Grasshopper task requires gh_path (or filepath/path/definition_path)",
+            }
+        return self.rhino.run_grasshopper_definition(str(gh_path))
 
     def _handle_rhino_export(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.rhino is None or not self.rhino.available:
@@ -953,6 +972,8 @@ class EdisonNodeAgent:
         # Execute
         result = self.executor.execute(task_type, payload)
         status = "done" if result.get("ok") else "failed"
+        if status == "failed":
+            logger.error(f"Task {task_id} failed: {result.get('error', result)}")
 
         # Report result
         try:

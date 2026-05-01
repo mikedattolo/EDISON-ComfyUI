@@ -58,6 +58,16 @@ class NodeTask:
 class NodeManager:
     """Manages registered worker nodes and dispatches tasks to them."""
 
+    TASK_PAYLOAD_ALIASES: Dict[str, Dict[str, List[str]]] = {
+        "rhino_grasshopper": {
+            "gh_path": ["gh_path", "filepath", "path", "definition", "definition_path", "file"],
+        },
+    }
+
+    TASK_REQUIRED_FIELDS: Dict[str, List[str]] = {
+        "rhino_grasshopper": ["gh_path"],
+    }
+
     def __init__(self, db_path: Path):
         self._db_path = db_path
         self._ensure_db()
@@ -165,12 +175,44 @@ class NodeManager:
 
     # ── task dispatch ──
 
+    def _normalize_task_payload(self, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize common task payload aliases and enforce required fields."""
+        normalized = dict(payload or {})
+
+        alias_map = self.TASK_PAYLOAD_ALIASES.get(task_type, {})
+        for canonical_key, aliases in alias_map.items():
+            current_value = normalized.get(canonical_key)
+            if isinstance(current_value, str) and current_value.strip():
+                continue
+            if current_value not in (None, ""):
+                continue
+
+            for alias in aliases:
+                value = normalized.get(alias)
+                if isinstance(value, str):
+                    value = value.strip()
+                if value in (None, ""):
+                    continue
+                normalized[canonical_key] = value
+                break
+
+        for required_key in self.TASK_REQUIRED_FIELDS.get(task_type, []):
+            value = normalized.get(required_key)
+            if isinstance(value, str):
+                value = value.strip()
+            if value in (None, ""):
+                raise ValueError(f"{task_type} requires payload.{required_key}")
+
+        return normalized
+
     def submit_task(self, node_id: str, task_type: str, payload: Dict[str, Any]) -> Dict[str, Any]:
         """Queue a task for a specific node."""
         db = self._load()
         node = next((n for n in db.get("nodes", []) if n.get("id") == node_id), None)
         if node is None:
             raise KeyError(f"Node '{node_id}' not found")
+
+        payload = self._normalize_task_payload(task_type, payload)
 
         task = NodeTask(
             id=f"task_{uuid.uuid4().hex[:12]}",
@@ -411,7 +453,11 @@ class NodeManager:
                          "Make sure the node agent is running on your remote machine.",
             }
 
-        task = self.submit_task(target_node["id"], task_type, payload)
+        try:
+            task = self.submit_task(target_node["id"], task_type, payload)
+        except ValueError as e:
+            return {"ok": False, "error": str(e)}
+
         return {
             "ok": True,
             "node": {

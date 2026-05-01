@@ -16512,6 +16512,8 @@ async def submit_node_task(node_id: str, request: dict):
         return {"success": True, "task": task}
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
 
 
 @app.post("/nodes/tasks/{task_id}/update")
