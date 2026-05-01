@@ -236,6 +236,27 @@
         ].join('');
     }
 
+    function renderWorkspaceRibbon(page) {
+        if (!page || page.key === 'chat') {
+            return '';
+        }
+
+        return [
+            '<section class="ws-workspace-ribbon" aria-label="Workspace quick actions">',
+            '<div class="ws-workspace-ribbon-main">',
+            '<span class="ws-workspace-ribbon-kicker">EDISON Workspace Layer <b>v3</b></span>',
+            '<h2>', page.label, ' workspace is active</h2>',
+            '<p>Launch actions directly from this page or jump back to chat with a prefilled prompt.</p>',
+            '</div>',
+            '<div class="ws-workspace-ribbon-actions">',
+            '<a class="ws-page-btn primary" href="', buildChatHref(page.prompt, page.mode), '">Ask In Chat</a>',
+            '<a class="ws-page-btn" href="/?panel=file-manager">Open Files</a>',
+            '<a class="ws-page-btn subtle" href="/?new=1">Start New Chat</a>',
+            '</div>',
+            '</section>'
+        ].join('');
+    }
+
     function cleanupQueryParam(name) {
         const url = new URL(window.location.href);
         if (!url.searchParams.has(name)) return;
@@ -436,6 +457,12 @@
         });
 
         document.body.prepend(rail);
+        if (currentPage.key !== 'chat') {
+            const topbar = document.querySelector('.topbar');
+            if (topbar && !document.querySelector('.ws-workspace-ribbon')) {
+                topbar.insertAdjacentHTML('afterend', renderWorkspaceRibbon(currentPage));
+            }
+        }
         if (currentPage.key !== 'chat') {
             const main = document.querySelector('main.shell, main');
             if (main && !main.querySelector('.ws-page-hero')) {

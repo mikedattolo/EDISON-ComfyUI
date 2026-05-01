@@ -15,6 +15,65 @@ body.ws-shell-enabled {
     padding-top: calc(var(--ws-shell-height) + 10px);
 }
 
+.ws-workspace-ribbon {
+    margin: 14px 14px 12px;
+    padding: 18px;
+    border: 1px solid var(--line, var(--ws-shell-border));
+    border-radius: 22px;
+    background:
+        linear-gradient(120deg, rgba(24, 181, 143, 0.2), transparent 38%),
+        linear-gradient(210deg, rgba(255, 154, 68, 0.2), transparent 42%),
+        var(--panel, var(--ws-shell-surface));
+    box-shadow: 0 22px 44px rgba(0, 0, 0, 0.14);
+    backdrop-filter: blur(16px);
+    display: grid;
+    grid-template-columns: minmax(0, 1.1fr) auto;
+    gap: 16px;
+    align-items: center;
+}
+
+.ws-workspace-ribbon-kicker {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-radius: 999px;
+    border: 1px solid rgba(24, 181, 143, 0.28);
+    background: rgba(24, 181, 143, 0.14);
+    color: var(--text-primary, var(--ws-shell-text));
+    font-size: 11px;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+.ws-workspace-ribbon-kicker b {
+    color: #04111a;
+    background: linear-gradient(135deg, var(--ws-shell-accent), var(--ws-shell-accent-warm));
+    border-radius: 999px;
+    padding: 2px 8px;
+    font-size: 10px;
+}
+
+.ws-workspace-ribbon h2 {
+    margin: 10px 0 8px;
+    color: var(--text-primary, var(--ws-shell-text));
+    font-size: clamp(22px, 3vw, 30px);
+    line-height: 1.1;
+}
+
+.ws-workspace-ribbon p {
+    margin: 0;
+    color: var(--text-secondary, var(--ws-shell-muted));
+}
+
+.ws-workspace-ribbon-actions {
+    display: flex;
+    flex-wrap: wrap;
+    justify-content: flex-end;
+    gap: 10px;
+}
+
 body.ws-shell-enabled .shell {
     max-width: 1520px;
     margin: 0 auto;
@@ -474,6 +533,14 @@ body.ws-shell-enabled .mobile-header {
         justify-content: flex-start;
         flex-wrap: wrap;
     }
+
+    .ws-workspace-ribbon {
+        grid-template-columns: 1fr;
+    }
+
+    .ws-workspace-ribbon-actions {
+        justify-content: flex-start;
+    }
 }
 
 @media (max-width: 768px) {
@@ -518,6 +585,12 @@ body.ws-shell-enabled .mobile-header {
 
     body.ws-shell-enabled .shell {
         padding: 14px 10px 22px;
+    }
+
+    .ws-workspace-ribbon {
+        margin: 12px 10px 10px;
+        padding: 14px;
+        border-radius: 18px;
     }
 
     .ws-page-hero-main,
