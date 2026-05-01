@@ -272,14 +272,38 @@ def _maybe_execute_node_model_action(
 
     filename = f"{model_request['shape']}-{_slugify_for_filename(text)[:24] or model_request['shape']}.3dm"
     output_hint = f"~/.edison/generated_models/{filename}"
-    command_result = node_manager.send_command(
-        target_node["id"],
-        "rhino_script",
-        {
-            "script_content": _build_rhino_script(model_request["shape"], filename),
-            "output_paths": [output_hint],
-        },
+    payload = {
+        "script_content": _build_rhino_script(model_request["shape"], filename),
+        "output_paths": [output_hint],
+    }
+
+    command_result = _dispatch_node_model_request(
+        text=text,
+        node_manager=node_manager,
+        target_node=target_node,
+        payload=payload,
+        preferred_software=[software for software in ["rhino", "grasshopper"] if software in lowered] or ["rhino", "grasshopper"],
     )
+
+    if command_result.get("status") == "queued":
+        queued_task = command_result.get("task") or {}
+        return {
+            "response": (
+                f"Sent the {model_request['shape']} model request to {target_node.get('name', target_node['id'])}. "
+                f"The node will pick it up from the queue on its next heartbeat. Task id: {queued_task.get('id', 'pending')}. "
+                f"Output hint: {output_hint}."
+            ),
+            "mode_used": "business",
+            "business_action": {
+                "type": "node_model_request",
+                "ok": True,
+                "status": "queued",
+                "shape": model_request["shape"],
+                "node": {"id": target_node["id"], "name": target_node.get("name")},
+                "task": queued_task,
+                "output_paths": [output_hint],
+            },
+        }
 
     if not command_result.get("ok"):
         error_text = command_result.get("error") or "unknown transport error"
@@ -331,11 +355,9 @@ def _maybe_execute_node_model_action(
 
 
 def _parse_model_request(lowered: str) -> Optional[Dict[str, Optional[str]]]:
-    normalized = re.sub(r"[^a-z0-9]+", "", lowered)
     if not any(verb in lowered for verb in _MODEL_REQUEST_VERBS):
         return None
-    hint_matches = any(hint in lowered for hint in _MODEL_REQUEST_HINTS) or "3d" in normalized
-    if not hint_matches:
+    if not any(hint in lowered for hint in _MODEL_REQUEST_HINTS):
         return None
     for shape, aliases in _PROCEDURAL_MODEL_ALIASES.items():
         for alias in aliases:
@@ -371,6 +393,48 @@ def _resolve_model_node(text: str, lowered: str, node_manager: Any) -> tuple[Opt
     if not _node_supports_rhino(best_node):
         return None, f"{best_node.get('name', best_node.get('id', 'The best CAD node'))} is online, but this automatic modeling flow currently targets Rhino-capable nodes only."
     return best_node, ""
+
+
+def _dispatch_node_model_request(
+    text: str,
+    node_manager: Any,
+    target_node: Dict[str, Any],
+    payload: Dict[str, Any],
+    preferred_software: list[str],
+) -> Dict[str, Any]:
+    if hasattr(node_manager, "dispatch_command"):
+        return node_manager.dispatch_command(target_node["id"], "rhino_script", payload)
+
+    if hasattr(node_manager, "send_command"):
+        try:
+            direct_result = node_manager.send_command(target_node["id"], "rhino_script", payload)
+        except Exception as exc:
+            direct_result = {"ok": False, "error": str(exc)}
+        if direct_result.get("ok"):
+            direct_result["status"] = "completed"
+            return direct_result
+
+    if not hasattr(node_manager, "delegate_task"):
+        return direct_result if 'direct_result' in locals() else {"ok": False, "error": "Node manager does not support task delegation"}
+
+    queued_result = node_manager.delegate_task(
+        task_description=text,
+        task_type="rhino_script",
+        payload=payload,
+        required_capabilities=["cad", "3d-modeling"],
+        preferred_software=preferred_software,
+        node_id=target_node["id"],
+    )
+    if queued_result.get("ok"):
+        queued_result["status"] = "queued"
+        return queued_result
+
+    direct_error = (direct_result.get("error") if 'direct_result' in locals() else "") or "unknown transport error"
+    queued_error = queued_result.get("error") or "unknown queue error"
+    return {
+        "ok": False,
+        "error": f"Direct dispatch failed ({direct_error}) and queue fallback failed ({queued_error})",
+    }
 
 
 def _find_named_node(text: str, nodes: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:

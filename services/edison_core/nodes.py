@@ -325,6 +325,37 @@ class NodeManager:
         except requests.RequestException as e:
             return {"ok": False, "node_id": node_id, "error": str(e)}
 
+    def dispatch_command(self, node_id: str, command: str, params: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Try a direct command first, then fall back to the heartbeat task queue."""
+        try:
+            direct_result = self.send_command(node_id, command, params)
+        except Exception as exc:
+            direct_result = {"ok": False, "node_id": node_id, "error": str(exc)}
+
+        if direct_result.get("ok"):
+            direct_result["status"] = "completed"
+            return direct_result
+
+        try:
+            task = self.submit_task(node_id, command, params or {})
+        except Exception as exc:
+            direct_error = direct_result.get("error") or "unknown transport error"
+            return {
+                "ok": False,
+                "node_id": node_id,
+                "error": f"Direct dispatch failed ({direct_error}) and queue fallback failed ({exc})",
+            }
+
+        result = {
+            "ok": True,
+            "node_id": node_id,
+            "status": "queued",
+            "task": task,
+        }
+        if direct_result.get("error"):
+            result["direct_error"] = direct_result["error"]
+        return result
+
     # ── capability matching & delegation ──
 
     # Maps task intent keywords → capability tags the node must have

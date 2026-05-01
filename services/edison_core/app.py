@@ -16566,10 +16566,18 @@ async def send_node_command(node_id: str, request: dict):
     if not command:
         raise HTTPException(status_code=400, detail="command is required")
     try:
-        result = await asyncio.to_thread(
-            node_manager_instance.send_command, node_id, command, params
-        )
+        dispatcher = getattr(node_manager_instance, "dispatch_command", None)
+        if callable(dispatcher):
+            result = await asyncio.to_thread(dispatcher, node_id, command, params)
+        else:
+            result = await asyncio.to_thread(
+                node_manager_instance.send_command, node_id, command, params
+            )
+        if not result.get("ok"):
+            raise HTTPException(status_code=502, detail=result.get("error") or "Node command failed")
         return {"success": True, **result}
+    except HTTPException:
+        raise
     except KeyError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:

@@ -403,6 +403,11 @@ async function viewNodeTasks(id,name){ _filterNode=id; document.getElementById('
 
 async function pingNode(id){
   const d=await fetchJSON('/nodes/'+id+'/command',{method:'POST',body:JSON.stringify({command:'ping',params:{}})});
+  if(d.status==='queued'){
+    toast('Ping queued — node will pick it up on the next heartbeat.','ok');
+    refreshTasks();
+    return;
+  }
   (d.ok||d.success)?toast('Ping OK &#8212; node alive!','ok'):toast('Ping failed: '+(d.error||d.detail||'no response'),'err');
 }
 async function removeNode(id,name){
