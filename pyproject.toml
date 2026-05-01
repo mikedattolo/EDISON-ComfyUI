@@ -1,7 +1,51 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "edison-comfyui"
+version = "1.0.0"
+description = "FastAPI-based AI orchestration platform for EDISON-ComfyUI."
+dependencies = [
+  "fastapi>=0.104.0",
+  "uvicorn[standard]>=0.24.0",
+  "pydantic>=2.0.0",
+  "pydantic-settings>=2.0.0",
+  "requests>=2.28.0",
+  "httpx>=0.24.0",
+  "llama-cpp-python>=0.2.0",
+  "torch>=2.0.0",
+  "transformers>=4.30.0",
+  "sentence-transformers>=2.2.0",
+  "qdrant-client>=1.7.0",
+  "pyyaml>=6.0",
+  "python-multipart>=0.0.6",
+  "beautifulsoup4>=4.12.0",
+  "duckduckgo-search>=6.0.0",
+  "psutil>=5.9.0",
+  "numpy>=1.24.0",
+  "soundfile>=0.12.1",
+  "webrtcvad>=2.0.10",
+  "faster-whisper>=1.0.0",
+  "edge-tts>=6.1.0",
+  "python-pptx>=1.0.0",
+  "python-docx>=1.0.0",
+  "scipy>=1.10.0",
+  "diffusers>=0.30.0",
+  "accelerate>=0.25.0",
+  "imageio[pyav]>=2.31.0",
+  "sentencepiece>=0.1.99",
+  "shap-e @ git+https://github.com/openai/shap-e.git",
+  "Pillow>=10.0.0",
+]
+
+[project.scripts]
+edison-core = "services.edison_core.app:app"
+
 [tool.ruff]
 target-version = "py311"
 line-length = 120
 
 [tool.ruff.lint]
-select = ["E9", "F63", "F7", "F82"]  # Critical errors only
-ignore = ["E501"]  # Line length handled separately
+select = ["E9", "F63", "F7", "F82"]
+ignore = ["E501"]

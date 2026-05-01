@@ -7,6 +7,7 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, Literal, Iterator, List, Dict, Any, Union
 import logging
 from pathlib import Path
@@ -1917,23 +1918,19 @@ _resource_manager = IdleResourceManager(idle_seconds=45.0) if IdleResourceManage
 
 
 def _sandbox_host_config() -> tuple[bool, list[str], int]:
-    ed = config.get("edison", {}) if isinstance(config, dict) else {}
-    allow_any = bool(ed.get("sandbox_allow_any_host", False))
-    hosts = ed.get("sandbox_allowed_hosts") or []
-    if not isinstance(hosts, list):
-        hosts = []
-    ttl_seconds = int(ed.get("sandbox_session_ttl_seconds", 900))
+    allow_any = bool(config.edison.sandbox_allow_any_host)
+    hosts = [str(h).strip() for h in (config.edison.sandbox_allowed_hosts or []) if str(h).strip()]
+    ttl_seconds = int(config.edison.sandbox_session_ttl_seconds)
     return allow_any, hosts, max(60, ttl_seconds)
 
 
 def _resource_protocol_config() -> dict:
-    ed = config.get("edison", {}) if isinstance(config, dict) else {}
     return {
-        "idle_cleanup_seconds": max(15, int(ed.get("idle_cleanup_seconds", 45))),
-        "cleanup_poll_seconds": max(10, int(ed.get("idle_cleanup_poll_seconds", 20))),
-        "swarm_session_ttl_seconds": max(60, int(ed.get("swarm_session_ttl_seconds", 900))),
-        "browser_cleanup_ttl_seconds": max(60, int(ed.get("sandbox_session_ttl_seconds", 900))),
-        "image_job_timeout_seconds": max(120, int(ed.get("image_job_timeout_seconds", 1800))),
+        "idle_cleanup_seconds": max(15, int(config.edison.idle_cleanup_seconds)),
+        "cleanup_poll_seconds": max(10, int(config.edison.idle_cleanup_poll_seconds)),
+        "swarm_session_ttl_seconds": max(60, int(config.edison.swarm_session_ttl_seconds)),
+        "browser_cleanup_ttl_seconds": max(60, int(config.edison.sandbox_session_ttl_seconds)),
+        "image_job_timeout_seconds": max(120, int(config.edison.image_job_timeout_seconds)),
     }
 
 
@@ -4121,42 +4118,47 @@ class OpenAIStreamResponse(BaseModel):
     model: str
     choices: List[OpenAIChoice]
 
+class EdisonConfig(BaseModel):
+    core: Dict[str, Any] = Field(default_factory=dict)
+    vllm: Dict[str, Any] = Field(default_factory=dict)
+    sandbox_allow_any_host: bool = False
+    sandbox_allowed_hosts: List[str] = Field(default_factory=list)
+    sandbox_session_ttl_seconds: int = 900
+    idle_cleanup_seconds: int = 45
+    idle_cleanup_poll_seconds: int = 20
+    swarm_session_ttl_seconds: int = 900
+    image_job_timeout_seconds: int = 1800
+
+
+class Config(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="EDISON_", env_nested_delimiter="__", extra="ignore")
+    edison: EdisonConfig = Field(default_factory=EdisonConfig)
+
+
 def load_config():
-    """Load EDISON configuration with absolute paths"""
+    """Load EDISON configuration with environment variable overrides."""
     global config
     try:
         config_path = REPO_ROOT / "config" / "edison.yaml"
         logger.info(f"Looking for config at: {config_path}")
-        
+
+        yaml_config: Dict[str, Any] = {}
         if config_path.exists():
             with open(config_path) as f:
-                config = yaml.safe_load(f)
-                logger.info("Configuration loaded successfully")
+                yaml_config = yaml.safe_load(f) or {}
+            logger.info("Configuration loaded successfully")
         else:
             logger.warning(f"Config file not found at {config_path}, using defaults")
-            config = {
-                "edison": {
-                    "core": {
-                        "host": "127.0.0.1",
-                        "port": 8811,
-                        "models_path": "models/llm",
-                        "fast_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
-                        "medium_model": "qwen2.5-14b-instruct-q4_k_m.gguf",
-                        "deep_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
-                        "reasoning_model": "qwen2.5-32b-instruct-q4_k_m.gguf"
-                    },
-                    "coral": {
-                        "host": "127.0.0.1",
-                        "port": 8808
-                    }
-                }
-            }
+
+        settings = Config(**yaml_config)
+        config = settings
     except Exception as e:
         logger.error(f"Error loading config: {e}")
-        config = {}
+        config = Config()
+
 
 def _get_core_config() -> dict:
-    return config.get("edison", {}).get("core", {})
+    return config.edison.core
 
 def _get_ctx_limit(model_name: str) -> int:
     core_config = _get_core_config()
@@ -4172,7 +4174,7 @@ def _get_ctx_limit(model_name: str) -> int:
 
 def _init_vllm_config():
     global vllm_enabled, vllm_url
-    vllm_cfg = config.get("edison", {}).get("vllm", {})
+    vllm_cfg = config.edison.vllm
     vllm_enabled = bool(vllm_cfg.get("enabled", False))
     host = vllm_cfg.get("host", "127.0.0.1")
     port = vllm_cfg.get("port", 8822)
@@ -14875,16 +14877,15 @@ async def get_sandbox_config():
 @app.put("/sandbox/config")
 async def update_sandbox_config(request: dict):
     """Update in-memory sandbox host policy settings used by browser sessions."""
-    ed = config.setdefault("edison", {})
     if "sandbox_allow_any_host" in request:
-        ed["sandbox_allow_any_host"] = bool(request.get("sandbox_allow_any_host"))
+        config.edison.sandbox_allow_any_host = bool(request.get("sandbox_allow_any_host"))
     if "sandbox_allowed_hosts" in request:
         hosts = request.get("sandbox_allowed_hosts")
         if not isinstance(hosts, list):
             raise HTTPException(status_code=400, detail="sandbox_allowed_hosts must be a list")
-        ed["sandbox_allowed_hosts"] = [str(h).strip() for h in hosts if str(h).strip()]
+        config.edison.sandbox_allowed_hosts = [str(h).strip() for h in hosts if str(h).strip()]
     if "sandbox_session_ttl_seconds" in request:
-        ed["sandbox_session_ttl_seconds"] = max(60, int(request.get("sandbox_session_ttl_seconds") or 900))
+        config.edison.sandbox_session_ttl_seconds = max(60, int(request.get("sandbox_session_ttl_seconds") or 900))
 
     # Recreate manager so updated host policy takes effect immediately.
     global browser_session_manager
