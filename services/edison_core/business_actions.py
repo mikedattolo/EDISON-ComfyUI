@@ -16,12 +16,27 @@ from .projects import ProjectWorkspaceManager
 from .system_awareness import build_capability_map
 
 
+_MODEL_REQUEST_VERBS = ("generate", "create", "make", "design", "model", "build", "sculpt")
+_MODEL_REQUEST_HINTS = ("3d", "cad", "rhino", "blender", "solidworks", "mesh", "prototype")
+_PROCEDURAL_MODEL_ALIASES = {
+    "vase": ("vase",),
+    "planter": ("planter", "plant pot", "flower pot", "pot"),
+    "bowl": ("bowl",),
+    "cup": ("cup", "mug", "glass"),
+    "box": ("box", "cube"),
+    "cylinder": ("cylinder",),
+    "cone": ("cone",),
+    "sphere": ("sphere", "ball"),
+}
+
+
 def execute_business_action(
     message: str,
     repo_root: Path,
     config: Dict[str, Any],
     branding_store: BrandingClientStore,
     project_manager: ProjectWorkspaceManager,
+    node_manager: Optional[Any] = None,
 ) -> Optional[Dict[str, Any]]:
     text = (message or "").strip()
     lowered = text.lower()
@@ -41,7 +56,11 @@ def execute_business_action(
         )
         return {"response": response, "mode_used": "business", "business_action": {"type": "capabilities", "summary": capability_map["summary"]}}
 
-    if any(phrase in lowered for phrase in ["what models", "available models", "model catalog", "which model should", "what model should", "product image model", "img2img model", "image to image model", "video model", "music model", "3d model", "mesh model", "text to 3d", "image to 3d"]):
+    node_model_action = _maybe_execute_node_model_action(text, lowered, node_manager)
+    if node_model_action is not None:
+        return node_model_action
+
+    if any(phrase in lowered for phrase in ["what models", "available models", "model catalog", "which model should", "what model should", "which mesh model", "what mesh model", "product image model", "img2img model", "image to image model", "video model", "music model", "text to 3d model", "image to 3d model"]):
         catalog = build_model_catalog(repo_root, config)
         recommendation = recommend_models_for_task(text, catalog)
         summary = catalog.get("summary", {})
@@ -214,3 +233,277 @@ def _model_dump(model: Any) -> Dict[str, Any]:
     if hasattr(model, "model_dump"):
         return model.model_dump()
     return model.dict()
+
+
+def _maybe_execute_node_model_action(
+    text: str,
+    lowered: str,
+    node_manager: Optional[Any],
+) -> Optional[Dict[str, Any]]:
+    model_request = _parse_model_request(lowered)
+    if model_request is None:
+        return None
+
+    if model_request["shape"] is None:
+        supported = ", ".join(sorted(_PROCEDURAL_MODEL_ALIASES.keys()))
+        return {
+            "response": (
+                "I can auto-run simple CAD requests on a Rhino node right now, but I only have procedural "
+                f"templates for: {supported}."
+            ),
+            "mode_used": "business",
+            "business_action": {"type": "node_model_request", "ok": False, "reason": "unsupported_shape"},
+        }
+
+    if node_manager is None:
+        return {
+            "response": "A CAD request was detected, but the node manager is not available on this server.",
+            "mode_used": "business",
+            "business_action": {"type": "node_model_request", "ok": False, "reason": "node_manager_unavailable"},
+        }
+
+    target_node, node_error = _resolve_model_node(text, lowered, node_manager)
+    if target_node is None:
+        return {
+            "response": node_error,
+            "mode_used": "business",
+            "business_action": {"type": "node_model_request", "ok": False, "reason": "node_unavailable"},
+        }
+
+    filename = f"{model_request['shape']}-{_slugify_for_filename(text)[:24] or model_request['shape']}.3dm"
+    output_hint = f"~/.edison/generated_models/{filename}"
+    command_result = node_manager.send_command(
+        target_node["id"],
+        "rhino_script",
+        {
+            "script_content": _build_rhino_script(model_request["shape"], filename),
+            "output_paths": [output_hint],
+        },
+    )
+
+    if not command_result.get("ok"):
+        error_text = command_result.get("error") or "unknown transport error"
+        return {
+            "response": f"I found {target_node.get('name', target_node['id'])}, but the command could not reach the node: {error_text}.",
+            "mode_used": "business",
+            "business_action": {
+                "type": "node_model_request",
+                "ok": False,
+                "reason": "dispatch_failed",
+                "node": {"id": target_node["id"], "name": target_node.get("name")},
+            },
+        }
+
+    node_response = command_result.get("response") or {}
+    if not node_response.get("ok"):
+        error_text = node_response.get("error") or "unknown Rhino error"
+        return {
+            "response": (
+                f"I sent the {model_request['shape']} request to {target_node.get('name', target_node['id'])}, "
+                f"but Rhino reported: {error_text}."
+            ),
+            "mode_used": "business",
+            "business_action": {
+                "type": "node_model_request",
+                "ok": False,
+                "reason": "execution_failed",
+                "node": {"id": target_node["id"], "name": target_node.get("name")},
+                "node_response": node_response,
+            },
+        }
+
+    output_paths = node_response.get("output_paths") or [output_hint]
+    return {
+        "response": (
+            f"Sent the {model_request['shape']} model request to {target_node.get('name', target_node['id'])} "
+            f"and Rhino executed it. Output hint: {', '.join(output_paths)}."
+        ),
+        "mode_used": "business",
+        "business_action": {
+            "type": "node_model_request",
+            "ok": True,
+            "shape": model_request["shape"],
+            "node": {"id": target_node["id"], "name": target_node.get("name")},
+            "output_paths": output_paths,
+            "node_response": node_response,
+        },
+    }
+
+
+def _parse_model_request(lowered: str) -> Optional[Dict[str, Optional[str]]]:
+    if not any(verb in lowered for verb in _MODEL_REQUEST_VERBS):
+        return None
+    if not any(hint in lowered for hint in _MODEL_REQUEST_HINTS):
+        return None
+    for shape, aliases in _PROCEDURAL_MODEL_ALIASES.items():
+        for alias in aliases:
+            if re.search(rf"\b{re.escape(alias)}\b", lowered):
+                return {"shape": shape, "matched_alias": alias}
+    return {"shape": None, "matched_alias": None}
+
+
+def _resolve_model_node(text: str, lowered: str, node_manager: Any) -> tuple[Optional[Dict[str, Any]], str]:
+    if hasattr(node_manager, "mark_stale"):
+        node_manager.mark_stale()
+    nodes_payload = node_manager.list_nodes() if hasattr(node_manager, "list_nodes") else {"nodes": []}
+    nodes = nodes_payload.get("nodes", []) if isinstance(nodes_payload, dict) else []
+
+    named_node = _find_named_node(text, nodes)
+    if named_node is not None:
+        if named_node.get("status") != "online":
+            return None, f"The requested node {named_node.get('name', named_node.get('id', 'unknown'))} is registered but not online."
+        if not _node_supports_rhino(named_node):
+            return None, f"{named_node.get('name', named_node.get('id', 'That node'))} is online, but it is not advertising Rhino support yet."
+        return named_node, ""
+
+    preferred_software = [software for software in ["rhino", "grasshopper", "solidworks", "blender"] if software in lowered]
+    if not preferred_software:
+        preferred_software = ["rhino", "grasshopper"]
+    best_node = node_manager.find_best_node_for_task(
+        text,
+        required_capabilities=["cad", "3d-modeling"],
+        preferred_software=preferred_software,
+    )
+    if best_node is None:
+        return None, "No online CAD node is available right now. Start the node agent on the workstation and make sure it has checked in."
+    if not _node_supports_rhino(best_node):
+        return None, f"{best_node.get('name', best_node.get('id', 'The best CAD node'))} is online, but this automatic modeling flow currently targets Rhino-capable nodes only."
+    return best_node, ""
+
+
+def _find_named_node(text: str, nodes: list[Dict[str, Any]]) -> Optional[Dict[str, Any]]:
+    normalized_message = _normalize_lookup_value(text)
+    message_tokens = {token for token in re.sub(r"[^a-z0-9]+", " ", text.lower()).split() if len(token) > 2}
+    for node in nodes:
+        name = str(node.get("name") or "")
+        if not name:
+            continue
+        normalized_name = _normalize_lookup_value(name)
+        if normalized_name and normalized_name in normalized_message:
+            return node
+        node_tokens = {token for token in re.sub(r"[^a-z0-9]+", " ", name.lower()).split() if len(token) > 2}
+        if node_tokens and node_tokens.issubset(message_tokens):
+            return node
+    return None
+
+
+def _normalize_lookup_value(value: str) -> str:
+    return re.sub(r"[^a-z0-9]+", "", value.lower())
+
+
+def _node_supports_rhino(node: Dict[str, Any]) -> bool:
+    capabilities = {str(item).lower() for item in node.get("capabilities", [])}
+    software = {str(item).lower() for item in (node.get("software") or {}).keys()}
+    combined = capabilities | software
+    return any(item in combined for item in ["rhino", "grasshopper"])
+
+
+def _slugify_for_filename(text: str) -> str:
+    lowered = text.lower()
+    lowered = re.sub(r"[^a-z0-9]+", "-", lowered).strip("-")
+    return re.sub(r"-+", "-", lowered)
+
+
+def _build_rhino_script(shape: str, filename: str) -> str:
+    shape_body = _build_rhino_shape_body(shape)
+    layer_name = f"EDISON_{filename.rsplit('.', 1)[0]}"
+    return (
+        "import os\n"
+        "import rhinoscriptsyntax as rs\n\n"
+        f"output_file = os.path.join(os.path.expanduser('~'), '.edison', 'generated_models', '{filename}')\n"
+        "output_dir = os.path.dirname(output_file)\n"
+        "if not os.path.isdir(output_dir):\n"
+        "    os.makedirs(output_dir)\n\n"
+        "previous_layer = rs.CurrentLayer()\n"
+        f"layer_name = '{layer_name}'\n"
+        "if not rs.IsLayer(layer_name):\n"
+        "    rs.AddLayer(layer_name)\n"
+        "rs.CurrentLayer(layer_name)\n"
+        "created_ids = []\n\n"
+        f"{shape_body}\n\n"
+        "if not created_ids:\n"
+        "    raise Exception('EDISON did not create any geometry.')\n"
+        "rs.UnselectAllObjects()\n"
+        "for object_id in created_ids:\n"
+        "    rs.SelectObject(object_id)\n"
+        "rs.Command('-_Export \"{}\" _Enter'.format(output_file), False)\n"
+        "rs.UnselectAllObjects()\n"
+        "if previous_layer and rs.IsLayer(previous_layer):\n"
+        "    rs.CurrentLayer(previous_layer)\n"
+    )
+
+
+def _build_rhino_shape_body(shape: str) -> str:
+    if shape == "vase":
+        return (
+            "axis = rs.AddLine((0, 0, 0), (0, 0, 180))\n"
+            "profile = rs.AddInterpCurve([(0, 0, 0), (32, 0, 0), (42, 0, 18), (54, 0, 70), (48, 0, 128), (26, 0, 176), (0, 0, 180)], degree=3)\n"
+            "if not axis or not profile:\n"
+            "    raise Exception('Failed to build the vase profile.')\n"
+            "surface = rs.AddRevSrf(profile, axis)\n"
+            "if surface:\n"
+            "    created_ids.append(surface)\n"
+            "rs.DeleteObject(profile)\n"
+            "rs.DeleteObject(axis)"
+        )
+    if shape == "planter":
+        return (
+            "axis = rs.AddLine((0, 0, 0), (0, 0, 110))\n"
+            "profile = rs.AddInterpCurve([(0, 0, 0), (50, 0, 0), (56, 0, 16), (60, 0, 70), (52, 0, 108), (0, 0, 110)], degree=3)\n"
+            "if not axis or not profile:\n"
+            "    raise Exception('Failed to build the planter profile.')\n"
+            "surface = rs.AddRevSrf(profile, axis)\n"
+            "if surface:\n"
+            "    created_ids.append(surface)\n"
+            "rs.DeleteObject(profile)\n"
+            "rs.DeleteObject(axis)"
+        )
+    if shape == "bowl":
+        return (
+            "axis = rs.AddLine((0, 0, 0), (0, 0, 80))\n"
+            "profile = rs.AddInterpCurve([(0, 0, 0), (64, 0, 0), (76, 0, 18), (86, 0, 42), (72, 0, 76), (0, 0, 80)], degree=3)\n"
+            "if not axis or not profile:\n"
+            "    raise Exception('Failed to build the bowl profile.')\n"
+            "surface = rs.AddRevSrf(profile, axis)\n"
+            "if surface:\n"
+            "    created_ids.append(surface)\n"
+            "rs.DeleteObject(profile)\n"
+            "rs.DeleteObject(axis)"
+        )
+    if shape == "cup":
+        return (
+            "axis = rs.AddLine((0, 0, 0), (0, 0, 115))\n"
+            "profile = rs.AddInterpCurve([(0, 0, 0), (34, 0, 0), (42, 0, 20), (46, 0, 88), (38, 0, 114), (0, 0, 115)], degree=3)\n"
+            "if not axis or not profile:\n"
+            "    raise Exception('Failed to build the cup profile.')\n"
+            "surface = rs.AddRevSrf(profile, axis)\n"
+            "if surface:\n"
+            "    created_ids.append(surface)\n"
+            "rs.DeleteObject(profile)\n"
+            "rs.DeleteObject(axis)"
+        )
+    if shape == "box":
+        return (
+            "box = rs.AddBox([(0, 0, 0), (80, 0, 0), (80, 60, 0), (0, 60, 0), (0, 0, 50), (80, 0, 50), (80, 60, 50), (0, 60, 50)])\n"
+            "if box:\n"
+            "    created_ids.append(box)"
+        )
+    if shape == "cylinder":
+        return (
+            "cylinder = rs.AddCylinder((0, 0, 0), 120, 40)\n"
+            "if cylinder:\n"
+            "    created_ids.append(cylinder)"
+        )
+    if shape == "cone":
+        return (
+            "cone = rs.AddCone((0, 0, 0), 120, 48)\n"
+            "if cone:\n"
+            "    created_ids.append(cone)"
+        )
+    if shape == "sphere":
+        return (
+            "sphere = rs.AddSphere((0, 0, 55), 55)\n"
+            "if sphere:\n"
+            "    created_ids.append(sphere)"
+        )
+    raise ValueError(f"Unsupported Rhino template: {shape}")

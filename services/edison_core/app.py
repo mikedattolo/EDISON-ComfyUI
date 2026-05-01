@@ -1425,6 +1425,7 @@ def _maybe_execute_business_action(message: str) -> Optional[Dict[str, Any]]:
             config=_get_business_config(),
             branding_store=branding_store,
             project_manager=project_manager,
+            node_manager=node_manager_instance,
         )
     except Exception as e:
         logger.warning(f"Business action execution failed: {e}")

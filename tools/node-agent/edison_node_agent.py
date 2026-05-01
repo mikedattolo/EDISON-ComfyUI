@@ -351,6 +351,29 @@ class RhinoController:
         except Exception as e:
             return {"ok": False, "error": str(e)}
 
+    def run_python_code(self, script_content: str, output_paths: Optional[List[str]] = None) -> Dict[str, Any]:
+        """Write inline Python code to a temp file and execute it inside Rhino."""
+        if not self.available or self._rhino is None:
+            return {"ok": False, "error": "Rhino is not connected"}
+        script_body = str(script_content or "").strip()
+        if not script_body:
+            return {"ok": False, "error": "Rhino script content is required"}
+
+        script_dir = Path.home() / ".edison" / "temp"
+        script_dir.mkdir(parents=True, exist_ok=True)
+        script_path = script_dir / f"rhino_inline_{uuid.uuid4().hex[:10]}.py"
+        script_path.write_text(script_body, encoding="utf-8")
+        try:
+            result = self.run_python_script(str(script_path))
+            if result.get("ok") and output_paths:
+                result["output_paths"] = output_paths
+            return result
+        finally:
+            try:
+                script_path.unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Could not remove temp Rhino script %s", script_path)
+
     def run_grasshopper_definition(self, gh_path: str) -> Dict[str, Any]:
         """Open a Grasshopper definition."""
         if not self.available or self._rhino is None:
@@ -620,6 +643,12 @@ class TaskExecutor:
     def _handle_rhino_script(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         if self.rhino is None or not self.rhino.available:
             return {"ok": False, "error": "Rhino is not connected on this node"}
+        script_content = payload.get("script_content") or payload.get("script") or ""
+        if str(script_content).strip():
+            output_paths = payload.get("output_paths") or []
+            if not isinstance(output_paths, list):
+                output_paths = [str(output_paths)]
+            return self.rhino.run_python_code(str(script_content), output_paths=output_paths)
         return self.rhino.run_python_script(payload.get("script_path", ""))
 
     def _handle_rhino_grasshopper(self, payload: Dict[str, Any]) -> Dict[str, Any]:

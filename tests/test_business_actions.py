@@ -124,3 +124,78 @@ def test_business_actions_execute_client_project_branding_and_marketing_flows(tm
     marketing_result = marketing_action["business_action"]["result"]
     assert marketing_result["project_id"] == project_id
     assert any(output["title"] == "social_captions" for output in marketing_result["outputs"])
+
+
+def test_business_actions_auto_routes_simple_cad_request_to_rhino_node(tmp_path):
+    from services.edison_core.branding_store import BrandingClientStore
+    from services.edison_core.business_actions import execute_business_action
+    from services.edison_core.projects import ProjectWorkspaceManager
+
+    class FakeNodeManager:
+        def __init__(self):
+            self.commands = []
+
+        def mark_stale(self):
+            return None
+
+        def list_nodes(self):
+            return {
+                "nodes": [
+                    {
+                        "id": "cad-laptop",
+                        "name": "CAD-Laptop",
+                        "status": "online",
+                        "capabilities": ["cad", "3d-modeling", "rhino"],
+                        "software": {"rhino": {"version": "7"}},
+                    }
+                ]
+            }
+
+        def find_best_node_for_task(self, task_description, required_capabilities=None, preferred_software=None):
+            return self.list_nodes()["nodes"][0]
+
+        def send_command(self, node_id, command, params=None):
+            self.commands.append({"node_id": node_id, "command": command, "params": params or {}})
+            return {
+                "ok": True,
+                "node_id": node_id,
+                "response": {
+                    "ok": True,
+                    "output_paths": (params or {}).get("output_paths", []),
+                },
+            }
+
+    repo_root = tmp_path / "repo"
+    branding_root = repo_root / "outputs" / "clients"
+    branding_db = repo_root / "config" / "integrations" / "branding.json"
+    branding_db.parent.mkdir(parents=True, exist_ok=True)
+
+    store = BrandingClientStore(
+        repo_root=repo_root,
+        branding_root=branding_root,
+        branding_db_path=branding_db,
+        media_roots=[repo_root / "outputs"],
+    )
+    manager = ProjectWorkspaceManager(
+        repo_root=repo_root,
+        config={"projects": {"root": "outputs"}, "modes": {"chat": {}, "work": {}}},
+        branding_db_path=branding_db,
+    )
+    node_manager = FakeNodeManager()
+
+    action = execute_business_action(
+        message="Edison generate a 3d model of a vase on CAD Laptop",
+        repo_root=repo_root,
+        config={"projects": {"root": "outputs"}, "modes": {"chat": {}, "work": {}}},
+        branding_store=store,
+        project_manager=manager,
+        node_manager=node_manager,
+    )
+
+    assert action is not None
+    assert action["business_action"]["type"] == "node_model_request"
+    assert action["business_action"]["ok"] is True
+    assert node_manager.commands[0]["node_id"] == "cad-laptop"
+    assert node_manager.commands[0]["command"] == "rhino_script"
+    assert "AddRevSrf" in node_manager.commands[0]["params"]["script_content"]
+    assert action["business_action"]["output_paths"] == node_manager.commands[0]["params"]["output_paths"]
