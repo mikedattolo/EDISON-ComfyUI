@@ -341,6 +341,7 @@ class RhinoController:
 
         self._pythoncom.CoInitialize()
         rhino = self._win32_client.Dispatch("Rhino.Application")
+        self._focus_rhino_window(rhino)
 
         script_object = None
         try:
@@ -350,6 +351,19 @@ class RhinoController:
 
         logger.info("✓ Connected to Rhino 7 via COM on thread %s", threading.current_thread().name)
         return rhino, script_object
+
+    def _focus_rhino_window(self, rhino: Any) -> None:
+        try:
+            rhino.Visible = True
+        except Exception:
+            logger.debug("Could not force Rhino visible on thread %s", threading.current_thread().name)
+
+        try:
+            bring_to_top = getattr(rhino, "BringToTop", None)
+            if callable(bring_to_top):
+                bring_to_top()
+        except Exception:
+            logger.debug("Could not bring Rhino to the foreground on thread %s", threading.current_thread().name)
 
     def _get_session(self) -> tuple[Any, Any]:
         if not self.available:
@@ -372,6 +386,7 @@ class RhinoController:
         except RuntimeError as exc:
             return {"ok": False, "error": str(exc)}
 
+        self._focus_rhino_window(rhino)
         errors: List[str] = []
         try:
             rhino.RunScript(command, 0)
@@ -401,6 +416,104 @@ class RhinoController:
             except Exception:
                 logger.debug("Could not prune stale Rhino script %s", script_path)
 
+    def _normalize_paths(self, paths: Optional[List[str]]) -> List[str]:
+        normalized: List[str] = []
+        for path in paths or []:
+            expanded = os.path.expandvars(os.path.expanduser(str(path or "").strip()))
+            if expanded:
+                normalized.append(expanded)
+        return normalized
+
+    def _derive_result_paths(self, output_paths: List[str]) -> List[str]:
+        derived: List[str] = []
+        for output_path in output_paths:
+            output_path_obj = Path(output_path)
+            if output_path_obj.suffix:
+                derived.append(str(output_path_obj.with_suffix(".result.json")))
+            else:
+                derived.append(f"{output_path}.result.json")
+        return derived
+
+    def _clear_expected_artifacts(self, paths: List[str]) -> None:
+        for path in paths:
+            try:
+                Path(path).unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Could not clear stale Rhino artifact %s", path)
+
+    def _wait_for_rhino_artifacts(
+        self,
+        output_paths: List[str],
+        result_paths: List[str],
+        timeout_seconds: int = 120,
+    ) -> Dict[str, Any]:
+        normalized_output_paths = self._normalize_paths(output_paths)
+        normalized_result_paths = self._normalize_paths(result_paths) or self._derive_result_paths(normalized_output_paths)
+
+        if not normalized_output_paths and not normalized_result_paths:
+            return {"ok": True, "output_paths": [], "result_paths": []}
+
+        deadline = time.time() + max(5, timeout_seconds)
+        while time.time() < deadline:
+            for result_path in normalized_result_paths:
+                result_file = Path(result_path)
+                if not result_file.exists():
+                    continue
+
+                try:
+                    with result_file.open(encoding="utf-8") as handle:
+                        rhino_result = json.load(handle)
+                except Exception as exc:
+                    return {
+                        "ok": False,
+                        "error": f"Could not read Rhino result file {result_path}: {exc}",
+                        "output_paths": normalized_output_paths,
+                        "result_paths": normalized_result_paths,
+                    }
+
+                if not rhino_result.get("ok"):
+                    return {
+                        "ok": False,
+                        "error": rhino_result.get("message") or "Rhino script reported failure",
+                        "output_paths": normalized_output_paths,
+                        "result_paths": normalized_result_paths,
+                        "rhino_result": rhino_result,
+                    }
+
+                missing_outputs = [path for path in normalized_output_paths if not Path(path).exists()]
+                if missing_outputs:
+                    return {
+                        "ok": False,
+                        "error": f"Rhino script reported success but missing outputs: {', '.join(missing_outputs)}",
+                        "output_paths": normalized_output_paths,
+                        "result_paths": normalized_result_paths,
+                        "rhino_result": rhino_result,
+                    }
+
+                return {
+                    "ok": True,
+                    "output_paths": normalized_output_paths,
+                    "result_paths": normalized_result_paths,
+                    "rhino_result": rhino_result,
+                }
+
+            if normalized_output_paths and all(Path(path).exists() for path in normalized_output_paths):
+                return {
+                    "ok": True,
+                    "output_paths": normalized_output_paths,
+                    "result_paths": normalized_result_paths,
+                }
+
+            time.sleep(0.25)
+
+        waited_for = normalized_result_paths or normalized_output_paths
+        return {
+            "ok": False,
+            "error": f"Rhino did not produce the expected output within {max(5, timeout_seconds)} seconds: {', '.join(waited_for)}",
+            "output_paths": normalized_output_paths,
+            "result_paths": normalized_result_paths,
+        }
+
     def run_command(self, command: str) -> Dict[str, Any]:
         """Send a Rhino command string."""
         if not self.available:
@@ -428,7 +541,13 @@ class RhinoController:
             result["script"] = normalized_path
         return result
 
-    def run_python_code(self, script_content: str, output_paths: Optional[List[str]] = None) -> Dict[str, Any]:
+    def run_python_code(
+        self,
+        script_content: str,
+        output_paths: Optional[List[str]] = None,
+        result_paths: Optional[List[str]] = None,
+        timeout_seconds: int = 120,
+    ) -> Dict[str, Any]:
         """Write inline Python code to a temp file and execute it inside Rhino."""
         if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
@@ -436,20 +555,28 @@ class RhinoController:
         if not script_body:
             return {"ok": False, "error": "Rhino script content is required"}
 
+        normalized_output_paths = self._normalize_paths(output_paths)
+        normalized_result_paths = self._normalize_paths(result_paths) or self._derive_result_paths(normalized_output_paths)
+
         script_dir = Path.home() / ".edison" / "temp"
         script_dir.mkdir(parents=True, exist_ok=True)
         self._cleanup_stale_inline_scripts(script_dir)
+        self._clear_expected_artifacts(normalized_output_paths + normalized_result_paths)
         script_path = script_dir / f"rhino_inline_{uuid.uuid4().hex[:10]}.py"
         script_path.write_text(script_body, encoding="utf-8")
         result = self.run_python_script(str(script_path))
         result["script_path"] = str(script_path)
-        if result.get("ok") and output_paths:
-            result["output_paths"] = output_paths
-        if not result.get("ok"):
-            try:
-                script_path.unlink(missing_ok=True)
-            except Exception:
-                logger.debug("Could not remove temp Rhino script %s", script_path)
+
+        if result.get("ok"):
+            artifact_result = self._wait_for_rhino_artifacts(
+                normalized_output_paths,
+                normalized_result_paths,
+                timeout_seconds=timeout_seconds,
+            )
+            result.update(artifact_result)
+        else:
+            result["output_paths"] = normalized_output_paths
+            result["result_paths"] = normalized_result_paths
         return result
 
     def run_grasshopper_definition(self, gh_path: str) -> Dict[str, Any]:
@@ -724,7 +851,16 @@ class TaskExecutor:
             output_paths = payload.get("output_paths") or []
             if not isinstance(output_paths, list):
                 output_paths = [str(output_paths)]
-            return self.rhino.run_python_code(str(script_content), output_paths=output_paths)
+            result_paths = payload.get("result_paths") or []
+            if not isinstance(result_paths, list):
+                result_paths = [str(result_paths)]
+            timeout_seconds = max(5, int(payload.get("timeout_seconds") or 120))
+            return self.rhino.run_python_code(
+                str(script_content),
+                output_paths=output_paths,
+                result_paths=result_paths,
+                timeout_seconds=timeout_seconds,
+            )
         return self.rhino.run_python_script(payload.get("script_path", ""))
 
     def _handle_rhino_grasshopper(self, payload: Dict[str, Any]) -> Dict[str, Any]:

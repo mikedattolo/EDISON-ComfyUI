@@ -272,9 +272,12 @@ def _maybe_execute_node_model_action(
 
     filename = f"{model_request['shape']}-{_slugify_for_filename(text)[:24] or model_request['shape']}.3dm"
     output_hint = f"~/.edison/generated_models/{filename}"
+    result_hint = f"~/.edison/generated_models/{Path(filename).stem}.result.json"
     payload = {
         "script_content": _build_rhino_script(model_request["shape"], filename),
         "output_paths": [output_hint],
+        "result_paths": [result_hint],
+        "timeout_seconds": 120,
     }
 
     command_result = _dispatch_node_model_request(
@@ -302,6 +305,7 @@ def _maybe_execute_node_model_action(
                 "node": {"id": target_node["id"], "name": target_node.get("name")},
                 "task": queued_task,
                 "output_paths": [output_hint],
+                "result_paths": [result_hint],
             },
         }
 
@@ -481,31 +485,100 @@ def _slugify_for_filename(text: str) -> str:
 
 
 def _build_rhino_script(shape: str, filename: str) -> str:
-    shape_body = _build_rhino_shape_body(shape)
+    shape_body = _build_rhino_shape_body(shape).replace("\n", "\n    ")
     layer_name = f"EDISON_{filename.rsplit('.', 1)[0]}"
+    result_filename = f"{Path(filename).stem}.result.json"
     return (
+        "import json\n"
         "import os\n"
+        "import time\n"
+        "import traceback\n"
         "import rhinoscriptsyntax as rs\n\n"
         f"output_file = os.path.join(os.path.expanduser('~'), '.edison', 'generated_models', '{filename}')\n"
+        f"result_file = os.path.join(os.path.expanduser('~'), '.edison', 'generated_models', '{result_filename}')\n"
         "output_dir = os.path.dirname(output_file)\n"
         "if not os.path.isdir(output_dir):\n"
-        "    os.makedirs(output_dir)\n\n"
-        "previous_layer = rs.CurrentLayer()\n"
-        f"layer_name = '{layer_name}'\n"
-        "if not rs.IsLayer(layer_name):\n"
-        "    rs.AddLayer(layer_name)\n"
-        "rs.CurrentLayer(layer_name)\n"
-        "created_ids = []\n\n"
-        f"{shape_body}\n\n"
-        "if not created_ids:\n"
-        "    raise Exception('EDISON did not create any geometry.')\n"
-        "rs.UnselectAllObjects()\n"
-        "for object_id in created_ids:\n"
-        "    rs.SelectObject(object_id)\n"
-        "rs.Command('-_Export \"{}\" _Enter'.format(output_file), False)\n"
-        "rs.UnselectAllObjects()\n"
-        "if previous_layer and rs.IsLayer(previous_layer):\n"
-        "    rs.CurrentLayer(previous_layer)\n"
+        "    os.makedirs(output_dir)\n"
+        "for artifact_path in [output_file, result_file]:\n"
+        "    if os.path.exists(artifact_path):\n"
+        "        os.remove(artifact_path)\n\n"
+        "def _write_result(ok, message, created_ids=None):\n"
+        "    payload = {\n"
+        "        'ok': bool(ok),\n"
+        "        'message': message,\n"
+        "        'output_file': output_file,\n"
+        "        'result_file': result_file,\n"
+        "        'created_ids': [str(object_id) for object_id in (created_ids or [])],\n"
+        "    }\n"
+        "    with open(result_file, 'w', encoding='utf-8') as handle:\n"
+        "        json.dump(payload, handle, indent=2)\n\n"
+        "def _show_progress(message, pause=0.35):\n"
+        "    print(message)\n"
+        "    try:\n"
+        "        rs.Redraw()\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    time.sleep(pause)\n\n"
+        "def _focus_model():\n"
+        "    try:\n"
+        "        rs.ZoomSelected()\n"
+        "    except Exception:\n"
+        "        try:\n"
+        "            rs.ZoomExtents()\n"
+        "        except Exception:\n"
+        "            pass\n"
+        "    try:\n"
+        "        rs.Redraw()\n"
+        "    except Exception:\n"
+        "        pass\n\n"
+        "previous_layer = None\n"
+        "created_ids = []\n"
+        "construction_ids = []\n"
+        "try:\n"
+        "    rs.EnableRedraw(True)\n"
+        "    try:\n"
+        "        rs.CurrentView('Perspective')\n"
+        "    except Exception:\n"
+        "        pass\n"
+        "    previous_layer = rs.CurrentLayer()\n"
+        f"    layer_name = '{layer_name}'\n"
+        "    if not rs.IsLayer(layer_name):\n"
+        "        rs.AddLayer(layer_name)\n"
+        "    rs.CurrentLayer(layer_name)\n"
+        "    _show_progress('EDISON: preparing Rhino workspace', 0.2)\n"
+        f"    {shape_body}\n"
+        "    if not created_ids:\n"
+        "        raise Exception('EDISON did not create any geometry.')\n"
+        "    for object_id in list(construction_ids):\n"
+        "        if rs.IsObject(object_id):\n"
+        "            rs.DeleteObject(object_id)\n"
+        "    _show_progress('EDISON: cleaned construction geometry', 0.2)\n"
+        "    rs.UnselectAllObjects()\n"
+        "    for object_id in created_ids:\n"
+        "        rs.SelectObject(object_id)\n"
+        "    _focus_model()\n"
+        "    _show_progress('EDISON: focused generated model', 0.45)\n"
+        "    export_ok = rs.Command('-_Export \"{}\" _Enter'.format(output_file), False)\n"
+        "    if not export_ok:\n"
+        "        raise Exception('Rhino export command failed.')\n"
+        "    deadline = time.time() + 15.0\n"
+        "    while time.time() < deadline and not os.path.exists(output_file):\n"
+        "        time.sleep(0.25)\n"
+        "    if not os.path.exists(output_file):\n"
+        "        raise Exception('Rhino export did not produce the expected file.')\n"
+        "    _show_progress('EDISON: export complete', 0.2)\n"
+        "    _write_result(True, 'Rhino model created successfully.', created_ids)\n"
+        "except Exception:\n"
+        "    _write_result(False, traceback.format_exc(), created_ids)\n"
+        "    raise\n"
+        "finally:\n"
+        "    try:\n"
+        "        rs.UnselectAllObjects()\n"
+        "        if previous_layer and rs.IsLayer(previous_layer):\n"
+        "            rs.CurrentLayer(previous_layer)\n"
+        "        rs.Redraw()\n"
+        "    except Exception:\n"
+        "        pass\n"
     )
 
 
@@ -513,73 +586,105 @@ def _build_rhino_shape_body(shape: str) -> str:
     if shape == "vase":
         return (
             "axis = rs.AddLine((0, 0, 0), (0, 0, 180))\n"
+            "if not axis:\n"
+            "    raise Exception('Failed to build the vase axis.')\n"
+            "construction_ids.append(axis)\n"
+            "_show_progress('EDISON: created revolve axis', 0.25)\n"
             "profile = rs.AddInterpCurve([(0, 0, 0), (32, 0, 0), (42, 0, 18), (54, 0, 70), (48, 0, 128), (26, 0, 176), (0, 0, 180)], degree=3)\n"
-            "if not axis or not profile:\n"
+            "if not profile:\n"
             "    raise Exception('Failed to build the vase profile.')\n"
+            "construction_ids.append(profile)\n"
+            "_show_progress('EDISON: drew vase profile', 0.35)\n"
             "surface = rs.AddRevSrf(profile, axis)\n"
-            "if surface:\n"
-            "    created_ids.append(surface)\n"
-            "rs.DeleteObject(profile)\n"
-            "rs.DeleteObject(axis)"
+            "if not surface:\n"
+            "    raise Exception('Failed to revolve the vase surface.')\n"
+            "created_ids.append(surface)\n"
+            "_show_progress('EDISON: revolved vase surface', 0.55)"
         )
     if shape == "planter":
         return (
             "axis = rs.AddLine((0, 0, 0), (0, 0, 110))\n"
+            "if not axis:\n"
+            "    raise Exception('Failed to build the planter axis.')\n"
+            "construction_ids.append(axis)\n"
+            "_show_progress('EDISON: created planter axis', 0.25)\n"
             "profile = rs.AddInterpCurve([(0, 0, 0), (50, 0, 0), (56, 0, 16), (60, 0, 70), (52, 0, 108), (0, 0, 110)], degree=3)\n"
-            "if not axis or not profile:\n"
+            "if not profile:\n"
             "    raise Exception('Failed to build the planter profile.')\n"
+            "construction_ids.append(profile)\n"
+            "_show_progress('EDISON: drew planter profile', 0.35)\n"
             "surface = rs.AddRevSrf(profile, axis)\n"
-            "if surface:\n"
-            "    created_ids.append(surface)\n"
-            "rs.DeleteObject(profile)\n"
-            "rs.DeleteObject(axis)"
+            "if not surface:\n"
+            "    raise Exception('Failed to revolve the planter surface.')\n"
+            "created_ids.append(surface)\n"
+            "_show_progress('EDISON: revolved planter surface', 0.55)"
         )
     if shape == "bowl":
         return (
             "axis = rs.AddLine((0, 0, 0), (0, 0, 80))\n"
+            "if not axis:\n"
+            "    raise Exception('Failed to build the bowl axis.')\n"
+            "construction_ids.append(axis)\n"
+            "_show_progress('EDISON: created bowl axis', 0.25)\n"
             "profile = rs.AddInterpCurve([(0, 0, 0), (64, 0, 0), (76, 0, 18), (86, 0, 42), (72, 0, 76), (0, 0, 80)], degree=3)\n"
-            "if not axis or not profile:\n"
+            "if not profile:\n"
             "    raise Exception('Failed to build the bowl profile.')\n"
+            "construction_ids.append(profile)\n"
+            "_show_progress('EDISON: drew bowl profile', 0.35)\n"
             "surface = rs.AddRevSrf(profile, axis)\n"
-            "if surface:\n"
-            "    created_ids.append(surface)\n"
-            "rs.DeleteObject(profile)\n"
-            "rs.DeleteObject(axis)"
+            "if not surface:\n"
+            "    raise Exception('Failed to revolve the bowl surface.')\n"
+            "created_ids.append(surface)\n"
+            "_show_progress('EDISON: revolved bowl surface', 0.55)"
         )
     if shape == "cup":
         return (
             "axis = rs.AddLine((0, 0, 0), (0, 0, 115))\n"
+            "if not axis:\n"
+            "    raise Exception('Failed to build the cup axis.')\n"
+            "construction_ids.append(axis)\n"
+            "_show_progress('EDISON: created cup axis', 0.25)\n"
             "profile = rs.AddInterpCurve([(0, 0, 0), (34, 0, 0), (42, 0, 20), (46, 0, 88), (38, 0, 114), (0, 0, 115)], degree=3)\n"
-            "if not axis or not profile:\n"
+            "if not profile:\n"
             "    raise Exception('Failed to build the cup profile.')\n"
+            "construction_ids.append(profile)\n"
+            "_show_progress('EDISON: drew cup profile', 0.35)\n"
             "surface = rs.AddRevSrf(profile, axis)\n"
-            "if surface:\n"
-            "    created_ids.append(surface)\n"
-            "rs.DeleteObject(profile)\n"
-            "rs.DeleteObject(axis)"
+            "if not surface:\n"
+            "    raise Exception('Failed to revolve the cup surface.')\n"
+            "created_ids.append(surface)\n"
+            "_show_progress('EDISON: revolved cup surface', 0.55)"
         )
     if shape == "box":
         return (
             "box = rs.AddBox([(0, 0, 0), (80, 0, 0), (80, 60, 0), (0, 60, 0), (0, 0, 50), (80, 0, 50), (80, 60, 50), (0, 60, 50)])\n"
-            "if box:\n"
-            "    created_ids.append(box)"
+            "if not box:\n"
+            "    raise Exception('Failed to create the box.')\n"
+            "created_ids.append(box)\n"
+            "_show_progress('EDISON: created box solid', 0.45)"
         )
     if shape == "cylinder":
         return (
             "cylinder = rs.AddCylinder((0, 0, 0), 120, 40)\n"
-            "if cylinder:\n"
-            "    created_ids.append(cylinder)"
+            "if not cylinder:\n"
+            "    raise Exception('Failed to create the cylinder.')\n"
+            "created_ids.append(cylinder)\n"
+            "_show_progress('EDISON: created cylinder solid', 0.45)"
         )
     if shape == "cone":
         return (
             "cone = rs.AddCone((0, 0, 0), 120, 48)\n"
-            "if cone:\n"
-            "    created_ids.append(cone)"
+            "if not cone:\n"
+            "    raise Exception('Failed to create the cone.')\n"
+            "created_ids.append(cone)\n"
+            "_show_progress('EDISON: created cone solid', 0.45)"
         )
     if shape == "sphere":
         return (
             "sphere = rs.AddSphere((0, 0, 55), 55)\n"
-            "if sphere:\n"
-            "    created_ids.append(sphere)"
+            "if not sphere:\n"
+            "    raise Exception('Failed to create the sphere.')\n"
+            "created_ids.append(sphere)\n"
+            "_show_progress('EDISON: created sphere solid', 0.45)"
         )
     raise ValueError(f"Unsupported Rhino template: {shape}")

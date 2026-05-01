@@ -124,3 +124,54 @@ def test_rhino_controller_keeps_inline_script_file_until_rhino_can_read_it(tmp_p
     assert result["output_paths"] == ["~/.edison/generated_models/vase.3dm"]
     assert script_path.exists()
     assert script_path.read_text(encoding="utf-8") == "print('hello from rhino')"
+
+
+def test_rhino_controller_waits_for_result_manifest_and_output(tmp_path):
+    module = _load_node_agent_module()
+
+    output_path = tmp_path / "vase.3dm"
+    result_path = tmp_path / "vase.result.json"
+    result_path.write_text(
+        '{"ok": true, "message": "Rhino model created successfully.", "output_file": "%s"}' % output_path,
+        encoding="utf-8",
+    )
+    output_path.write_text("3dm", encoding="utf-8")
+
+    controller = module.RhinoController.__new__(module.RhinoController)
+    controller.available = True
+
+    result = module.RhinoController._wait_for_rhino_artifacts(
+        controller,
+        [str(output_path)],
+        [str(result_path)],
+        timeout_seconds=1,
+    )
+
+    assert result["ok"] is True
+    assert result["output_paths"] == [str(output_path)]
+    assert result["result_paths"] == [str(result_path)]
+    assert result["rhino_result"]["ok"] is True
+
+
+def test_rhino_controller_reports_script_failure_from_result_manifest(tmp_path):
+    module = _load_node_agent_module()
+
+    output_path = tmp_path / "vase.3dm"
+    result_path = tmp_path / "vase.result.json"
+    result_path.write_text(
+        '{"ok": false, "message": "Traceback: boom"}',
+        encoding="utf-8",
+    )
+
+    controller = module.RhinoController.__new__(module.RhinoController)
+    controller.available = True
+
+    result = module.RhinoController._wait_for_rhino_artifacts(
+        controller,
+        [str(output_path)],
+        [str(result_path)],
+        timeout_seconds=1,
+    )
+
+    assert result["ok"] is False
+    assert "Traceback: boom" in result["error"]
