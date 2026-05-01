@@ -321,39 +321,116 @@ class RhinoController:
 
     def __init__(self):
         self.available = False
-        self._rhino = None
+        self._thread_state = threading.local()
+        self._pythoncom = None
+        self._win32_client = None
         if platform.system() == "Windows":
             try:
+                import pythoncom  # type: ignore
                 import win32com.client  # type: ignore
-                self._rhino = win32com.client.Dispatch("Rhino.Application")
+                self._pythoncom = pythoncom
+                self._win32_client = win32com.client
                 self.available = True
-                logger.info("✓ Connected to Rhino 7 via COM")
+                logger.info("✓ Rhino 7 COM automation available")
             except Exception as e:
                 logger.info(f"Rhino COM not available (start Rhino first): {e}")
 
+    def _connect_current_thread(self) -> tuple[Any, Any]:
+        if self._pythoncom is None or self._win32_client is None:
+            raise RuntimeError("Rhino COM automation is unavailable")
+
+        self._pythoncom.CoInitialize()
+        rhino = self._win32_client.Dispatch("Rhino.Application")
+
+        script_object = None
+        try:
+            script_object = rhino.GetScriptObject()
+        except Exception:
+            logger.debug("Rhino script object is unavailable on thread %s", threading.current_thread().name)
+
+        logger.info("✓ Connected to Rhino 7 via COM on thread %s", threading.current_thread().name)
+        return rhino, script_object
+
+    def _get_session(self) -> tuple[Any, Any]:
+        if not self.available:
+            raise RuntimeError("Rhino is not connected")
+
+        session = getattr(self._thread_state, "rhino_session", None)
+        if session is None:
+            try:
+                rhino, script_object = self._connect_current_thread()
+            except Exception as exc:
+                raise RuntimeError(f"Rhino COM dispatch failed: {exc}") from exc
+            session = {"rhino": rhino, "script_object": script_object}
+            self._thread_state.rhino_session = session
+
+        return session["rhino"], session.get("script_object")
+
+    def _run_script_command(self, command: str) -> Dict[str, Any]:
+        try:
+            rhino, script_object = self._get_session()
+        except RuntimeError as exc:
+            return {"ok": False, "error": str(exc)}
+
+        errors: List[str] = []
+        try:
+            rhino.RunScript(command, 0)
+            return {"ok": True, "command": command, "transport": "application"}
+        except Exception as exc:
+            errors.append(f"application: {exc}")
+
+        if script_object is not None and hasattr(script_object, "RunScript"):
+            try:
+                script_object.RunScript(command, 0)
+                return {"ok": True, "command": command, "transport": "script_object"}
+            except Exception as exc:
+                errors.append(f"script_object: {exc}")
+
+        return {
+            "ok": False,
+            "error": "; ".join(errors) or "Rhino RunScript failed",
+            "command": command,
+        }
+
+    def _cleanup_stale_inline_scripts(self, script_dir: Path, max_age_seconds: int = 12 * 60 * 60) -> None:
+        cutoff = time.time() - max_age_seconds
+        for script_path in script_dir.glob("rhino_inline_*.py"):
+            try:
+                if script_path.stat().st_mtime < cutoff:
+                    script_path.unlink(missing_ok=True)
+            except Exception:
+                logger.debug("Could not prune stale Rhino script %s", script_path)
+
     def run_command(self, command: str) -> Dict[str, Any]:
         """Send a Rhino command string."""
-        if not self.available or self._rhino is None:
+        if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
-        try:
-            self._rhino.RunScript(f"-_RunScript ({command})", 0)
-            return {"ok": True, "command": command}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        command_text = str(command or "").strip()
+        if not command_text:
+            return {"ok": False, "error": "Rhino command is required"}
+        result = self._run_script_command(command_text)
+        if result.get("ok"):
+            result["command"] = command_text
+        return result
 
     def run_python_script(self, script_path: str) -> Dict[str, Any]:
         """Run a Python script inside Rhino."""
-        if not self.available or self._rhino is None:
+        if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
-        try:
-            self._rhino.RunScript(f'-_RunPythonScript "{script_path}"', 0)
-            return {"ok": True, "script": script_path}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        normalized_path = os.path.expandvars(os.path.expanduser(str(script_path or "").strip()))
+        if not normalized_path:
+            return {"ok": False, "error": "Rhino script path is required"}
+        if not Path(normalized_path).exists():
+            return {"ok": False, "error": f"Rhino script not found: {normalized_path}"}
+
+        result = self._run_script_command(f'-_RunPythonScript "{normalized_path}"')
+        if result.get("ok"):
+            result["script"] = normalized_path
+        return result
 
     def run_python_code(self, script_content: str, output_paths: Optional[List[str]] = None) -> Dict[str, Any]:
         """Write inline Python code to a temp file and execute it inside Rhino."""
-        if not self.available or self._rhino is None:
+        if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
         script_body = str(script_content or "").strip()
         if not script_body:
@@ -361,53 +438,52 @@ class RhinoController:
 
         script_dir = Path.home() / ".edison" / "temp"
         script_dir.mkdir(parents=True, exist_ok=True)
+        self._cleanup_stale_inline_scripts(script_dir)
         script_path = script_dir / f"rhino_inline_{uuid.uuid4().hex[:10]}.py"
         script_path.write_text(script_body, encoding="utf-8")
-        try:
-            result = self.run_python_script(str(script_path))
-            if result.get("ok") and output_paths:
-                result["output_paths"] = output_paths
-            return result
-        finally:
+        result = self.run_python_script(str(script_path))
+        result["script_path"] = str(script_path)
+        if result.get("ok") and output_paths:
+            result["output_paths"] = output_paths
+        if not result.get("ok"):
             try:
                 script_path.unlink(missing_ok=True)
             except Exception:
                 logger.debug("Could not remove temp Rhino script %s", script_path)
+        return result
 
     def run_grasshopper_definition(self, gh_path: str) -> Dict[str, Any]:
         """Open a Grasshopper definition."""
-        if not self.available or self._rhino is None:
+        if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
         gh_path = os.path.expandvars(os.path.expanduser(str(gh_path or "").strip()))
         if not gh_path:
             return {"ok": False, "error": "Grasshopper definition path is required"}
         if not Path(gh_path).exists():
             return {"ok": False, "error": f"Grasshopper definition not found: {gh_path}"}
-        try:
-            self._rhino.RunScript(f'-_Grasshopper _Open "{gh_path}"', 0)
-            return {"ok": True, "definition": gh_path}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        result = self._run_script_command(f'-_Grasshopper _Open "{gh_path}"')
+        if result.get("ok"):
+            result["definition"] = gh_path
+        return result
 
     def export_file(self, filepath: str, format: str = "3dm") -> Dict[str, Any]:
         """Export the current document."""
-        if not self.available or self._rhino is None:
+        if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
-        try:
-            self._rhino.RunScript(f'-_Export "{filepath}"', 0)
-            return {"ok": True, "exported": filepath, "format": format}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        result = self._run_script_command(f'-_Export "{filepath}"')
+        if result.get("ok"):
+            result["exported"] = filepath
+            result["format"] = format
+        return result
 
     def open_file(self, filepath: str) -> Dict[str, Any]:
         """Open a file in Rhino."""
-        if not self.available or self._rhino is None:
+        if not self.available:
             return {"ok": False, "error": "Rhino is not connected"}
-        try:
-            self._rhino.RunScript(f'-_Open "{filepath}"', 0)
-            return {"ok": True, "opened": filepath}
-        except Exception as e:
-            return {"ok": False, "error": str(e)}
+        result = self._run_script_command(f'-_Open "{filepath}"')
+        if result.get("ok"):
+            result["opened"] = filepath
+        return result
 
 
 # ── SolidWorks Controller ────────────────────────────────────────────────
