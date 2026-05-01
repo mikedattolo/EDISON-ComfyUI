@@ -81,11 +81,17 @@ class BrowserSessionManager:
         return hostname.endswith(f".{allowed}")
 
     def _resolve_allowed_hosts(self, session_allowed_hosts: Optional[list[str]]) -> Set[str]:
-        # Optional restriction: if no allowlist configured, allow any host.
         merged = self._normalize_allowed_hosts(session_allowed_hosts)
         if merged:
             return merged
-        return set(self._default_allowed_hosts)
+        if self._default_allowed_hosts:
+            return set(self._default_allowed_hosts)
+        if not self._allow_any_host:
+            raise BrowserSessionError(
+                "No allowed hosts configured. Set sandbox_allowed_hosts or enable sandbox_allow_any_host.",
+                status_code=403,
+            )
+        return set()
 
     def _validate_url(self, raw_url: str, allowed_hosts: Set[str]) -> str:
         url = (raw_url or "").strip()
