@@ -74,7 +74,7 @@
             ],
             prompt: 'Review the 3D printing workspace and tell me how to make print job setup, queueing, and fabrication status clearer.',
             mode: 'agent',
-            secondaryHref: '/nodes',
+            secondaryHref: '/node-manager',
             secondaryLabel: 'Open Nodes'
         },
         {
@@ -118,9 +118,9 @@
         {
             key: 'nodes',
             label: 'Nodes',
-            href: '/nodes',
+            href: '/node-manager',
             icon: 'N',
-            matches: ['/nodes', '/nodes.html'],
+            matches: ['/node-manager', '/nodes-ui', '/nodes.html'],
             heroKicker: 'Distributed Workstations',
             heroTitle: 'Track remote workers, CAD nodes, and hardware capacity as part of the same operating system.',
             heroDescription: 'Nodes should surface readiness, ownership, and job routing clearly, especially when fabrication and Rhino work depend on remote machines.',

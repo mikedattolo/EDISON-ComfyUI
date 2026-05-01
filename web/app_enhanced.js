@@ -526,7 +526,7 @@ class EdisonApp {
                                 <strong>Custom AI</strong>
                                 <span>Specialized assistants, automations, and reusable flows.</span>
                             </a>
-                            <a class="welcome-destination-card" href="/nodes">
+                            <a class="welcome-destination-card" href="/node-manager">
                                 <strong>Nodes</strong>
                                 <span>Remote workstations, Rhino workers, and distributed jobs.</span>
                             </a>

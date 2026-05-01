@@ -34,6 +34,13 @@ from http.server import HTTPServer, BaseHTTPRequestHandler
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
+try:
+    import requests
+except ImportError:
+    print("ERROR: 'requests' package is required. Install it with:")
+    print("  pip install requests")
+    sys.exit(1)
+
 # Optional imports for GPU detection
 try:
     import wmi  # type: ignore
@@ -775,27 +782,22 @@ class EdisonNodeAgent:
         agent_port: int = DEFAULT_AGENT_PORT,
         name: str = "",
         role: str = "general",
+        verify_ssl: bool = False,
     ):
-        # Normalize server URL — handle cases like "192.168.1.20:8811" or "http://192.168.1.20"
-        host = server_host.strip()
-        if host.startswith("http://") or host.startswith("https://"):
-            # Already has scheme — strip it to parse
-            scheme_end = host.index("://") + 3
-            scheme = host[:scheme_end]
-            rest = host[scheme_end:]
-        else:
-            scheme = "http://"
-            rest = host
-        # If host already includes a port, use it; otherwise append server_port
-        if ":" in rest:
-            self.server_url = f"{scheme}{rest}"
-        else:
-            self.server_url = f"{scheme}{rest}:{server_port}"
+        self.verify_ssl = verify_ssl
+        self._server_targets = self._build_server_targets(server_host, server_port)
+        self.server_url = self._server_targets[0][0]
         self.agent_port = agent_port
         self.node_id = get_or_create_node_id()
         self.name = name or f"{platform.node()}"
         self.role = role
         self.running = False
+
+        if any(url.startswith("https://") and not verify for url, verify in self._server_targets):
+            try:
+                requests.packages.urllib3.disable_warnings()  # type: ignore[attr-defined]
+            except Exception:
+                pass
 
         # Detect hardware
         logger.info("Detecting hardware...")
@@ -826,6 +828,52 @@ class EdisonNodeAgent:
             solidworks=self.solidworks,
             blender=self.blender,
         )
+
+    def _build_server_targets(self, server_host: str, server_port: int) -> List[tuple[str, bool]]:
+        """Build candidate server URLs, preferring HTTPS on the public web port."""
+        host = server_host.strip()
+        explicit_scheme = host.startswith("http://") or host.startswith("https://")
+
+        if explicit_scheme:
+            scheme_end = host.index("://") + 3
+            scheme = host[:scheme_end]
+            rest = host[scheme_end:]
+            normalized = f"{scheme}{rest}" if ":" in rest else f"{scheme}{rest}:{server_port}"
+            verify = self.verify_ssl if normalized.startswith("https://") else True
+            return [(normalized, verify)]
+
+        rest = host if ":" in host else f"{host}:{server_port}"
+        if server_port == 8080:
+            return [
+                (f"https://{rest}", self.verify_ssl),
+                (f"http://{rest}", True),
+            ]
+
+        return [
+            (f"http://{rest}", True),
+            (f"https://{rest}", self.verify_ssl),
+        ]
+
+    def _post_json(self, path: str, payload: Dict[str, Any], timeout: int):
+        """POST JSON to the EDISON server, trying HTTPS first on the public web port."""
+        errors: List[str] = []
+
+        for base_url, verify in self._server_targets:
+            try:
+                response = requests.post(
+                    f"{base_url}{path}",
+                    json=payload,
+                    timeout=timeout,
+                    verify=verify,
+                )
+                if self.server_url != base_url:
+                    logger.info(f"✓ Using EDISON server at {base_url}")
+                    self.server_url = base_url
+                return response
+            except requests.exceptions.RequestException as exc:
+                errors.append(f"{base_url}: {exc}")
+
+        raise ConnectionError(" | ".join(errors))
 
     def _get_local_ip(self) -> str:
         """Get the LAN IP that can reach the EDISON server."""
@@ -859,11 +907,7 @@ class EdisonNodeAgent:
         """Register with the EDISON server."""
         payload = self._build_registration()
         try:
-            resp = requests.post(
-                f"{self.server_url}/nodes/register",
-                json=payload,
-                timeout=10,
-            )
+            resp = self._post_json("/nodes/register", payload, timeout=10)
             if resp.ok:
                 logger.info(f"✓ Registered with EDISON server as '{self.node_id}'")
                 return True
@@ -876,16 +920,10 @@ class EdisonNodeAgent:
 
     def _heartbeat_loop(self):
         """Send heartbeats and poll for tasks."""
-        import requests as req
-
         while self.running:
             try:
                 status = get_system_status()
-                resp = req.post(
-                    f"{self.server_url}/nodes/{self.node_id}/heartbeat",
-                    json=status,
-                    timeout=10,
-                )
+                resp = self._post_json(f"/nodes/{self.node_id}/heartbeat", status, timeout=10)
                 if resp.ok:
                     data = resp.json()
                     pending = data.get("pending_tasks", [])
@@ -900,8 +938,6 @@ class EdisonNodeAgent:
 
     def _execute_remote_task(self, task: Dict[str, Any]):
         """Execute a task received from the server and report back."""
-        import requests as req
-
         task_id = task.get("id", "")
         task_type = task.get("task_type", "")
         payload = task.get("payload", {})
@@ -910,11 +946,7 @@ class EdisonNodeAgent:
 
         # Mark as running
         try:
-            req.post(
-                f"{self.server_url}/nodes/tasks/{task_id}/update",
-                json={"status": "running"},
-                timeout=5,
-            )
+            self._post_json(f"/nodes/tasks/{task_id}/update", {"status": "running"}, timeout=5)
         except Exception:
             pass
 
@@ -924,9 +956,9 @@ class EdisonNodeAgent:
 
         # Report result
         try:
-            req.post(
-                f"{self.server_url}/nodes/tasks/{task_id}/update",
-                json={"status": status, "result": result},
+            self._post_json(
+                f"/nodes/tasks/{task_id}/update",
+                {"status": status, "result": result},
                 timeout=10,
             )
             logger.info(f"Task {task_id} completed: {status}")
@@ -973,14 +1005,6 @@ class EdisonNodeAgent:
 
 # ── CLI ──────────────────────────────────────────────────────────────────
 
-try:
-    import requests
-except ImportError:
-    print("ERROR: 'requests' package is required. Install it with:")
-    print("  pip install requests")
-    sys.exit(1)
-
-
 def main():
     parser = argparse.ArgumentParser(
         description="EDISON Node Agent — connect this machine to your EDISON AI server",
@@ -1013,6 +1037,11 @@ Examples:
         choices=["general", "cad", "render", "compute", "print"],
         help="Node role (default: general)",
     )
+    parser.add_argument(
+        "--verify-ssl",
+        action="store_true",
+        help="Verify HTTPS certificates when talking to the EDISON web service",
+    )
 
     args = parser.parse_args()
 
@@ -1032,6 +1061,7 @@ Examples:
         agent_port=args.port,
         name=args.name,
         role=args.role,
+        verify_ssl=args.verify_ssl,
     )
     agent.start()
 

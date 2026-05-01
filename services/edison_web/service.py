@@ -8,7 +8,7 @@ so the browser only needs to trust a single HTTPS origin.
 from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, Response, StreamingResponse
+from fastapi.responses import FileResponse, RedirectResponse, Response, StreamingResponse
 from starlette.requests import Request
 from pathlib import Path
 import logging
@@ -26,6 +26,8 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+NO_CACHE_HEADERS = {"Cache-Control": "no-cache, no-store, must-revalidate"}
 
 # Get repo root
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -80,6 +82,13 @@ _HOP_HEADERS = frozenset([
     "host", "transfer-encoding", "connection", "keep-alive",
     "proxy-authenticate", "proxy-authorization", "te", "trailers", "upgrade",
 ])
+
+
+def _prefers_html(request: Request) -> bool:
+    """Return True when the request looks like a browser page navigation."""
+    accept = (request.headers.get("accept") or "").lower()
+    sec_fetch_dest = (request.headers.get("sec-fetch-dest") or "").lower()
+    return "text/html" in accept or sec_fetch_dest == "document"
 
 @app.api_route("/api/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def reverse_proxy(request: Request, path: str):
@@ -154,6 +163,19 @@ async def reverse_proxy(request: Request, path: str):
 # ── External proxy for /nodes/* (node agent registration/heartbeat) ───
 # Allows remote node agents to reach core API through the public port 8080
 # without exposing the core directly on 0.0.0.0.
+
+@app.get("/nodes")
+async def nodes_entrypoint(request: Request):
+    """Send browser visits to the node manager page; keep JSON/API access at /nodes."""
+    if _prefers_html(request):
+        return RedirectResponse(url="/node-manager", status_code=307)
+    return await _proxy_to_core(request, "nodes")
+
+
+@app.get("/nodes.html")
+async def nodes_html_redirect():
+    """Preserve older node page links."""
+    return RedirectResponse(url="/node-manager", status_code=307)
 
 @app.api_route("/nodes/{path:path}", methods=["GET", "POST", "PUT", "DELETE", "PATCH", "OPTIONS", "HEAD"])
 async def proxy_nodes(request: Request, path: str):
@@ -233,7 +255,7 @@ async def root():
     if not index_file.exists():
         logger.error(f"index.html not found at {index_file}")
         return {"error": "Web UI not found"}
-    return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(index_file, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/video-editor")
@@ -243,7 +265,7 @@ async def video_editor_page():
     if not page.exists():
         logger.error(f"video_editor.html not found at {page}")
         return {"error": "Video editor UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/branding")
@@ -253,7 +275,7 @@ async def branding_page():
     if not page.exists():
         logger.error(f"branding.html not found at {page}")
         return {"error": "Branding UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/projects")
@@ -263,7 +285,7 @@ async def projects_page():
     if not page.exists():
         logger.error(f"projects.html not found at {page}")
         return {"error": "Projects UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/connectors")
@@ -273,7 +295,7 @@ async def connectors_page():
     if not page.exists():
         logger.error(f"connectors.html not found at {page}")
         return {"error": "Connectors UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/assistants")
@@ -283,7 +305,7 @@ async def assistants_page():
     if not page.exists():
         logger.error(f"assistants.html not found at {page}")
         return {"error": "Assistants UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/printing")
@@ -293,7 +315,7 @@ async def printing_page():
     if not page.exists():
         logger.error(f"printing.html not found at {page}")
         return {"error": "Printing UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/node-manager")
@@ -304,7 +326,7 @@ async def nodes_ui_page():
     if not page.exists():
         logger.error(f"nodes.html not found at {page}")
         return {"error": "Nodes UI not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
 @app.get("/help")
@@ -314,7 +336,7 @@ async def help_page():
     if not page.exists():
         logger.error(f"help.html not found at {page}")
         return {"error": "Help page not found"}
-    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 @app.get("/styles.css")
 async def styles():
@@ -322,7 +344,25 @@ async def styles():
     return FileResponse(
         WEB_DIR / "styles.css",
         media_type="text/css",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers=NO_CACHE_HEADERS
+    )
+
+@app.get("/workspace-shell.css")
+async def workspace_shell_styles():
+    """Serve shared workspace shell CSS."""
+    return FileResponse(
+        WEB_DIR / "workspace-shell.css",
+        media_type="text/css",
+        headers=NO_CACHE_HEADERS,
+    )
+
+@app.get("/workspace-shell.js")
+async def workspace_shell_script():
+    """Serve shared workspace shell JavaScript."""
+    return FileResponse(
+        WEB_DIR / "workspace-shell.js",
+        media_type="application/javascript",
+        headers=NO_CACHE_HEADERS,
     )
 
 @app.get("/app_enhanced.js")
@@ -331,7 +371,7 @@ async def app_enhanced():
     return FileResponse(
         WEB_DIR / "app_enhanced.js",
         media_type="application/javascript",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers=NO_CACHE_HEADERS
     )
 
 @app.get("/app_features.js")
@@ -340,13 +380,17 @@ async def app_features():
     return FileResponse(
         WEB_DIR / "app_features.js",
         media_type="application/javascript",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers=NO_CACHE_HEADERS
     )
 
 @app.get("/theme-device.js")
 async def theme_device():
     """Serve theme and device detection JS file"""
-    return FileResponse(WEB_DIR / "theme-device.js", media_type="application/javascript")
+    return FileResponse(
+        WEB_DIR / "theme-device.js",
+        media_type="application/javascript",
+        headers=NO_CACHE_HEADERS,
+    )
 
 @app.get("/app_new_features.js")
 async def app_new_features():
@@ -354,7 +398,7 @@ async def app_new_features():
     return FileResponse(
         WEB_DIR / "app_new_features.js",
         media_type="application/javascript",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers=NO_CACHE_HEADERS
     )
 
 @app.get("/voice_agent_live.js")
@@ -363,7 +407,7 @@ async def voice_agent_live():
     return FileResponse(
         WEB_DIR / "voice_agent_live.js",
         media_type="application/javascript",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers=NO_CACHE_HEADERS
     )
 
 @app.get("/gallery.js")
@@ -372,7 +416,7 @@ async def gallery():
     return FileResponse(
         WEB_DIR / "gallery.js",
         media_type="application/javascript",
-        headers={"Cache-Control": "no-cache, no-store, must-revalidate"}
+        headers=NO_CACHE_HEADERS
     )
 
 @app.get("/health")
