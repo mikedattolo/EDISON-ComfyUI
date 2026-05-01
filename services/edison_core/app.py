@@ -7,11 +7,11 @@ from fastapi import FastAPI, HTTPException, Request, WebSocket, WebSocketDisconn
 from fastapi.responses import StreamingResponse, FileResponse
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field, validator
-from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional, Literal, Iterator, List, Dict, Any, Union
 import logging
 from pathlib import Path
 import yaml
+import copy
 import sys
 import requests
 import datetime
@@ -1917,20 +1917,28 @@ _active_image_prompts_lock = threading.Lock()
 _resource_manager = IdleResourceManager(idle_seconds=45.0) if IdleResourceManager else None
 
 
+def _get_edison_config() -> dict:
+    if not isinstance(config, dict):
+        return {}
+    return config.setdefault("edison", {})
+
+
 def _sandbox_host_config() -> tuple[bool, list[str], int]:
-    allow_any = bool(config.edison.sandbox_allow_any_host)
-    hosts = [str(h).strip() for h in (config.edison.sandbox_allowed_hosts or []) if str(h).strip()]
-    ttl_seconds = int(config.edison.sandbox_session_ttl_seconds)
+    edison_config = _get_edison_config()
+    allow_any = bool(edison_config.get("sandbox_allow_any_host", False))
+    hosts = [str(h).strip() for h in (edison_config.get("sandbox_allowed_hosts", []) or []) if str(h).strip()]
+    ttl_seconds = int(edison_config.get("sandbox_session_ttl_seconds", 900))
     return allow_any, hosts, max(60, ttl_seconds)
 
 
 def _resource_protocol_config() -> dict:
+    edison_config = _get_edison_config()
     return {
-        "idle_cleanup_seconds": max(15, int(config.edison.idle_cleanup_seconds)),
-        "cleanup_poll_seconds": max(10, int(config.edison.idle_cleanup_poll_seconds)),
-        "swarm_session_ttl_seconds": max(60, int(config.edison.swarm_session_ttl_seconds)),
-        "browser_cleanup_ttl_seconds": max(60, int(config.edison.sandbox_session_ttl_seconds)),
-        "image_job_timeout_seconds": max(120, int(config.edison.image_job_timeout_seconds)),
+        "idle_cleanup_seconds": max(15, int(edison_config.get("idle_cleanup_seconds", 45))),
+        "cleanup_poll_seconds": max(10, int(edison_config.get("idle_cleanup_poll_seconds", 20))),
+        "swarm_session_ttl_seconds": max(60, int(edison_config.get("swarm_session_ttl_seconds", 900))),
+        "browser_cleanup_ttl_seconds": max(60, int(edison_config.get("sandbox_session_ttl_seconds", 900))),
+        "image_job_timeout_seconds": max(120, int(edison_config.get("image_job_timeout_seconds", 1800))),
     }
 
 
@@ -4118,21 +4126,80 @@ class OpenAIStreamResponse(BaseModel):
     model: str
     choices: List[OpenAIChoice]
 
-class EdisonConfig(BaseModel):
-    core: Dict[str, Any] = Field(default_factory=dict)
-    vllm: Dict[str, Any] = Field(default_factory=dict)
-    sandbox_allow_any_host: bool = False
-    sandbox_allowed_hosts: List[str] = Field(default_factory=list)
-    sandbox_session_ttl_seconds: int = 900
-    idle_cleanup_seconds: int = 45
-    idle_cleanup_poll_seconds: int = 20
-    swarm_session_ttl_seconds: int = 900
-    image_job_timeout_seconds: int = 1800
+_DEFAULT_CONFIG: Dict[str, Any] = {
+    "edison": {
+        "core": {
+            "host": "127.0.0.1",
+            "port": 8811,
+            "models_path": "models/llm",
+            "fast_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
+            "medium_model": "qwen2.5-14b-instruct-q4_k_m.gguf",
+            "deep_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
+            "reasoning_model": "qwen2.5-32b-instruct-q4_k_m.gguf",
+        },
+        "coral": {
+            "host": "127.0.0.1",
+            "port": 8808,
+        },
+        "vllm": {},
+        "sandbox_allow_any_host": False,
+        "sandbox_allowed_hosts": [],
+        "sandbox_session_ttl_seconds": 900,
+        "idle_cleanup_seconds": 45,
+        "idle_cleanup_poll_seconds": 20,
+        "swarm_session_ttl_seconds": 900,
+        "image_job_timeout_seconds": 1800,
+    }
+}
 
 
-class Config(BaseSettings):
-    model_config = SettingsConfigDict(env_prefix="EDISON_", env_nested_delimiter="__", extra="ignore")
-    edison: EdisonConfig = Field(default_factory=EdisonConfig)
+def _deep_merge_dicts(base: Dict[str, Any], overrides: Dict[str, Any]) -> Dict[str, Any]:
+    for key, value in overrides.items():
+        if isinstance(base.get(key), dict) and isinstance(value, dict):
+            _deep_merge_dicts(base[key], value)
+        else:
+            base[key] = value
+    return base
+
+
+def _coerce_env_value(value: str) -> Any:
+    try:
+        parsed = yaml.safe_load(value)
+    except yaml.YAMLError:
+        return value
+    return value if parsed is None and value != "null" else parsed
+
+
+def _load_env_config_overrides() -> Dict[str, Any]:
+    overrides: Dict[str, Any] = {}
+    prefixes = ("EDISON__", "EDISON_EDISON__")
+
+    for env_name, raw_value in os.environ.items():
+        matched_prefix = next((prefix for prefix in prefixes if env_name.startswith(prefix)), None)
+        if matched_prefix is None:
+            continue
+
+        key_path = [part.lower() for part in env_name[len(matched_prefix):].split("__") if part]
+        if not key_path:
+            continue
+
+        cursor = overrides.setdefault("edison", {})
+        for part in key_path[:-1]:
+            cursor = cursor.setdefault(part, {})
+        cursor[key_path[-1]] = _coerce_env_value(raw_value)
+
+    return overrides
+
+
+def _build_runtime_config(yaml_config: Dict[str, Any]) -> Dict[str, Any]:
+    merged = copy.deepcopy(_DEFAULT_CONFIG)
+    if isinstance(yaml_config, dict):
+        _deep_merge_dicts(merged, yaml_config)
+
+    env_overrides = _load_env_config_overrides()
+    if env_overrides:
+        _deep_merge_dicts(merged, env_overrides)
+    return merged
 
 
 def load_config():
@@ -4150,15 +4217,14 @@ def load_config():
         else:
             logger.warning(f"Config file not found at {config_path}, using defaults")
 
-        settings = Config(**yaml_config)
-        config = settings
+        config = _build_runtime_config(yaml_config)
     except Exception as e:
         logger.error(f"Error loading config: {e}")
-        config = Config()
+        config = copy.deepcopy(_DEFAULT_CONFIG)
 
 
 def _get_core_config() -> dict:
-    return config.edison.core
+    return _get_edison_config().get("core", {})
 
 def _get_ctx_limit(model_name: str) -> int:
     core_config = _get_core_config()
@@ -4174,7 +4240,7 @@ def _get_ctx_limit(model_name: str) -> int:
 
 def _init_vllm_config():
     global vllm_enabled, vllm_url
-    vllm_cfg = config.edison.vllm
+    vllm_cfg = _get_edison_config().get("vllm", {})
     vllm_enabled = bool(vllm_cfg.get("enabled", False))
     host = vllm_cfg.get("host", "127.0.0.1")
     port = vllm_cfg.get("port", 8822)
@@ -14877,15 +14943,16 @@ async def get_sandbox_config():
 @app.put("/sandbox/config")
 async def update_sandbox_config(request: dict):
     """Update in-memory sandbox host policy settings used by browser sessions."""
+    edison_config = _get_edison_config()
     if "sandbox_allow_any_host" in request:
-        config.edison.sandbox_allow_any_host = bool(request.get("sandbox_allow_any_host"))
+        edison_config["sandbox_allow_any_host"] = bool(request.get("sandbox_allow_any_host"))
     if "sandbox_allowed_hosts" in request:
         hosts = request.get("sandbox_allowed_hosts")
         if not isinstance(hosts, list):
             raise HTTPException(status_code=400, detail="sandbox_allowed_hosts must be a list")
-        config.edison.sandbox_allowed_hosts = [str(h).strip() for h in hosts if str(h).strip()]
+        edison_config["sandbox_allowed_hosts"] = [str(h).strip() for h in hosts if str(h).strip()]
     if "sandbox_session_ttl_seconds" in request:
-        config.edison.sandbox_session_ttl_seconds = max(60, int(request.get("sandbox_session_ttl_seconds") or 900))
+        edison_config["sandbox_session_ttl_seconds"] = max(60, int(request.get("sandbox_session_ttl_seconds") or 900))
 
     # Recreate manager so updated host policy takes effect immediately.
     global browser_session_manager
