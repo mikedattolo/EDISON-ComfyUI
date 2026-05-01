@@ -16482,6 +16482,15 @@ async def list_nodes():
     return {"success": True, **node_manager_instance.list_nodes()}
 
 
+@app.get("/nodes/tasks")
+async def list_all_tasks(node_id: str = None, status: str = None, limit: int = 50):
+    """List tasks across all nodes (optionally filtered by node_id and/or status)."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    tasks = node_manager_instance.list_tasks(node_id=node_id, status=status, limit=limit)
+    return {"success": True, "tasks": tasks, "count": len(tasks)}
+
+
 @app.get("/nodes/{node_id}")
 async def get_node(node_id: str):
     """Get details for a specific node."""
@@ -16638,15 +16647,6 @@ async def delegate_node_task(request: dict):
     if not result.get("ok"):
         raise HTTPException(status_code=422, detail=result.get("error", "Delegation failed"))
     return {"success": True, **result}
-
-
-@app.get("/nodes/tasks")
-async def list_all_tasks(node_id: str = None, status: str = None, limit: int = 50):
-    """List tasks across all nodes (optionally filtered by node_id and/or status)."""
-    if node_manager_instance is None:
-        raise HTTPException(status_code=503, detail="Node manager is not available")
-    tasks = node_manager_instance.list_tasks(node_id=node_id, status=status, limit=limit)
-    return {"success": True, "tasks": tasks, "count": len(tasks)}
 
 
 @app.get("/nodes/{node_id}/tasks")
