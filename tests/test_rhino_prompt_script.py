@@ -25,6 +25,8 @@ def test_rhino_prompt_script_contains_visual_feedback_and_result_manifest():
 
     assert "result_file" in script
     assert ".result.json" in script
+    assert "with open(result_file, 'w') as handle:" in script
+    assert "encoding='utf-8'" not in script
     assert "_show_progress('EDISON: drew vase profile'" in script
     assert "_focus_model()" in script
     assert "rs.ZoomSelected()" in script
