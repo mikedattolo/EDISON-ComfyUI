@@ -282,3 +282,161 @@ class NodeManager:
             return {"ok": True, "node_id": node_id, "response": resp.json()}
         except requests.RequestException as e:
             return {"ok": False, "node_id": node_id, "error": str(e)}
+
+    # ── capability matching & delegation ──
+
+    # Maps task intent keywords → capability tags the node must have
+    CAPABILITY_MAP: Dict[str, List[str]] = {
+        # 3D CAD / modeling
+        "rhino": ["rhino"],
+        "grasshopper": ["grasshopper"],
+        "solidworks": ["solidworks"],
+        "blender": ["blender"],
+        "cad": ["cad"],
+        "3d_model": ["3d-modeling"],
+        "3d_modeling": ["3d-modeling"],
+        "nurbs": ["nurbs"],
+        "parametric": ["parametric-design", "cad"],
+        "mechanical": ["mechanical-cad"],
+        "sheet_metal": ["sheet-metal"],
+        "assembly": ["assembly-design"],
+        "render": ["rendering", "gpu-render"],
+        "animation": ["animation"],
+        # Compute
+        "gpu": ["gpu-compute", "cuda"],
+        "cuda": ["cuda"],
+        # Generic
+        "compute": ["gpu-compute"],
+    }
+
+    def find_nodes_with_capability(self, *capabilities: str) -> List[Dict[str, Any]]:
+        """Return all online enabled nodes that have ALL of the given capabilities."""
+        self.mark_stale()
+        db = self._load()
+        result = []
+        for node in db.get("nodes", []):
+            if not node.get("enabled", True):
+                continue
+            if node.get("status") != "online":
+                continue
+            node_caps = set(node.get("capabilities", []))
+            node_sw   = set((node.get("software") or {}).keys())
+            combined  = node_caps | node_sw
+            if all(cap in combined for cap in capabilities):
+                result.append(node)
+        return result
+
+    def find_best_node_for_task(
+        self,
+        task_description: str,
+        required_capabilities: Optional[List[str]] = None,
+        preferred_software: Optional[List[str]] = None,
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Given a natural-language task description and optional explicit capability
+        requirements, find the best available online node.
+
+        Returns the best matching node dict, or None if no suitable node is online.
+        """
+        self.mark_stale()
+        db = self._load()
+        nodes = [n for n in db.get("nodes", [])
+                 if n.get("enabled", True) and n.get("status") == "online"]
+        if not nodes:
+            return None
+
+        # Build a set of required capabilities from the description
+        required = set(required_capabilities or [])
+        preferred = set(sw.lower() for sw in (preferred_software or []))
+
+        desc_lower = task_description.lower()
+        for keyword, caps in self.CAPABILITY_MAP.items():
+            if keyword.replace("_", " ") in desc_lower or keyword in desc_lower:
+                required.update(caps)
+
+        def score(node: Dict[str, Any]) -> int:
+            node_caps = set(node.get("capabilities", []))
+            node_sw   = set((node.get("software") or {}).keys())
+            combined  = node_caps | node_sw
+            s = sum(1 for r in required if r in combined)
+            s += sum(2 for p in preferred if p in combined)   # bonus for preferred SW
+            # Prefer less busy nodes
+            cpu = node.get("cpu_usage", 50)
+            if cpu < 40:
+                s += 1
+            return s
+
+        candidates = sorted(nodes, key=score, reverse=True)
+        best = candidates[0]
+
+        # Require at least minimal match when requirements were derived
+        if required:
+            node_caps = set(best.get("capabilities", []))
+            node_sw = set((best.get("software") or {}).keys())
+            combined = node_caps | node_sw
+            if not any(r in combined for r in required):
+                return None
+
+        return best
+
+    def delegate_task(
+        self,
+        task_description: str,
+        task_type: str,
+        payload: Dict[str, Any],
+        required_capabilities: Optional[List[str]] = None,
+        preferred_software: Optional[List[str]] = None,
+        node_id: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Intelligently delegate a task to the best available node.
+
+        If node_id is given, use that node directly.
+        Otherwise, find the best node based on task_description and capabilities.
+        Returns a dict with node info and task info.
+        """
+        if node_id:
+            target_node = self.get_node(node_id)
+        else:
+            target_node = self.find_best_node_for_task(
+                task_description,
+                required_capabilities=required_capabilities,
+                preferred_software=preferred_software,
+            )
+
+        if target_node is None:
+            return {
+                "ok": False,
+                "error": "No suitable online node found for this task. "
+                         "Make sure the node agent is running on your remote machine.",
+            }
+
+        task = self.submit_task(target_node["id"], task_type, payload)
+        return {
+            "ok": True,
+            "node": {
+                "id": target_node["id"],
+                "name": target_node.get("name"),
+                "host": target_node.get("host"),
+                "capabilities": target_node.get("capabilities", []),
+                "software": target_node.get("software", {}),
+            },
+            "task": task,
+        }
+
+    def list_tasks(
+        self,
+        node_id: Optional[str] = None,
+        status: Optional[str] = None,
+        limit: int = 50,
+    ) -> List[Dict[str, Any]]:
+        """List tasks, optionally filtered by node and/or status."""
+        db = self._load()
+        tasks = db.get("tasks", [])
+        if node_id:
+            tasks = [t for t in tasks if t.get("node_id") == node_id]
+        if status:
+            tasks = [t for t in tasks if t.get("status") == status]
+        # Return most-recent first
+        tasks.sort(key=lambda t: t.get("created", 0), reverse=True)
+        return tasks[:limit]

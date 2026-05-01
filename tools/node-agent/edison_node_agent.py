@@ -197,6 +197,51 @@ def detect_software() -> Dict[str, str]:
     if shutil.which("freecad") or shutil.which("FreeCAD"):
         software["freecad"] = "detected"
 
+    # SolidWorks (Windows only)
+    if platform.system() == "Windows":
+        sw_paths = [
+            r"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS\SLDWORKS.exe",
+            r"C:\Program Files\SolidWorks Corp\SolidWorks\SLDWORKS.exe",
+        ]
+        # Also check versioned installs 2020-2025
+        for yr in range(2020, 2026):
+            sw_paths.append(rf"C:\Program Files\SOLIDWORKS Corp\SOLIDWORKS {yr}\SLDWORKS.exe")
+            sw_paths.append(rf"C:\Program Files\SolidWorks Corp\SolidWorks {yr}\SLDWORKS.exe")
+        for sw_path_str in sw_paths:
+            sw_path = Path(sw_path_str)
+            if sw_path.exists():
+                # Extract year from path component if possible
+                for part in sw_path.parts:
+                    if "solidworks" in part.lower() and any(c.isdigit() for c in part):
+                        digits = [c for c in part if c.isdigit()]
+                        if len(digits) >= 4:
+                            ver = "".join(digits[:4])
+                            software["solidworks"] = ver
+                            break
+                if "solidworks" not in software:
+                    software["solidworks"] = "detected"
+                break
+        if "solidworks" not in software:
+            # Fallback: registry check
+            try:
+                import winreg  # type: ignore
+                for hive in [winreg.HKEY_LOCAL_MACHINE, winreg.HKEY_CURRENT_USER]:
+                    for key_path in [
+                        r"SOFTWARE\SolidWorks",
+                        r"SOFTWARE\SolidWorks Corp\SolidWorks",
+                        r"SOFTWARE\WOW6432Node\SolidWorks Corp\SolidWorks",
+                    ]:
+                        try:
+                            with winreg.OpenKey(hive, key_path):
+                                software["solidworks"] = "detected"
+                                break
+                        except FileNotFoundError:
+                            continue
+                    if "solidworks" in software:
+                        break
+            except ImportError:
+                pass
+
     # Grasshopper (comes with Rhino)
     if "rhino" in software:
         software["grasshopper"] = software["rhino"]
@@ -211,18 +256,23 @@ def detect_capabilities(software: Dict[str, str]) -> List[str]:
     """Derive capability tags from detected software."""
     caps = []
     if "rhino" in software:
-        caps.extend(["cad", "rhino", "3d-modeling", "nurbs"])
+        caps.extend(["cad", "rhino", "3d-modeling", "nurbs", "surface-modeling"])
     if "grasshopper" in software:
-        caps.append("grasshopper")
+        caps.extend(["grasshopper", "parametric-design"])
     if "blender" in software:
-        caps.extend(["3d-modeling", "rendering", "blender"])
+        caps.extend(["3d-modeling", "rendering", "blender", "animation", "sculpting"])
     if "freecad" in software:
-        caps.extend(["cad", "freecad"])
+        caps.extend(["cad", "freecad", "parametric-cad"])
+    if "solidworks" in software:
+        caps.extend(["cad", "solidworks", "mechanical-cad", "3d-modeling",
+                     "sheet-metal", "assembly-design", "technical-drawing"])
 
     # GPU capabilities
     gpu_name, _ = detect_gpu()
-    if any(x in gpu_name.lower() for x in ["nvidia", "rtx", "gtx", "quadro"]):
-        caps.extend(["gpu-compute", "cuda"])
+    if any(x in gpu_name.lower() for x in ["nvidia", "rtx", "gtx", "quadro", "a3000", "a4000", "a5000"]):
+        caps.extend(["gpu-compute", "cuda", "gpu-render"])
+    if any(x in gpu_name.lower() for x in ["quadro", "a3000", "a4000", "a5000", "rtx a"]):
+        caps.append("workstation-gpu")
 
     return list(set(caps))
 
@@ -325,19 +375,216 @@ class RhinoController:
             return {"ok": False, "error": str(e)}
 
 
+# ── SolidWorks Controller ────────────────────────────────────────────────
+
+class SolidWorksController:
+    """Interface to SolidWorks via COM automation (Windows only)."""
+
+    def __init__(self):
+        self.available = False
+        self._sw = None
+        if platform.system() == "Windows":
+            try:
+                import win32com.client  # type: ignore
+                # Connect to running instance first, then launch
+                try:
+                    self._sw = win32com.client.GetActiveObject("SldWorks.Application")
+                    logger.info("✓ Connected to running SolidWorks instance via COM")
+                except Exception:
+                    self._sw = win32com.client.Dispatch("SldWorks.Application")
+                    self._sw.Visible = True
+                    logger.info("✓ Launched SolidWorks via COM")
+                self.available = True
+            except Exception as e:
+                logger.info(f"SolidWorks COM not available (start SolidWorks first): {e}")
+
+    def open_file(self, filepath: str) -> Dict[str, Any]:
+        """Open a SolidWorks part/assembly/drawing file."""
+        if not self.available or self._sw is None:
+            return {"ok": False, "error": "SolidWorks is not connected"}
+        try:
+            import win32com.client  # type: ignore
+            ext = Path(filepath).suffix.lower()
+            doc_type = {".sldprt": 1, ".sldasm": 2, ".slddrw": 3}.get(ext, 1)
+            errors_var = win32com.client.VARIANT(0x4003, 0)   # VT_BYREF|VT_I4
+            warns_var  = win32com.client.VARIANT(0x4003, 0)
+            doc = self._sw.OpenDoc6(filepath, doc_type, 0, "", errors_var, warns_var)
+            if doc:
+                return {"ok": True, "opened": filepath}
+            return {"ok": False, "error": f"Could not open {filepath}"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def run_macro(self, macro_path: str) -> Dict[str, Any]:
+        """Run a SolidWorks VBA macro (.swp file)."""
+        if not self.available or self._sw is None:
+            return {"ok": False, "error": "SolidWorks is not connected"}
+        try:
+            ret = self._sw.RunMacro(macro_path, "", "")
+            return {"ok": True, "macro": macro_path, "result": ret}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def export_file(self, output_path: str, fmt: str = "step") -> Dict[str, Any]:
+        """Export the active SolidWorks document to another format."""
+        if not self.available or self._sw is None:
+            return {"ok": False, "error": "SolidWorks is not connected"}
+        try:
+            import win32com.client  # type: ignore
+            doc = self._sw.ActiveDoc
+            if doc is None:
+                return {"ok": False, "error": "No active document in SolidWorks"}
+            # swExportDataFormat enum values
+            fmt_map = {"step": 20, "stl": 26, "iges": 3, "dxf": 9,
+                       "dwg": 10, "obj": 41, "3ds": 25, "parasolid": 31}
+            fmt_id = fmt_map.get(fmt.lower(), 20)
+            data_options = self._sw.GetExportFileData(fmt_id)
+            errors_var = win32com.client.VARIANT(0x4003, 0)
+            warns_var  = win32com.client.VARIANT(0x4003, 0)
+            doc.Extension.SaveAs(output_path, 0, 0, data_options, errors_var, warns_var)
+            return {"ok": True, "exported": output_path, "format": fmt}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def run_script(self, script_content: str) -> Dict[str, Any]:
+        """Run a Python script that uses solidworks-python-api (swpg) or standalone."""
+        try:
+            import tempfile
+            with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tf:
+                tf.write(script_content)
+                tmp_path = tf.name
+            result = subprocess.run(
+                [sys.executable, tmp_path],
+                capture_output=True, text=True, timeout=120,
+            )
+            Path(tmp_path).unlink(missing_ok=True)
+            return {
+                "ok": result.returncode == 0,
+                "stdout": result.stdout[:4000],
+                "stderr": result.stderr[:1000],
+                "returncode": result.returncode,
+            }
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+
+# ── Blender Controller ────────────────────────────────────────────────────
+
+class BlenderController:
+    """Run Blender in background mode or via headless script execution."""
+
+    def __init__(self):
+        self.blender_exe = shutil.which("blender") or ""
+        self.available = bool(self.blender_exe)
+        if self.available:
+            logger.info(f"✓ Blender found at {self.blender_exe}")
+        else:
+            logger.info("Blender not found in PATH")
+
+    def run_script(self, script_content: str, blend_file: str = "") -> Dict[str, Any]:
+        """Run a Python script inside Blender (background mode)."""
+        if not self.available:
+            return {"ok": False, "error": "Blender not found"}
+        import tempfile
+        try:
+            with tempfile.NamedTemporaryFile(suffix=".py", delete=False, mode="w") as tf:
+                tf.write(script_content)
+                script_path = tf.name
+            cmd = [self.blender_exe, "--background"]
+            if blend_file:
+                cmd.append(blend_file)
+            cmd += ["--python", script_path]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+            Path(script_path).unlink(missing_ok=True)
+            return {
+                "ok": result.returncode == 0,
+                "stdout": result.stdout[:4000],
+                "stderr": result.stderr[:1000],
+                "returncode": result.returncode,
+            }
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "Blender script timed out (300s)"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def render(self, blend_file: str, output_path: str = "", frame: int = 1) -> Dict[str, Any]:
+        """Render a frame from a .blend file."""
+        if not self.available:
+            return {"ok": False, "error": "Blender not found"}
+        try:
+            cmd = [self.blender_exe, "--background", blend_file,
+                   "--render-output", output_path or "/tmp/render_",
+                   "--render-frame", str(frame)]
+            result = subprocess.run(cmd, capture_output=True, text=True, timeout=600)
+            return {
+                "ok": result.returncode == 0,
+                "stdout": result.stdout[:2000],
+                "stderr": result.stderr[:500],
+                "output_path": output_path,
+            }
+        except subprocess.TimeoutExpired:
+            return {"ok": False, "error": "Blender render timed out (600s)"}
+        except Exception as e:
+            return {"ok": False, "error": str(e)}
+
+    def export(self, blend_file: str, output_path: str, fmt: str = "gltf") -> Dict[str, Any]:
+        """Export a .blend to another format using a generated inline script."""
+        fmt_lower = fmt.lower()
+        export_scripts = {
+            "stl": (
+                "import bpy\n"
+                f"bpy.ops.export_mesh.stl(filepath=r'{output_path}')\n"
+            ),
+            "obj": (
+                "import bpy\n"
+                f"bpy.ops.export_scene.obj(filepath=r'{output_path}')\n"
+            ),
+            "gltf": (
+                "import bpy\n"
+                f"bpy.ops.export_scene.gltf(filepath=r'{output_path}', export_format='GLTF_SEPARATE')\n"
+            ),
+            "fbx": (
+                "import bpy\n"
+                f"bpy.ops.export_scene.fbx(filepath=r'{output_path}')\n"
+            ),
+        }
+        script = export_scripts.get(fmt_lower)
+        if not script:
+            return {"ok": False, "error": f"Unsupported export format: {fmt}"}
+        return self.run_script(script, blend_file=blend_file)
+
+
 # ── Task Executor ────────────────────────────────────────────────────────
 
 class TaskExecutor:
     """Executes tasks received from the EDISON server."""
 
-    def __init__(self, rhino: Optional[RhinoController] = None):
+    def __init__(
+        self,
+        rhino: Optional[RhinoController] = None,
+        solidworks: Optional["SolidWorksController"] = None,
+        blender: Optional["BlenderController"] = None,
+    ):
         self.rhino = rhino
+        self.solidworks = solidworks
+        self.blender = blender
         self._handlers = {
+            # Rhino
             "rhino_command": self._handle_rhino_command,
             "rhino_script": self._handle_rhino_script,
             "rhino_grasshopper": self._handle_rhino_grasshopper,
             "rhino_export": self._handle_rhino_export,
             "rhino_open": self._handle_rhino_open,
+            # SolidWorks
+            "solidworks_open": self._handle_sw_open,
+            "solidworks_macro": self._handle_sw_macro,
+            "solidworks_export": self._handle_sw_export,
+            "solidworks_script": self._handle_sw_script,
+            # Blender
+            "blender_script": self._handle_blender_script,
+            "blender_render": self._handle_blender_render,
+            "blender_export": self._handle_blender_export,
+            # Generic
             "shell": self._handle_shell,
             "file_transfer": self._handle_file_transfer,
             "ping": self._handle_ping,
@@ -380,6 +627,61 @@ class TaskExecutor:
         if self.rhino is None or not self.rhino.available:
             return {"ok": False, "error": "Rhino is not connected on this node"}
         return self.rhino.open_file(payload.get("filepath", ""))
+
+    # ── SolidWorks handlers ──
+
+    def _handle_sw_open(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.solidworks is None or not self.solidworks.available:
+            return {"ok": False, "error": "SolidWorks is not connected on this node"}
+        return self.solidworks.open_file(payload.get("filepath", ""))
+
+    def _handle_sw_macro(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.solidworks is None or not self.solidworks.available:
+            return {"ok": False, "error": "SolidWorks is not connected on this node"}
+        return self.solidworks.run_macro(payload.get("macro_path", ""))
+
+    def _handle_sw_export(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.solidworks is None or not self.solidworks.available:
+            return {"ok": False, "error": "SolidWorks is not connected on this node"}
+        return self.solidworks.export_file(
+            payload.get("output_path", ""),
+            payload.get("format", "step"),
+        )
+
+    def _handle_sw_script(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.solidworks is None or not self.solidworks.available:
+            return {"ok": False, "error": "SolidWorks is not connected on this node"}
+        return self.solidworks.run_script(payload.get("script", ""))
+
+    # ── Blender handlers ──
+
+    def _handle_blender_script(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.blender is None or not self.blender.available:
+            return {"ok": False, "error": "Blender not found on this node"}
+        return self.blender.run_script(
+            payload.get("script", ""),
+            payload.get("blend_file", ""),
+        )
+
+    def _handle_blender_render(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.blender is None or not self.blender.available:
+            return {"ok": False, "error": "Blender not found on this node"}
+        return self.blender.render(
+            payload.get("blend_file", ""),
+            payload.get("output_path", ""),
+            int(payload.get("frame", 1)),
+        )
+
+    def _handle_blender_export(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        if self.blender is None or not self.blender.available:
+            return {"ok": False, "error": "Blender not found on this node"}
+        return self.blender.export(
+            payload.get("blend_file", ""),
+            payload.get("output_path", ""),
+            payload.get("format", "gltf"),
+        )
+
+    # ── Generic handlers ──
 
     def _handle_shell(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         cmd = payload.get("command", "")
@@ -512,8 +814,18 @@ class EdisonNodeAgent:
         # Rhino controller
         self.rhino = RhinoController() if "rhino" in self.software else None
 
+        # SolidWorks controller
+        self.solidworks = SolidWorksController() if "solidworks" in self.software else None
+
+        # Blender controller
+        self.blender = BlenderController() if "blender" in self.software else None
+
         # Task executor
-        self.executor = TaskExecutor(rhino=self.rhino)
+        self.executor = TaskExecutor(
+            rhino=self.rhino,
+            solidworks=self.solidworks,
+            blender=self.blender,
+        )
 
     def _get_local_ip(self) -> str:
         """Get the LAN IP that can reach the EDISON server."""

@@ -162,7 +162,7 @@ async def root():
     if not index_file.exists():
         logger.error(f"index.html not found at {index_file}")
         return {"error": "Web UI not found"}
-    return FileResponse(index_file)
+    return FileResponse(index_file, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/video-editor")
@@ -172,7 +172,7 @@ async def video_editor_page():
     if not page.exists():
         logger.error(f"video_editor.html not found at {page}")
         return {"error": "Video editor UI not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/branding")
@@ -182,7 +182,7 @@ async def branding_page():
     if not page.exists():
         logger.error(f"branding.html not found at {page}")
         return {"error": "Branding UI not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/projects")
@@ -192,7 +192,7 @@ async def projects_page():
     if not page.exists():
         logger.error(f"projects.html not found at {page}")
         return {"error": "Projects UI not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/connectors")
@@ -202,7 +202,7 @@ async def connectors_page():
     if not page.exists():
         logger.error(f"connectors.html not found at {page}")
         return {"error": "Connectors UI not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/assistants")
@@ -212,7 +212,7 @@ async def assistants_page():
     if not page.exists():
         logger.error(f"assistants.html not found at {page}")
         return {"error": "Assistants UI not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/printing")
@@ -222,7 +222,18 @@ async def printing_page():
     if not page.exists():
         logger.error(f"printing.html not found at {page}")
         return {"error": "Printing UI not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
+
+
+@app.get("/node-manager")
+@app.get("/nodes-ui")
+async def nodes_ui_page():
+    """Serve the Node Manager UI page."""
+    page = WEB_DIR / "nodes.html"
+    if not page.exists():
+        logger.error(f"nodes.html not found at {page}")
+        return {"error": "Nodes UI not found"}
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 
 @app.get("/help")
@@ -232,7 +243,7 @@ async def help_page():
     if not page.exists():
         logger.error(f"help.html not found at {page}")
         return {"error": "Help page not found"}
-    return FileResponse(page)
+    return FileResponse(page, headers={"Cache-Control": "no-cache, no-store, must-revalidate"})
 
 @app.get("/styles.css")
 async def styles():

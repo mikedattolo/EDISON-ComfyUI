@@ -16530,6 +16530,67 @@ async def update_node_task(task_id: str, request: dict):
         raise HTTPException(status_code=404, detail=str(e))
 
 
+@app.post("/nodes/delegate")
+async def delegate_node_task(request: dict):
+    """
+    Intelligently delegate a task to the best available node.
+
+    Body fields:
+      task_description  – natural-language description (used for capability matching)
+      task_type         – executor type on the node, e.g. rhino_command / solidworks_export / blender_script
+      payload           – task-specific parameters passed to the node executor
+      required_capabilities – optional explicit list of capability tags required
+      preferred_software    – optional list of preferred software names (e.g. ['solidworks'])
+      node_id           – optional: target a specific node by ID (bypasses auto-selection)
+    """
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+
+    task_description = str(request.get("task_description") or "")
+    task_type        = str(request.get("task_type") or "")
+    payload          = dict(request.get("payload") or {})
+    req_caps         = list(request.get("required_capabilities") or [])
+    pref_sw          = list(request.get("preferred_software") or [])
+    node_id          = str(request.get("node_id") or "").strip() or None
+
+    if not task_type:
+        raise HTTPException(status_code=400, detail="task_type is required")
+
+    result = node_manager_instance.delegate_task(
+        task_description=task_description,
+        task_type=task_type,
+        payload=payload,
+        required_capabilities=req_caps or None,
+        preferred_software=pref_sw or None,
+        node_id=node_id,
+    )
+    if not result.get("ok"):
+        raise HTTPException(status_code=422, detail=result.get("error", "Delegation failed"))
+    return {"success": True, **result}
+
+
+@app.get("/nodes/tasks")
+async def list_all_tasks(node_id: str = None, status: str = None, limit: int = 50):
+    """List tasks across all nodes (optionally filtered by node_id and/or status)."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    tasks = node_manager_instance.list_tasks(node_id=node_id, status=status, limit=limit)
+    return {"success": True, "tasks": tasks, "count": len(tasks)}
+
+
+@app.get("/nodes/{node_id}/tasks")
+async def list_node_tasks(node_id: str, status: str = None, limit: int = 30):
+    """List tasks for a specific node."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    try:
+        node_manager_instance.get_node(node_id)  # verify exists
+    except KeyError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    tasks = node_manager_instance.list_tasks(node_id=node_id, status=status, limit=limit)
+    return {"success": True, "node_id": node_id, "tasks": tasks, "count": len(tasks)}
+
+
 if __name__ == "__main__":
     import uvicorn
     from pathlib import Path as _Path

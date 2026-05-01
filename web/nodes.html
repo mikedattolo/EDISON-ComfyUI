@@ -6,520 +6,490 @@
   <title>EDISON Node Manager</title>
   <style>
     :root {
-      --bg: #eef2f5;
-      --bg-2: #f7f9fb;
-      --panel: #ffffff;
-      --line: #d9e0e6;
-      --ink: #24323f;
-      --muted: #6d7b88;
-      --accent: #2c7be5;
-      --accent-2: #1f63bf;
-      --ok: #249a6b;
-      --warn: #b8781a;
-      --bad: #cc4b4b;
-      --shadow: 0 10px 28px rgba(34, 57, 82, 0.08);
+      --bg: #eef2f5; --panel: #ffffff; --line: #d9e0e6; --ink: #24323f;
+      --muted: #6d7b88; --accent: #2c7be5; --accent-2: #1f63bf;
+      --ok: #249a6b; --warn: #b8781a; --bad: #cc4b4b;
+      --shadow: 0 10px 28px rgba(34,57,82,0.08);
     }
-
     * { box-sizing: border-box; }
-
     body {
-      margin: 0;
-      color: var(--ink);
-      font-family: "Segoe UI", sans-serif;
+      margin: 0; color: var(--ink); font-family: "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at 10% 8%, rgba(44, 123, 229, 0.1), transparent 24%),
-        radial-gradient(circle at 96% 6%, rgba(70, 132, 180, 0.08), transparent 22%),
+        radial-gradient(circle at 10% 8%, rgba(44,123,229,0.1), transparent 24%),
+        radial-gradient(circle at 96% 6%, rgba(70,132,180,0.08), transparent 22%),
         linear-gradient(180deg, #f9fbfd 0%, #eef3f7 100%);
+      min-height: 100vh;
     }
-
     .topbar {
-      position: sticky;
-      top: 0;
-      z-index: 10;
+      position: sticky; top: 0; z-index: 10;
       border-bottom: 1px solid var(--line);
-      background: rgba(248, 251, 253, 0.92);
-      backdrop-filter: blur(10px);
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      gap: 10px;
-      padding: 14px 18px;
+      background: rgba(248,251,253,0.92); backdrop-filter: blur(10px);
+      display: flex; justify-content: space-between; align-items: center;
+      gap: 10px; padding: 14px 18px;
     }
-
     .title h1 { margin: 0; font-size: 22px; }
-    .title p { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
-
+    .title p  { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
     .btn {
-      border: 1px solid var(--line);
-      border-radius: 10px;
-      background: linear-gradient(180deg, #fff, #f4f7fa);
-      color: var(--ink);
-      padding: 9px 14px;
-      font: inherit;
-      font-size: 13px;
-      cursor: pointer;
-      transition: all 0.2s ease;
+      border: 1px solid var(--line); border-radius: 10px;
+      background: linear-gradient(180deg,#fff,#f4f7fa); color: var(--ink);
+      padding: 9px 14px; font: inherit; font-size: 13px; cursor: pointer; transition: all .2s;
     }
     .btn:hover { border-color: #9db8d8; }
-    .btn.primary {
-      border-color: transparent;
-      background: linear-gradient(120deg, #2c7be5, #1f63bf);
-      color: #fff; font-weight: 700;
-    }
-    .btn:disabled { opacity: 0.5; cursor: not-allowed; }
-
-    .shell {
-      display: grid;
-      grid-template-columns: 1fr;
-      gap: 14px;
-      padding: 14px;
-      min-height: calc(100vh - 74px);
-    }
-
-    .card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      padding: 18px;
-    }
-
-    .card h2 {
-      margin: 0 0 14px;
-      font-size: 16px;
-    }
-
-    /* Node grid */
-    .node-grid {
-      display: grid;
-      grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
-      gap: 14px;
-    }
-
+    .btn.primary { border-color: transparent; background: linear-gradient(120deg,#2c7be5,#1f63bf); color:#fff; font-weight:700; }
+    .btn.danger  { border-color: var(--bad); color: var(--bad); }
+    .btn:disabled { opacity:.5; cursor:not-allowed; }
+    .shell { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px; }
+    @media (max-width:900px) { .shell { grid-template-columns: 1fr; } }
+    .left-col { display:flex; flex-direction:column; gap:16px; }
+    .right-col { display:flex; flex-direction:column; gap:16px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:18px; }
+    .card h2 { margin:0 0 14px; font-size:16px; }
+    .card-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:14px; }
+    .card-header h2 { margin:0; }
+    .node-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
     .node-card {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 14px;
-      box-shadow: var(--shadow);
-      padding: 18px;
-      position: relative;
-      transition: border-color 0.2s;
+      background:var(--panel); border:1px solid var(--line); border-radius:14px;
+      box-shadow:var(--shadow); padding:18px; transition:border-color .2s,box-shadow .2s;
     }
-    .node-card:hover { border-color: var(--accent); }
-
-    .node-card .status-dot {
-      width: 10px; height: 10px;
-      border-radius: 50%;
-      display: inline-block;
-      margin-right: 6px;
+    .node-card:hover { border-color:var(--accent); box-shadow:0 12px 32px rgba(44,123,229,.12); }
+    .node-card.online  { border-left:3px solid var(--ok); }
+    .node-card.offline { border-left:3px solid var(--bad); opacity:.8; }
+    .node-card.busy    { border-left:3px solid var(--warn); }
+    .status-dot { width:9px; height:9px; border-radius:50%; display:inline-block; margin-right:5px; }
+    .status-dot.online  { background:var(--ok); box-shadow:0 0 5px var(--ok); animation:pulse 2s infinite; }
+    .status-dot.offline { background:var(--bad); }
+    .status-dot.busy    { background:var(--warn); }
+    @keyframes pulse { 0%,100%{opacity:1;} 50%{opacity:.5;} }
+    .node-name { font-size:16px; font-weight:700; display:flex; align-items:center; gap:6px; margin-bottom:10px; }
+    .node-role { display:inline-block; background:rgba(44,123,229,.1); color:var(--accent); font-size:10px; font-weight:700; padding:2px 7px; border-radius:5px; text-transform:uppercase; margin-left:4px; }
+    .node-meta { font-size:12px; color:var(--muted); display:grid; grid-template-columns:1fr 1fr; gap:5px 12px; }
+    .node-meta .lbl { color:var(--ink); font-weight:600; }
+    .node-caps { margin-top:8px; display:flex; flex-wrap:wrap; gap:4px; }
+    .cap-tag { background:rgba(44,123,229,.07); border:1px solid rgba(44,123,229,.18); color:var(--accent-2); font-size:10px; padding:2px 7px; border-radius:5px; }
+    .cap-tag.sw { background:rgba(36,154,107,.07); border-color:rgba(36,154,107,.2); color:var(--ok); }
+    .usage-bar { margin-top:10px; display:grid; grid-template-columns:1fr 1fr 1fr; gap:8px; }
+    .usage-item { font-size:11px; }
+    .bar-bg { height:4px; background:var(--line); border-radius:3px; margin-top:3px; overflow:hidden; }
+    .bar-fill { height:100%; border-radius:3px; background:var(--accent); transition:width .5s; }
+    .node-actions { margin-top:12px; display:flex; gap:6px; flex-wrap:wrap; }
+    .node-actions .btn { padding:6px 11px; font-size:12px; }
+    .task-list { display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto; }
+    .task-item { border:1px solid var(--line); border-radius:10px; padding:12px; font-size:12px; background:#fafcfe; }
+    .task-item .task-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; }
+    .task-item .task-type { font-weight:700; font-size:13px; }
+    .task-badge { font-size:10px; font-weight:700; padding:2px 8px; border-radius:5px; text-transform:uppercase; }
+    .task-badge.pending { background:rgba(184,120,26,.1); color:var(--warn); }
+    .task-badge.running { background:rgba(44,123,229,.1); color:var(--accent); }
+    .task-badge.done    { background:rgba(36,154,107,.1); color:var(--ok); }
+    .task-badge.failed  { background:rgba(204,75,75,.1); color:var(--bad); }
+    .delegate-form { display:flex; flex-direction:column; gap:10px; }
+    .delegate-form label { font-size:12px; font-weight:600; display:block; margin-bottom:3px; color:var(--muted); }
+    .delegate-form input, .delegate-form select, .delegate-form textarea {
+      width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
+      font:inherit; font-size:13px; background:#fafcfe; transition:border-color .2s;
     }
-    .status-dot.online { background: var(--ok); }
-    .status-dot.offline { background: var(--bad); }
-    .status-dot.busy { background: var(--warn); }
-
-    .node-card .node-name {
-      font-size: 17px;
-      font-weight: 700;
-      display: flex;
-      align-items: center;
-      gap: 6px;
-    }
-
-    .node-card .node-role {
-      display: inline-block;
-      background: rgba(44, 123, 229, 0.1);
-      color: var(--accent);
-      font-size: 11px;
-      font-weight: 700;
-      padding: 2px 8px;
-      border-radius: 6px;
-      text-transform: uppercase;
-      margin-left: 8px;
-    }
-
-    .node-card .node-meta {
-      margin-top: 10px;
-      font-size: 13px;
-      color: var(--muted);
-      display: grid;
-      grid-template-columns: 1fr 1fr;
-      gap: 6px 14px;
-    }
-    .node-meta .label { color: var(--ink); font-weight: 600; }
-
-    .node-card .node-caps {
-      margin-top: 10px;
-      display: flex;
-      flex-wrap: wrap;
-      gap: 4px;
-    }
-    .node-caps .cap-tag {
-      background: rgba(44, 123, 229, 0.06);
-      border: 1px solid rgba(44, 123, 229, 0.15);
-      color: var(--accent-2);
-      font-size: 11px;
-      padding: 2px 7px;
-      border-radius: 5px;
-    }
-
-    .node-card .node-actions {
-      margin-top: 12px;
-      display: flex;
-      gap: 8px;
-    }
-
-    .node-card .usage-bar {
-      margin-top: 10px;
-      display: grid;
-      grid-template-columns: 1fr 1fr 1fr;
-      gap: 8px;
-    }
-    .usage-item { font-size: 12px; }
-    .usage-item .bar-bg {
-      height: 5px;
-      background: var(--line);
-      border-radius: 3px;
-      margin-top: 3px;
-      overflow: hidden;
-    }
-    .usage-item .bar-fill {
-      height: 100%;
-      border-radius: 3px;
-      background: var(--accent);
-      transition: width 0.5s;
-    }
-
-    /* Empty state */
-    .empty-state {
-      text-align: center;
-      padding: 60px 20px;
-      color: var(--muted);
-    }
-    .empty-state h3 { color: var(--ink); margin-bottom: 8px; }
-
-    /* Discover modal */
-    .modal-overlay {
-      display: none;
-      position: fixed;
-      inset: 0;
-      background: rgba(0,0,0,0.35);
-      z-index: 100;
-      justify-content: center;
-      align-items: center;
-    }
-    .modal-overlay.active { display: flex; }
-    .modal {
-      background: var(--panel);
-      border-radius: 16px;
-      box-shadow: 0 20px 60px rgba(0,0,0,0.2);
-      padding: 24px;
-      width: 500px;
-      max-width: 90vw;
-      max-height: 80vh;
-      overflow-y: auto;
-    }
-    .modal h2 { margin: 0 0 14px; }
-    .modal .close-btn {
-      position: absolute;
-      top: 14px; right: 14px;
-      background: none; border: none;
-      font-size: 20px; cursor: pointer;
-      color: var(--muted);
-    }
-
-    /* Setup guide */
-    .setup-guide {
-      background: #f8fafc;
-      border: 1px solid var(--line);
-      border-radius: 12px;
-      padding: 18px;
-      margin-top: 14px;
-    }
-    .setup-guide h3 { margin: 0 0 10px; font-size: 15px; }
-    .setup-guide ol { padding-left: 20px; margin: 0; }
-    .setup-guide li { margin-bottom: 8px; font-size: 13px; line-height: 1.5; }
-    .setup-guide code {
-      background: #e8edf2;
-      padding: 2px 6px;
-      border-radius: 4px;
-      font-size: 12px;
-      font-family: "Cascadia Code", "Fira Code", monospace;
-    }
-    .setup-guide pre {
-      background: #1e293b;
-      color: #e2e8f0;
-      padding: 12px;
-      border-radius: 8px;
-      font-size: 12px;
-      overflow-x: auto;
-      margin: 8px 0;
-    }
+    .delegate-form input:focus, .delegate-form select:focus, .delegate-form textarea:focus { outline:none; border-color:var(--accent); }
+    .delegate-form textarea { min-height:60px; resize:vertical; }
+    .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:100; justify-content:center; align-items:center; }
+    .modal-overlay.active { display:flex; }
+    .modal { background:var(--panel); border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,.2); padding:24px; width:540px; max-width:90vw; max-height:85vh; overflow-y:auto; position:relative; }
+    .modal h2 { margin:0 0 14px; font-size:18px; }
+    .close-btn { position:absolute; top:14px; right:14px; background:none; border:none; font-size:22px; cursor:pointer; color:var(--muted); }
+    .setup-guide { background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .setup-guide code { background:#e8edf2; padding:2px 5px; border-radius:4px; font-size:11px; font-family:"Cascadia Code","Fira Code",monospace; }
+    .setup-guide pre { background:#1e293b; color:#e2e8f0; padding:12px; border-radius:8px; font-size:11px; overflow-x:auto; margin:6px 0; }
+    .setup-guide li { margin-bottom:8px; font-size:13px; line-height:1.5; }
+    .empty-state { text-align:center; padding:50px 20px; color:var(--muted); }
+    .empty-state h3 { color:var(--ink); margin-bottom:8px; }
+    #toast { position:fixed; bottom:20px; right:20px; z-index:9999; background:#1e293b; color:#fff; padding:12px 18px; border-radius:10px; font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.3); opacity:0; pointer-events:none; transition:opacity .3s; max-width:320px; }
+    #toast.show { opacity:1; }
+    #toast.ok  { border-left:3px solid var(--ok); }
+    #toast.err { border-left:3px solid var(--bad); }
   </style>
-  <link rel="stylesheet" href="workspace-shell.css?v=3" />
-  <script src="workspace-shell.js?v=3" defer></script>
+  <link rel="stylesheet" href="workspace-shell.css?v=4" />
+  <script src="workspace-shell.js?v=4" defer></script>
 </head>
 <body>
 
+<div id="toast"></div>
+
 <div class="topbar">
   <div class="title">
-    <h1>🖧 Node Manager</h1>
-    <p>Manage worker machines connected to your EDISON network</p>
+    <h1>&#128423; Node Manager</h1>
+    <p>Manage worker machines &amp; delegate tasks across your EDISON network</p>
   </div>
-  <div style="display:flex;gap:8px;">
-    <button class="btn" onclick="discoverNodes()">🔍 Discover Nodes</button>
-    <button class="btn primary" onclick="refreshNodes()">↻ Refresh</button>
-    <a href="/" class="btn">← Back to EDISON</a>
+  <div style="display:flex;gap:8px;flex-wrap:wrap;">
+    <button class="btn" onclick="openDiscover()">&#128269; Discover</button>
+    <button class="btn" onclick="openDelegate()">&#9889; Delegate Task</button>
+    <button class="btn" onclick="toggleSetup()">&#128218; Setup Guide</button>
+    <button class="btn primary" onclick="refreshAll()">&#8635; Refresh</button>
+    <a href="/" class="btn">&#8592; Back</a>
   </div>
 </div>
 
 <div class="shell">
-  <!-- Node Grid -->
-  <div id="nodeGrid" class="node-grid"></div>
-
-  <!-- Empty State -->
-  <div id="emptyState" class="empty-state" style="display:none;">
-    <h3>No Nodes Connected</h3>
-    <p>Set up the EDISON Node Agent on a remote machine to connect it here.</p>
-    <button class="btn primary" onclick="toggleSetup()" style="margin-top:12px;">📖 Setup Guide</button>
+  <div class="left-col">
+    <div class="card">
+      <div class="card-header">
+        <h2>&#128421; Connected Nodes</h2>
+        <span id="nodeCount" style="font-size:12px;color:var(--muted);"></span>
+      </div>
+      <div id="nodeGrid" class="node-grid"></div>
+      <div id="emptyState" class="empty-state" style="display:none;">
+        <h3>No Nodes Connected</h3>
+        <p>Install and run the EDISON Node Agent on a remote machine to connect it here.</p>
+        <button class="btn primary" onclick="toggleSetup()" style="margin-top:12px;">&#128218; Setup Guide</button>
+      </div>
+    </div>
+    <div id="setupGuide" class="card" style="display:none;">
+      <div class="card-header">
+        <h2>&#128218; Setup Guide &#8212; Engineering Laptop</h2>
+        <button class="btn" onclick="toggleSetup()" style="padding:5px 10px;font-size:12px;">&#10005; Close</button>
+      </div>
+      <div class="setup-guide">
+        <p style="margin:0 0 12px;font-size:13px;">Connect your <strong>Windows 11 laptop (i7 / RTX A3000)</strong> running Rhino 7, SolidWorks, and Blender to EDISON as a CAD worker node.</p>
+        <ol>
+          <li><strong>Install Python 3.10+</strong> from <a href="https://python.org/downloads" target="_blank">python.org</a> &mdash; check &ldquo;Add Python to PATH&rdquo;</li>
+          <li><strong>Copy the agent</strong> &mdash; copy the <code>tools/node-agent/</code> folder from this repo to your laptop</li>
+          <li><strong>Run the installer</strong> &mdash; double-click <code>install_windows.bat</code>, or open a cmd window:
+            <pre>cd C:\path\to\node-agent
+install_windows.bat</pre>
+          </li>
+          <li><strong>Or run manually</strong> (replace with your EDISON server IP):
+            <pre>cd C:\path\to\node-agent
+pip install -r requirements.txt
+python edison_node_agent.py --server 192.168.1.X --name "CAD-Laptop" --role cad</pre>
+          </li>
+          <li><strong>Rhino 7:</strong> open Rhino <em>before</em> starting the agent so it can connect via COM</li>
+          <li><strong>SolidWorks:</strong> open SolidWorks <em>before</em> starting the agent; also install:
+            <pre>pip install pywin32</pre>
+          </li>
+          <li><strong>Blender</strong> is auto-detected from PATH &mdash; no extra setup needed</li>
+          <li><strong>Auto-start (optional):</strong> run <code>setup_autostart.ps1</code> in PowerShell</li>
+        </ol>
+        <p style="margin:10px 0 0;font-size:11px;color:var(--muted);">The agent auto-detects CPU, RAM, GPU, and installed software, registers with EDISON, and sends heartbeats every 30 s.</p>
+      </div>
+    </div>
   </div>
 
-  <!-- Setup Guide -->
-  <div id="setupGuide" class="card" style="display:none;">
-    <h2>📖 Quick Setup Guide</h2>
-    <div class="setup-guide">
-      <h3>Connect your Windows engineering laptop to EDISON</h3>
-      <ol>
-        <li><span class="label">Install Python 3.10+</span> on the laptop if not already installed — <a href="https://python.org/downloads" target="_blank">python.org</a></li>
-        <li><span class="label">Download the agent files</span> — copy the <code>tools/node-agent/</code> folder from your EDISON server to the laptop</li>
-        <li><span class="label">Install dependencies</span>:
-          <pre>cd node-agent
-pip install -r requirements.txt</pre>
-        </li>
-        <li><span class="label">Run the agent</span> (replace with your EDISON server's IP):
-          <pre>python edison_node_agent.py --server YOUR_EDISON_IP --name "Engineering-Laptop" --role cad</pre>
-        </li>
-        <li><span class="label">For Rhino 7 integration</span>, also install pywin32:
-          <pre>pip install pywin32</pre>
-          Then start Rhino 7 <strong>before</strong> running the agent.
-        </li>
-        <li><span class="label">Auto-start (optional)</span>: Create a shortcut in your Startup folder or use Task Scheduler to run the agent at login.</li>
-      </ol>
-      <p style="margin-top:12px;font-size:12px;color:var(--muted);">
-        The agent will auto-detect your CPU, RAM, GPU, and installed software (Rhino, Blender, etc.) and register with EDISON.
-        It sends heartbeats every 30 seconds to stay connected.
-      </p>
+  <div class="right-col">
+    <div class="card">
+      <div class="card-header">
+        <h2>&#128203; Task Queue</h2>
+        <div style="display:flex;gap:6px;">
+          <select id="taskFilter" onchange="refreshTasks()" style="padding:5px 8px;border:1px solid var(--line);border-radius:7px;font:inherit;font-size:12px;">
+            <option value="">All</option>
+            <option value="pending">Pending</option>
+            <option value="running">Running</option>
+            <option value="done">Done</option>
+            <option value="failed">Failed</option>
+          </select>
+          <button class="btn" onclick="refreshTasks()" style="padding:5px 10px;font-size:12px;">&#8635;</button>
+        </div>
+      </div>
+      <div id="taskList" class="task-list">
+        <p style="color:var(--muted);font-size:13px;text-align:center;padding:20px 0;">Loading&hellip;</p>
+      </div>
     </div>
-    <button class="btn" onclick="toggleSetup()" style="margin-top:12px;">Close Guide</button>
+
+    <div class="card">
+      <h2>&#9889; Quick Delegate</h2>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;">Describe what you need &mdash; EDISON picks the best available node automatically.</p>
+      <div class="delegate-form">
+        <div>
+          <label>What do you need done?</label>
+          <textarea id="qdDesc" placeholder="e.g. Export the SolidWorks part to STEP..." rows="2"></textarea>
+        </div>
+        <div>
+          <label>Task Type</label>
+          <select id="qdType">
+            <optgroup label="SolidWorks">
+              <option value="solidworks_export" selected>Export from SolidWorks</option>
+              <option value="solidworks_open">Open File in SolidWorks</option>
+              <option value="solidworks_macro">Run SolidWorks Macro</option>
+              <option value="solidworks_script">Run SolidWorks Script</option>
+            </optgroup>
+            <optgroup label="Rhino 3D">
+              <option value="rhino_command">Run Rhino Command</option>
+              <option value="rhino_script">Run Rhino Python Script</option>
+              <option value="rhino_export">Export from Rhino</option>
+              <option value="rhino_open">Open File in Rhino</option>
+              <option value="rhino_grasshopper">Run Grasshopper Definition</option>
+            </optgroup>
+            <optgroup label="Blender">
+              <option value="blender_script">Run Blender Script</option>
+              <option value="blender_render">Render .blend File</option>
+              <option value="blender_export">Export from Blender</option>
+            </optgroup>
+            <optgroup label="System">
+              <option value="ping">Ping Node</option>
+              <option value="system_status">Get System Status</option>
+              <option value="shell">Run Shell Command</option>
+            </optgroup>
+          </select>
+        </div>
+        <div>
+          <label>Payload JSON (optional)</label>
+          <textarea id="qdPayload" placeholder='{"filepath":"C:\\models\\part.sldprt","format":"step"}' rows="2" style="font-family:monospace;font-size:11px;"></textarea>
+        </div>
+        <div>
+          <label>Target Node (blank = auto-select)</label>
+          <select id="qdNode"><option value="">Auto-select best node</option></select>
+        </div>
+        <button class="btn primary" onclick="quickDelegate()" id="qdBtn">&#9889; Send Task</button>
+      </div>
+    </div>
   </div>
 </div>
 
 <!-- Discover Modal -->
 <div id="discoverModal" class="modal-overlay">
-  <div class="modal" style="position:relative;">
-    <button class="close-btn" onclick="closeDiscover()">✕</button>
-    <h2>🔍 Discover Nodes on Network</h2>
-    <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">
-      Scans your local network for machines running the EDISON Node Agent.
-    </p>
+  <div class="modal">
+    <button class="close-btn" onclick="closeDiscover()">&#10005;</button>
+    <h2>&#128269; Discover Nodes</h2>
+    <p style="color:var(--muted);font-size:13px;margin:0 0 14px;">Scans your LAN for machines running the EDISON Node Agent (port 9200).</p>
     <div style="display:flex;gap:8px;margin-bottom:14px;">
       <input id="discoverSubnet" type="text" placeholder="Auto-detect (or e.g. 192.168.1.0/24)"
-        style="flex:1;padding:8px 12px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:13px;" />
+        style="flex:1;padding:8px 10px;border:1px solid var(--line);border-radius:8px;font:inherit;font-size:13px;" />
       <button class="btn primary" id="discoverBtn" onclick="runDiscover()">Scan</button>
     </div>
     <div id="discoverResults"></div>
   </div>
 </div>
 
+<!-- Full Delegate Modal -->
+<div id="delegateModal" class="modal-overlay">
+  <div class="modal">
+    <button class="close-btn" onclick="closeDelegateModal()">&#10005;</button>
+    <h2>&#9889; Delegate Task to Node</h2>
+    <div class="delegate-form" style="margin-top:4px;">
+      <div>
+        <label>Task Description (used for auto-routing)</label>
+        <textarea id="dlDesc" placeholder="e.g. Export SolidWorks assembly to STEP and save to C:\exports" rows="2"></textarea>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:10px;">
+        <div>
+          <label>Task Type</label>
+          <select id="dlType">
+            <optgroup label="SolidWorks">
+              <option value="solidworks_export">Export from SolidWorks</option>
+              <option value="solidworks_open">Open File</option>
+              <option value="solidworks_macro">Run Macro</option>
+              <option value="solidworks_script">Run Script</option>
+            </optgroup>
+            <optgroup label="Rhino 3D">
+              <option value="rhino_command">Run Rhino Command</option>
+              <option value="rhino_script">Run Python Script</option>
+              <option value="rhino_export">Export from Rhino</option>
+              <option value="rhino_open">Open File</option>
+              <option value="rhino_grasshopper">Run Grasshopper</option>
+            </optgroup>
+            <optgroup label="Blender">
+              <option value="blender_script">Run Script</option>
+              <option value="blender_render">Render Frame</option>
+              <option value="blender_export">Export Scene</option>
+            </optgroup>
+            <optgroup label="System">
+              <option value="ping">Ping</option>
+              <option value="system_status">System Status</option>
+              <option value="shell">Shell Command</option>
+            </optgroup>
+          </select>
+        </div>
+        <div>
+          <label>Force Node (optional)</label>
+          <select id="dlNode"><option value="">Auto-select</option></select>
+        </div>
+      </div>
+      <div>
+        <label>Payload JSON</label>
+        <textarea id="dlPayload" placeholder='{"filepath":"C:\\models\\part.sldprt","format":"step","output_path":"C:\\exports\\part.step"}' rows="4" style="font-family:monospace;font-size:11px;"></textarea>
+      </div>
+      <div>
+        <label>Required Capabilities (comma-separated, optional)</label>
+        <input id="dlCaps" type="text" placeholder="solidworks, cad" />
+      </div>
+      <button class="btn primary" onclick="submitDelegate()" id="dlBtn">&#9889; Delegate Task</button>
+      <div id="dlResult" style="margin-top:8px;font-size:12px;"></div>
+    </div>
+  </div>
+</div>
+
 <script>
 const API = window.location.origin;
-
-async function fetchJSON(url, opts = {}) {
-  const resp = await fetch(API + url, {
-    headers: { 'Content-Type': 'application/json' },
-    ...opts,
-  });
-  return resp.json();
+async function fetchJSON(url,opts={}){ const r=await fetch(API+url,{headers:{'Content-Type':'application/json'},...opts}); return r.json(); }
+function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
+function toast(msg,type='ok'){
+  const el=document.getElementById('toast');
+  el.textContent=msg; el.className='show '+type;
+  clearTimeout(el._t); el._t=setTimeout(()=>{ el.className=''; },4000);
+}
+function timeAgo(e){
+  if(!e) return 'Never';
+  const s=Math.floor(Date.now()/1000-e);
+  if(s<5) return 'Just now'; if(s<60) return s+'s ago';
+  if(s<3600) return Math.floor(s/60)+'m ago'; return Math.floor(s/3600)+'h ago';
 }
 
-// ── Load & Render Nodes ─────────────────────────────────────────────
-
-async function refreshNodes() {
-  const data = await fetchJSON('/nodes');
-  const nodes = data.nodes || [];
-  const grid = document.getElementById('nodeGrid');
-  const empty = document.getElementById('emptyState');
-
-  if (nodes.length === 0) {
-    grid.innerHTML = '';
-    empty.style.display = '';
-    return;
-  }
-
-  empty.style.display = 'none';
-  grid.innerHTML = nodes.map(renderNodeCard).join('');
+async function refreshNodes(){
+  const data=await fetchJSON('/nodes');
+  const nodes=data.nodes||[];
+  document.getElementById('nodeCount').textContent=nodes.length+' node'+(nodes.length!==1?'s':'');
+  const opts='<option value="">Auto-select best node</option>'+nodes.map(n=>`<option value="${esc(n.id)}">${esc(n.name)} (${n.status})</option>`).join('');
+  document.getElementById('qdNode').innerHTML=opts;
+  document.getElementById('dlNode').innerHTML='<option value="">Auto-select</option>'+nodes.map(n=>`<option value="${esc(n.id)}">${esc(n.name)} (${n.status})</option>`).join('');
+  const grid=document.getElementById('nodeGrid');
+  const empty=document.getElementById('emptyState');
+  if(nodes.length===0){ grid.innerHTML=''; empty.style.display=''; return; }
+  empty.style.display='none';
+  grid.innerHTML=nodes.map(renderNodeCard).join('');
 }
 
-function renderNodeCard(node) {
-  const status = node.status || 'offline';
-  const lastSeen = node.last_seen ? new Date(node.last_seen * 1000).toLocaleTimeString() : 'Never';
-  const caps = (node.capabilities || []).map(c => `<span class="cap-tag">${c}</span>`).join('');
-  const sw = Object.entries(node.software || {}).map(([k,v]) => `${k} ${v}`).join(', ') || 'None detected';
-
-  const cpuUsage = node.cpu_usage ?? 0;
-  const ramUsage = node.ram_usage ?? 0;
-  const gpuUsage = node.gpu_usage ?? 0;
-
-  return `
-    <div class="node-card">
-      <div class="node-name">
-        <span class="status-dot ${status}"></span>
-        ${esc(node.name)}
-        <span class="node-role">${esc(node.role || 'general')}</span>
-      </div>
-
-      <div class="node-meta">
-        <div><span class="label">Host:</span> ${esc(node.host)}:${node.port || 9200}</div>
-        <div><span class="label">OS:</span> ${esc(node.os || 'unknown')}</div>
-        <div><span class="label">CPU:</span> ${esc(node.cpu || 'unknown')}</div>
-        <div><span class="label">RAM:</span> ${node.ram_gb || 0} GB</div>
-        <div><span class="label">GPU:</span> ${esc(node.gpu || 'unknown')}</div>
-        <div><span class="label">VRAM:</span> ${node.gpu_vram_gb || 0} GB</div>
-        <div><span class="label">Software:</span> ${esc(sw)}</div>
-        <div><span class="label">Last Seen:</span> ${lastSeen}</div>
-      </div>
-
-      ${caps ? `<div class="node-caps">${caps}</div>` : ''}
-
-      <div class="usage-bar">
-        <div class="usage-item">
-          <div>CPU ${cpuUsage}%</div>
-          <div class="bar-bg"><div class="bar-fill" style="width:${cpuUsage}%;background:${cpuUsage > 80 ? 'var(--bad)' : 'var(--accent)'}"></div></div>
-        </div>
-        <div class="usage-item">
-          <div>RAM ${ramUsage}%</div>
-          <div class="bar-bg"><div class="bar-fill" style="width:${ramUsage}%;background:${ramUsage > 85 ? 'var(--bad)' : 'var(--ok)'}"></div></div>
-        </div>
-        <div class="usage-item">
-          <div>GPU ${gpuUsage}%</div>
-          <div class="bar-bg"><div class="bar-fill" style="width:${gpuUsage}%;background:${gpuUsage > 80 ? 'var(--warn)' : '#7c3aed'}"></div></div>
-        </div>
-      </div>
-
-      <div class="node-actions">
-        <button class="btn" onclick="pingNode('${esc(node.id)}')">🏓 Ping</button>
-        <button class="btn" onclick="nodeStatus('${esc(node.id)}')">📊 Status</button>
-        <button class="btn" style="color:var(--bad);" onclick="removeNode('${esc(node.id)}')">✕ Remove</button>
-      </div>
+function renderNodeCard(node){
+  const st=node.status||'offline';
+  const caps=(node.capabilities||[]).map(c=>`<span class="cap-tag">${esc(c)}</span>`).join('');
+  const sw=Object.entries(node.software||{}).filter(([k])=>k!=='python').map(([k,v])=>`<span class="cap-tag sw">${esc(k)} ${esc(v)}</span>`).join('');
+  const cu=node.cpu_usage??0, ru=node.ram_usage??0, gu=node.gpu_usage??0;
+  return `<div class="node-card ${esc(st)}">
+    <div class="node-name"><span class="status-dot ${esc(st)}"></span>${esc(node.name)}<span class="node-role">${esc(node.role||'general')}</span></div>
+    <div class="node-meta">
+      <div><span class="lbl">Host:</span> ${esc(node.host)}:${node.port||9200}</div>
+      <div><span class="lbl">OS:</span> ${esc(node.os||'?')}</div>
+      <div><span class="lbl">CPU:</span> ${esc(node.cpu||'?')}</div>
+      <div><span class="lbl">RAM:</span> ${node.ram_gb||0} GB</div>
+      <div><span class="lbl">GPU:</span> ${esc(node.gpu||'?')}</div>
+      <div><span class="lbl">VRAM:</span> ${node.gpu_vram_gb||0} GB</div>
+      <div style="grid-column:1/-1;"><span class="lbl">Last Seen:</span> ${timeAgo(node.last_seen)}</div>
     </div>
-  `;
+    ${sw?`<div class="node-caps">${sw}</div>`:''}
+    ${caps?`<div class="node-caps" style="margin-top:4px;">${caps}</div>`:''}
+    <div class="usage-bar">
+      <div class="usage-item">CPU ${cu}%<div class="bar-bg"><div class="bar-fill" style="width:${cu}%;background:${cu>80?'var(--bad)':'var(--accent)'}"></div></div></div>
+      <div class="usage-item">RAM ${ru}%<div class="bar-bg"><div class="bar-fill" style="width:${ru}%;background:${ru>85?'var(--bad)':'var(--ok)'}"></div></div></div>
+      <div class="usage-item">GPU ${gu}%<div class="bar-bg"><div class="bar-fill" style="width:${gu}%;background:${gu>80?'var(--warn)':'#7c3aed'}"></div></div></div>
+    </div>
+    <div class="node-actions">
+      <button class="btn" onclick="pingNode('${esc(node.id)}')">Ping</button>
+      <button class="btn" onclick="openDelegateForNode('${esc(node.id)}')">&#9889; Delegate</button>
+      <button class="btn" onclick="viewNodeTasks('${esc(node.id)}','${esc(node.name)}')">Tasks</button>
+      <button class="btn danger" onclick="removeNode('${esc(node.id)}','${esc(node.name)}')">&#10005;</button>
+    </div>
+  </div>`;
 }
 
-function esc(s) {
-  const d = document.createElement('div');
-  d.textContent = s || '';
-  return d.innerHTML;
+let _filterNode=null;
+async function refreshTasks(){
+  const status=document.getElementById('taskFilter').value;
+  const p=new URLSearchParams();
+  if(status) p.set('status',status);
+  if(_filterNode) p.set('node_id',_filterNode);
+  p.set('limit','40');
+  const data=await fetchJSON('/nodes/tasks?'+p);
+  const tasks=data.tasks||[];
+  const list=document.getElementById('taskList');
+  if(tasks.length===0){ list.innerHTML='<p style="text-align:center;color:var(--muted);padding:20px 0;font-size:13px;">No tasks found.</p>'; return; }
+  list.innerHTML=tasks.map(t=>{
+    const res=t.result?JSON.stringify(t.result).slice(0,100):'';
+    return `<div class="task-item">
+      <div class="task-head"><span class="task-type">${esc(t.task_type)}</span><span class="task-badge ${esc(t.status)}">${esc(t.status)}</span></div>
+      <div style="color:var(--muted);font-size:11px;margin-bottom:2px;">Node: ${esc(t.node_id)}</div>
+      <div style="color:var(--muted);font-size:10px;">Created ${timeAgo(t.created)}${t.completed?' &middot; Done '+timeAgo(t.completed):''}</div>
+      ${res?`<div style="margin-top:4px;color:var(--muted);font-size:10px;font-family:monospace;">${esc(res)}&#8230;</div>`:''}
+    </div>`;
+  }).join('');
 }
 
-// ── Node Actions ────────────────────────────────────────────────────
+async function viewNodeTasks(id,name){ _filterNode=id; document.getElementById('taskFilter').value=''; toast('Tasks for '+name); await refreshTasks(); }
 
-async function pingNode(nodeId) {
-  const data = await fetchJSON(`/nodes/${nodeId}/command`, {
-    method: 'POST',
-    body: JSON.stringify({ command: 'ping', params: {} }),
-  });
-  if (data.ok || data.success) {
-    alert(`Node responded! Ping OK.`);
-  } else {
-    alert(`Ping failed: ${data.error || data.detail || 'No response'}`);
-  }
+async function pingNode(id){
+  const d=await fetchJSON('/nodes/'+id+'/command',{method:'POST',body:JSON.stringify({command:'ping',params:{}})});
+  (d.ok||d.success)?toast('Ping OK &#8212; node alive!','ok'):toast('Ping failed: '+(d.error||d.detail||'no response'),'err');
+}
+async function removeNode(id,name){
+  if(!confirm('Remove node "'+name+'"?')) return;
+  await fetchJSON('/nodes/'+id,{method:'DELETE'});
+  toast('Node "'+name+'" removed'); refreshAll();
 }
 
-async function nodeStatus(nodeId) {
-  const data = await fetchJSON(`/nodes/${nodeId}/command`, {
-    method: 'POST',
-    body: JSON.stringify({ command: 'system_status', params: {} }),
-  });
-  const r = data.response || data;
-  alert(`CPU: ${r.cpu_usage ?? '?'}%\nRAM: ${r.ram_usage ?? '?'}%\nGPU: ${r.gpu_usage ?? '?'}%`);
+function openDiscover(){ document.getElementById('discoverModal').classList.add('active'); document.getElementById('discoverResults').innerHTML=''; }
+function closeDiscover(){ document.getElementById('discoverModal').classList.remove('active'); }
+async function runDiscover(){
+  const btn=document.getElementById('discoverBtn');
+  const res=document.getElementById('discoverResults');
+  const subnet=document.getElementById('discoverSubnet').value.trim();
+  btn.disabled=true; btn.textContent='Scanning...';
+  res.innerHTML='<p style="color:var(--muted);font-size:13px;">Scanning &#8212; may take 20&#8211;30 s&#8230;</p>';
+  try{
+    const d=await fetchJSON('/nodes/discover',{method:'POST',body:JSON.stringify({subnet,timeout_sec:0.5,max_hosts:128})});
+    const f=d.discovered||[];
+    if(!f.length){ res.innerHTML=`<p style="color:var(--muted);font-size:13px;">No EDISON nodes found on <strong>${esc(d.subnet||'local network')}</strong>.<br><small>Ensure the node agent is running and accessible on port 9200.</small></p>`; }
+    else{ res.innerHTML=f.map(x=>`<div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:8px;display:flex;justify-content:space-between;align-items:center;">
+      <div><strong>${esc(x.name||x.host)}</strong> <span style="color:var(--muted);font-size:12px;">${esc(x.host)}:${x.port||9200}</span>
+        ${(x.capabilities||[]).length?'<div style="font-size:11px;color:var(--muted);">'+esc((x.capabilities||[]).join(', '))+'</div>':''}
+      </div>
+      <button class="btn primary" style="padding:5px 12px;font-size:12px;" onclick='registerDiscovered(${JSON.stringify(x).replace(/"/g,"&quot;")})'>+ Register</button>
+    </div>`).join(''); }
+  }catch(e){ res.innerHTML='<p style="color:var(--bad);">Error: '+esc(e.message)+'</p>'; }
+  btn.disabled=false; btn.textContent='Scan';
+}
+async function registerDiscovered(info){
+  const d=await fetchJSON('/nodes/register',{method:'POST',body:JSON.stringify(info)});
+  if(d.success){ toast('Registered: '+(info.name||info.host),'ok'); closeDiscover(); refreshAll(); }
+  else { toast('Registration failed: '+(d.detail||'Unknown error'),'err'); }
 }
 
-async function removeNode(nodeId) {
-  if (!confirm(`Remove node "${nodeId}"?`)) return;
-  await fetchJSON(`/nodes/${nodeId}`, { method: 'DELETE' });
-  refreshNodes();
-}
+function openDelegate(){ document.getElementById('delegateModal').classList.add('active'); document.getElementById('dlResult').innerHTML=''; }
+function closeDelegateModal(){ document.getElementById('delegateModal').classList.remove('active'); }
+function openDelegateForNode(id){ openDelegate(); document.getElementById('dlNode').value=id; }
 
-// ── Discover ────────────────────────────────────────────────────────
-
-function discoverNodes() {
-  document.getElementById('discoverModal').classList.add('active');
-  document.getElementById('discoverResults').innerHTML = '';
-}
-
-function closeDiscover() {
-  document.getElementById('discoverModal').classList.remove('active');
-}
-
-async function runDiscover() {
-  const btn = document.getElementById('discoverBtn');
-  const results = document.getElementById('discoverResults');
-  const subnet = document.getElementById('discoverSubnet').value.trim();
-
-  btn.disabled = true;
-  btn.textContent = 'Scanning...';
-  results.innerHTML = '<p style="color:var(--muted);">Scanning network...</p>';
-
-  try {
-    const data = await fetchJSON('/nodes/discover', {
-      method: 'POST',
-      body: JSON.stringify({ subnet, timeout_sec: 0.5, max_hosts: 128 }),
-    });
-
-    const discovered = data.discovered || [];
-    if (discovered.length === 0) {
-      results.innerHTML = `<p>No EDISON nodes found on ${esc(data.subnet || 'local network')}.</p>
-        <p style="font-size:12px;color:var(--muted);">Make sure the node agent is running on the remote machine.</p>`;
+async function submitDelegate(){
+  const desc=document.getElementById('dlDesc').value.trim();
+  const type=document.getElementById('dlType').value;
+  const nodeId=document.getElementById('dlNode').value;
+  const capsRaw=document.getElementById('dlCaps').value;
+  const caps=capsRaw?capsRaw.split(',').map(s=>s.trim()).filter(Boolean):[];
+  let payload={};
+  const pr=document.getElementById('dlPayload').value.trim();
+  if(pr){ try{payload=JSON.parse(pr);}catch{toast('Payload is not valid JSON','err');return;} }
+  if(!type){ toast('Select a task type','err'); return; }
+  const btn=document.getElementById('dlBtn'); btn.disabled=true; btn.textContent='Sending...';
+  document.getElementById('dlResult').innerHTML='';
+  try{
+    const d=await fetchJSON('/nodes/delegate',{method:'POST',body:JSON.stringify({task_description:desc||type,task_type:type,payload,required_capabilities:caps,node_id:nodeId||null})});
+    if(d.success){
+      const n=d.node||{};
+      document.getElementById('dlResult').innerHTML=`<span style="color:var(--ok);">&#10003; Dispatched to <strong>${esc(n.name||'node')}</strong></span><br><span style="color:var(--muted);font-size:10px;">Task ID: ${esc(d.task?.id)}</span>`;
+      toast('Task sent to '+(n.name||'node'),'ok'); refreshTasks();
     } else {
-      results.innerHTML = discovered.map(d => `
-        <div style="border:1px solid var(--line);border-radius:10px;padding:12px;margin-bottom:8px;">
-          <strong>${esc(d.name || d.host)}</strong> — ${esc(d.host)}:${d.port || 9200}
-          <span style="color:var(--ok);font-size:12px;margin-left:8px;">${d.status || 'detected'}</span>
-          <button class="btn" style="float:right;padding:4px 10px;font-size:12px;"
-            onclick="registerDiscovered(${JSON.stringify(d).replace(/"/g, '&quot;')})">
-            + Register
-          </button>
-        </div>
-      `).join('');
+      document.getElementById('dlResult').innerHTML=`<span style="color:var(--bad);">&#10007; ${esc(d.detail||'Delegation failed')}</span>`;
+      toast(d.detail||'Delegation failed','err');
     }
-  } catch (e) {
-    results.innerHTML = `<p style="color:var(--bad);">Error: ${esc(e.message)}</p>`;
-  }
-
-  btn.disabled = false;
-  btn.textContent = 'Scan';
+  }catch(e){ toast('Error: '+e.message,'err'); }
+  btn.disabled=false; btn.textContent='&#9889; Delegate Task';
 }
 
-async function registerDiscovered(nodeInfo) {
-  await fetchJSON('/nodes/register', {
-    method: 'POST',
-    body: JSON.stringify(nodeInfo),
-  });
-  closeDiscover();
-  refreshNodes();
+async function quickDelegate(){
+  const desc=document.getElementById('qdDesc').value.trim();
+  const type=document.getElementById('qdType').value;
+  const nodeId=document.getElementById('qdNode').value;
+  let payload={};
+  const pr=document.getElementById('qdPayload').value.trim();
+  if(pr){ try{payload=JSON.parse(pr);}catch{toast('Payload is not valid JSON','err');return;} }
+  if(!type){ toast('Select a task type','err'); return; }
+  const btn=document.getElementById('qdBtn'); btn.disabled=true; btn.textContent='Sending...';
+  try{
+    const d=await fetchJSON('/nodes/delegate',{method:'POST',body:JSON.stringify({task_description:desc||type,task_type:type,payload,node_id:nodeId||null})});
+    if(d.success){ toast('Task sent to '+(d.node?.name||'node'),'ok'); document.getElementById('qdDesc').value=''; document.getElementById('qdPayload').value=''; refreshTasks(); }
+    else { toast(d.detail||'Delegation failed','err'); }
+  }catch(e){ toast('Error: '+e.message,'err'); }
+  btn.disabled=false; btn.textContent='&#9889; Send Task';
 }
 
-// ── Setup Guide Toggle ──────────────────────────────────────────────
+function toggleSetup(){ const el=document.getElementById('setupGuide'); el.style.display=el.style.display==='none'?'':'none'; if(el.style.display!=='none') el.scrollIntoView({behavior:'smooth'}); }
 
-function toggleSetup() {
-  const el = document.getElementById('setupGuide');
-  el.style.display = el.style.display === 'none' ? '' : 'none';
-}
-
-// ── Init ────────────────────────────────────────────────────────────
-
-refreshNodes();
-setInterval(refreshNodes, 15000); // Auto-refresh every 15s
+async function refreshAll(){ await Promise.all([refreshNodes(),refreshTasks()]); }
+refreshAll();
+setInterval(refreshAll, 20000);
 </script>
-
 </body>
 </html>
