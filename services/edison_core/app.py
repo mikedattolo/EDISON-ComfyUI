@@ -1419,6 +1419,12 @@ def _maybe_execute_business_action(message: str) -> Optional[Dict[str, Any]]:
     project_manager = _get_project_manager()
     if branding_store is None or project_manager is None:
         return None
+    # Inject the active LLM so Rhino codegen can handle free-form shape requests
+    try:
+        from .business_actions import set_rhino_llm
+        set_rhino_llm(llm_fast or llm_medium or llm_deep)
+    except Exception:
+        pass
     try:
         return execute_business_action(
             message=message,
@@ -16600,6 +16606,23 @@ async def submit_node_task(node_id: str, request: dict):
         raise HTTPException(status_code=404, detail=str(e))
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
+
+
+@app.get("/nodes/tasks/{task_id}")
+async def get_node_task(task_id: str):
+    """Return the current state of a single task by ID."""
+    if node_manager_instance is None:
+        raise HTTPException(status_code=503, detail="Node manager is not available")
+    try:
+        db = node_manager_instance._load()
+        task = next((t for t in db.get("tasks", []) if t.get("id") == task_id), None)
+        if task is None:
+            raise HTTPException(status_code=404, detail=f"Task '{task_id}' not found")
+        return task
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.post("/nodes/tasks/{task_id}/update")

@@ -1209,7 +1209,7 @@ console.log('🧊 app_new_features.js v1 loading...');
     let fmAuthToken = sessionStorage.getItem('fm_auth_token') || '';
 
     function fmIsAuthed() {
-        return !!fmAuthToken;
+        return true; // auth gate removed
     }
 
     function fmShowAuthedUI() {
@@ -1219,19 +1219,13 @@ console.log('🧊 app_new_features.js v1 loading...');
         const logoutBtn = document.getElementById('fmLogoutBtn');
         if (gate) gate.style.display = 'none';
         if (content) content.style.display = '';
-        if (badge) badge.style.display = '';
-        if (logoutBtn) logoutBtn.style.display = '';
+        if (badge) badge.style.display = 'none';
+        if (logoutBtn) logoutBtn.style.display = 'none';
     }
 
     function fmShowLoginUI() {
-        const gate = document.getElementById('fmLoginGate');
-        const content = document.getElementById('fmAuthedContent');
-        const badge = document.getElementById('fmAuthStatus');
-        const logoutBtn = document.getElementById('fmLogoutBtn');
-        if (gate) gate.style.display = '';
-        if (content) content.style.display = 'none';
-        if (badge) badge.style.display = 'none';
-        if (logoutBtn) logoutBtn.style.display = 'none';
+        // auth gate removed — always show content
+        fmShowAuthedUI();
     }
 
     window.fmDoLogin = async function() {
@@ -1285,7 +1279,7 @@ console.log('🧊 app_new_features.js v1 loading...');
     };
 
     function fmHeaders() {
-        return { 'X-FM-Token': fmAuthToken };
+        return {}; // no auth token required
     }
 
     window.toggleFileManager = function() {
@@ -1295,13 +1289,9 @@ console.log('🧊 app_new_features.js v1 loading...');
         if (fmPanelOpen) {
             panel.style.visibility = 'visible';
             panel.style.transform = 'translateX(0)';
-            if (fmIsAuthed()) {
-                fmShowAuthedUI();
-                loadStorageInfo();
-                fmNavigate('');
-            } else {
-                fmShowLoginUI();
-            }
+            fmShowAuthedUI();
+            loadStorageInfo();
+            fmNavigate('');
         } else {
             panel.style.transform = 'translateX(100%)';
             setTimeout(() => { panel.style.visibility = 'hidden'; }, 300);

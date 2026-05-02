@@ -1277,6 +1277,12 @@ class EdisonApp {
                                     if (chat && chat.messages.length === 2) {
                                         this.generateChatTitle(chat, message, accumulatedResponse);
                                     }
+
+                                    // Poll for Rhino/node task completion and post the result back to chat
+                                    const biz = data.business_action;
+                                    if (biz && biz.type === 'node_model_request' && biz.status === 'queued' && biz.task && biz.task.id) {
+                                        this.pollNodeTaskResult(biz.task.id, biz.shape || 'model');
+                                    }
                                 } else if (data.error) {
                                     // Error
                                     throw new Error(data.error);
@@ -2088,6 +2094,46 @@ ${code}
         const div = document.createElement('div');
         div.textContent = text;
         return div.innerHTML;
+    }
+
+    /**
+     * Poll /nodes/tasks/{taskId} until it reaches a terminal state, then
+     * inject the result as a follow-up assistant message in the chat.
+     */
+    pollNodeTaskResult(taskId, shapeName) {
+        const MAX_ATTEMPTS = 72; // 6 minutes at 5s intervals
+        let attempts = 0;
+        const label = shapeName ? shapeName.charAt(0).toUpperCase() + shapeName.slice(1) : 'Model';
+        const poll = async () => {
+            try {
+                const r = await fetch(`/nodes/tasks/${encodeURIComponent(taskId)}`);
+                if (!r.ok) return;
+                const task = await r.json();
+                const status = (task.status || '').toLowerCase();
+                if (status === 'done') {
+                    const res = task.result || {};
+                    const ok = res.ok !== false;
+                    const msg = ok
+                        ? `✅ **${label} complete.** The model has been generated and saved on the Rhino node.\n\nFile: \`${res.output_file || '~/.edison/generated_models/' + taskId + '.3dm'}\``
+                        : `⚠️ **${label} task finished with an error.**\n\n${res.message || res.error || 'Unknown error from Rhino.'}`;
+                    this.addMessage('assistant', msg);
+                    this.saveMessageToChat(null, msg, 'business');
+                    this.scrollToBottom(true);
+                    return;
+                }
+                if (status === 'failed') {
+                    const res = task.result || {};
+                    const msg = `⚠️ **${label} task failed on the Rhino node.**\n\n${res.error || res.message || 'Unknown error.'}`;
+                    this.addMessage('assistant', msg);
+                    this.saveMessageToChat(null, msg, 'business');
+                    this.scrollToBottom(true);
+                    return;
+                }
+            } catch (_) { /* silent – network blip */ }
+            attempts++;
+            if (attempts < MAX_ATTEMPTS) setTimeout(poll, 5000);
+        };
+        setTimeout(poll, 5000);
     }
 
     scrollToBottom(force = false) {

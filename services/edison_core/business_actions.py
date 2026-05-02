@@ -17,7 +17,11 @@ from .system_awareness import build_capability_map
 
 
 _MODEL_REQUEST_VERBS = ("generate", "create", "make", "design", "model", "build", "sculpt")
-_MODEL_REQUEST_HINTS = ("3d", "cad", "rhino", "blender", "solidworks", "mesh", "prototype")
+_MODEL_REQUEST_HINTS = (
+    "3d", "cad", "rhino", "blender", "solidworks", "mesh", "prototype",
+    "model", "shape", "figure", "solid", "stl", "object", "sculpture",
+    "printable", "3d print",
+)
 _PROCEDURAL_MODEL_ALIASES = {
     "vase": ("vase",),
     "planter": ("planter", "plant pot", "flower pot", "pot"),
@@ -28,6 +32,84 @@ _PROCEDURAL_MODEL_ALIASES = {
     "cone": ("cone",),
     "sphere": ("sphere", "ball"),
 }
+
+# Words in an extracted shape description that suggest a non-physical, non-3D intent.
+_NON_PHYSICAL_NOUNS = frozenset([
+    "plan", "list", "summary", "report", "document", "email", "message", "note",
+    "text", "post", "caption", "copy", "flyer", "logo", "image", "photo", "video",
+    "campaign", "strategy", "analysis", "invoice", "proposal", "description",
+    "script", "story", "blog", "tweet", "ad", "slogan", "tagline",
+])
+
+# Module-level injectable LLM reference used for free-form Rhino script codegen.
+_rhino_llm_ref: list = []
+
+
+def set_rhino_llm(llm: Any) -> None:
+    """Inject the active LLM so EDISON can generate Rhino Python for arbitrary shape requests."""
+    _rhino_llm_ref.clear()
+    if llm is not None:
+        _rhino_llm_ref.append(llm)
+
+
+_RHINO_CODEGEN_SYSTEM_PROMPT = (
+    "You are a Rhinoceros 3D Python scripting expert.\n"
+    "Generate ONLY the body lines of a rhinoscriptsyntax Python script that creates the requested 3D model.\n\n"
+    "STRICT RULES:\n"
+    "- Use only `rhinoscriptsyntax` (already imported as `rs`). No other imports.\n"
+    "- DO NOT add import statements, try/except, or top-level function defs.\n"
+    "- Append every final geometry object to the `created_ids` list.\n"
+    "- Append all temporary/construction geometry to the `construction_ids` list.\n"
+    "- Call `_show_progress('EDISON: <step>', <weight>)` for each major step. Weights sum to ~1.0.\n"
+    "- Units are millimetres. Keep the model between 50mm and 300mm in its largest dimension.\n"
+    "- Build closed solids. Use rs.BooleanUnion / rs.BooleanDifference to combine parts.\n"
+    "- For revolution shapes: profiles must NOT touch the revolution axis (minimum X = 3).\n"
+    "  Call rs.CapPlanarHoles(srf) after every rs.AddRevSrf to close open ends.\n"
+    "- For compound objects build each part separately then join with rs.BooleanUnion.\n"
+    "- Use descriptive variable names: body, lid, leg, fin, handle, tail, etc.\n"
+    "- Output ONLY raw Python lines. No markdown fences, no comments outside code.\n"
+)
+
+
+def _extract_shape_description(lowered: str, original: str) -> str:
+    """Return the noun phrase describing the 3D shape, preserving original casing."""
+    verb_alt = "|".join(re.escape(v) for v in _MODEL_REQUEST_VERBS)
+    # Pattern: <verb> [article/me/us] <noun_phrase> [stop words]
+    stop = r"(?:\s+(?:in rhino|in 3d|in cad|in blender|as a model|as a 3d|for me|for us|on the|with rhino)\b|$)"
+    m = re.search(
+        rf"\b(?:{verb_alt})\b\s+(?:(?:a|an|the|me|us)\s+)?(.+?){stop}",
+        lowered,
+    )
+    raw = (m.group(1) if m else re.sub(rf".*\b(?:{verb_alt})\b\s*", "", lowered, count=1)).strip()
+    # Restore original casing
+    idx = lowered.find(raw)
+    return original[idx: idx + len(raw)].strip() if idx >= 0 and raw else raw
+
+
+def _generate_rhino_body_via_llm(description: str) -> Optional[str]:
+    """Ask the injected LLM to write rhinoscriptsyntax Python for the given description."""
+    if not _rhino_llm_ref:
+        return None
+    llm = _rhino_llm_ref[0]
+    prompt = (
+        f"{_RHINO_CODEGEN_SYSTEM_PROMPT}\n"
+        f"Create a 3D Rhino model of: {description}\n\n"
+        "Code:\n"
+    )
+    try:
+        result = llm(
+            prompt,
+            max_tokens=1400,
+            temperature=0.15,
+            stop=["```", "import ", "\ndef ", "\ntry:", "\nexcept"],
+            echo=False,
+        )
+        code = result["choices"][0]["text"].strip()
+        code = re.sub(r"^```[a-zA-Z]*\n?", "", code)
+        code = re.sub(r"\n?```$", "", code)
+        return code.strip() or None
+    except Exception:
+        return None
 
 
 def execute_business_action(
@@ -240,21 +322,141 @@ def _maybe_execute_node_model_action(
     lowered: str,
     node_manager: Optional[Any],
 ) -> Optional[Dict[str, Any]]:
-    model_request = _parse_model_request(lowered)
+    model_request = _parse_model_request(lowered, text, node_manager is not None)
     if model_request is None:
         return None
 
-    if model_request["shape"] is None:
-        supported = ", ".join(sorted(_PROCEDURAL_MODEL_ALIASES.keys()))
-        return {
-            "response": (
-                "I can auto-run simple CAD requests on a Rhino node right now, but I only have procedural "
-                f"templates for: {supported}."
-            ),
-            "mode_used": "business",
-            "business_action": {"type": "node_model_request", "ok": False, "reason": "unsupported_shape"},
+    shape = model_request["shape"]
+    needs_llm = model_request.get("needs_llm", False)
+
+    if needs_llm:
+        # Free-form LLM codegen path
+        if not _rhino_llm_ref:
+            supported = ", ".join(sorted(_PROCEDURAL_MODEL_ALIASES.keys()))
+            return {
+                "response": (
+                    f"I understand you want a 3D model of \"{shape}\", but the AI code generator "
+                    f"is not available yet (LLM not loaded). I have built-in templates for: {supported}."
+                ),
+                "mode_used": "business",
+                "business_action": {"type": "node_model_request", "ok": False, "reason": "llm_unavailable"},
+            }
+
+        if node_manager is None:
+            return {
+                "response": "A CAD request was detected, but the node manager is not available on this server.",
+                "mode_used": "business",
+                "business_action": {"type": "node_model_request", "ok": False, "reason": "node_manager_unavailable"},
+            }
+
+        target_node, node_error = _resolve_model_node(text, lowered, node_manager)
+        if target_node is None:
+            return {
+                "response": node_error,
+                "mode_used": "business",
+                "business_action": {"type": "node_model_request", "ok": False, "reason": "node_unavailable"},
+            }
+
+        custom_body = _generate_rhino_body_via_llm(shape)
+        if not custom_body:
+            return {
+                "response": (
+                    f"I tried to generate Rhino code for \"{shape}\" but the model produced no output. "
+                    f"Try rephrasing or ask for a simpler shape."
+                ),
+                "mode_used": "business",
+                "business_action": {"type": "node_model_request", "ok": False, "reason": "codegen_failed"},
+            }
+
+        safe_name = _slugify_for_filename(shape)[:32] or "custom-model"
+        filename = f"{safe_name}.3dm"
+        output_hint = f"~/.edison/generated_models/{filename}"
+        result_hint = f"~/.edison/generated_models/{Path(filename).stem}.result.json"
+        payload = {
+            "script_content": _build_rhino_script(safe_name, filename, shape_body=custom_body),
+            "output_paths": [output_hint],
+            "result_paths": [result_hint],
+            "timeout_seconds": 180,
         }
 
+        command_result = _dispatch_node_model_request(
+            text=text,
+            node_manager=node_manager,
+            target_node=target_node,
+            payload=payload,
+            preferred_software=["rhino", "grasshopper"],
+        )
+
+        if command_result.get("status") == "queued":
+            queued_task = command_result.get("task") or {}
+            return {
+                "response": (
+                    f"Generated custom Rhino script for \"{shape}\" and sent it to "
+                    f"{target_node.get('name', target_node['id'])}. "
+                    f"Task id: {queued_task.get('id', 'pending')}. Output: {output_hint}."
+                ),
+                "mode_used": "business",
+                "business_action": {
+                    "type": "node_model_request",
+                    "ok": True,
+                    "status": "queued",
+                    "shape": shape,
+                    "node": {"id": target_node["id"], "name": target_node.get("name")},
+                    "task": queued_task,
+                    "output_paths": [output_hint],
+                    "result_paths": [result_hint],
+                },
+            }
+
+        if not command_result.get("ok"):
+            error_text = command_result.get("error") or "unknown transport error"
+            return {
+                "response": f"Script generated but could not reach the node: {error_text}.",
+                "mode_used": "business",
+                "business_action": {
+                    "type": "node_model_request",
+                    "ok": False,
+                    "reason": "dispatch_failed",
+                    "node": {"id": target_node["id"], "name": target_node.get("name")},
+                },
+            }
+
+        node_response = command_result.get("response") or {}
+        if not node_response.get("ok"):
+            error_text = node_response.get("error") or "unknown Rhino error"
+            return {
+                "response": (
+                    f"Sent the \"{shape}\" script to {target_node.get('name', target_node['id'])}, "
+                    f"but Rhino reported: {error_text}."
+                ),
+                "mode_used": "business",
+                "business_action": {
+                    "type": "node_model_request",
+                    "ok": False,
+                    "reason": "execution_failed",
+                    "node": {"id": target_node["id"], "name": target_node.get("name")},
+                    "node_response": node_response,
+                },
+            }
+
+        output_paths = node_response.get("output_paths") or [output_hint]
+        return {
+            "response": (
+                f"Rhino executed the custom \"{shape}\" model on "
+                f"{target_node.get('name', target_node['id'])}. Output: {', '.join(output_paths)}."
+            ),
+            "mode_used": "business",
+            "business_action": {
+                "type": "node_model_request",
+                "ok": True,
+                "shape": shape,
+                "node": {"id": target_node["id"], "name": target_node.get("name")},
+                "output_paths": output_paths,
+                "node_response": node_response,
+            },
+        }
+
+    # ─── Preset/template path ──────────────────────────────────────────────────
     if node_manager is None:
         return {
             "response": "A CAD request was detected, but the node manager is not available on this server.",
@@ -358,16 +560,30 @@ def _maybe_execute_node_model_action(
     }
 
 
-def _parse_model_request(lowered: str) -> Optional[Dict[str, Optional[str]]]:
+def _parse_model_request(
+    lowered: str,
+    original: str = "",
+    has_node_manager: bool = False,
+) -> Optional[Dict[str, Any]]:
     if not any(verb in lowered for verb in _MODEL_REQUEST_VERBS):
         return None
-    if not any(hint in lowered for hint in _MODEL_REQUEST_HINTS):
-        return None
+    # Check preset aliases first — works regardless of hint keywords
     for shape, aliases in _PROCEDURAL_MODEL_ALIASES.items():
         for alias in aliases:
             if re.search(rf"\b{re.escape(alias)}\b", lowered):
-                return {"shape": shape, "matched_alias": alias}
-    return {"shape": None, "matched_alias": None}
+                return {"shape": shape, "matched_alias": alias, "needs_llm": False}
+    # Require a 3D hint OR an active node manager for free-form codegen
+    has_hint = any(hint in lowered for hint in _MODEL_REQUEST_HINTS)
+    if not has_hint and not has_node_manager:
+        return None
+    # Extract the noun phrase the user wants modelled
+    description = _extract_shape_description(lowered, original or lowered)
+    if not description:
+        return None
+    # Reject clearly non-physical intents
+    if any(skip in description.lower().split() for skip in _NON_PHYSICAL_NOUNS):
+        return None
+    return {"shape": description, "matched_alias": None, "needs_llm": True}
 
 
 def _resolve_model_node(text: str, lowered: str, node_manager: Any) -> tuple[Optional[Dict[str, Any]], str]:
@@ -484,8 +700,11 @@ def _slugify_for_filename(text: str) -> str:
     return re.sub(r"-+", "-", lowered)
 
 
-def _build_rhino_script(shape: str, filename: str) -> str:
-    shape_body = _build_rhino_shape_body(shape).replace("\n", "\n    ")
+def _build_rhino_script(shape: str, filename: str, shape_body: Optional[str] = None) -> str:
+    if shape_body is None:
+        shape_body = _build_rhino_shape_body(shape).replace("\n", "\n    ")
+    else:
+        shape_body = shape_body.replace("\n", "\n    ")
     layer_name = f"EDISON_{filename.rsplit('.', 1)[0]}"
     result_filename = f"{Path(filename).stem}.result.json"
     return (
@@ -520,6 +739,10 @@ def _build_rhino_script(shape: str, filename: str) -> str:
         "        pass\n"
         "    time.sleep(pause)\n\n"
         "def _focus_model():\n"
+        "    try:\n"
+        "        rs.ViewDisplayMode(rs.CurrentView(), 'Shaded')\n"
+        "    except Exception:\n"
+        "        pass\n"
         "    try:\n"
         "        rs.ZoomSelected()\n"
         "    except Exception:\n"
@@ -590,7 +813,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "    raise Exception('Failed to build the vase axis.')\n"
             "construction_ids.append(axis)\n"
             "_show_progress('EDISON: created revolve axis', 0.25)\n"
-            "profile = rs.AddInterpCurve([(0, 0, 0), (32, 0, 0), (42, 0, 18), (54, 0, 70), (48, 0, 128), (26, 0, 176), (0, 0, 180)], degree=3)\n"
+            "profile = rs.AddInterpCurve([(3, 0, 0), (32, 0, 0), (42, 0, 18), (54, 0, 70), (48, 0, 128), (26, 0, 176), (20, 0, 180)], degree=3)\n"
             "if not profile:\n"
             "    raise Exception('Failed to build the vase profile.')\n"
             "construction_ids.append(profile)\n"
@@ -598,6 +821,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "surface = rs.AddRevSrf(profile, axis)\n"
             "if not surface:\n"
             "    raise Exception('Failed to revolve the vase surface.')\n"
+            "rs.CapPlanarHoles(surface)\n"
             "created_ids.append(surface)\n"
             "_show_progress('EDISON: revolved vase surface', 0.55)"
         )
@@ -608,7 +832,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "    raise Exception('Failed to build the planter axis.')\n"
             "construction_ids.append(axis)\n"
             "_show_progress('EDISON: created planter axis', 0.25)\n"
-            "profile = rs.AddInterpCurve([(0, 0, 0), (50, 0, 0), (56, 0, 16), (60, 0, 70), (52, 0, 108), (0, 0, 110)], degree=3)\n"
+            "profile = rs.AddInterpCurve([(4, 0, 0), (50, 0, 0), (56, 0, 16), (60, 0, 70), (52, 0, 108), (40, 0, 110)], degree=3)\n"
             "if not profile:\n"
             "    raise Exception('Failed to build the planter profile.')\n"
             "construction_ids.append(profile)\n"
@@ -616,6 +840,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "surface = rs.AddRevSrf(profile, axis)\n"
             "if not surface:\n"
             "    raise Exception('Failed to revolve the planter surface.')\n"
+            "rs.CapPlanarHoles(surface)\n"
             "created_ids.append(surface)\n"
             "_show_progress('EDISON: revolved planter surface', 0.55)"
         )
@@ -626,7 +851,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "    raise Exception('Failed to build the bowl axis.')\n"
             "construction_ids.append(axis)\n"
             "_show_progress('EDISON: created bowl axis', 0.25)\n"
-            "profile = rs.AddInterpCurve([(0, 0, 0), (64, 0, 0), (76, 0, 18), (86, 0, 42), (72, 0, 76), (0, 0, 80)], degree=3)\n"
+            "profile = rs.AddInterpCurve([(4, 0, 0), (64, 0, 0), (76, 0, 18), (86, 0, 42), (72, 0, 76), (50, 0, 80)], degree=3)\n"
             "if not profile:\n"
             "    raise Exception('Failed to build the bowl profile.')\n"
             "construction_ids.append(profile)\n"
@@ -634,6 +859,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "surface = rs.AddRevSrf(profile, axis)\n"
             "if not surface:\n"
             "    raise Exception('Failed to revolve the bowl surface.')\n"
+            "rs.CapPlanarHoles(surface)\n"
             "created_ids.append(surface)\n"
             "_show_progress('EDISON: revolved bowl surface', 0.55)"
         )
@@ -644,7 +870,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "    raise Exception('Failed to build the cup axis.')\n"
             "construction_ids.append(axis)\n"
             "_show_progress('EDISON: created cup axis', 0.25)\n"
-            "profile = rs.AddInterpCurve([(0, 0, 0), (34, 0, 0), (42, 0, 20), (46, 0, 88), (38, 0, 114), (0, 0, 115)], degree=3)\n"
+            "profile = rs.AddInterpCurve([(4, 0, 0), (34, 0, 0), (42, 0, 20), (46, 0, 88), (38, 0, 114), (30, 0, 115)], degree=3)\n"
             "if not profile:\n"
             "    raise Exception('Failed to build the cup profile.')\n"
             "construction_ids.append(profile)\n"
@@ -652,6 +878,7 @@ def _build_rhino_shape_body(shape: str) -> str:
             "surface = rs.AddRevSrf(profile, axis)\n"
             "if not surface:\n"
             "    raise Exception('Failed to revolve the cup surface.')\n"
+            "rs.CapPlanarHoles(surface)\n"
             "created_ids.append(surface)\n"
             "_show_progress('EDISON: revolved cup surface', 0.55)"
         )
