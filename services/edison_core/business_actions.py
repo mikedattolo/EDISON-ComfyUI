@@ -53,21 +53,26 @@ def set_rhino_llm(llm: Any) -> None:
 
 
 _RHINO_CODEGEN_SYSTEM_PROMPT = (
-    "You are a Rhinoceros 3D Python scripting expert.\n"
-    "Generate ONLY the body lines of a rhinoscriptsyntax Python script that creates the requested 3D model.\n\n"
+    "You are a Rhinoceros 3D Python scripting expert targeting IronPython 2.7 inside Rhino 6/7/8.\n"
+    "Generate ONLY the body statements of a rhinoscriptsyntax Python script that creates the requested 3D model.\n\n"
     "STRICT RULES:\n"
-    "- Use only `rhinoscriptsyntax` (already imported as `rs`). No other imports.\n"
-    "- DO NOT add import statements, try/except, or top-level function defs.\n"
-    "- Append every final geometry object to the `created_ids` list.\n"
-    "- Append all temporary/construction geometry to the `construction_ids` list.\n"
-    "- Call `_show_progress('EDISON: <step>', <weight>)` for each major step. Weights sum to ~1.0.\n"
-    "- Units are millimetres. Keep the model between 50mm and 300mm in its largest dimension.\n"
-    "- Build closed solids. Use rs.BooleanUnion / rs.BooleanDifference to combine parts.\n"
-    "- For revolution shapes: profiles must NOT touch the revolution axis (minimum X = 3).\n"
-    "  Call rs.CapPlanarHoles(srf) after every rs.AddRevSrf to close open ends.\n"
-    "- For compound objects build each part separately then join with rs.BooleanUnion.\n"
-    "- Use descriptive variable names: body, lid, leg, fin, handle, tail, etc.\n"
-    "- Output ONLY raw Python lines. No markdown fences, no comments outside code.\n"
+    "- Use ONLY `rhinoscriptsyntax` (already imported as `rs`). No other imports.\n"
+    "- Do NOT add import statements, function definitions, try/except blocks, or class definitions.\n"
+    "- Do NOT use list comprehensions, f-strings, walrus operator, or any Python 3-only syntax.\n"
+    "- Use only plain for-loops and string concatenation for compatibility with IronPython 2.7.\n"
+    "- Append every FINAL geometry object ID to the list named `created_ids`.\n"
+    "- Append all temporary/construction geometry to the list named `construction_ids`.\n"
+    "- Call `_show_progress('EDISON: <step>', <weight>)` for each major step. Total weights ~1.0.\n"
+    "- Units are millimetres. Keep the model between 80mm and 250mm in its largest dimension.\n"
+    "- Prefer rs.AddBox, rs.AddCylinder, rs.AddSphere, rs.AddTorus for primitive parts.\n"
+    "- For revolution profiles: start X must be >= 3 (never on the axis). \n"
+    "  Always call rs.CapPlanarHoles(srf) after rs.AddRevSrf.\n"
+    "- Build compound objects part by part; store each part id then join with rs.BooleanUnion.\n"
+    "  IMPORTANT: after BooleanUnion delete the source parts from created_ids; add the union result.\n"
+    "- ALWAYS check that each rs.Add* call succeeded (result is not None/False) before using it.\n"
+    "  If a call fails, skip that part silently (do not raise).\n"
+    "- Keep it simple: 3-6 primitives max. Do not attempt fine surface modelling.\n"
+    "- Output ONLY plain Python statements. No markdown fences, no prose, no inline comments.\n"
 )
 
 
@@ -86,6 +91,20 @@ def _extract_shape_description(lowered: str, original: str) -> str:
     return original[idx: idx + len(raw)].strip() if idx >= 0 and raw else raw
 
 
+def _strip_to_valid_python(code: str) -> str:
+    """Remove trailing lines that make the code unparseable (e.g. LLM truncation mid-statement)."""
+    lines = code.splitlines()
+    # Walk backwards removing lines until the remainder compiles
+    for end in range(len(lines), 0, -1):
+        candidate = "\n".join(lines[:end])
+        try:
+            compile(candidate, "<generated>", "exec")
+            return candidate
+        except SyntaxError:
+            continue
+    return ""
+
+
 def _generate_rhino_body_via_llm(description: str) -> Optional[str]:
     """Ask the injected LLM to write rhinoscriptsyntax Python for the given description."""
     if not _rhino_llm_ref:
@@ -99,15 +118,24 @@ def _generate_rhino_body_via_llm(description: str) -> Optional[str]:
     try:
         result = llm(
             prompt,
-            max_tokens=1400,
+            max_tokens=3000,
             temperature=0.15,
-            stop=["```", "import ", "\ndef ", "\ntry:", "\nexcept"],
+            stop=["```", "\nimport ", "\nclass "],
             echo=False,
         )
         code = result["choices"][0]["text"].strip()
+        # Strip markdown fences if the model added them anyway
         code = re.sub(r"^```[a-zA-Z]*\n?", "", code)
-        code = re.sub(r"\n?```$", "", code)
-        return code.strip() or None
+        code = re.sub(r"\n?```$", "", code).strip()
+        if not code:
+            return None
+        # Remove any try/except/finally wrappers the LLM may have added
+        code = re.sub(r"^try:\s*\n", "", code)
+        code = re.sub(r"\nexcept[^\n]*:\n(?: +[^\n]*\n)*", "\n", code)
+        code = re.sub(r"\nfinally:[^\n]*\n(?: +[^\n]*\n)*", "\n", code)
+        # Strip trailing incomplete lines caused by token-limit truncation
+        code = _strip_to_valid_python(code)
+        return code or None
     except Exception:
         return None
 
@@ -372,8 +400,21 @@ def _maybe_execute_node_model_action(
         filename = f"{safe_name}.3dm"
         output_hint = f"~/.edison/generated_models/{filename}"
         result_hint = f"~/.edison/generated_models/{Path(filename).stem}.result.json"
+        full_script = _build_rhino_script(safe_name, filename, shape_body=custom_body)
+        # Validate the assembled script compiles before sending to the node
+        try:
+            compile(full_script, "<validation>", "exec")
+        except SyntaxError as _se:
+            return {
+                "response": (
+                    f"The AI generated a Rhino script for \"{shape}\" but it contained a syntax error "
+                    f"({_se}). Try asking again — the model may produce a cleaner result on a retry."
+                ),
+                "mode_used": "business",
+                "business_action": {"type": "node_model_request", "ok": False, "reason": "codegen_syntax_error"},
+            }
         payload = {
-            "script_content": _build_rhino_script(safe_name, filename, shape_body=custom_body),
+            "script_content": full_script,
             "output_paths": [output_hint],
             "result_paths": [result_hint],
             "timeout_seconds": 180,
