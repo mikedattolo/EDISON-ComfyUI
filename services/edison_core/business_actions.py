@@ -105,6 +105,44 @@ def _strip_to_valid_python(code: str) -> str:
     return ""
 
 
+def _fstr_body_to_concat(quote: str, body: str) -> str:
+    """Turn the interior of an f-string into IronPython 2.7 str-concat."""
+    parts = re.split(r"\{([^}]+)\}", body)
+    out = []
+    for idx, part in enumerate(parts):
+        if idx % 2 == 0:
+            if part:
+                out.append(quote + part + quote)
+        else:
+            out.append("str(" + part.strip() + ")")
+    return " + ".join(out) if out else quote + quote
+
+
+def _py2_sanitize(code: str) -> str:
+    """Convert Python 3-only syntax to IronPython 2.7-compatible equivalents."""
+    # f"..."  double-quoted f-strings
+    code = re.sub(
+        r'f"((?:[^\\"]|\\.)*)"',
+        lambda m: _fstr_body_to_concat('"', m.group(1)),
+        code,
+    )
+    # f'...'  single-quoted f-strings
+    code = re.sub(
+        r"f'((?:[^\\']|\\.)*)'",
+        lambda m: _fstr_body_to_concat("'", m.group(1)),
+        code,
+    )
+    # Walrus operator  x := expr  ->  x = expr
+    code = re.sub(r"(\w+)\s*:=", r"\1 =", code)
+    # Bare type annotations  var: SomeType = ...  ->  var = ...
+    code = re.sub(
+        r"^(\s*\w+)\s*:[A-Za-z_][\w\[\], ]*\s*=",
+        r"\1 =",
+        code,
+        flags=re.MULTILINE,
+    )
+    return code
+
 def _generate_rhino_body_via_llm(description: str) -> Optional[str]:
     """Ask the injected LLM to write rhinoscriptsyntax Python for the given description."""
     if not _rhino_llm_ref:
@@ -133,6 +171,8 @@ def _generate_rhino_body_via_llm(description: str) -> Optional[str]:
         code = re.sub(r"^try:\s*\n", "", code)
         code = re.sub(r"\nexcept[^\n]*:\n(?: +[^\n]*\n)*", "\n", code)
         code = re.sub(r"\nfinally:[^\n]*\n(?: +[^\n]*\n)*", "\n", code)
+        # Convert Python 3-only syntax to IronPython 2.7 equivalents (f-strings, walrus, annotations)
+        code = _py2_sanitize(code)
         # Strip trailing incomplete lines caused by token-limit truncation
         code = _strip_to_valid_python(code)
         return code or None
@@ -768,9 +808,9 @@ def _build_rhino_script(shape: str, filename: str, shape_body: Optional[str] = N
         "            os.remove(artifact_path)\n"
         "    except Exception:\n"
         "        pass\n\n"
-        "def _write_result(ok, message, created_ids=None):\n"
+        "def _write_result(ok, message, obj_ids=None):\n"
         "    id_list = []\n"
-        "    for oid in (created_ids or []):\n"
+        "    for oid in (obj_ids or []):\n"
         "        id_list.append(str(oid))\n"
         "    payload = {\n"
         "        'ok': bool(ok),\n"
@@ -780,7 +820,7 @@ def _build_rhino_script(shape: str, filename: str, shape_body: Optional[str] = N
         "        'created_ids': id_list,\n"
         "    }\n"
         "    with open(result_file, 'w') as handle:\n"
-        "        json.dump(payload, handle, indent=2, ensure_ascii=True)\n\n"
+        "        json.dump(payload, handle, indent=2)\n\n"
         "def _show_progress(msg, pause=0.35):\n"
         "    try:\n"
         "        print(msg)\n"
