@@ -341,14 +341,20 @@ function updateHardwareUI(stats) {
     // GPUs (dynamic)
     const gpuContainer = document.getElementById('gpuStatsContainer');
     if (gpuContainer && stats.gpus && stats.gpus.length > 0) {
+        const totalVram = Number(stats.gpu_total_vram_gb || 0);
+        const usedVram = Number(stats.gpu_used_vram_gb || 0);
+        const driverSummary = stats.nvidia_driver_version ? `Driver ${stats.nvidia_driver_version}` : 'Driver unknown';
         gpuContainer.innerHTML = stats.gpus.map((gpu, i) => {
             const memPercent = gpu.memory_total_gb > 0 ? (gpu.memory_used_gb / gpu.memory_total_gb) * 100 : 0;
             const utilColor = getBarColor(gpu.utilization_percent);
             const memColor = getBarColor(memPercent);
             const tempColor = getTempColor(gpu.temperature_c);
             const tempPercent = Math.min(gpu.temperature_c / 100, 1) * 100;
+            const fanAvailable = gpu.fan_speed_percent !== null && gpu.fan_speed_percent !== undefined;
+            const fanPercent = fanAvailable ? gpu.fan_speed_percent : 0;
             const powerStr = gpu.power_watts > 0 ? ` • ${gpu.power_watts}W` : '';
             return `
+                ${i === 0 ? `<div class="hw-detail">${driverSummary} • ${usedVram.toFixed(1)} / ${totalVram.toFixed(0)} GB total VRAM</div>` : ''}
                 <div class="hw-section-label">GPU ${gpu.index}</div>
                 <div class="hw-detail">${gpu.name}${powerStr}</div>
                 <div class="hw-stat">
@@ -365,6 +371,11 @@ function updateHardwareUI(stats) {
                     <span class="hw-label">Temp</span>
                     <div class="hw-bar hw-bar-temp"><div class="hw-fill hw-fill-temp" style="width:${tempPercent}%;${tempColor ? 'background:' + tempColor : ''}"></div></div>
                     <span class="hw-value">${gpu.temperature_c > 0 ? gpu.temperature_c.toFixed(0) + '°C' : 'N/A'}</span>
+                </div>
+                <div class="hw-stat">
+                    <span class="hw-label">Fan</span>
+                    <div class="hw-bar"><div class="hw-fill" style="width:${fanPercent}%;background:var(--primary);"></div></div>
+                    <span class="hw-value">${fanAvailable ? fanPercent.toFixed(0) + '%' : 'N/A'}</span>
                 </div>
             `;
         }).join('');

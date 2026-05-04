@@ -11302,11 +11302,12 @@ async def system_stats():
         
         # GPU stats - enumerate ALL GPUs with detailed info
         gpus = []
+        nvidia_driver_version = ""
         try:
             import subprocess
-            # Get GPU count, names, utilization, memory used/total, temperature
+            # Get GPU count, names, utilization, memory used/total, temperature, power, and fan speed.
             result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit',
+                ['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,driver_version',
                  '--format=csv,noheader,nounits'],
                 capture_output=True, text=True, timeout=3
             )
@@ -11322,6 +11323,11 @@ async def system_stats():
                         gpu_temp = float(parts[5]) if parts[5] not in ['[N/A]', 'N/A', ''] else 0
                         gpu_power = float(parts[6]) if len(parts) > 6 and parts[6] not in ['[N/A]', 'N/A', ''] else 0
                         gpu_power_limit = float(parts[7]) if len(parts) > 7 and parts[7] not in ['[N/A]', 'N/A', ''] else 0
+                        gpu_fan_percent = None
+                        if len(parts) > 8 and parts[8] not in ['[N/A]', 'N/A', '']:
+                            gpu_fan_percent = float(parts[8])
+                        if len(parts) > 9 and parts[9] not in ['[N/A]', 'N/A', ''] and not nvidia_driver_version:
+                            nvidia_driver_version = parts[9]
                         gpus.append({
                             "index": gpu_index,
                             "name": gpu_name,
@@ -11331,6 +11337,7 @@ async def system_stats():
                             "temperature_c": gpu_temp,
                             "power_watts": round(gpu_power, 1),
                             "power_limit_watts": round(gpu_power_limit, 1),
+                            "fan_speed_percent": round(gpu_fan_percent, 1) if gpu_fan_percent is not None else None,
                         })
         except Exception as e:
             logger.debug(f"nvidia-smi not available: {e}")
@@ -11369,6 +11376,9 @@ async def system_stats():
             "cpu_temp_c": cpu_temp_c,
             "gpus": gpus,
             "gpu_count": len(gpus),
+            "gpu_total_vram_gb": round(sum(gpu.get("memory_total_gb", 0) for gpu in gpus), 2),
+            "gpu_used_vram_gb": round(sum(gpu.get("memory_used_gb", 0) for gpu in gpus), 2),
+            "nvidia_driver_version": nvidia_driver_version,
         }
         
     except Exception as e:

@@ -2,25 +2,27 @@
 
 gpus:
   - id: 0
-    name: "Primary GPU"
+    name: "RTX 3090"
     memory: "24GB"
     allocated_services:
       - comfyui
       - edison-core
   
   - id: 1
-    name: "Secondary GPU"
-    memory: "24GB"
+    name: "RTX 5060 Ti"
+    memory: "16GB"
     allocated_services:
       - inference
+      - vision
 
   - id: 2
-    name: "Tertiary GPU"
-    memory: "24GB"
+    name: "RTX 4060 Ti"
+    memory: "16GB"
     allocated_services:
       - inference
       - video
       - music
+      - voice
 
 coral_tpu:
   enabled: true
