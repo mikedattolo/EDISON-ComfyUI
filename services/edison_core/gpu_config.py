@@ -194,6 +194,23 @@ def validate_config(
                     f"gpu_map.yaml lists {len(map_gpus)} GPU(s) but {gpu_count} detected. "
                     f"Update gpu_map.yaml to match your hardware."
                 )
+            else:
+                for idx, (mapped_gpu, detected_gpu) in enumerate(zip(map_gpus, detected_gpus)):
+                    mapped_name = str(mapped_gpu.get("name", "")).strip().lower()
+                    detected_name = str(detected_gpu.get("name", "")).strip().lower()
+                    mapped_mem_text = str(mapped_gpu.get("memory", "")).strip().lower().replace("ib", "b")
+                    detected_mem_gb = round(float(detected_gpu.get("total_mb", 0)) / 1024)
+                    detected_mem_text = f"{detected_mem_gb}gb"
+                    if mapped_name and mapped_name not in detected_name:
+                        warnings.append(
+                            f"gpu_map.yaml GPU {idx} is '{mapped_gpu.get('name')}' but detected GPU {idx} is '{detected_gpu.get('name')}'. "
+                            f"Update gpu_map.yaml to match the real device order."
+                        )
+                    if mapped_mem_text and mapped_mem_text != detected_mem_text:
+                        warnings.append(
+                            f"gpu_map.yaml GPU {idx} memory is '{mapped_gpu.get('memory')}' but detected GPU {idx} has ~{detected_mem_gb}GB. "
+                            f"Update gpu_map.yaml to match the installed card."
+                        )
         except Exception as e:
             warnings.append(f"Failed to parse gpu_map.yaml: {e}")
 

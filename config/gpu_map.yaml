@@ -2,20 +2,13 @@
 
 gpus:
   - id: 0
-    name: "RTX 3090"
-    memory: "24GB"
-    allocated_services:
-      - comfyui
-      - edison-core
-  
-  - id: 1
     name: "RTX 5060 Ti"
     memory: "16GB"
     allocated_services:
       - inference
       - vision
-
-  - id: 2
+  
+  - id: 1
     name: "RTX 4060 Ti"
     memory: "16GB"
     allocated_services:
@@ -23,6 +16,13 @@ gpus:
       - video
       - music
       - voice
+
+  - id: 2
+    name: "RTX 3090"
+    memory: "24GB"
+    allocated_services:
+      - comfyui
+      - edison-core
 
 coral_tpu:
   enabled: true
