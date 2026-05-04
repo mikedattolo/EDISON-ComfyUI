@@ -10,6 +10,7 @@ On startup:
 
 import logging
 import os
+import shutil
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -17,6 +18,17 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 logger = logging.getLogger(__name__)
+
+
+def _find_binary(name: str) -> Optional[str]:
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in ("/usr/bin", "/usr/local/bin", "/usr/sbin", "/bin", "/snap/bin"):
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 # ── GPU detection ────────────────────────────────────────────────────────
@@ -73,8 +85,11 @@ def detect_gpus() -> List[Dict[str, Any]]:
 
     # Fallback: nvidia-smi
     try:
+        nvidia_smi = _find_binary("nvidia-smi")
+        if not nvidia_smi:
+            return gpus
         result = subprocess.run(
-            ["nvidia-smi",
+            [nvidia_smi,
              "--query-gpu=index,name,memory.total,memory.used,memory.free",
              "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=10,

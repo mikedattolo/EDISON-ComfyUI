@@ -7,7 +7,7 @@ Wants=edison-coral.service
 Type=simple
 User=edison
 WorkingDirectory=/opt/edison
-Environment="PATH=/opt/edison/.venv/bin"
+Environment="PATH=/opt/edison/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 Environment="CUDA_VISIBLE_DEVICES=0,1,2"
 # Core API stays HTTP on localhost — the web service reverse-proxies /api/* over HTTPS

@@ -7,7 +7,7 @@ Before=edison-core.service
 Type=simple
 User=edison
 WorkingDirectory=/opt/edison/ComfyUI
-Environment="PATH=/opt/edison/ComfyUI/venv/bin"
+Environment="PATH=/opt/edison/ComfyUI/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 Environment="PYTHONUNBUFFERED=1"
 ExecStart=/opt/edison/ComfyUI/venv/bin/python main.py --listen 0.0.0.0 --port 8188
 Restart=always

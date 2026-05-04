@@ -23,7 +23,7 @@ VALID_DOMAINS = {
 
 VALID_TASK_STAGES = {
     "idle", "planning", "executing", "reviewing", "iterating",
-    "debugging", "waiting_for_input", "complete",
+    "debugging", "waiting_for_input", "complete", "completed", "in_progress",
 }
 
 

@@ -15,6 +15,7 @@ Implements:
 import gc
 import logging
 import os
+import shutil
 import threading
 import time
 from dataclasses import dataclass, field
@@ -34,6 +35,18 @@ __all__ = [
     "get_memory_gate",
     "get_memory_snapshot",
 ]
+
+
+def _find_binary(name: str) -> Optional[str]:
+    """Locate a binary even when systemd PATH is minimal."""
+    found = shutil.which(name)
+    if found:
+        return found
+    for directory in ("/usr/bin", "/usr/local/bin", "/usr/sbin", "/bin", "/snap/bin"):
+        candidate = os.path.join(directory, name)
+        if os.path.isfile(candidate) and os.access(candidate, os.X_OK):
+            return candidate
+    return None
 
 
 # ── Data Classes ─────────────────────────────────────────────────────────
@@ -170,8 +183,11 @@ def get_memory_snapshot() -> MemorySnapshot:
     # Fallback: nvidia-smi
     try:
         import subprocess
+        nvidia_smi = _find_binary("nvidia-smi")
+        if not nvidia_smi:
+            return snap
         result = subprocess.run(
-            ["nvidia-smi", "--query-gpu=memory.total,memory.used,memory.free", "--format=csv,noheader,nounits"],
+            [nvidia_smi, "--query-gpu=memory.total,memory.used,memory.free", "--format=csv,noheader,nounits"],
             capture_output=True, text=True, timeout=5
         )
         if result.returncode == 0:
@@ -549,6 +565,13 @@ class MemoryGate:
                 f"MemoryGate OK for '{reason}' after full unload (freed ~{freed:.0f} MB)"
             )
             return {"ok": True, "freed_mb": freed, "snapshot": final_snap}
+
+        if not final_snap.gpus:
+            return self._fail(
+                final_snap, freed, reason,
+                required_vram_mb, required_ram_mb,
+                f"Could not detect GPU VRAM for {reason}. Ensure nvidia-smi is installed and visible to the edison-core service, then restart the service.",
+            )
 
         # CPU fallback explicitly disallowed for heavy tasks
         if not allow_cpu_fallback:

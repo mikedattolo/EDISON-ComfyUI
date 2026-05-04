@@ -2120,8 +2120,11 @@ def _get_gpu_free_vram_mb(device_id: int = 0) -> float:
     # Fallback: parse nvidia-smi
     try:
         import subprocess
+        nvidia_smi = _find_binary("nvidia-smi")
+        if not nvidia_smi:
+            return 0.0
         out = subprocess.check_output(
-            ["nvidia-smi", f"--id={device_id}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
+            [nvidia_smi, f"--id={device_id}", "--query-gpu=memory.free", "--format=csv,noheader,nounits"],
             timeout=5
         ).decode().strip()
         return float(out)
@@ -4726,7 +4729,12 @@ def check_gpu_availability():
     import subprocess
     
     try:
-        result = subprocess.run(['nvidia-smi', '--query-gpu=name,memory.total', '--format=csv,noheader'],
+        nvidia_smi = _find_binary("nvidia-smi")
+        if not nvidia_smi:
+            logger.warning("nvidia-smi not found - NVIDIA drivers may not be installed")
+            logger.warning("Models will load on CPU (very slow)")
+            return False
+        result = subprocess.run([nvidia_smi, '--query-gpu=name,memory.total', '--format=csv,noheader'],
                               capture_output=True, text=True, timeout=5)
         if result.returncode == 0:
             gpus = result.stdout.strip().split('\n')
@@ -11305,9 +11313,12 @@ async def system_stats():
         nvidia_driver_version = ""
         try:
             import subprocess
+            nvidia_smi = _find_binary("nvidia-smi")
+            if not nvidia_smi:
+                raise FileNotFoundError("nvidia-smi not found")
             # Get GPU count, names, utilization, memory used/total, temperature, power, and fan speed.
             result = subprocess.run(
-                ['nvidia-smi', '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,driver_version',
+                [nvidia_smi, '--query-gpu=index,name,utilization.gpu,memory.used,memory.total,temperature.gpu,power.draw,power.limit,fan.speed,driver_version',
                  '--format=csv,noheader,nounits'],
                 capture_output=True, text=True, timeout=3
             )
