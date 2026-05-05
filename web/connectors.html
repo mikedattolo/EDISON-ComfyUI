@@ -7,18 +7,12 @@
   <link rel="stylesheet" href="page-theme.css?v=1" />
   <script src="page-theme.js?v=1" defer></script>
   <style>
-    :root {
-      --bg: #0f1722; --panel: #18293e; --panel-2: #1c3049;
-      --ink: #f4f8ff; --muted: #9db3cc; --line: rgba(178,201,231,0.22);
-      --accent: #63d2a3; --warn: #ffba69; --bad: #ff9090;
-    }
+    /* local palette stripped — see page-theme.css */
     * { box-sizing: border-box; }
     body {
       margin: 0; color: var(--ink);
       font-family: "Manrope","Segoe UI",sans-serif;
-      background: radial-gradient(circle at 8% 10%,rgba(99,210,163,.18),transparent 30%),
-                  radial-gradient(circle at 90% 5%,rgba(70,181,136,.15),transparent 28%),
-                  linear-gradient(180deg,#0b121b 0%,#101a26 100%);
+      background: var(--background);
       min-height: 100vh;
     }
     .topbar {
@@ -155,7 +149,7 @@
     .collapsible-body {
       display: none; padding: 12px; border: 1px solid var(--line);
       border-top: none; border-radius: 0 0 12px 12px;
-      background: linear-gradient(180deg,#18293e,#152232);
+      background: var(--background);
       flex-direction: column; gap: 8px;
     }
     .collapsible-body.open { display: flex; }

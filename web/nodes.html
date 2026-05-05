@@ -7,19 +7,12 @@
   <link rel="stylesheet" href="page-theme.css?v=1" />
   <script src="page-theme.js?v=1" defer></script>
   <style>
-    :root {
-      --bg: #eef2f5; --panel: #ffffff; --line: #d9e0e6; --ink: #24323f;
-      --muted: #6d7b88; --accent: #2c7be5; --accent-2: #1f63bf;
-      --ok: #249a6b; --warn: #b8781a; --bad: #cc4b4b;
-      --shadow: 0 10px 28px rgba(34,57,82,0.08);
-    }
+    /* local palette stripped — see page-theme.css */
     * { box-sizing: border-box; }
     body {
       margin: 0; color: var(--ink); font-family: "Segoe UI", sans-serif;
       background:
-        radial-gradient(circle at 10% 8%, rgba(44,123,229,0.1), transparent 24%),
-        radial-gradient(circle at 96% 6%, rgba(70,132,180,0.08), transparent 22%),
-        linear-gradient(180deg, #f9fbfd 0%, #eef3f7 100%);
+        var(--background);
       min-height: 100vh;
     }
     .topbar {
@@ -33,11 +26,11 @@
     .title p  { margin: 2px 0 0; color: var(--muted); font-size: 12px; }
     .btn {
       border: 1px solid var(--line); border-radius: 10px;
-      background: linear-gradient(180deg,#fff,#f4f7fa); color: var(--ink);
+      background: linear-gradient(180deg,var(--surface),var(--surface-alt)); color: var(--ink);
       padding: 9px 14px; font: inherit; font-size: 13px; cursor: pointer; transition: all .2s;
     }
-    .btn:hover { border-color: #9db8d8; }
-    .btn.primary { border-color: transparent; background: linear-gradient(120deg,#2c7be5,#1f63bf); color:#fff; font-weight:700; }
+    .btn:hover { border-color: var(--border); }
+    .btn.primary { border-color: transparent; background: linear-gradient(120deg,var(--primary),var(--primary-dark)); color:var(--surface); font-weight:700; }
     .btn.danger  { border-color: var(--bad); color: var(--bad); }
     .btn:disabled { opacity:.5; cursor:not-allowed; }
     .shell { display: grid; grid-template-columns: 1fr 380px; gap: 16px; padding: 16px; }
@@ -76,7 +69,7 @@
     .node-actions { margin-top:12px; display:flex; gap:6px; flex-wrap:wrap; }
     .node-actions .btn { padding:6px 11px; font-size:12px; }
     .task-list { display:flex; flex-direction:column; gap:8px; max-height:420px; overflow-y:auto; }
-    .task-item { border:1px solid var(--line); border-radius:10px; padding:12px; font-size:12px; background:#fafcfe; }
+    .task-item { border:1px solid var(--line); border-radius:10px; padding:12px; font-size:12px; background:var(--surface-alt); }
     .task-item .task-head { display:flex; justify-content:space-between; align-items:center; margin-bottom:5px; }
     .task-item .task-type { font-weight:700; font-size:13px; }
     .task-badge { font-size:10px; font-weight:700; padding:2px 8px; border-radius:5px; text-transform:uppercase; }
@@ -88,7 +81,7 @@
     .delegate-form label { font-size:12px; font-weight:600; display:block; margin-bottom:3px; color:var(--muted); }
     .delegate-form input, .delegate-form select, .delegate-form textarea {
       width:100%; padding:8px 10px; border:1px solid var(--line); border-radius:8px;
-      font:inherit; font-size:13px; background:#fafcfe; transition:border-color .2s;
+      font:inherit; font-size:13px; background:var(--surface-alt); transition:border-color .2s;
     }
     .delegate-form input:focus, .delegate-form select:focus, .delegate-form textarea:focus { outline:none; border-color:var(--accent); }
     .delegate-form textarea { min-height:60px; resize:vertical; }
@@ -97,13 +90,13 @@
     .modal { background:var(--panel); border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,.2); padding:24px; width:540px; max-width:90vw; max-height:85vh; overflow-y:auto; position:relative; }
     .modal h2 { margin:0 0 14px; font-size:18px; }
     .close-btn { position:absolute; top:14px; right:14px; background:none; border:none; font-size:22px; cursor:pointer; color:var(--muted); }
-    .setup-guide { background:#f8fafc; border:1px solid var(--line); border-radius:12px; padding:16px; }
-    .setup-guide code { background:#e8edf2; padding:2px 5px; border-radius:4px; font-size:11px; font-family:"Cascadia Code","Fira Code",monospace; }
-    .setup-guide pre { background:#1e293b; color:#e2e8f0; padding:12px; border-radius:8px; font-size:11px; overflow-x:auto; margin:6px 0; }
+    .setup-guide { background:var(--surface-alt); border:1px solid var(--line); border-radius:12px; padding:16px; }
+    .setup-guide code { background:var(--border); padding:2px 5px; border-radius:4px; font-size:11px; font-family:"Cascadia Code","Fira Code",monospace; }
+    .setup-guide pre { background:var(--surface-alt); color:var(--border); padding:12px; border-radius:8px; font-size:11px; overflow-x:auto; margin:6px 0; }
     .setup-guide li { margin-bottom:8px; font-size:13px; line-height:1.5; }
     .empty-state { text-align:center; padding:50px 20px; color:var(--muted); }
     .empty-state h3 { color:var(--ink); margin-bottom:8px; }
-    #toast { position:fixed; bottom:20px; right:20px; z-index:9999; background:#1e293b; color:#fff; padding:12px 18px; border-radius:10px; font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.3); opacity:0; pointer-events:none; transition:opacity .3s; max-width:320px; }
+    #toast { position:fixed; bottom:20px; right:20px; z-index:9999; background:var(--surface-alt); color:var(--surface); padding:12px 18px; border-radius:10px; font-size:13px; box-shadow:0 8px 24px rgba(0,0,0,.3); opacity:0; pointer-events:none; transition:opacity .3s; max-width:320px; }
     #toast.show { opacity:1; }
     #toast.ok  { border-left:3px solid var(--ok); }
     #toast.err { border-left:3px solid var(--bad); }

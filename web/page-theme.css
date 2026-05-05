@@ -29,6 +29,8 @@
   --text-tertiary:  #708295;
   --primary:        #18b58f;
   --primary-dark:   #0e9473;
+  --primary-light:  #4ed8b3;
+  --text-muted:     #708295;
   --secondary:      #ff9a44;
   --success:        #16c38f;
   --warning:        #f5a44c;
@@ -46,6 +48,8 @@ body.light-theme {
   --text-primary:   #1a1a1a;
   --text-secondary: #555a63;
   --text-tertiary:  #999999;
+  --text-muted:     #999999;
+  --primary-light:  #5dd5b3;
 }
 
 /* Color accents (mirror the main app). */

@@ -7,19 +7,7 @@
   <link rel="stylesheet" href="page-theme.css?v=1" />
   <script src="page-theme.js?v=1" defer></script>
   <style>
-    :root {
-      --bg: #f2f5f8;
-      --panel: #ffffff;
-      --panel-2: #eef3f8;
-      --ink: #13273b;
-      --muted: #5f7388;
-      --line: #d1dbe6;
-      --accent: #2275d7;
-      --accent-2: #0f4f99;
-      --ok: #1d8f5b;
-      --warn: #c66a15;
-      --shadow: 0 14px 32px rgba(16, 45, 78, 0.12);
-    }
+    /* local palette stripped — see page-theme.css */
 
     * { box-sizing: border-box; }
     body {
@@ -28,9 +16,7 @@
       font-family: "Manrope", "Segoe UI", sans-serif;
       color: var(--ink);
       background:
-        radial-gradient(circle at 6% 8%, rgba(34, 117, 215, 0.16), transparent 26%),
-        radial-gradient(circle at 92% 3%, rgba(15, 79, 153, 0.12), transparent 24%),
-        linear-gradient(180deg, #f8fbff 0%, #edf2f8 100%);
+        var(--background);
     }
 
     .topbar {
@@ -53,7 +39,7 @@
     .btn {
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: linear-gradient(180deg, #fff, #eff4fa);
+      background: linear-gradient(180deg, var(--surface), var(--surface-hover));
       color: var(--ink);
       font: inherit;
       font-size: 13px;
@@ -63,8 +49,8 @@
 
     .btn.primary {
       border-color: transparent;
-      background: linear-gradient(120deg, #2f87ef, #1f65c2);
-      color: #fff;
+      background: linear-gradient(120deg, var(--primary), var(--primary-dark));
+      color: var(--surface);
       font-weight: 700;
     }
 
@@ -107,7 +93,7 @@
       border-radius: 10px;
       padding: 9px 10px;
       font: inherit;
-      background: #fff;
+      background: var(--surface);
       color: var(--ink);
     }
 
@@ -123,8 +109,8 @@
       font-size: 13px;
     }
     .client-item.active {
-      border-color: #7fb2ee;
-      background: #e4effb;
+      border-color: var(--primary-light);
+      background: var(--surface-hover);
     }
 
     .pathbar {
@@ -133,7 +119,7 @@
       border-radius: 10px;
       font-size: 12px;
       color: var(--muted);
-      background: #fff;
+      background: var(--surface);
       margin-bottom: 8px;
       word-break: break-all;
     }
@@ -142,15 +128,15 @@
       width: 100%;
       border-collapse: collapse;
       font-size: 13px;
-      background: #fff;
+      background: var(--surface);
       border: 1px solid var(--line);
       border-radius: 10px;
       overflow: hidden;
     }
 
     thead {
-      background: #ecf2fa;
-      color: #304a63;
+      background: var(--surface-alt);
+      color: var(--text-secondary);
       position: sticky;
       top: 0;
       z-index: 1;
@@ -159,20 +145,20 @@
     th, td {
       text-align: left;
       padding: 8px 9px;
-      border-bottom: 1px solid #e5edf6;
+      border-bottom: 1px solid var(--surface-hover);
       white-space: nowrap;
       text-overflow: ellipsis;
       overflow: hidden;
       max-width: 1px;
     }
 
-    tbody tr:hover { background: #f3f8ff; }
-    tbody tr.sel { background: #dbeafe; }
+    tbody tr:hover { background: var(--surface-alt); }
+    tbody tr.sel { background: var(--surface-hover); }
 
     .status {
       border: 1px solid var(--line);
       border-radius: 10px;
-      background: #f7fbff;
+      background: var(--surface-alt);
       color: var(--muted);
       padding: 9px 10px;
       font-size: 12px;
@@ -180,8 +166,8 @@
       line-height: 1.45;
     }
 
-    .status.ok { border-color: rgba(29, 143, 91, 0.4); color: #12633f; }
-    .status.warn { border-color: rgba(198, 106, 21, 0.4); color: #925110; }
+    .status.ok { border-color: rgba(29, 143, 91, 0.4); color: var(--success); }
+    .status.warn { border-color: rgba(198, 106, 21, 0.4); color: var(--warning); }
 
     .asset-table { max-height: 340px; overflow: auto; border: 1px solid var(--line); border-radius: 10px; }
 

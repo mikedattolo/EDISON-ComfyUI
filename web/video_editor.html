@@ -7,21 +7,7 @@
   <link rel="stylesheet" href="page-theme.css?v=1" />
   <script src="page-theme.js?v=1" defer></script>
   <style>
-    :root {
-      --bg: #081018;
-      --bg-2: #0e1722;
-      --panel: rgba(12, 22, 35, 0.92);
-      --panel-2: rgba(18, 31, 49, 0.95);
-      --panel-3: rgba(23, 40, 61, 0.96);
-      --text: #f2f4f8;
-      --muted: #94a8bf;
-      --accent: #7ee081;
-      --accent-2: #ffb347;
-      --accent-3: #53c7ff;
-      --danger: #ff8d8d;
-      --border: rgba(177, 198, 224, 0.18);
-      --shadow: 0 18px 40px rgba(0, 0, 0, 0.3);
-    }
+    /* local palette stripped — see page-theme.css */
 
     * { box-sizing: border-box; }
 
@@ -32,9 +18,7 @@
       font-family: "Manrope", "Segoe UI", sans-serif;
       color: var(--text);
       background:
-        radial-gradient(circle at 12% 18%, rgba(83, 199, 255, 0.18), transparent 28%),
-        radial-gradient(circle at 85% 8%, rgba(255, 179, 71, 0.18), transparent 30%),
-        linear-gradient(180deg, #050b12 0%, #09111a 38%, #07111b 100%);
+        var(--background);
     }
 
     .topbar {
