@@ -22,6 +22,15 @@ _MODEL_REQUEST_HINTS = (
     "model", "shape", "figure", "solid", "stl", "object", "sculpture",
     "printable", "3d print",
 )
+# Strong 3D signals — at least one of these must be present before we route a
+# request to the Rhino/CAD pipeline. Plain words like "model" or "build" are
+# far too ambiguous (they fire on coding requests, software architecture,
+# planning, etc.) so they are intentionally NOT in this list.
+_STRONG_3D_HINTS = (
+    "3d", "cad", "rhino", "blender", "solidworks", "stl", "obj file", ".stl",
+    ".obj", ".step", ".stp", "grasshopper", "3d print", "3d-print", "printable",
+    "mesh", "sculpture", "sculpt", "physical model", "physical object",
+)
 _PROCEDURAL_MODEL_ALIASES = {
     "vase": ("vase",),
     "planter": ("planter", "plant pot", "flower pot", "pot"),
@@ -33,13 +42,65 @@ _PROCEDURAL_MODEL_ALIASES = {
     "sphere": ("sphere", "ball"),
 }
 
+# Whole-word code-context tokens. Matched with \b boundaries so "build"
+# does NOT trigger on the substring "ui", and "luxury" does not trigger
+# on "ux". Use _CODE_CONTEXT_PHRASES below for multi-word phrases.
+_CODE_CONTEXT_TERMS = frozenset([
+    "code", "coding", "function", "class", "method", "module", "script",
+    "package", "library", "api", "endpoint", "route", "router", "component",
+    "react", "vue", "svelte", "angular", "html", "css", "javascript", "typescript",
+    "python", "java", "kotlin", "swift", "rust", "golang", "ruby", "php",
+    "sql", "database", "schema", "query", "regex", "json", "yaml",
+    "docker", "kubernetes", "k8s", "terraform", "ansible", "github",
+    "git", "bug", "refactor", "pytest", "jest", "vitest", "mocha",
+    "playwright", "selenium", "frontend", "backend", "fullstack",
+    "wireframe", "algorithm", "fastapi", "flask", "django", "express",
+    "npm", "pnpm", "yarn", "compiler", "interpreter", "linter",
+])
+_CODE_CONTEXT_PHRASES = (
+    "ci/cd", "unit test", "integration test", "data structure",
+    "linked list", "binary tree", "hash map", "type hint", "type hints",
+    "typed function",
+)
+_CODE_CONTEXT_WORD_RE = re.compile(
+    r"\b(?:" + "|".join(re.escape(t) for t in _CODE_CONTEXT_TERMS) + r")\b"
+)
+
 # Words in an extracted shape description that suggest a non-physical, non-3D intent.
 _NON_PHYSICAL_NOUNS = frozenset([
     "plan", "list", "summary", "report", "document", "email", "message", "note",
     "text", "post", "caption", "copy", "flyer", "logo", "image", "photo", "video",
     "campaign", "strategy", "analysis", "invoice", "proposal", "description",
     "script", "story", "blog", "tweet", "ad", "slogan", "tagline",
+    # Code-context nouns (note: deliberately NOT including "model" — that's
+    # the foundational 3D term and is gated by other checks)
+    "function", "class", "method", "module", "package", "library", "api",
+    "endpoint", "component", "page", "route", "router", "schema",
+    "controller", "service", "view", "template", "test", "tests",
 ])
+
+
+def _looks_like_code_request(lowered: str) -> bool:
+    """True if the prompt is clearly about software/code, not 3D modelling."""
+    # Whole-word code-context terms
+    if _CODE_CONTEXT_WORD_RE.search(lowered):
+        return True
+    # Multi-word phrases
+    for phrase in _CODE_CONTEXT_PHRASES:
+        if phrase in lowered:
+            return True
+    # Triple-backtick fenced code blocks or inline code
+    if "```" in lowered or " code " in f" {lowered} ":
+        return True
+    # Common coding asks even without an explicit keyword
+    code_phrases = (
+        "write a function", "implement a", "fix this", "fix the bug",
+        "debug this", "what's wrong with", "why doesn't this work",
+        "why doesnt this work", "explain this code", "review this code",
+        "optimize this", "rewrite this", "convert this",
+        "translate this code", "what does this do",
+    )
+    return any(phrase in lowered for phrase in code_phrases)
 
 # Module-level injectable LLM reference used for free-form Rhino script codegen.
 _rhino_llm_ref: list = []
@@ -651,14 +712,23 @@ def _parse_model_request(
 ) -> Optional[Dict[str, Any]]:
     if not any(verb in lowered for verb in _MODEL_REQUEST_VERBS):
         return None
-    # Check preset aliases first — works regardless of hint keywords
-    for shape, aliases in _PROCEDURAL_MODEL_ALIASES.items():
-        for alias in aliases:
-            if re.search(rf"\b{re.escape(alias)}\b", lowered):
-                return {"shape": shape, "matched_alias": alias, "needs_llm": False}
-    # Require a 3D hint OR an active node manager for free-form codegen
-    has_hint = any(hint in lowered for hint in _MODEL_REQUEST_HINTS)
-    if not has_hint and not has_node_manager:
+    # Hard guard: never route coding/software requests to the CAD pipeline.
+    # This was the bug — "build a Box class", "create a cylinder utility",
+    # "generate a sphere component" all matched the alias table and got
+    # silently sent to Rhino.
+    if _looks_like_code_request(lowered):
+        return None
+    has_strong_3d = any(hint in lowered for hint in _STRONG_3D_HINTS)
+    # Check preset aliases — but ONLY when there's a strong 3D signal.
+    if has_strong_3d:
+        for shape, aliases in _PROCEDURAL_MODEL_ALIASES.items():
+            for alias in aliases:
+                if re.search(rf"\b{re.escape(alias)}\b", lowered):
+                    return {"shape": shape, "matched_alias": alias, "needs_llm": False}
+    # Free-form codegen path requires either a strong 3D hint OR a node
+    # manager AND a soft 3D hint (mesh/prototype/etc.).
+    has_soft_hint = any(hint in lowered for hint in _MODEL_REQUEST_HINTS)
+    if not has_strong_3d and not (has_node_manager and has_soft_hint):
         return None
     # Extract the noun phrase the user wants modelled
     description = _extract_shape_description(lowered, original or lowered)
