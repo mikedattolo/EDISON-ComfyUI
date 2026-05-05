@@ -98,6 +98,11 @@ def retry_sync(
         try:
             return func(*args, **kwargs)
         except BaseException as exc:  # noqa: BLE001
+            # Always propagate fatal/cancellation exceptions raw — wrapping
+            # them in RetryError would hide the intent from the caller and
+            # break asyncio's cancellation contract.
+            if isinstance(exc, pol.give_up_on):
+                raise
             errors.append(exc)
             if not _should_retry(exc, pol) or attempt >= pol.max_attempts:
                 if on_retry:
@@ -129,6 +134,9 @@ async def retry_async(
         try:
             return await func(*args, **kwargs)
         except BaseException as exc:  # noqa: BLE001
+            # Same as retry_sync: never wrap shutdown/cancellation.
+            if isinstance(exc, pol.give_up_on):
+                raise
             errors.append(exc)
             if not _should_retry(exc, pol) or attempt >= pol.max_attempts:
                 if on_retry:

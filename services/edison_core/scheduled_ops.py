@@ -61,6 +61,11 @@ async def run_scheduled(
     The metadata dict is stored on the scheduler's job record so the
     unified jobs center can correlate scheduler entries back to the
     persistent :class:`JobStore` row identified by ``job_id``.
+
+    If ``job_id`` is provided and the matching :class:`JobStore` row is
+    already in ``cancelled`` status before the lane semaphore is
+    acquired, the coroutine is never started and ``asyncio.CancelledError``
+    is raised instead.
     """
     from .gpu_scheduler import get_scheduler
 
@@ -72,4 +77,24 @@ async def run_scheduled(
     meta["job_type"] = job_type
 
     pri = priority if priority is not None else JOB_TYPE_PRIORITY.get(job_type)
-    return await sched.run(lane, coro_factory, priority=pri, metadata=meta)
+
+    async def guarded() -> Any:
+        if job_id and _job_already_cancelled(job_id):
+            import asyncio as _asyncio
+            raise _asyncio.CancelledError(f"job {job_id} cancelled before start")
+        return await coro_factory()
+
+    return await sched.run(lane, guarded, priority=pri, metadata=meta)
+
+
+def _job_already_cancelled(job_id: str) -> bool:
+    """Best-effort check against :class:`JobStore`. Returns False if the
+    store is unavailable so scheduling never breaks because of a missing
+    DB.
+    """
+    try:
+        from .job_store import JobStore
+        row = JobStore.get_instance().get_job(job_id)
+        return bool(row and row.get("status") == "cancelled")
+    except Exception:
+        return False

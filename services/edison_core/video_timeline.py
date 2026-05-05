@@ -10,8 +10,6 @@ from __future__ import annotations
 
 import json
 import logging
-import math
-import threading
 import time
 import uuid
 from dataclasses import dataclass, field, asdict
@@ -218,8 +216,6 @@ class ClipSequence:
 
     REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
     DEFAULT_ROOT = REPO_ROOT / "data" / "video_sequences"
-
-    _instances_lock = threading.Lock()
 
     def __init__(
         self,

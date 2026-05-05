@@ -40,6 +40,19 @@ class ArtifactRevisionStore:
 
     @classmethod
     def get_instance(cls, root: Optional[Path] = None) -> "ArtifactRevisionStore":
+        """Return the process-wide singleton.
+
+        If ``root`` is provided and differs from the current singleton's
+        root, a *new* instance is created and replaces the singleton —
+        this is what tests want when they pass ``tmp_path``.
+        """
+        if root is not None:
+            requested = root.resolve()
+            if cls._instance is None or cls._instance.root != requested:
+                with cls._lock:
+                    if cls._instance is None or cls._instance.root != requested:
+                        cls._instance = cls(root)
+            return cls._instance
         if cls._instance is None:
             with cls._lock:
                 if cls._instance is None:

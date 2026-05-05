@@ -49,6 +49,7 @@ def normalize_hits(hits: Iterable[Dict[str, Any]], *, source: str = "rag") -> Li
     ``content``, ``text``, ``summary``).
     """
     out: List[Citation] = []
+    used_ids: set[str] = set()
     for index, raw in enumerate(hits, start=1):
         if not isinstance(raw, dict):
             continue
@@ -71,6 +72,12 @@ def normalize_hits(hits: Iterable[Dict[str, Any]], *, source: str = "rag") -> Li
         if not isinstance(cid, str):
             cid = f"c{index}"
         # ensure ids are unique within a single bundle
+        original_cid = cid
+        suffix = 2
+        while cid in used_ids:
+            cid = f"{original_cid}_{suffix}"
+            suffix += 1
+        used_ids.add(cid)
         out.append(
             Citation(
                 id=cid,

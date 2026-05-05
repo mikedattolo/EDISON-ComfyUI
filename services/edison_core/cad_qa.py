@@ -115,8 +115,22 @@ def _parse_ascii_stl(text: str) -> List[Tuple[Tuple[float, float, float], ...]]:
 
 # ── Geometry helpers ─────────────────────────────────────────────────
 
-def _edge_key(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
-    return (a, b) if a <= b else (b, a)
+def _edge_key(
+    a: Tuple[float, float, float],
+    b: Tuple[float, float, float],
+    *,
+    ndigits: int = 4,
+) -> Tuple[Tuple[float, float, float], Tuple[float, float, float]]:
+    """Return a canonical edge key with vertices rounded to ``ndigits``.
+
+    Rounding is essential — STL stores vertices as float32, and shared
+    edges between adjacent triangles can drift in the lowest bits during
+    save/load. Without rounding, every shared edge looks unique and the
+    manifold check produces false positives.
+    """
+    ra = (round(a[0], ndigits), round(a[1], ndigits), round(a[2], ndigits))
+    rb = (round(b[0], ndigits), round(b[1], ndigits), round(b[2], ndigits))
+    return (ra, rb) if ra <= rb else (rb, ra)
 
 
 def _distance(a: Tuple[float, float, float], b: Tuple[float, float, float]) -> float:
