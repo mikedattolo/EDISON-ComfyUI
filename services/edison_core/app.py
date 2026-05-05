@@ -5415,6 +5415,30 @@ except Exception as e:
     except Exception:
         logger.warning(f"⚠ Phase 1 routes not available: {e}")
 
+try:
+    from .routes.phase2 import router as phase2_router
+    app.include_router(phase2_router)
+    logger.info("✓ Phase 2 routes registered (jobs center/revisions/palette)")
+except Exception as e:
+    try:
+        from routes.phase2 import router as phase2_router
+        app.include_router(phase2_router)
+        logger.info("✓ Phase 2 routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Phase 2 routes not available: {e}")
+
+try:
+    from .routes.phase3 import router as phase3_router
+    app.include_router(phase3_router)
+    logger.info("✓ Phase 3 routes registered (CAD QA/video timeline)")
+except Exception as e:
+    try:
+        from routes.phase3 import router as phase3_router
+        app.include_router(phase3_router)
+        logger.info("✓ Phase 3 routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Phase 3 routes not available: {e}")
+
 @app.post("/rag/search")
 async def rag_search(request: dict):
     """Search RAG memory for relevant context"""
