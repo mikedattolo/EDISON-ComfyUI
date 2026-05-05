@@ -5439,6 +5439,18 @@ except Exception as e:
     except Exception:
         logger.warning(f"⚠ Phase 3 routes not available: {e}")
 
+try:
+    from .routes.phase4 import router as phase4_router
+    app.include_router(phase4_router)
+    logger.info("✓ Phase 4 routes registered (image presets/rewriter/style/ETA)")
+except Exception as e:
+    try:
+        from routes.phase4 import router as phase4_router
+        app.include_router(phase4_router)
+        logger.info("✓ Phase 4 routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Phase 4 routes not available: {e}")
+
 @app.post("/rag/search")
 async def rag_search(request: dict):
     """Search RAG memory for relevant context"""
