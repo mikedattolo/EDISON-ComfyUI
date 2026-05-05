@@ -12,6 +12,8 @@ import shutil
 import time
 import uuid
 
+from .safe_io import atomic_write_json
+
 
 def _slugify_client_name(name: str) -> str:
     slug = re.sub(r"[^a-zA-Z0-9]+", "-", (name or "").strip().lower()).strip("-")
@@ -241,7 +243,7 @@ class BrandingClientStore:
 
     def _save_branding(self, data: Dict[str, Any]) -> None:
         self._ensure_directory(self.branding_db_path.parent)
-        self.branding_db_path.write_text(json.dumps(data, indent=2))
+        atomic_write_json(self.branding_db_path, data)
 
     def _normalize_client_record(self, client: Dict[str, Any]) -> Dict[str, Any]:
         business_name = str(client.get("business_name") or client.get("name") or "").strip()

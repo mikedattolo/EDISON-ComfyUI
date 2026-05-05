@@ -9,6 +9,12 @@ set -e
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 VENV_DIR="$SCRIPT_DIR/venv"
 
+# Safety: never let an unset/empty VENV_DIR result in `rm -rf /bin` etc.
+if [ -z "${VENV_DIR:-}" ] || [ "$VENV_DIR" = "/" ] || [ "$VENV_DIR" = "$HOME" ]; then
+    echo "FATAL: refusing to operate on suspicious VENV_DIR='$VENV_DIR'" >&2
+    exit 1
+fi
+
 echo "═══════════════════════════════════════════"
 echo "  EDISON Setup — $SCRIPT_DIR"
 echo "═══════════════════════════════════════════"

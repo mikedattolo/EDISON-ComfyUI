@@ -36,7 +36,8 @@ class ArtifactPipeline:
             "created_at": datetime.utcnow().isoformat() + "Z"
         }
         meta_path = project_dir / "artifact.json"
-        meta_path.write_text(json.dumps(meta, indent=2))
+        from .safe_io import atomic_write_json as _aw
+        _aw(meta_path, meta)
 
         # Generate a minimal artifact file based on kind
         output_file = None
@@ -74,7 +75,7 @@ class ArtifactPipeline:
             output_file.write_text(content)
             meta["status"] = "generated"
             meta["output_file"] = str(output_file)
-            meta_path.write_text(json.dumps(meta, indent=2))
+            _aw(meta_path, meta)
 
         return ArtifactGenerateResponse(
             artifact_id=artifact_id,

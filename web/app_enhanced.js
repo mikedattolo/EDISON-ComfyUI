@@ -2290,6 +2290,24 @@ ${code}
         this.lastGeneratedImage = null;
     }
 
+    _clearAttachedFiles() {
+        // Drop any pending attachments so they don't leak between chats.
+        try {
+            if (Array.isArray(window.uploadedFiles)) {
+                window.uploadedFiles.length = 0;
+            } else {
+                window.uploadedFiles = [];
+            }
+            const attachedFilesDiv = document.getElementById('attachedFiles');
+            if (attachedFilesDiv) {
+                attachedFilesDiv.innerHTML = '';
+                attachedFilesDiv.style.display = 'none';
+            }
+            const fileInput = document.getElementById('fileInput');
+            if (fileInput) fileInput.value = '';
+        } catch (_e) { /* non-critical */ }
+    }
+
     normalizeImageContext(context) {
         if (!context || typeof context !== 'object') {
             return null;
@@ -2763,6 +2781,7 @@ ${code}
     createNewChat() {
         this.closeMobileSidebar();
         this.resetImageConversationState();
+        this._clearAttachedFiles();
         const chatId = this.generateId('chat');
         const chat = {
             id: chatId,
@@ -2805,6 +2824,7 @@ ${code}
         this.closeMobileSidebar();
         this.currentChatId = chatId;
         this.resetImageConversationState();
+        this._clearAttachedFiles();
         const chat = this.chats.find(c => c.id === chatId);
         if (chat) {
             this.clearMessages();
@@ -3386,7 +3406,15 @@ ${code}
     loadChats({ sync = true } = {}) {
         // Load from localStorage first for immediate display
         const saved = localStorage.getItem(this.getChatsStorageKey());
-        const localChats = saved ? JSON.parse(saved) : [];
+        let localChats = [];
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed)) localChats = parsed;
+            } catch (e) {
+                console.warn('[edison] saved chats corrupted, ignoring:', e);
+            }
+        }
         
         // Then sync with server in background
         if (sync && !this._needsUserBootstrap) {
@@ -3697,7 +3725,12 @@ ${code}
             assistantProfileId: '',
         };
 
-        const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+        let parsedSaved = {};
+        if (saved) {
+            try { parsedSaved = JSON.parse(saved) || {}; }
+            catch (e) { console.warn('[edison] settings corrupted, using defaults:', e); }
+        }
+        const settings = { ...defaults, ...parsedSaved };
 
         // Migrate old direct-to-core endpoints to use the /api proxy
         if (settings.apiEndpoint && settings.apiEndpoint.match(/:8811/)) {

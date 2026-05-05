@@ -1,0 +1,58 @@
+# Build context excludes for Docker.
+# Keeps the build context small and avoids busting layer cache when
+# tests, docs, or local outputs change.
+
+# Version control
+.git
+.gitignore
+.github
+
+# Python build / cache
+__pycache__
+*.pyc
+*.pyo
+*.pyd
+*.egg-info
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.coverage
+htmlcov
+
+# Virtual envs
+venv
+.venv
+env
+
+# Editor / OS
+.vscode
+.idea
+.DS_Store
+*.swp
+
+# Tests (kept out of production image)
+tests
+test_*.py
+
+# Local outputs / large artifacts
+outputs
+gallery
+chats
+data
+models
+ComfyUI/models
+*.log
+*.tmp
+
+# Docs
+*.md
+!README.md
+
+# Docker / compose definitions themselves (avoid recursive copies)
+Dockerfile
+docker-compose*.yml
+.dockerignore
+
+# Memory / debug logs
+.memory
+.pytest_cache

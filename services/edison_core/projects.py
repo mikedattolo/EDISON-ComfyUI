@@ -11,6 +11,7 @@ import shutil
 import uuid
 
 from .contracts import ProjectCreateRequest, ProjectResponse, ProjectUpdateRequest
+from .safe_io import atomic_write_json
 
 
 def _utc_now() -> str:
@@ -317,5 +318,4 @@ class ProjectWorkspaceManager:
         return normalized
 
     def _write_json(self, path: Path, payload: Dict[str, Any]) -> None:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2))
+        atomic_write_json(path, payload)

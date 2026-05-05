@@ -775,7 +775,15 @@ class EdisonApp {
     loadChats() {
         // Load from localStorage first for immediate display
         const saved = localStorage.getItem('edison_chats');
-        const localChats = saved ? JSON.parse(saved) : [];
+        let localChats = [];
+        if (saved) {
+            try {
+                const parsed = JSON.parse(saved);
+                if (Array.isArray(parsed)) localChats = parsed;
+            } catch (e) {
+                console.warn('[edison] saved chats corrupted, ignoring:', e);
+            }
+        }
         
         // Then sync with server in background
         this.syncChatsFromServer();
@@ -879,7 +887,12 @@ class EdisonApp {
             syntaxHighlight: true
         };
         
-        const settings = saved ? { ...defaults, ...JSON.parse(saved) } : defaults;
+        let parsedSaved = {};
+        if (saved) {
+            try { parsedSaved = JSON.parse(saved) || {}; }
+            catch (e) { console.warn('[edison] settings corrupted, using defaults:', e); }
+        }
+        const settings = { ...defaults, ...parsedSaved };
         // Migrate away from hardcoded legacy IP
         if (settings.apiEndpoint && settings.apiEndpoint.includes('192.168.1.26')) {
             settings.apiEndpoint = defaults.apiEndpoint;

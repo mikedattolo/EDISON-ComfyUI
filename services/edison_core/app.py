@@ -36,6 +36,8 @@ import ipaddress
 import mimetypes
 import urllib.parse
 
+from .safe_io import atomic_write_json, atomic_write_text
+
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
 # We run a dedicated daemon thread with its own event queue.
@@ -1099,7 +1101,7 @@ def _ensure_integrations_dir():
     ]:
         try:
             if not db_path.exists():
-                db_path.write_text(json.dumps(default_data, indent=2))
+                atomic_write_json(db_path, default_data)
         except Exception as e:
             logger.warning(f"Could not create DB file {db_path}: {e}")
 
@@ -1133,7 +1135,7 @@ def _load_prompt_store() -> dict:
 
 def _save_prompt_store(data: dict):
     _ensure_integrations_dir()
-    PROMPTS_DB.write_text(json.dumps(_normalize_prompt_store(data), indent=2))
+    atomic_write_json(PROMPTS_DB, _normalize_prompt_store(data))
 
 
 def _load_assistants() -> list:
@@ -1166,7 +1168,7 @@ def _load_connectors() -> dict:
 
 def _save_connectors(data: dict):
     _ensure_integrations_dir()
-    CONNECTORS_DB.write_text(json.dumps(data, indent=2))
+    atomic_write_json(CONNECTORS_DB, data)
 
 
 def _resolve_assistant_profile(assistant_profile_id: Optional[str]) -> Optional[dict]:
@@ -1298,7 +1300,7 @@ def _load_printers() -> dict:
 
 def _save_printers(data: dict):
     _ensure_integrations_dir()
-    PRINTERS_DB.write_text(json.dumps(data, indent=2))
+    atomic_write_json(PRINTERS_DB, data)
 
 
 def _load_branding() -> dict:

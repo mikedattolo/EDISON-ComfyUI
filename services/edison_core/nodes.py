@@ -17,6 +17,8 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
+from .safe_io import atomic_write_json
+
 logger = logging.getLogger(__name__)
 
 
@@ -77,7 +79,7 @@ class NodeManager:
     def _ensure_db(self):
         self._db_path.parent.mkdir(parents=True, exist_ok=True)
         if not self._db_path.exists():
-            self._db_path.write_text(json.dumps({"nodes": [], "tasks": []}, indent=2))
+            atomic_write_json(self._db_path, {"nodes": [], "tasks": []})
 
     def _load(self) -> Dict[str, Any]:
         try:
@@ -86,7 +88,7 @@ class NodeManager:
             return {"nodes": [], "tasks": []}
 
     def _save(self, data: Dict[str, Any]):
-        self._db_path.write_text(json.dumps(data, indent=2))
+        atomic_write_json(self._db_path, data)
 
     # ── node CRUD ──
 

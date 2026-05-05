@@ -250,7 +250,8 @@ class ClipSequence:
             "updated_at": self.updated_at,
             "clips": [c.to_dict() for c in self.clips],
         }
-        self.path.write_text(json.dumps(payload, indent=2, default=str))
+        from .safe_io import atomic_write_json as _aw
+        _aw(self.path, payload)
         return self.path
 
     @classmethod

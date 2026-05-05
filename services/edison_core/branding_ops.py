@@ -96,7 +96,8 @@ class BrandingWorkflowService:
 
     def _write_json(self, path: Path, payload: Any, title: str, project_id: Optional[str]) -> Dict[str, Any]:
         path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(payload, indent=2))
+        from .safe_io import atomic_write_json as _aw
+        _aw(path, payload)
         return self._register_output(path, title, project_id, "json")
 
     def _write_markdown(self, path: Path, content: str, title: str, project_id: Optional[str]) -> Dict[str, Any]:

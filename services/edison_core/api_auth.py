@@ -61,7 +61,8 @@ def _load_json(fpath: Path) -> list:
 
 def _save_json(fpath: Path, data: list):
     _ensure_storage()
-    fpath.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    from .safe_io import atomic_write_json as _aw
+    _aw(fpath, data)
 
 
 def _hash_password(password: str, salt: Optional[str] = None) -> tuple:

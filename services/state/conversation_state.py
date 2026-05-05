@@ -104,21 +104,24 @@ class ConversationStateManager:
 
         Only known fields are applied; unknown keys are silently ignored.
         """
-        state = self.get_state(session_id)
-        applied = []
-        for key, value in updates.items():
-            if not hasattr(state, key) or key in ("session_id", "created_at"):
-                continue
-            # Validate constrained fields
-            if key == "active_domain" and value not in VALID_DOMAINS:
-                logger.warning(f"Invalid domain '{value}', ignoring")
-                continue
-            if key == "task_stage" and value not in VALID_TASK_STAGES:
-                logger.warning(f"Invalid task_stage '{value}', ignoring")
-                continue
-            setattr(state, key, value)
-            applied.append(key)
-        state.updated_at = time.time()
+        with self._lock:
+            if session_id not in self._states:
+                self._states[session_id] = ConversationState(session_id=session_id)
+            state = self._states[session_id]
+            applied = []
+            for key, value in updates.items():
+                if not hasattr(state, key) or key in ("session_id", "created_at"):
+                    continue
+                # Validate constrained fields
+                if key == "active_domain" and value not in VALID_DOMAINS:
+                    logger.warning(f"Invalid domain '{value}', ignoring")
+                    continue
+                if key == "task_stage" and value not in VALID_TASK_STAGES:
+                    logger.warning(f"Invalid task_stage '{value}', ignoring")
+                    continue
+                setattr(state, key, value)
+                applied.append(key)
+            state.updated_at = time.time()
         if applied:
             logger.debug(f"State update [{session_id}]: {', '.join(applied)}")
         return state
@@ -132,24 +135,33 @@ class ConversationStateManager:
 
     def increment_turn(self, session_id: str) -> int:
         """Bump turn counter and return new count."""
-        state = self.get_state(session_id)
-        state.turn_count += 1
-        state.updated_at = time.time()
-        return state.turn_count
+        with self._lock:
+            if session_id not in self._states:
+                self._states[session_id] = ConversationState(session_id=session_id)
+            state = self._states[session_id]
+            state.turn_count += 1
+            state.updated_at = time.time()
+            return state.turn_count
 
     def record_error(self, session_id: str, error_msg: str):
         """Track an error occurrence in the session."""
-        state = self.get_state(session_id)
-        state.error_count += 1
-        state.last_error = error_msg[:500]
-        state.updated_at = time.time()
+        with self._lock:
+            if session_id not in self._states:
+                self._states[session_id] = ConversationState(session_id=session_id)
+            state = self._states[session_id]
+            state.error_count += 1
+            state.last_error = error_msg[:500]
+            state.updated_at = time.time()
 
     def add_history_note(self, session_id: str, note: str, max_notes: int = 20):
         """Append a concise history note (capped at *max_notes*)."""
-        state = self.get_state(session_id)
-        state.history_summary.append(note[:200])
-        if len(state.history_summary) > max_notes:
-            state.history_summary = state.history_summary[-max_notes:]
+        with self._lock:
+            if session_id not in self._states:
+                self._states[session_id] = ConversationState(session_id=session_id)
+            state = self._states[session_id]
+            state.history_summary.append(note[:200])
+            if len(state.history_summary) > max_notes:
+                state.history_summary = state.history_summary[-max_notes:]
 
     def list_sessions(self) -> List[Dict[str, Any]]:
         """Return summaries of all active sessions."""

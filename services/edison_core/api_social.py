@@ -80,7 +80,8 @@ def _load_posts() -> list:
 
 def _save_posts(data: list):
     _ensure_storage()
-    SOCIAL_POSTS_FILE.write_text(json.dumps(data, indent=2, default=str), encoding="utf-8")
+    from .safe_io import atomic_write_json as _aw
+    _aw(SOCIAL_POSTS_FILE, data)
 
 
 def _load_connectors() -> dict:
