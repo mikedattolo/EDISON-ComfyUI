@@ -5403,6 +5403,18 @@ except Exception as e:
     except Exception:
         logger.warning(f"⚠ Business platform routes not available: {e}")
 
+try:
+    from .routes.phase1 import router as phase1_router
+    app.include_router(phase1_router)
+    logger.info("✓ Phase 1 routes registered (scheduler/citations/artifact streams)")
+except Exception as e:
+    try:
+        from routes.phase1 import router as phase1_router
+        app.include_router(phase1_router)
+        logger.info("✓ Phase 1 routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Phase 1 routes not available: {e}")
+
 @app.post("/rag/search")
 async def rag_search(request: dict):
     """Search RAG memory for relevant context"""
