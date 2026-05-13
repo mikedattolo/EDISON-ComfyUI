@@ -156,6 +156,77 @@ edison:
     default_height: 512
     default_steps: 20
 
+  persona_video:
+    enabled: true
+    default_output_directory: "outputs/persona_video"
+    temp_working_directory: "outputs/persona_video/tmp"
+    upload_directory: "uploads/persona_video"
+    keep_intermediates_default: false
+    default_quality_preset: "balanced"
+    default_gpu_strategy: "auto"
+    exclusive_gpu_render_mode_default: false
+    auto_restore_suspended_services: true
+    vram_min_free_mb_by_gpu:
+      "0": 18000
+      "1": 10000
+      "2": 10000
+    maximum_concurrent_segment_workers: 2
+    automatic_failed_segment_rerender_threshold: 0.55
+    qc_thresholds:
+      minimum_segment_score: 0.60
+    backend: "metadata_only_passthrough"
+    comfyui_workflows_dir: "config/persona_video/comfyui_workflows"
+
+  gpu_fan_control:
+    enabled: true
+    # Safe default: UI/API dry-runs unless apply=true is explicitly requested.
+    apply_enabled_default: false
+    poll_interval_s: 5
+    telemetry_preference: ["nvml", "nvidia-smi", "sysfs"]
+    control_preference: ["nvidia-settings", "nvml"]
+    display: ":0"
+    xauthority: null
+    fan_index_map:
+      "0": 0
+      "1": 1
+      "2": 2
+    deadband_percent: 3
+    minimum_change_interval_s: 8
+    min_fan_percent: 30
+    max_fan_percent: 100
+    critical_temp_c: 84
+    critical_fan_percent: 100
+    expected_gpus:
+      - index: 0
+        label: "RTX 3090 24GB"
+        name_contains: "3090"
+      - index: 1
+        label: "RTX 5060 Ti 16GB"
+        name_contains: "5060"
+      - index: 2
+        label: "RTX 4060 Ti 16GB"
+        name_contains: "4060"
+    curve:
+      - temp_c: 35
+        fan_percent: 30
+      - temp_c: 45
+        fan_percent: 36
+      - temp_c: 55
+        fan_percent: 48
+      - temp_c: 65
+        fan_percent: 62
+      - temp_c: 72
+        fan_percent: 76
+      - temp_c: 80
+        fan_percent: 92
+      - temp_c: 84
+        fan_percent: 100
+    gpu_overrides:
+      "4060":
+        min_fan_percent: 40
+        spinup_if_fan_zero_above_c: 42
+        spinup_percent: 60
+
   music:
     model_size: "medium"       # small (~4GB VRAM), medium (~8GB), large (~16GB), melody (~8GB)
     default_duration: 15       # seconds

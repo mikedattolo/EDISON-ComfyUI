@@ -1,0 +1,165 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON GPU Fan Control</title>
+  <link rel="stylesheet" href="page-theme.css?v=1" />
+  <link rel="stylesheet" href="workspace-shell.css?v=6" />
+  <script src="page-theme.js?v=1" defer></script>
+  <script src="workspace-shell.js?v=6" defer></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin: 0; min-height: 100vh; font-family: "Manrope", "Segoe UI", sans-serif; color: var(--ink, #f8fafc); background: radial-gradient(circle at 20% 0%, rgba(248,113,113,.18), transparent 34%), radial-gradient(circle at 82% 10%, rgba(56,189,248,.20), transparent 38%), var(--background, #08111f); }
+    .topbar { position: sticky; top: 0; z-index: 20; display: flex; align-items: center; justify-content: space-between; gap: 18px; padding: 16px 20px; background: rgba(5,10,18,.82); border-bottom: 1px solid var(--line, rgba(148,163,184,.22)); backdrop-filter: blur(16px); }
+    h1 { margin: 0; font-size: 24px; }
+    .subtitle { margin: 4px 0 0; color: var(--muted, #94a3b8); font-size: 13px; max-width: 940px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .btn { border: 1px solid rgba(148,163,184,.25); border-radius: 12px; padding: 10px 14px; background: linear-gradient(180deg, rgba(30,41,59,.92), rgba(15,23,42,.92)); color: var(--ink, #e2e8f0); font: inherit; font-size: 13px; cursor: pointer; text-decoration: none; }
+    .btn.primary { background: linear-gradient(135deg, #38bdf8, #2dd4bf 58%, #a3e635); color: #06101a; border-color: transparent; font-weight: 800; }
+    .btn.danger { background: rgba(239,68,68,.13); border-color: rgba(239,68,68,.42); color: #fecaca; }
+    .btn.warn { background: rgba(251,146,60,.12); border-color: rgba(251,146,60,.45); color: #fed7aa; }
+    .shell { display: grid; grid-template-columns: minmax(0,1.2fr) minmax(360px,.8fr); gap: 14px; padding: 14px; }
+    .panel { border: 1px solid rgba(148,163,184,.22); border-radius: 18px; background: linear-gradient(180deg, rgba(15,23,42,.90), rgba(8,13,25,.94)); box-shadow: 0 20px 60px rgba(0,0,0,.28); overflow: hidden; }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 16px; border-bottom: 1px solid rgba(148,163,184,.18); }
+    .panel-head h2, .panel-head h3 { margin: 0; font-size: 15px; }
+    .panel-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 12px; }
+    .card { border: 1px solid rgba(148,163,184,.18); border-radius: 16px; padding: 14px; background: rgba(15,23,42,.62); }
+    .card.good { border-color: rgba(34,197,94,.38); background: rgba(34,197,94,.08); }
+    .card.warn { border-color: rgba(251,146,60,.42); background: rgba(251,146,60,.08); }
+    .card.bad { border-color: rgba(239,68,68,.45); background: rgba(239,68,68,.08); }
+    .metric { display: block; color: var(--muted, #94a3b8); font-size: 11px; text-transform: uppercase; letter-spacing: .06em; }
+    .value { display: block; margin-top: 4px; font-size: 28px; font-weight: 900; }
+    .small { color: var(--muted, #94a3b8); font-size: 12px; line-height: 1.5; }
+    .status, pre { border: 1px solid rgba(148,163,184,.2); border-radius: 14px; background: rgba(2,6,23,.58); padding: 12px; font-size: 12px; color: var(--muted, #cbd5e1); white-space: pre-wrap; overflow: auto; line-height: 1.5; }
+    .status.ok { border-color: rgba(34,197,94,.38); color: #bbf7d0; }
+    .status.err { border-color: rgba(248,113,113,.45); color: #fecaca; }
+    .pill { display: inline-flex; border-radius: 999px; background: rgba(56,189,248,.12); color: #bae6fd; padding: 4px 8px; font-size: 11px; font-weight: 800; margin: 2px; }
+    .pill.warn { background: rgba(251,146,60,.13); color: #fed7aa; }
+    .pill.good { background: rgba(34,197,94,.13); color: #bbf7d0; }
+    .check { display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start; padding: 10px; border: 1px solid rgba(148,163,184,.18); border-radius: 12px; background: rgba(15,23,42,.62); font-size: 12px; color: var(--muted, #cbd5e1); }
+    input[type="number"] { width: 110px; border: 1px solid rgba(148,163,184,.25); border-radius: 12px; background: rgba(2,6,23,.7); color: var(--ink, #e2e8f0); padding: 10px; }
+    @media (max-width: 1100px) { .shell, .grid { grid-template-columns: 1fr; } }
+  </style>
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>GPU Fan Control</h1>
+      <p class="subtitle">Temperature-driven fan watchdog for the RTX 3090, RTX 5060 Ti, and RTX 4060 Ti. Dry-run by default; apply mode must run on a host with NVIDIA driver tools, Xorg Coolbits, and fan-write permission.</p>
+    </div>
+    <div class="actions">
+      <a class="btn" href="/">Main Chat</a>
+      <a class="btn" href="/persona-video-studio">Persona Video</a>
+      <button class="btn primary" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="panel">
+      <div class="panel-head"><h2>Live GPU Fan Decisions</h2><span id="runState" class="pill">loading</span></div>
+      <div class="panel-body">
+        <div class="grid" id="gpuCards"></div>
+        <div class="status" id="statusBox">Loading status…</div>
+        <div class="actions">
+          <button class="btn" id="dryRunBtn">Evaluate Dry Run</button>
+          <button class="btn warn" id="applyOnceBtn">Apply Once</button>
+          <button class="btn primary" id="startDryBtn">Start Dry-Run Loop</button>
+          <button class="btn danger" id="startApplyBtn">Start Apply Loop</button>
+          <button class="btn" id="stopBtn">Stop Loop</button>
+          <label class="check"><input type="checkbox" id="confirmApply" /> <span>I understand apply mode writes fan targets on the host and requires NVIDIA fan-control setup.</span></label>
+          <label class="small">Poll interval <input type="number" id="interval" min="1" max="120" value="5" /> seconds</label>
+        </div>
+      </div>
+    </section>
+
+    <aside class="panel">
+      <div class="panel-head"><h3>Driver / Fan-Control Diagnostics</h3></div>
+      <div class="panel-body">
+        <div id="diagSummary"></div>
+        <pre id="diagJson">Loading diagnostics…</pre>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const API = '/api/gpu-fans';
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v ?? '').replace(/[&<>\"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'}[c]));
+
+    async function api(path, opts = {}) {
+      const res = await fetch(`${API}${path}`, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+      return data;
+    }
+
+    function setStatus(msg, tone = '') {
+      const el = byId('statusBox');
+      el.textContent = msg;
+      el.className = `status ${tone}`;
+    }
+
+    function render(data) {
+      const decisions = data.decisions || [];
+      byId('runState').textContent = data.running ? `running · apply=${data.apply_requested ?? data.apply}` : `stopped · apply=${data.apply_requested ?? data.apply}`;
+      byId('gpuCards').innerHTML = decisions.length ? decisions.map((d) => {
+        const temp = d.temperature_c ?? 'n/a';
+        const current = d.current_fan_percent ?? 'n/a';
+        const target = d.target_fan_percent ?? 'n/a';
+        const tone = d.error ? 'bad' : d.applied ? 'good' : (d.warnings || []).length ? 'warn' : '';
+        return `<div class="card ${tone}"><span class="metric">GPU ${d.index}</span><strong>${esc(d.name)}</strong><span class="value">${esc(temp)}°C</span><div class="small">Current fan: ${esc(current)}%<br>Target fan: ${esc(target)}%<br>Backend: ${esc(d.backend)}<br>Reason: ${esc(d.reason)}</div>${(d.warnings||[]).map(w => `<span class="pill warn">${esc(w)}</span>`).join('')}${d.error ? `<div class="status err">${esc(d.error)}</div>` : ''}</div>`;
+      }).join('') : '<div class="status err">No GPU readings available from this environment.</div>';
+      const diag = data.diagnostics || {};
+      byId('diagJson').textContent = JSON.stringify(diag, null, 2);
+      byId('diagSummary').innerHTML = [
+        ['GPU access', diag.container_or_host_has_gpu_access], ['Fan writes ready', diag.fan_control_ready], ['nvidia-smi', diag.nvidia_smi_path || 'missing'], ['nvidia-settings', diag.nvidia_settings_path || 'missing'], ['DISPLAY', diag.display || 'missing']
+      ].map(([k,v]) => `<span class="pill ${v === true ? 'good' : v === false || v === 'missing' ? 'warn' : ''}">${esc(k)}: ${esc(v)}</span>`).join('');
+      const errors = data.telemetry_errors || [];
+      setStatus(errors.length ? `Telemetry warnings:\n${errors.join('\n')}` : 'Fan controller status refreshed.', errors.length ? 'err' : 'ok');
+    }
+
+    async function refresh(apply = false) {
+      const data = await api(`/status?refresh=true&apply=${apply ? 'true' : 'false'}`);
+      render(data);
+    }
+
+    async function start(apply) {
+      if (apply && !byId('confirmApply').checked) {
+        setStatus('Check the confirmation box before starting apply mode.', 'err');
+        return;
+      }
+      const payload = { apply, poll_interval_s: Number(byId('interval').value || 5) };
+      const data = await api('/start', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      setStatus(`Loop started. apply=${data.apply}`, 'ok');
+      await refresh(false);
+    }
+
+    async function applyOnce() {
+      if (!byId('confirmApply').checked) {
+        setStatus('Check the confirmation box before applying fan targets.', 'err');
+        return;
+      }
+      const data = await api('/apply-once', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ apply: true }) });
+      render(data);
+    }
+
+    async function stopLoop() {
+      const data = await api('/stop', { method: 'POST' });
+      setStatus(`Loop stopped. running=${data.running}`, 'ok');
+      await refresh(false);
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      byId('refreshBtn').addEventListener('click', () => refresh(false).catch(e => setStatus(e.message, 'err')));
+      byId('dryRunBtn').addEventListener('click', () => refresh(false).catch(e => setStatus(e.message, 'err')));
+      byId('applyOnceBtn').addEventListener('click', () => applyOnce().catch(e => setStatus(e.message, 'err')));
+      byId('startDryBtn').addEventListener('click', () => start(false).catch(e => setStatus(e.message, 'err')));
+      byId('startApplyBtn').addEventListener('click', () => start(true).catch(e => setStatus(e.message, 'err')));
+      byId('stopBtn').addEventListener('click', () => stopLoop().catch(e => setStatus(e.message, 'err')));
+      refresh(false).catch(e => setStatus(e.message, 'err'));
+    });
+  </script>
+</body>
+</html>

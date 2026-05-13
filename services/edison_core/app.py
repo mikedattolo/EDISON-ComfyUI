@@ -5406,6 +5406,30 @@ except Exception as e:
         logger.warning(f"⚠ Business platform routes not available: {e}")
 
 try:
+    from .routes.persona_video import router as persona_video_router
+    app.include_router(persona_video_router)
+    logger.info("✓ Persona Video Studio routes registered")
+except Exception as e:
+    try:
+        from routes.persona_video import router as persona_video_router
+        app.include_router(persona_video_router)
+        logger.info("✓ Persona Video Studio routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ Persona Video Studio routes not available: {e}")
+
+try:
+    from .routes.gpu_fans import router as gpu_fans_router
+    app.include_router(gpu_fans_router)
+    logger.info("✓ GPU fan control routes registered")
+except Exception as e:
+    try:
+        from routes.gpu_fans import router as gpu_fans_router
+        app.include_router(gpu_fans_router)
+        logger.info("✓ GPU fan control routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ GPU fan control routes not available: {e}")
+
+try:
     from .routes.phase1 import router as phase1_router
     app.include_router(phase1_router)
     logger.info("✓ Phase 1 routes registered (scheduler/citations/artifact streams)")

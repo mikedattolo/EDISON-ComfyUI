@@ -60,6 +60,24 @@ _CAPABILITY_MAP: Dict[str, Dict[str, Any]] = {
         "endpoints": ["/api/video/upload", "/api/video/trim", "/api/video/storyboard"],
         "frontend_page": "video.html",
     },
+    "persona_video_studio": {
+        "description": "Consent-gated source-coherent persona video transformation pipeline with segment QC, retry, GPU orchestration, and pluggable backends",
+        "endpoints": ["/persona-video/jobs", "/persona-video/personas", "/persona-video/backends", "/persona-video/gpus"],
+        "storage_file": "config/integrations/persona_packs.json",
+        "frontend_page": "persona_video_studio.html",
+        "backend_modules": [
+            "services/edison_core/persona_video.py",
+            "services/edison_core/persona_video_backends.py",
+            "services/edison_core/persona_video_gpu.py",
+        ],
+    },
+    "gpu_fan_control": {
+        "description": "Host-side NVIDIA GPU temperature and fan watchdog with dry-run diagnostics, fan-curve targets, and a 4060 Ti zero-RPM spin-up guard",
+        "endpoints": ["/gpu-fans/health", "/gpu-fans/status", "/gpu-fans/diagnostics", "/gpu-fans/start", "/gpu-fans/stop"],
+        "frontend_page": "gpu_fans.html",
+        "backend_modules": ["services/edison_core/gpu_fan_control.py"],
+        "config_key": "edison.gpu_fan_control",
+    },
     "connectors": {
         "description": "External service integrations (GitHub, Slack, Gmail, etc.)",
         "endpoints": ["/api/connectors", "/api/connectors/{id}/test"],

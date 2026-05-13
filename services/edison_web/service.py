@@ -268,6 +268,26 @@ async def video_editor_page():
     return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
+@app.get("/persona-video-studio")
+async def persona_video_studio_page():
+    """Serve dedicated Persona Video Studio page."""
+    page = WEB_DIR / "persona_video_studio.html"
+    if not page.exists():
+        logger.error(f"persona_video_studio.html not found at {page}")
+        return {"error": "Persona Video Studio UI not found"}
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
+
+
+@app.get("/gpu-fans")
+async def gpu_fans_page():
+    """Serve GPU fan-control dashboard."""
+    page = WEB_DIR / "gpu_fans.html"
+    if not page.exists():
+        logger.error(f"gpu_fans.html not found at {page}")
+        return {"error": "GPU Fan Control UI not found"}
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
+
+
 @app.get("/branding")
 async def branding_page():
     """Serve dedicated branding/file explorer page."""

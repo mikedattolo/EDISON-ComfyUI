@@ -1,0 +1,21 @@
+[Unit]
+Description=EDISON NVIDIA GPU Fan Control Watchdog
+After=graphical.target nvidia-persistenced.service
+Wants=nvidia-persistenced.service
+
+[Service]
+Type=simple
+User=edison
+WorkingDirectory=/opt/edison
+Environment="PATH=/opt/edison/.venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+# Fan writes through nvidia-settings require host Xorg/Coolbits access.
+# Adjust DISPLAY/XAUTHORITY for your display manager/session if needed.
+Environment="DISPLAY=:0"
+Environment="XAUTHORITY=/home/edison/.Xauthority"
+ExecStart=/opt/edison/.venv/bin/python -m services.edison_core.gpu_fan_control --loop --apply --config /opt/edison/config/edison.yaml
+Restart=always
+RestartSec=5
+
+[Install]
+WantedBy=multi-user.target

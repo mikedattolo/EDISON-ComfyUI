@@ -59,6 +59,44 @@
             secondaryLabel: 'Open Projects'
         },
         {
+            key: 'persona-video',
+            label: 'Persona Video',
+            href: '/persona-video-studio',
+            icon: 'PV',
+            matches: ['/persona-video-studio', '/persona_video_studio.html'],
+            heroKicker: 'Consent-Gated Transformation Studio',
+            heroTitle: 'Transform cleared source footage through a segment-based synthetic persona pipeline.',
+            heroDescription: 'Persona Video Studio preserves source timing, camera motion, and audio while delegating identity synthesis to installable backends with explicit rights metadata.',
+            highlights: ['Rights checklist gate', 'Segment retry + QC', 'Exclusive GPU render mode'],
+            stats: [
+                { label: 'Pipeline', value: 'Source-coherent VFX' },
+                { label: 'GPU plan', value: '3090 + auxiliaries' }
+            ],
+            prompt: 'Open Persona Video Studio context and help me set up a consent-gated persona transformation job with the safest local workflow.',
+            mode: 'work',
+            secondaryHref: '/video-editor',
+            secondaryLabel: 'Open Video'
+        },
+        {
+            key: 'gpu-fans',
+            label: 'GPU Fans',
+            href: '/gpu-fans',
+            icon: 'GF',
+            matches: ['/gpu-fans', '/gpu_fans.html'],
+            heroKicker: 'Hardware Safety Watchdog',
+            heroTitle: 'Monitor GPU temperatures and command safe fan targets on supported NVIDIA hosts.',
+            heroDescription: 'GPU Fan Control diagnoses nvidia-smi/NVML access, applies a conservative fan curve, and forces a 4060 Ti spin-up target when the fan reports 0% above the configured threshold.',
+            highlights: ['Dry-run diagnostics', '4060 Ti zero-RPM guard', 'Host-side apply mode'],
+            stats: [
+                { label: 'Cards', value: '3090 + 5060 Ti + 4060 Ti' },
+                { label: 'Default', value: 'Dry-run safe' }
+            ],
+            prompt: 'Open GPU Fan Control context and diagnose my NVIDIA driver, fan telemetry, and 4060 Ti fan spin-up state.',
+            mode: 'work',
+            secondaryHref: '/persona-video-studio',
+            secondaryLabel: 'Open Persona Video'
+        },
+        {
             key: 'printing',
             label: 'Print',
             href: '/printing',

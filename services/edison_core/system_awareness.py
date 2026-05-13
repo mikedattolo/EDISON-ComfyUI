@@ -64,6 +64,8 @@ def _discover_pages(web_dir: Path) -> List[Dict[str, Any]]:
         "connectors.html": "/connectors",
         "printing.html": "/printing",
         "projects.html": "/projects",
+        "persona_video_studio.html": "/persona-video-studio",
+        "gpu_fans.html": "/gpu-fans",
         "video_editor.html": "/video-editor",
     }
     pages = []
@@ -108,9 +110,11 @@ def _discover_storage(repo_root: Path, config: Dict[str, Any]) -> List[Dict[str,
         repo_root / "config" / "integrations" / "branding.json",
         repo_root / "config" / "integrations" / "connectors.json",
         repo_root / "config" / "integrations" / "printers.json",
+        repo_root / "config" / "integrations" / "persona_packs.json",
         repo_root / "config" / "integrations" / "prompts.json",
         projects_root,
         repo_root / "outputs" / "clients",
+        repo_root / "outputs" / "persona_video",
         repo_root / "outputs" / "gallery",
     ]
     storage = []
@@ -127,10 +131,12 @@ def _discover_integrations(integrations_dir: Path) -> Dict[str, Any]:
     branding = _load_json(integrations_dir / "branding.json", {"clients": []})
     connectors = _load_json(integrations_dir / "connectors.json", {"connectors": []})
     printers = _load_json(integrations_dir / "printers.json", {"printers": []})
+    persona_packs = _load_json(integrations_dir / "persona_packs.json", {"persona_packs": []})
     return {
         "branding_clients": len(branding.get("clients", [])),
         "connected_integrations": len(connectors.get("connectors", [])),
         "registered_printers": len(printers.get("printers", [])),
+        "registered_persona_packs": len(persona_packs.get("persona_packs", [])),
     }
 
 
@@ -153,7 +159,7 @@ def _discover_modes(config: Dict[str, Any]) -> Dict[str, Any]:
     configured_modes = sorted((config.get("modes") or {}).keys())
     return {
         "configured": configured_modes,
-        "business_domains": ["branding", "marketing", "printing", "video", "connectors", "projects"],
+        "business_domains": ["branding", "marketing", "printing", "video", "persona_video", "gpu_fan_control", "connectors", "projects"],
     }
 
 

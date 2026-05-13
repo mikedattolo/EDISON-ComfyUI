@@ -1,0 +1,528 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON Persona Video Studio</title>
+  <link rel="stylesheet" href="page-theme.css?v=1" />
+  <script src="page-theme.js?v=1" defer></script>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      font-family: "Manrope", "Segoe UI", sans-serif;
+      color: var(--ink, #f8fafc);
+      background: radial-gradient(circle at 18% 0%, rgba(99,102,241,.24), transparent 34%),
+                  radial-gradient(circle at 82% 12%, rgba(20,184,166,.18), transparent 38%),
+                  var(--background, #08111f);
+    }
+    .topbar {
+      position: sticky; top: 0; z-index: 30;
+      display: flex; justify-content: space-between; align-items: center; gap: 18px;
+      padding: 16px 20px;
+      background: rgba(5, 10, 18, .78);
+      border-bottom: 1px solid var(--line, rgba(148,163,184,.22));
+      backdrop-filter: blur(16px);
+    }
+    .title h1 { margin: 0; font-size: 24px; letter-spacing: .01em; }
+    .title p { margin: 4px 0 0; color: var(--muted, #94a3b8); font-size: 13px; max-width: 980px; }
+    .actions { display: flex; gap: 8px; flex-wrap: wrap; justify-content: flex-end; }
+    .btn {
+      border: 1px solid var(--line, rgba(148,163,184,.25));
+      border-radius: 12px; padding: 10px 14px;
+      background: linear-gradient(180deg, rgba(30,41,59,.92), rgba(15,23,42,.92));
+      color: var(--ink, #e2e8f0); font: inherit; font-size: 13px; cursor: pointer;
+      transition: transform .14s ease, border-color .14s ease, opacity .14s ease;
+    }
+    .btn:hover { transform: translateY(-1px); border-color: rgba(45,212,191,.55); }
+    .btn.primary { background: linear-gradient(135deg, #38bdf8, #2dd4bf 58%, #a3e635); color: #06101a; border-color: transparent; font-weight: 800; }
+    .btn.warn { background: rgba(251,146,60,.12); border-color: rgba(251,146,60,.45); color: #fed7aa; }
+    .btn:disabled { opacity: .48; cursor: not-allowed; transform: none; }
+    .shell { display: grid; grid-template-columns: 360px minmax(0, 1fr) 380px; gap: 14px; padding: 14px; min-height: calc(100vh - 84px); }
+    .column { display: flex; flex-direction: column; gap: 14px; min-height: 0; }
+    .panel {
+      border: 1px solid var(--line, rgba(148,163,184,.22));
+      border-radius: 18px; overflow: hidden;
+      background: linear-gradient(180deg, rgba(15,23,42,.90), rgba(8,13,25,.94));
+      box-shadow: 0 20px 60px rgba(0,0,0,.28);
+    }
+    .panel-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; padding: 14px 16px; border-bottom: 1px solid var(--line, rgba(148,163,184,.18)); }
+    .panel-head h2, .panel-head h3 { margin: 0; font-size: 15px; }
+    .panel-body { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+    .step-tag { display: inline-flex; align-items: center; gap: 6px; color: #67e8f9; font-size: 11px; text-transform: uppercase; letter-spacing: .08em; font-weight: 800; }
+    .field, .textarea, .select {
+      width: 100%; border: 1px solid var(--line, rgba(148,163,184,.25)); border-radius: 12px;
+      background: rgba(2, 6, 23, .7); color: var(--ink, #e2e8f0); padding: 10px 12px; font: inherit; font-size: 13px;
+    }
+    .textarea { min-height: 78px; resize: vertical; }
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 10px; }
+    .checklist { display: flex; flex-direction: column; gap: 9px; }
+    .check {
+      display: grid; grid-template-columns: 22px 1fr; gap: 8px; align-items: start;
+      padding: 10px; border: 1px solid rgba(148,163,184,.18); border-radius: 12px; background: rgba(15,23,42,.62);
+      font-size: 12px; line-height: 1.45; color: var(--muted, #cbd5e1);
+    }
+    .check strong { color: var(--ink, #f8fafc); }
+    .status {
+      border: 1px solid rgba(148,163,184,.2); border-radius: 14px; background: rgba(2,6,23,.55);
+      padding: 12px; font-size: 12px; color: var(--muted, #cbd5e1); white-space: pre-wrap; line-height: 1.5; overflow: auto;
+    }
+    .status.ok { border-color: rgba(34,197,94,.38); color: #bbf7d0; }
+    .status.err { border-color: rgba(248,113,113,.45); color: #fecaca; }
+    .pill-row { display: flex; gap: 7px; flex-wrap: wrap; }
+    .pill { border-radius: 999px; background: rgba(56,189,248,.12); color: #bae6fd; padding: 4px 8px; font-size: 11px; font-weight: 800; }
+    .pill.warn { background: rgba(251,146,60,.13); color: #fed7aa; }
+    .pill.ok { background: rgba(34,197,94,.13); color: #bbf7d0; }
+    .persona-card, .segment-card, .gpu-card, .backend-card {
+      border: 1px solid rgba(148,163,184,.18); border-radius: 14px; padding: 12px; background: rgba(15,23,42,.62);
+    }
+    .persona-card.active { border-color: rgba(45,212,191,.6); background: rgba(20,184,166,.10); }
+    .persona-card h4, .backend-card h4 { margin: 0 0 6px; font-size: 13px; }
+    .small { color: var(--muted, #94a3b8); font-size: 11px; line-height: 1.45; }
+    .media-facts { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+    .fact { border: 1px solid rgba(148,163,184,.16); border-radius: 12px; padding: 10px; background: rgba(2,6,23,.55); }
+    .fact span { display: block; color: var(--muted, #94a3b8); font-size: 10px; text-transform: uppercase; letter-spacing: .05em; }
+    .fact strong { display: block; margin-top: 4px; font-size: 13px; word-break: break-word; }
+    .progress { height: 12px; border-radius: 999px; background: rgba(148,163,184,.18); overflow: hidden; }
+    .progress > div { height: 100%; width: 0%; background: linear-gradient(90deg, #38bdf8, #2dd4bf, #a3e635); transition: width .3s ease; }
+    .stage-list { display: flex; flex-direction: column; gap: 7px; max-height: 360px; overflow: auto; padding-right: 4px; }
+    .stage { display: grid; grid-template-columns: 24px 1fr auto; gap: 8px; align-items: center; font-size: 12px; color: var(--muted, #cbd5e1); }
+    .dot { width: 12px; height: 12px; border-radius: 999px; background: rgba(148,163,184,.35); justify-self: center; }
+    .stage.running .dot { background: #38bdf8; box-shadow: 0 0 16px rgba(56,189,248,.7); }
+    .stage.completed .dot { background: #22c55e; }
+    .stage.failed .dot { background: #ef4444; }
+    .output-card { border: 1px solid rgba(34,197,94,.35); border-radius: 16px; padding: 14px; background: rgba(34,197,94,.08); }
+    .logbox { max-height: 240px; overflow: auto; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; }
+    .preview-img { max-width: 100%; border-radius: 12px; border: 1px solid rgba(148,163,184,.22); background: #020617; }
+    @media (max-width: 1280px) { .shell { grid-template-columns: 1fr; } }
+  </style>
+  <link rel="stylesheet" href="workspace-shell.css?v=6" />
+  <script src="workspace-shell.js?v=6" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <div class="title">
+      <h1>Persona Video Studio</h1>
+      <p>Consent-gated, source-coherent persona transformation pipeline. Edison preserves source motion, timing, camera movement, and audio while pluggable backends handle synthetic persona rendering.</p>
+    </div>
+    <div class="actions">
+      <button class="btn" onclick="window.location.href='/'">Main Chat</button>
+      <button class="btn" onclick="window.location.href='/video-editor'">Video Editor</button>
+      <button class="btn primary" id="refreshBtn">Refresh</button>
+    </div>
+  </header>
+
+  <main class="shell">
+    <section class="column">
+      <div class="panel">
+        <div class="panel-head"><h2><span class="step-tag">Step 1</span> Project Setup</h2></div>
+        <div class="panel-body">
+          <input id="projectTitle" class="field" placeholder="Project title" />
+          <textarea id="projectDescription" class="textarea" placeholder="Optional description or production notes"></textarea>
+          <input id="outputFolder" class="field" placeholder="Optional output folder (relative or absolute local path)" />
+          <div class="status">Exclusive Render Mode can temporarily suspend Edison-controlled local AI services to free GPU headroom. It will not kill external/unmanaged processes.</div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2><span class="step-tag">Rights Gate</span> Required Acknowledgement</h2></div>
+        <div class="panel-body">
+          <div class="checklist" id="rightsChecklist">
+            <label class="check"><input type="checkbox" data-right="all_visible_performers_are_consenting_adults" /> <span><strong>Every visible performer</strong> in the uploaded/source footage is a consenting adult.</span></label>
+            <label class="check"><input type="checkbox" data-right="source_footage_cleared_for_ai_transformation" /> <span>The source footage is owned, licensed, or otherwise explicitly cleared for AI transformation.</span></label>
+            <label class="check"><input type="checkbox" data-right="persona_identity_is_synthetic_or_authorized" /> <span>The persona identity is fully synthetic OR explicitly legally authorized.</span></label>
+            <label class="check"><input type="checkbox" data-right="material_is_non_explicit_production_footage" /> <span>The footage is non-explicit production/performance material and is not a sexual deepfake or impersonation workflow.</span></label>
+            <label class="check"><input type="checkbox" data-right="material_does_not_depict_or_simulate_minors" /> <span>The material does not depict or simulate minors.</span></label>
+            <label class="check"><input type="checkbox" data-right="no_unauthorized_real_person_impersonation" /> <span>The material is not intended to impersonate a real person without authorization.</span></label>
+            <label class="check"><input type="checkbox" data-right="local_metadata_acknowledgment_understood" /> <span>I understand Edison stores this acknowledgement only as local job metadata and in the final sidecar report.</span></label>
+          </div>
+          <input id="ackBy" class="field" placeholder="Acknowledged by (local label, optional)" />
+          <div class="status" id="rightsStatus">All confirmations are required before a job can start.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="column">
+      <div class="panel">
+        <div class="panel-head"><h2><span class="step-tag">Step 2</span> Source Footage</h2></div>
+        <div class="panel-body">
+          <input id="sourceFile" class="field" type="file" accept="video/*" />
+          <div class="grid-2">
+            <button class="btn" id="uploadBtn">Upload Source</button>
+            <button class="btn" id="probeBtn">Probe Local Path</button>
+          </div>
+          <input id="sourcePath" class="field" placeholder="Or select/enter an existing local video path" />
+          <div class="media-facts" id="mediaFacts"></div>
+          <div id="previewBlock"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2><span class="step-tag">Step 3</span> Persona Selection</h2><button class="btn" id="reloadPersonasBtn">Reload</button></div>
+        <div class="panel-body">
+          <div class="grid-2">
+            <input id="personaName" class="field" placeholder="Register persona pack name" />
+            <select id="personaType" class="select">
+              <option value="lora">LoRA</option>
+              <option value="reference_images">Reference images</option>
+              <option value="identity_model">Identity model</option>
+              <option value="adapter">Other adapter</option>
+              <option value="other">Other</option>
+            </select>
+          </div>
+          <textarea id="personaPaths" class="textarea" placeholder="Local file path(s), one per line"></textarea>
+          <input id="personaNotes" class="field" placeholder="Notes / compatibility" />
+          <button class="btn" id="registerPersonaBtn">Register Persona Pack</button>
+          <div id="personaList" class="stage-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h2><span class="step-tag">Step 4-5</span> Target + Transformation Settings</h2></div>
+        <div class="panel-body">
+          <select id="targetMode" class="select">
+            <option value="auto_detect_primary_subject">Auto-detect primary subject</option>
+            <option value="manual_track_metadata">Manual/known target track metadata</option>
+          </select>
+          <input id="targetTrackId" class="field" placeholder="Optional target track ID / notes for future mask editing" />
+          <div class="grid-2">
+            <select id="qualityPreset" class="select">
+              <option value="fast_preview">Fast Preview</option>
+              <option value="balanced" selected>Balanced</option>
+              <option value="maximum_quality">Maximum Quality</option>
+            </select>
+            <select id="backendSelect" class="select"></select>
+          </div>
+          <select id="transformationScope" class="select">
+            <option value="face_identity_only">Face identity only</option>
+            <option value="face_hair_head_region">Face + hair/head-region identity where supported</option>
+            <option value="full_visible_persona_styling">Full visible persona styling where supported</option>
+            <option value="metadata_validation_only">Pipeline validation only</option>
+          </select>
+          <div class="grid-2">
+            <select id="temporalConsistency" class="select">
+              <option value="low">Temporal consistency: Low</option>
+              <option value="medium">Temporal consistency: Medium</option>
+              <option value="high" selected>Temporal consistency: High</option>
+              <option value="maximum">Temporal consistency: Maximum</option>
+            </select>
+            <select id="segmentSize" class="select">
+              <option value="auto">Auto segment size</option>
+              <option value="short">Short segments for stability</option>
+              <option value="long">Longer segments for speed</option>
+            </select>
+          </div>
+          <div class="checklist">
+            <label class="check"><input type="checkbox" id="flickerReduction" checked /> <span>Flicker reduction / temporal cleanup where supported</span></label>
+            <label class="check"><input type="checkbox" id="preserveLighting" checked /> <span>Preserve source lighting/color relationship</span></label>
+            <label class="check"><input type="checkbox" id="exclusiveGpu" /> <span>Exclusive GPU Render Mode</span></label>
+            <label class="check"><input type="checkbox" id="useAllGpus" checked /> <span>Use all GPUs where supported</span></label>
+            <label class="check"><input type="checkbox" id="keepIntermediate" /> <span>Keep intermediate files for debugging/rerendering</span></label>
+          </div>
+          <select id="gpuStrategy" class="select">
+            <option value="auto">Auto</option>
+            <option value="primary_aux">RTX 3090 Primary + Other GPUs for Auxiliary Tasks</option>
+            <option value="parallel_all">Parallel Segment Processing Across All GPUs</option>
+            <option value="3090_only">3090 Only</option>
+            <option value="advanced_multigpu">Advanced MultiGPU Backend Mode</option>
+          </select>
+          <div class="grid-3">
+            <label class="check"><input name="audioMode" type="radio" value="preserve" checked /> <span>Preserve audio</span></label>
+            <label class="check"><input name="audioMode" type="radio" value="replace" /> <span>Replace audio</span></label>
+            <label class="check"><input name="audioMode" type="radio" value="strip" /> <span>Strip audio</span></label>
+          </div>
+          <input id="alternateAudioPath" class="field" placeholder="Optional replacement audio path" />
+          <button class="btn primary" id="startJobBtn">Start Persona Video Job</button>
+          <div class="status" id="formStatus">Ready.</div>
+        </div>
+      </div>
+    </section>
+
+    <section class="column">
+      <div class="panel">
+        <div class="panel-head"><h2><span class="step-tag">Step 6</span> Processing Dashboard</h2></div>
+        <div class="panel-body">
+          <div class="progress"><div id="progressFill"></div></div>
+          <div class="pill-row" id="jobPills"><span class="pill">No active job</span></div>
+          <div class="stage-list" id="stageList"></div>
+          <div class="grid-2">
+            <button class="btn warn" id="cancelJobBtn" disabled>Cancel</button>
+            <button class="btn" id="refreshJobBtn" disabled>Refresh Job</button>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>GPU / Backend Readiness</h3></div>
+        <div class="panel-body">
+          <div id="gpuList" class="stage-list"></div>
+          <div id="backendList" class="stage-list"></div>
+        </div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>Segments / QC</h3></div>
+        <div class="panel-body"><div id="segmentList" class="stage-list"></div></div>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>Logs + Output</h3></div>
+        <div class="panel-body">
+          <div id="outputCard"></div>
+          <div id="logBox" class="status logbox">No logs yet.</div>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <script>
+    const API = '/api/persona-video';
+    const state = { personas: [], backends: [], selectedPersona: '', sourcePath: '', activeJobId: '', poll: null };
+    const byId = (id) => document.getElementById(id);
+    const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+    const baseName = (p) => String(p || '').split(/[\\/]/).pop();
+
+    function setStatus(message, tone = '') {
+      const el = byId('formStatus');
+      el.textContent = message;
+      el.className = `status ${tone}`;
+    }
+
+    function rightsPayload() {
+      const payload = {};
+      document.querySelectorAll('[data-right]').forEach((input) => { payload[input.dataset.right] = input.checked; });
+      payload.acknowledged_by = byId('ackBy').value.trim() || 'local_user';
+      return payload;
+    }
+
+    function rightsComplete() {
+      return Object.entries(rightsPayload()).filter(([k]) => k !== 'acknowledged_by').every(([,v]) => v === true);
+    }
+
+    function updateRightsStatus() {
+      const complete = rightsComplete();
+      const el = byId('rightsStatus');
+      el.textContent = complete ? 'Rights/consent gate complete. Edison will store this only in local job/report metadata.' : 'All confirmations are required before a job can start.';
+      el.className = `status ${complete ? 'ok' : ''}`;
+      byId('startJobBtn').disabled = !complete;
+    }
+
+    async function api(path, opts = {}) {
+      const res = await fetch(`${API}${path}`, opts);
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+      return data;
+    }
+
+    async function loadBasics() {
+      const [personas, backends, gpus, settings] = await Promise.all([
+        api('/personas'), api('/backends'), api('/gpus'), api('/settings')
+      ]);
+      state.personas = personas.persona_packs || [];
+      state.backends = backends.backends || [];
+      renderPersonas(); renderBackends(); renderGpus(gpus.gpus || []); applySettings(settings.settings || {});
+    }
+
+    function applySettings(settings) {
+      byId('exclusiveGpu').checked = !!settings.exclusive_gpu_render_mode_default;
+      byId('qualityPreset').value = settings.default_quality_preset || 'balanced';
+      byId('gpuStrategy').value = settings.default_gpu_strategy || 'auto';
+    }
+
+    function renderPersonas() {
+      const list = byId('personaList');
+      if (!state.personas.length) {
+        list.innerHTML = '<div class="status">No persona packs registered yet. Register a LoRA, identity model, adapter, or reference image pack first.</div>';
+        return;
+      }
+      list.innerHTML = state.personas.map((p) => {
+        const active = p.persona_id === state.selectedPersona ? ' active' : '';
+        return `<button class="persona-card${active}" data-persona="${esc(p.persona_id)}">
+          <h4>${esc(p.name)} <span class="pill">${esc(p.pack_type || p.type)}</span></h4>
+          <div class="small">${esc(p.notes || 'No notes')}<br>${esc((p.paths || []).join(', '))}</div>
+        </button>`;
+      }).join('');
+      list.querySelectorAll('[data-persona]').forEach((el) => el.addEventListener('click', () => { state.selectedPersona = el.dataset.persona; renderPersonas(); }));
+      if (!state.selectedPersona && state.personas[0]) { state.selectedPersona = state.personas[0].persona_id; renderPersonas(); }
+    }
+
+    function renderBackends() {
+      const select = byId('backendSelect');
+      select.innerHTML = state.backends.map((b) => `<option value="${esc(b.backend_id)}">${esc(b.display_name)}${b.available ? '' : ' (setup required)'}</option>`).join('');
+      const list = byId('backendList');
+      list.innerHTML = state.backends.map((b) => `<div class="backend-card">
+        <h4>${esc(b.display_name)} ${b.available ? '<span class="pill ok">available</span>' : '<span class="pill warn">setup required</span>'}</h4>
+        <div class="small">${esc(b.description)}<br>${esc(b.notes || '')}</div>
+      </div>`).join('');
+      select.addEventListener('change', applyBackendScopes);
+      applyBackendScopes();
+    }
+
+    function applyBackendScopes() {
+      const backend = state.backends.find((b) => b.backend_id === byId('backendSelect').value);
+      const supported = new Set((backend && backend.supported_transformation_scopes) || []);
+      [...byId('transformationScope').options].forEach((option) => {
+        option.disabled = supported.size && !supported.has(option.value);
+      });
+      const current = byId('transformationScope').value;
+      if (supported.size && !supported.has(current)) byId('transformationScope').value = [...supported][0];
+      const adv = byId('gpuStrategy').querySelector('option[value="advanced_multigpu"]');
+      if (adv) adv.disabled = !(backend && backend.supports_advanced_multigpu);
+    }
+
+    function renderGpus(gpus) {
+      const el = byId('gpuList');
+      if (!gpus.length) { el.innerHTML = '<div class="status">No NVIDIA GPU telemetry detected.</div>'; return; }
+      el.innerHTML = gpus.map((g) => `<div class="gpu-card"><strong>GPU ${g.index}: ${esc(g.name)}</strong><div class="small">${Math.round(g.free_mb || 0)} MB free / ${Math.round(g.total_mb || 0)} MB total · ${esc(g.role_hint || '')}</div></div>`).join('');
+    }
+
+    async function uploadSource() {
+      const file = byId('sourceFile').files[0];
+      if (!file) return setStatus('Choose a source video file first.', 'err');
+      const fd = new FormData(); fd.append('file', file);
+      setStatus('Uploading and probing source...');
+      const res = await fetch(`${API}/upload-source`, { method: 'POST', body: fd });
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || 'Upload failed');
+      state.sourcePath = data.source_path; byId('sourcePath').value = data.source_path;
+      renderProbe(data.probe); setStatus('Source uploaded and probed.', 'ok');
+    }
+
+    async function probePath() {
+      const sourcePath = byId('sourcePath').value.trim();
+      if (!sourcePath) return setStatus('Enter a local source video path first.', 'err');
+      const data = await api('/probe', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify({ source_path: sourcePath, create_preview: true }) });
+      state.sourcePath = sourcePath; renderProbe(data.probe); setStatus('Source probed.', 'ok');
+    }
+
+    function renderProbe(probe) {
+      byId('mediaFacts').innerHTML = [
+        ['Duration', `${probe.duration_s || 0}s`], ['Resolution', probe.width ? `${probe.width}×${probe.height}` : 'unknown'],
+        ['Frame rate', probe.fps || 'unknown'], ['Audio', probe.audio_present ? `present (${probe.audio_codec || 'unknown'})` : 'not present'],
+        ['Video codec', probe.video_codec || 'unknown'], ['Container', probe.container || 'unknown']
+      ].map(([k,v]) => `<div class="fact"><span>${k}</span><strong>${esc(v)}</strong></div>`).join('');
+      const thumb = probe.thumbnail_path ? `${API}/previews/${encodeURIComponent(baseName(probe.thumbnail_path))}` : '';
+      const contact = probe.contact_sheet_path ? `${API}/previews/${encodeURIComponent(baseName(probe.contact_sheet_path))}` : '';
+      byId('previewBlock').innerHTML = [thumb && `<img class="preview-img" src="${thumb}" alt="Preview thumbnail" />`, contact && `<img class="preview-img" src="${contact}" alt="Contact sheet" />`].filter(Boolean).join('');
+    }
+
+    async function registerPersona() {
+      const payload = {
+        name: byId('personaName').value.trim(),
+        type: byId('personaType').value,
+        paths: byId('personaPaths').value.split('\n').map((v) => v.trim()).filter(Boolean),
+        notes: byId('personaNotes').value.trim(),
+        preferred_backend_compatibility: [byId('backendSelect').value].filter(Boolean)
+      };
+      if (!payload.name) return setStatus('Persona pack name is required.', 'err');
+      const data = await api('/personas', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      state.selectedPersona = data.persona_pack.persona_id;
+      await loadBasics(); setStatus('Persona pack registered.', 'ok');
+    }
+
+    function collectSettings() {
+      const audio = document.querySelector('input[name="audioMode"]:checked').value;
+      return {
+        backend: byId('backendSelect').value,
+        quality_preset: byId('qualityPreset').value,
+        transformation_scope: byId('transformationScope').value,
+        temporal_consistency_priority: byId('temporalConsistency').value,
+        flicker_reduction: byId('flickerReduction').checked,
+        preserve_lighting_color_relationship: byId('preserveLighting').checked,
+        preserve_original_audio: audio === 'preserve',
+        replace_audio: audio === 'replace',
+        strip_audio: audio === 'strip',
+        alternate_audio_path: byId('alternateAudioPath').value.trim() || null,
+        exclusive_gpu_render_mode: byId('exclusiveGpu').checked,
+        use_all_gpus_where_supported: byId('useAllGpus').checked,
+        gpu_strategy: byId('gpuStrategy').value,
+        keep_intermediate_files: byId('keepIntermediate').checked,
+        segment_size_preference: byId('segmentSize').value
+      };
+    }
+
+    async function startJob() {
+      if (!rightsComplete()) return setStatus('Complete the rights/consent checklist first.', 'err');
+      if (!state.sourcePath && byId('sourcePath').value.trim()) state.sourcePath = byId('sourcePath').value.trim();
+      if (!state.sourcePath) return setStatus('Upload or select source footage first.', 'err');
+      if (!state.selectedPersona) return setStatus('Select or register a persona pack first.', 'err');
+      const payload = {
+        project_title: byId('projectTitle').value.trim() || 'Persona Video Studio Job',
+        description: byId('projectDescription').value.trim(),
+        output_folder: byId('outputFolder').value.trim() || null,
+        source_path: state.sourcePath,
+        persona_id: state.selectedPersona,
+        rights_acknowledgement: rightsPayload(),
+        target_selection: { mode: byId('targetMode').value, track_id: byId('targetTrackId').value.trim() || null },
+        settings: collectSettings(),
+        autostart: true
+      };
+      const data = await api('/jobs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
+      state.activeJobId = data.job.job_id; byId('cancelJobBtn').disabled = false; byId('refreshJobBtn').disabled = false;
+      setStatus(`Job started: ${state.activeJobId}`, 'ok'); renderJob(data.job); startPolling();
+    }
+
+    function startPolling() {
+      if (state.poll) clearInterval(state.poll);
+      state.poll = setInterval(refreshJob, 2500);
+    }
+
+    async function refreshJob() {
+      if (!state.activeJobId) return;
+      const data = await api(`/jobs/${state.activeJobId}`); renderJob(data.job);
+      if (['completed','failed','needs_review','cancelled'].includes(data.job.status)) { clearInterval(state.poll); state.poll = null; }
+    }
+
+    function renderJob(job) {
+      const progress = Math.round(((job.pipeline && job.pipeline.overall_progress) || 0) * 100);
+      byId('progressFill').style.width = `${progress}%`;
+      byId('jobPills').innerHTML = `<span class="pill ${job.status === 'completed' ? 'ok' : job.status === 'failed' ? 'warn' : ''}">${esc(job.status)}</span><span class="pill">${progress}%</span><span class="pill">${esc((job.pipeline||{}).current_stage || 'queued')}</span>`;
+      byId('stageList').innerHTML = ((job.pipeline && job.pipeline.stages) || []).map((s) => `<div class="stage ${esc(s.status)}"><span class="dot"></span><span>${esc(s.id.replaceAll('_',' '))}</span><span>${Math.round((s.progress||0)*100)}%</span></div>`).join('');
+      byId('segmentList').innerHTML = (job.segments || []).map((s) => {
+        const qc = s.qc || {}; const retry = (s.status === 'failed' || s.status === 'needs_review') ? `<button class="btn" data-retry="${esc(s.segment_id)}">Retry</button>` : '';
+        return `<div class="segment-card"><strong>${esc(s.segment_id)} · ${esc(s.status)}</strong><div class="small">${s.start_s}s → ${s.end_s}s · GPU ${(s.gpu_assignment||{}).gpu_index ?? 'n/a'} ${(s.gpu_assignment||{}).gpu_name || ''}<br>QC score: ${qc.score ?? 'pending'} · warnings: ${esc((qc.warning_flags||[]).join(', '))}</div>${retry}</div>`;
+      }).join('') || '<div class="status">Segments will appear after source inspection.</div>';
+      byId('segmentList').querySelectorAll('[data-retry]').forEach((btn) => btn.addEventListener('click', () => retrySegment(btn.dataset.retry)));
+      const logs = (job.logs || []).slice(-80).map((l) => `[${l.timestamp}] ${l.message}`).join('\n');
+      const gpuLogs = ((job.gpu || {}).logs || []).join('\n');
+      byId('logBox').textContent = [gpuLogs, logs].filter(Boolean).join('\n');
+      renderOutput(job);
+    }
+
+    function renderOutput(job) {
+      const final = job.outputs && job.outputs.final_video_path;
+      if (!final) { byId('outputCard').innerHTML = ''; return; }
+      const href = `${API}/outputs/${encodeURIComponent(job.job_id)}/${encodeURIComponent(baseName(final))}`;
+      const report = job.outputs.metadata_report_path ? `${API}/outputs/${encodeURIComponent(job.job_id)}/${encodeURIComponent(baseName(job.outputs.metadata_report_path))}` : '';
+      byId('outputCard').innerHTML = `<div class="output-card"><strong>Final export ready</strong><div class="small">${esc(final)}</div><div class="pill-row" style="margin-top:10px"><a class="btn primary" href="${href}" target="_blank">Open Video</a>${report ? `<a class="btn" href="${report}" target="_blank">Open Metadata JSON</a>` : ''}</div></div>`;
+    }
+
+    async function retrySegment(segmentId) {
+      if (!state.activeJobId) return;
+      await api(`/jobs/${state.activeJobId}/segments/${segmentId}/retry`, { method: 'POST' });
+      setStatus(`Retry requested for ${segmentId}.`, 'ok'); startPolling();
+    }
+
+    async function cancelJob() {
+      if (!state.activeJobId) return;
+      await api(`/jobs/${state.activeJobId}/cancel`, { method: 'POST' });
+      setStatus('Cancellation requested.', 'ok'); refreshJob();
+    }
+
+    document.addEventListener('DOMContentLoaded', () => {
+      document.querySelectorAll('[data-right]').forEach((input) => input.addEventListener('change', updateRightsStatus));
+      byId('uploadBtn').addEventListener('click', () => uploadSource().catch((e) => setStatus(e.message, 'err')));
+      byId('probeBtn').addEventListener('click', () => probePath().catch((e) => setStatus(e.message, 'err')));
+      byId('registerPersonaBtn').addEventListener('click', () => registerPersona().catch((e) => setStatus(e.message, 'err')));
+      byId('reloadPersonasBtn').addEventListener('click', () => loadBasics().catch((e) => setStatus(e.message, 'err')));
+      byId('refreshBtn').addEventListener('click', () => loadBasics().catch((e) => setStatus(e.message, 'err')));
+      byId('startJobBtn').addEventListener('click', () => startJob().catch((e) => setStatus(e.message, 'err')));
+      byId('refreshJobBtn').addEventListener('click', () => refreshJob().catch((e) => setStatus(e.message, 'err')));
+      byId('cancelJobBtn').addEventListener('click', () => cancelJob().catch((e) => setStatus(e.message, 'err')));
+      updateRightsStatus(); loadBasics().catch((e) => setStatus(e.message, 'err'));
+    });
+  </script>
+</body>
+</html>
