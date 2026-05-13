@@ -13,14 +13,14 @@ It monitors GPU temperature, utilization, VRAM, power, fan percent, optional RPM
 - Fan control must run on the host or in a privileged GPU-enabled container with `/dev/nvidia*` devices exposed.
 - NVIDIA fan writes normally require `nvidia-settings`, a running Xorg display, and Coolbits fan-control enabled.
 - EDISON does not disable thermal protections. The curve clamps to a minimum fan percent and forces 100% near critical temperature.
-- The 4060 Ti may stop its fans at low temperature because of zero-RPM mode. This is normal when cool; it is suspicious only when temperature rises and the fan stays at 0%.
+- Modern RTX cards may stop their fans at low temperature because of zero-RPM mode. This is normal when cool; it is suspicious only when temperature rises and the fan stays at 0%.
 - Edison cannot repair a physical fan, cable, shroud, or card failure in software. It can only classify symptoms, warn, and safely command fans when the driver stack permits it.
 
 ## What the service does
 
 1. Reads telemetry through NVML, `nvidia-smi`, then sysfs fallback.
 2. Applies a configured fan curve.
-3. Adds a 4060 Ti guard: if the card reports fan `0%` above `42°C`, target at least `60%`.
+3. Adds a 4060 Ti guard: if the card reports fan `0%` above `42 C`, target at least `60%`.
 4. Applies targets through `nvidia-settings` or NVML fan APIs when available.
 5. Classifies cooling state as `normal`, `zero_rpm_idle_probably_normal`, `telemetry_unavailable`, `manual_control_unavailable`, `suspect_fan_not_spinning`, or `over_temp_warning`.
 6. Reports diagnostics if `nvidia-smi` is missing or cannot communicate with the driver.
@@ -72,6 +72,8 @@ ls /proc/driver/nvidia
 ```
 
 If those fail on the host, reinstall or repair the NVIDIA driver package for your distro, then reboot.
+
+On Secure Boot systems, `modprobe nvidia` may fail with `Key was rejected by service`. On Edison, the host had Canonical-signed `linux-modules-nvidia-580-open` modules installed, but DKMS-built modules in `updates/dkms` were shadowing them. Moving the rejected DKMS `nvidia*.ko*` files out of the active kernel module path and running `depmod -a` allowed the signed modules to load without a physical MOK enrollment screen.
 
 If they work on the host but fail inside Docker/devcontainer, install NVIDIA Container Toolkit and run the container with GPU access:
 

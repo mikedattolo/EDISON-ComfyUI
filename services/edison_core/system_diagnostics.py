@@ -69,6 +69,20 @@ def _find_binary(name: str) -> Optional[str]:
     return None
 
 
+def _torch_arch_supported(arch: str, supported_arches: Iterable[str]) -> Optional[bool]:
+    supported = {str(item).lower() for item in supported_arches if item}
+    if not arch or not supported:
+        return None
+    arch = arch.lower()
+    if arch in supported:
+        return True
+    # PyTorch may report PTX support such as compute_90. Treat exact compute_NN
+    # support as usable when a device reports sm_NN.
+    if arch.startswith("sm_"):
+        return f"compute_{arch[3:]}" in supported
+    return False
+
+
 def collect_nvidia_smi() -> DiagnosticCheck:
     binary = _find_binary("nvidia-smi")
     if not binary:
@@ -210,6 +224,11 @@ def collect_torch_cuda(run_allocation: bool = False) -> DiagnosticCheck:
         }
     )
     warnings: List[str] = []
+    try:
+        supported_arches = list(torch.cuda.get_arch_list())
+    except Exception:
+        supported_arches = []
+    details["supported_cuda_arches"] = supported_arches
     if not details["cuda_available"]:
         return DiagnosticCheck(
             key="torch_cuda",
@@ -226,13 +245,21 @@ def collect_torch_cuda(run_allocation: bool = False) -> DiagnosticCheck:
         device: Dict[str, Any] = {"index": idx}
         try:
             props = torch.cuda.get_device_properties(idx)
+            arch = f"sm_{props.major}{props.minor}"
+            arch_supported = _torch_arch_supported(arch, supported_arches)
             device.update(
                 {
                     "name": props.name,
                     "total_memory_mb": round(props.total_memory / (1024**2), 1),
                     "compute_capability": f"{props.major}.{props.minor}",
+                    "torch_arch": arch,
+                    "torch_arch_supported": arch_supported,
                 }
             )
+            if arch_supported is False:
+                warnings.append(
+                    f"cuda:{idx} {props.name} reports {arch}, which is not in this PyTorch build's supported CUDA architectures."
+                )
         except Exception as exc:
             device["properties_error"] = str(exc)
         if run_allocation:
@@ -255,7 +282,12 @@ def collect_torch_cuda(run_allocation: bool = False) -> DiagnosticCheck:
         status="warn" if warnings else "pass",
         summary=f"PyTorch CUDA is available with {details['device_count']} device(s).",
         details={**details, "warnings": warnings},
-        recommended_fix="Check CUDA_VISIBLE_DEVICES, driver support, and PyTorch wheel family if GPU count is wrong." if warnings else "",
+        recommended_fix=(
+            "Check CUDA_VISIBLE_DEVICES, driver support, and PyTorch wheel family. For newer GPUs, use a PyTorch/CUDA build "
+            "that includes the device compute capability, or temporarily mask that GPU from PyTorch services."
+            if warnings
+            else ""
+        ),
     )
 
 

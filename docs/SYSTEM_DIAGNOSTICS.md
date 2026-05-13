@@ -8,7 +8,7 @@ The report includes:
 - GPU names, UUIDs, bus IDs, VRAM, temperature, utilization, power, and fan percent when exposed
 - CUDA toolkit / `nvcc` visibility
 - Python executable and AI package versions
-- PyTorch import, CUDA availability, CUDA runtime version, GPU count, device names, and optional per-device allocation
+- PyTorch import, CUDA availability, CUDA runtime version, GPU count, device names, supported CUDA architectures, and optional per-device allocation
 - FFmpeg/FFprobe/Whisper binary readiness
 - ComfyUI queue reachability and Persona workflow template library status
 - output/upload/temp path writability
@@ -16,9 +16,17 @@ The report includes:
 
 The legacy lightweight endpoint remains at `/api/system/diagnostics` for older web tools. The production doctor endpoint is `/api/system/doctor`.
 
-## Live Environment Limitation
+## Live Edison Audit Notes
 
-During this implementation, SSH to `mike@192.168.1.46` timed out and SSH to `mike@100.67.221.112` reached a host but failed host-key verification. No host-key bypass was performed. Therefore no live CUDA, PyTorch, ComfyUI, or GPU fan repair was applied on the Edison PC from this session.
+The live Edison host was verified over SSH after matching the host ED25519 fingerprint. CUDA initially failed because Secure Boot rejected the DKMS-built NVIDIA 580 modules signed by an unenrolled local key. The host already had Canonical-signed `linux-modules-nvidia-580-open` modules for the active kernel, so the rejected DKMS modules were moved out of the module search path, `depmod` was rebuilt, and the Canonical-signed modules loaded successfully.
+
+After repair, `nvidia-smi` detected:
+
+- index 0: RTX 5060 Ti 16GB
+- index 1: RTX 4060 Ti 16GB
+- index 2: RTX 3090 24GB
+
+PyTorch `2.6.0+cu124` can use the RTX 3090 and RTX 4060 Ti, but the RTX 5060 Ti reports `sm_120`, which is not supported by that PyTorch wheel family. Until Edison is upgraded to a PyTorch/CUDA build that supports `sm_120`, mask PyTorch services to the 3090 and 4060 Ti with `CUDA_VISIBLE_DEVICES` or equivalent service overrides.
 
 ## What Edison Can Fix Automatically
 
@@ -27,8 +35,8 @@ Edison can detect and explain many configuration problems, but it does not blind
 Typical fixes:
 
 - install the PyTorch CUDA wheel matching the installed NVIDIA driver
+- mask a too-new GPU from PyTorch services when the installed wheel does not support its compute capability
 - install missing `torchvision` / `torchaudio` wheels from the same family
 - repair NVIDIA driver utilities when `nvidia-smi` fails on the host
 - install FFmpeg when video/persona workflows need probing, cutting, or remuxing
 - add missing ComfyUI custom nodes/models listed by workflow templates
-

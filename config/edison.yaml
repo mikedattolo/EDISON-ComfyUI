@@ -167,9 +167,9 @@ edison:
     exclusive_gpu_render_mode_default: false
     auto_restore_suspended_services: true
     vram_min_free_mb_by_gpu:
-      "0": 18000
+      "0": 10000
       "1": 10000
-      "2": 10000
+      "2": 18000
     maximum_concurrent_segment_workers: 2
     automatic_failed_segment_rerender_threshold: 0.55
     qc_thresholds:
@@ -209,14 +209,14 @@ edison:
     critical_fan_percent: 100
     expected_gpus:
       - index: 0
-        label: "RTX 3090 24GB"
-        name_contains: "3090"
-      - index: 1
         label: "RTX 5060 Ti 16GB"
         name_contains: "5060"
-      - index: 2
+      - index: 1
         label: "RTX 4060 Ti 16GB"
         name_contains: "4060"
+      - index: 2
+        label: "RTX 3090 24GB"
+        name_contains: "3090"
     curve:
       - temp_c: 35
         fan_percent: 30
