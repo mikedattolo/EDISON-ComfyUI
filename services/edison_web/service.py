@@ -288,6 +288,17 @@ async def gpu_fans_page():
     return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
+@app.get("/system-diagnostics")
+@app.get("/doctor")
+async def system_diagnostics_page():
+    """Serve System Doctor diagnostics dashboard."""
+    page = WEB_DIR / "system_diagnostics.html"
+    if not page.exists():
+        logger.error(f"system_diagnostics.html not found at {page}")
+        return {"error": "System diagnostics UI not found"}
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
+
+
 @app.get("/branding")
 async def branding_page():
     """Serve dedicated branding/file explorer page."""

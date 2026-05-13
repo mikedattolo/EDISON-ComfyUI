@@ -97,6 +97,25 @@
             secondaryLabel: 'Open Persona Video'
         },
         {
+            key: 'system-diagnostics',
+            label: 'Doctor',
+            href: '/system-diagnostics',
+            icon: 'DR',
+            matches: ['/system-diagnostics', '/doctor', '/system_diagnostics.html'],
+            heroKicker: 'Runtime Health',
+            heroTitle: 'Check CUDA, PyTorch, ComfyUI, paths, and cooling before heavy local AI work.',
+            heroDescription: 'System Doctor gathers the host signals Edison needs to explain missing GPUs, CUDA mismatches, workflow dependency gaps, and fan telemetry limitations.',
+            highlights: ['CUDA stack checks', 'ComfyUI readiness', 'Cooling warnings'],
+            stats: [
+                { label: 'Covers', value: 'Runtime + hardware' },
+                { label: 'Output', value: 'Exportable report' }
+            ],
+            prompt: 'Open System Doctor context and summarize the most important runtime, CUDA, ComfyUI, and cooling warnings.',
+            mode: 'work',
+            secondaryHref: '/gpu-fans',
+            secondaryLabel: 'Open GPU Cooling'
+        },
+        {
             key: 'printing',
             label: 'Print',
             href: '/printing',

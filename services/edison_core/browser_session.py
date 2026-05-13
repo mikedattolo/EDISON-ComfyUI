@@ -14,7 +14,10 @@ import re
 import time
 import uuid
 
-from bs4 import BeautifulSoup
+try:
+    from bs4 import BeautifulSoup
+except Exception:  # pragma: no cover - optional dependency fallback
+    BeautifulSoup = None
 
 
 class BrowserSessionError(Exception):
@@ -134,6 +137,8 @@ class BrowserSessionManager:
             return ""
 
         try:
+            if BeautifulSoup is None:
+                raise RuntimeError("BeautifulSoup is not installed")
             soup = BeautifulSoup(html, "html.parser")
             for tag in soup(["script", "style", "noscript", "svg", "canvas", "iframe"]):
                 tag.decompose()

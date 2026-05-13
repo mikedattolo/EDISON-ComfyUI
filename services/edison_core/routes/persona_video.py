@@ -8,12 +8,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from typing import Any, Dict, List, Optional
+import asyncio
+import json
 import logging
 import mimetypes
 import yaml
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
-from fastapi.responses import FileResponse
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
+from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..persona_video import (
@@ -69,6 +71,9 @@ class PersonaPackPayload(BaseModel):
     preferred_backend_compatibility: List[str] = Field(default_factory=list)
     thumbnail: Optional[str] = None
     persona_id: Optional[str] = None
+    description: str = ""
+    tags: List[str] = Field(default_factory=list)
+    recommended_scopes: List[str] = Field(default_factory=list)
 
 
 class ProbeRequest(BaseModel):
@@ -131,6 +136,17 @@ async def register_persona(payload: PersonaPackPayload) -> Dict[str, Any]:
         raise HTTPException(status_code=400, detail=str(exc))
 
 
+@router.put("/personas/{persona_id}")
+async def update_persona(persona_id: str, payload: PersonaPackPayload) -> Dict[str, Any]:
+    try:
+        data = _model_dump(payload)
+        data["persona_id"] = persona_id
+        pack = get_service().registry.register_pack(data)
+        return {"ok": True, "persona_pack": pack}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @router.delete("/personas/{persona_id}")
 async def delete_persona(persona_id: str) -> Dict[str, Any]:
     deleted = get_service().registry.delete_pack(persona_id)
@@ -164,6 +180,11 @@ async def list_jobs(status: Optional[str] = None, limit: int = 50) -> Dict[str, 
     return {"ok": True, "jobs": get_service().list_jobs(status=status, limit=limit)}
 
 
+@router.post("/jobs/recover")
+async def recover_jobs(mark_only: bool = True) -> Dict[str, Any]:
+    return get_service().recover_stale_jobs(mark_only=mark_only)
+
+
 @router.post("/jobs")
 async def create_job(payload: PersonaVideoJobRequest) -> Dict[str, Any]:
     try:
@@ -182,6 +203,46 @@ async def get_job(job_id: str) -> Dict[str, Any]:
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
     return {"ok": True, "job": job}
+
+
+@router.get("/jobs/{job_id}/events")
+async def job_events(request: Request, job_id: str) -> StreamingResponse:
+    async def _events():
+        last_payload = ""
+        while True:
+            if await request.is_disconnected():
+                break
+            job = get_service().get_job(job_id)
+            if not job:
+                yield f"event: error\ndata: {json.dumps({'ok': False, 'error': 'Job not found'})}\n\n"
+                break
+            payload = json.dumps({
+                "ok": True,
+                "job_id": job_id,
+                "status": job.get("status"),
+                "stage": (job.get("pipeline") or {}).get("current_stage"),
+                "progress": (job.get("pipeline") or {}).get("overall_progress", 0.0),
+                "gpu": job.get("gpu"),
+                "segments": job.get("segments", []),
+                "qc_summary": job.get("qc_summary"),
+                "outputs": job.get("outputs"),
+                "logs": job.get("logs", [])[-25:],
+                "warnings": job.get("warnings", []),
+                "errors": job.get("errors", []),
+            })
+            if payload != last_payload:
+                yield f"event: job\ndata: {payload}\n\n"
+                last_payload = payload
+            if job.get("status") in {"completed", "failed", "needs_review", "cancelled"}:
+                yield f"event: done\ndata: {payload}\n\n"
+                break
+            await asyncio.sleep(1.5)
+
+    return StreamingResponse(
+        _events(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+    )
 
 
 @router.post("/jobs/{job_id}/cancel")

@@ -19,6 +19,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
+from .comfyui_integration import ComfyUIExecutionService, discover_workflow_templates, inject_workflow_variables
+
 
 @dataclass(frozen=True)
 class PersonaBackendCapabilities:
@@ -204,14 +206,19 @@ class ComfyUITemplatePersonaBackend(PersonaTransformBackend):
         return self.repo_root / "config" / "persona_video" / "comfyui_workflows"
 
     def _workflow_files(self) -> List[Path]:
-        directory = self._workflow_dir()
-        if not directory.exists():
-            return []
-        return sorted(directory.glob("*.json"))
+        return [template.path for template in self._workflow_templates()]
+
+    def _workflow_templates(self):
+        return discover_workflow_templates(self._workflow_dir())
 
     def get_capabilities(self) -> PersonaBackendCapabilities:
-        workflows = self._workflow_files()
-        available = bool(workflows)
+        templates = self._workflow_templates()
+        available_templates = [template for template in templates if template.validation.ok]
+        available = bool(available_templates)
+        setup_required: List[str] = []
+        for template in templates:
+            setup_required.extend(template.validation.errors)
+            setup_required.extend(template.validation.warnings)
         return PersonaBackendCapabilities(
             backend_id=self.backend_id,
             display_name="Curated ComfyUI persona workflow adapter",
@@ -234,13 +241,13 @@ class ComfyUITemplatePersonaBackend(PersonaTransformBackend):
             supports_temporal_consistency_pass=True,
             produces_synthetic_persona=True,
             disabled_for_final_render=not available,
-            setup_required=[] if available else [
+            setup_required=[] if available else setup_required or [
                 "Add curated ComfyUI workflow JSON templates under config/persona_video/comfyui_workflows/.",
                 "Install the custom nodes and model weights required by those templates.",
             ],
             notes=(
-                f"Detected {len(workflows)} workflow template(s)."
-                if workflows else
+                f"Detected {len(templates)} workflow template(s), {len(available_templates)} valid."
+                if templates else
                 "No workflow templates detected; adapter is not available."
             ),
         )
@@ -248,17 +255,82 @@ class ComfyUITemplatePersonaBackend(PersonaTransformBackend):
     def prepare(self, job: Dict[str, Any], workspace: Path) -> Dict[str, Any]:
         if not self.is_available():
             raise RuntimeError("ComfyUI persona workflow backend is not available")
+        templates = self._workflow_templates()
         return {
             "ok": True,
             "backend": self.backend_id,
-            "workflow_templates": [str(p) for p in self._workflow_files()],
-            "integration_point": "Inject source/persona/output/device variables before submitting via Edison ComfyUI bridge.",
+            "workflow_templates": [template.to_dict() for template in templates],
+            "integration_point": "Templates are injected and submitted through Edison ComfyUIExecutionService.",
         }
 
-    def transform_segment(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
-        raise NotImplementedError(
-            "ComfyUI persona workflow execution requires curated workflow templates and adapter-specific node mapping."
+    def transform_segment(
+        self,
+        job: Dict[str, Any],
+        segment: Dict[str, Any],
+        source_segment: Path,
+        output_segment: Path,
+        gpu_assignment: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        templates = [template for template in self._workflow_templates() if template.validation.ok]
+        if not templates:
+            return {
+                "ok": False,
+                "backend": self.backend_id,
+                "error": "No valid ComfyUI persona workflow templates are available.",
+            }
+        settings = job.get("settings") or {}
+        requested = str(settings.get("workflow_template") or "").strip()
+        template = next((item for item in templates if item.template_id == requested or item.name == requested), templates[0])
+        output_segment.parent.mkdir(parents=True, exist_ok=True)
+        persona = job.get("persona") or {}
+        variables = {
+            "source_segment_path": str(source_segment),
+            "source_frame_path": str(source_segment),
+            "persona_paths": persona.get("paths") or [],
+            "persona_pack_path": ",".join(persona.get("paths") or []),
+            "output_path": str(output_segment),
+            "quality_preset": settings.get("quality_preset", "balanced"),
+            "transformation_scope": settings.get("transformation_scope", "face_identity_only"),
+            "segment_id": segment.get("segment_id"),
+            "gpu_index": (gpu_assignment or {}).get("gpu_index", ""),
+            "gpu_name": (gpu_assignment or {}).get("gpu_name", ""),
+        }
+        workflow = inject_workflow_variables(template.workflow, variables)
+        comfy_cfg = (self.config.get("comfyui") or self.config.get("comfyui_backend") or {})
+        base_url = str(comfy_cfg.get("base_url") or self.config.get("comfyui_base_url") or "http://127.0.0.1:8188")
+        service = ComfyUIExecutionService(base_url=base_url, timeout_s=float(self.config.get("comfyui_timeout_s", 10)))
+        submit = service.submit(workflow, extra_data={"edison_job_id": job.get("job_id"), "segment_id": segment.get("segment_id")})
+        if not submit.get("ok"):
+            return {
+                "ok": False,
+                "backend": self.backend_id,
+                "workflow_template": template.to_dict(),
+                "error": submit.get("error") or "ComfyUI submit failed",
+                "submit": submit,
+            }
+        poll = service.poll_until_complete(
+            str(submit.get("prompt_id")),
+            timeout_s=float(self.config.get("comfyui_poll_timeout_s", 900)),
+            poll_interval_s=float(self.config.get("comfyui_poll_interval_s", 2)),
         )
+        if not output_segment.exists():
+            return {
+                "ok": False,
+                "backend": self.backend_id,
+                "workflow_template": template.to_dict(),
+                "prompt_id": submit.get("prompt_id"),
+                "poll": poll,
+                "error": "ComfyUI completed or returned state, but the expected output_path was not created.",
+            }
+        return {
+            "ok": bool(poll.get("ok")),
+            "backend": self.backend_id,
+            "workflow_template": template.to_dict(),
+            "prompt_id": submit.get("prompt_id"),
+            "output_path": str(output_segment),
+            "poll": poll,
+            "gpu_assignment": gpu_assignment or {},
+        }
 
     def temporal_stabilize(self, *args: Any, **kwargs: Any) -> Dict[str, Any]:
         raise NotImplementedError("ComfyUI temporal stabilization is workflow-template specific.")

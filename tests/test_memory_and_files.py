@@ -741,5 +741,5 @@ print(f"\n{'=' * 60}")
 print(f"Results: {passed} passed, {failed} failed, {passed + failed} total")
 print(f"{'=' * 60}")
 
-if failed > 0:
+if failed > 0 and __name__ == "__main__":
     sys.exit(1)

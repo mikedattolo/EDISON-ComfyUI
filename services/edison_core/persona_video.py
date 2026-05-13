@@ -29,6 +29,8 @@ from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 from .persona_video_backends import PersonaBackendRegistry, PersonaTransformBackend
 from .persona_video_gpu import ExclusiveGPURenderManager, GPUStrategySelector, SegmentQueueScheduler
+from .persona_qc import basic_segment_qc, merge_backend_qc
+from .persona_tracking import TrackingService
 from .safe_io import atomic_write_json, read_json
 
 logger = logging.getLogger(__name__)
@@ -97,6 +99,12 @@ class PersonaPack:
     notes: str = ""
     preferred_backend_compatibility: List[str] = field(default_factory=list)
     thumbnail: Optional[str] = None
+    description: str = ""
+    tags: List[str] = field(default_factory=list)
+    recommended_scopes: List[str] = field(default_factory=list)
+    schema_version: str = "1.1"
+    last_validated_at: str = ""
+    validation_state: str = "untested"
     created_at: str = ""
     updated_at: str = ""
 
@@ -118,7 +126,7 @@ class PersonaPackRegistry:
     def list_packs(self) -> List[Dict[str, Any]]:
         with self._lock:
             data = read_json(self.registry_path, {"persona_packs": []}) or {"persona_packs": []}
-            return list(data.get("persona_packs", []))
+            return [self._validate_pack_record(dict(pack)) for pack in data.get("persona_packs", [])]
 
     def get_pack(self, persona_id: str) -> Optional[Dict[str, Any]]:
         return next((pack for pack in self.list_packs() if pack.get("persona_id") == persona_id), None)
@@ -143,10 +151,16 @@ class PersonaPackRegistry:
                 str(item).strip() for item in payload.get("preferred_backend_compatibility", []) if str(item).strip()
             ],
             thumbnail=payload.get("thumbnail") or payload.get("preview_image"),
+            description=str(payload.get("description") or ""),
+            tags=[str(item).strip() for item in payload.get("tags", []) if str(item).strip()],
+            recommended_scopes=[str(item).strip() for item in payload.get("recommended_scopes", []) if str(item).strip()],
             created_at=str(payload.get("created_at") or now),
             updated_at=now,
+            last_validated_at=now,
         ).to_dict()
         pack["path_status"] = self._path_status(paths)
+        pack["missing_paths"] = [item["path"] for item in pack["path_status"] if not item.get("exists")]
+        pack["validation_state"] = "valid" if not pack["missing_paths"] else "missing_files"
         with self._lock:
             data = read_json(self.registry_path, {"persona_packs": []}) or {"persona_packs": []}
             packs = [item for item in data.get("persona_packs", []) if item.get("persona_id") != persona_id]
@@ -174,6 +188,18 @@ class PersonaPackRegistry:
             status.append({"path": raw, "exists": p.exists(), "resolved": str(p.resolve(strict=False))})
         return status
 
+    def _validate_pack_record(self, pack: Dict[str, Any]) -> Dict[str, Any]:
+        paths = [str(item).strip() for item in pack.get("paths", []) if str(item).strip()]
+        pack.setdefault("schema_version", "1.1")
+        pack.setdefault("description", "")
+        pack.setdefault("tags", [])
+        pack.setdefault("recommended_scopes", [])
+        pack["path_status"] = self._path_status(paths)
+        pack["missing_paths"] = [item["path"] for item in pack["path_status"] if not item.get("exists")]
+        pack["validation_state"] = "valid" if not pack["missing_paths"] else "missing_files"
+        pack["last_validated_at"] = _utc_now()
+        return pack
+
 
 class PersonaVideoValidationError(ValueError):
     pass
@@ -194,8 +220,10 @@ class PersonaVideoService:
         self.registry = PersonaPackRegistry(self.repo_root)
         self.backends = PersonaBackendRegistry(self.repo_root, self.config)
         self.gpu_manager = ExclusiveGPURenderManager()
+        self.tracking = TrackingService()
         self._lock = threading.RLock()
         self._active_threads: Dict[str, threading.Thread] = {}
+        self.recover_stale_jobs(mark_only=True)
 
     # ── settings / discovery ───────────────────────────────────────────
 
@@ -220,10 +248,33 @@ class PersonaVideoService:
             "pipeline_stages": list(PIPELINE_STAGES),
             "quality_presets": QUALITY_PRESETS,
             "transformation_scopes": TRANSFORMATION_SCOPES,
+            "tracking_providers": self.tracking.capabilities(),
         }
 
     def list_backends(self) -> List[Dict[str, Any]]:
         return self.backends.list()
+
+    def recover_stale_jobs(self, mark_only: bool = True) -> Dict[str, Any]:
+        recovered: List[str] = []
+        for path in self.jobs_root.glob("*/job.json"):
+            try:
+                job = read_json(path, {}) or {}
+            except Exception:
+                continue
+            if job.get("status") not in {"validating", "running", "paused"}:
+                continue
+            job.setdefault("recovery", {})
+            job["recovery"].update({
+                "detected_stale_at": _utc_now(),
+                "mark_only": mark_only,
+                "note": "Job was active when Edison restarted. Existing segment outputs will be reused when passing basic QC.",
+            })
+            job["status"] = "needs_review" if mark_only else "queued"
+            job["pause_requested"] = False
+            job["updated_at"] = _utc_now()
+            atomic_write_json(path, job)
+            recovered.append(str(job.get("job_id") or path.parent.name))
+        return {"ok": True, "recovered_job_ids": recovered, "count": len(recovered)}
 
     def list_gpus(self) -> Dict[str, Any]:
         gpus = [gpu.to_dict() for gpu in self.gpu_manager.detect_gpus()]
@@ -328,6 +379,7 @@ class PersonaVideoService:
             "rerender_history": [],
         }
         self._save_job(job)
+        self._register_global_job(job)
         self._append_log(job_id, "Job queued.")
         if autostart:
             self._start_thread(job_id, self._run_job)
@@ -442,7 +494,8 @@ class PersonaVideoService:
             self._stage(job_id, "inspecting_media_streams", "completed", 0.16)
 
             self._stage(job_id, "detecting_shots_scenes", "running", 0.18)
-            segments = build_segments(
+            segments = detect_shots_and_build_segments(
+                source,
                 float(probe.get("duration_s") or 0),
                 settings.get("segment_size_preference", "auto"),
                 settings.get("quality_preset", "balanced"),
@@ -650,21 +703,28 @@ class PersonaVideoService:
 
     def _track_target(self, job_id: str, segments: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         job = self._require_job(job_id)
-        target = job.get("target_selection") or {}
-        mode = target.get("mode") or "auto_detect_primary_subject"
+        tracking_result = self.tracking.track(job, segments, Path(job["project"]["job_dir"]) / "work" / "tracking")
+        tracks = tracking_result.get("tracks") or []
+        primary = tracks[0] if tracks else {}
         tracked = []
         for segment in segments:
             self._checkpoint(job_id)
             seg = dict(segment)
             seg["tracking"] = {
-                "mode": mode,
-                "track_id": target.get("track_id") or "primary_subject_auto_track",
-                "confidence": 0.72 if mode == "auto_detect_primary_subject" else 0.82,
-                "mask_path": None,
-                "representative_frame_path": None,
-                "notes": "Heuristic track scaffold; replace with detector/tracker plugin for mask editing.",
+                "provider": (tracking_result.get("provider") or {}).get("provider_id"),
+                "track_id": primary.get("track_id") or "primary_subject_auto_track",
+                "subject_label": primary.get("subject_label") or "primary subject",
+                "coverage": (primary.get("per_segment_coverage") or {}).get(seg.get("segment_id"), 0.0),
+                "confidence": primary.get("confidence", 0.0),
+                "representative_thumbnails": primary.get("representative_thumbnails", []),
+                "boxes": (primary.get("boxes") or {}).get(seg.get("segment_id"), []),
+                "mask_path": (primary.get("masks") or {}).get(seg.get("segment_id")),
+                "fallback": tracking_result.get("fallback", True),
+                "notes": primary.get("notes") or "Tracking metadata unavailable.",
             }
             tracked.append(seg)
+        job["tracking_summary"] = tracking_result
+        self._save_job(job)
         return tracked
 
     def _transform_segments(
@@ -681,6 +741,14 @@ class PersonaVideoService:
             seg = dict(segment)
             source_segment = Path(seg.get("source_segment_path") or "")
             output_segment = output_dir / f"{seg['segment_id']}_transformed.mp4"
+            reuse_qc = basic_segment_qc(output_path=output_segment, segment=seg)
+            if output_segment.exists() and reuse_qc.status in {"pass", "warning"}:
+                seg["transform_result"] = {"ok": True, "reused_existing_output": True, "qc": reuse_qc.to_dict()}
+                seg["transformed_path"] = str(output_segment)
+                seg["status"] = "transformed"
+                out.append(seg)
+                self._append_log(job_id, f"Reused existing transform for {seg['segment_id']} after basic QC.")
+                continue
             try:
                 result = backend.transform_segment(self._require_job(job_id), seg, source_segment, output_segment, seg.get("gpu_assignment"))
                 seg["transform_result"] = result
@@ -700,6 +768,14 @@ class PersonaVideoService:
             seg = dict(segment)
             transformed = Path(seg.get("transformed_path") or "")
             target = output_dir / f"{seg['segment_id']}_stabilized.mp4"
+            reuse_qc = basic_segment_qc(output_path=target, segment=seg)
+            if target.exists() and reuse_qc.status in {"pass", "warning"}:
+                seg["stabilized_path"] = str(target)
+                seg["temporal_stabilization"] = {"ok": True, "reused_existing_output": True, "qc": reuse_qc.to_dict()}
+                seg["status"] = "stabilized"
+                out.append(seg)
+                self._append_log(job_id, f"Reused existing stabilized segment for {seg['segment_id']} after basic QC.")
+                continue
             if seg.get("status") == "failed" or not transformed.exists():
                 seg["temporal_stabilization"] = {"ok": False, "error": "transform output missing"}
                 out.append(seg)
@@ -734,9 +810,20 @@ class PersonaVideoService:
                     "warning_flags": ["missing_segment_output"],
                     "needs_review": True,
                     "score": 0.0,
+                    "status": "failed",
                 }
             else:
-                qc = backend.score_segment(self._require_job(job_id), seg, stable)
+                current_job = self._require_job(job_id)
+                backend_qc = backend.score_segment(current_job, seg, stable)
+                basic_qc = basic_segment_qc(
+                    output_path=stable,
+                    source_probe=(current_job.get("source") or {}).get("probe") or {},
+                    segment=seg,
+                    backend_result=seg.get("transform_result"),
+                    expect_audio=False,
+                    duration_tolerance_s=float((self.config.get("qc_thresholds") or {}).get("duration_tolerance_s", 0.75)),
+                )
+                qc = merge_backend_qc(backend_qc, basic_qc)
                 qc["needs_review"] = bool(qc.get("needs_review")) or float(qc.get("score") or 0.0) < min_score
             seg["qc"] = qc
             if qc.get("needs_review"):
@@ -799,6 +886,9 @@ class PersonaVideoService:
         audio_mode = settings.get("audio_mode", "preserve_original")
         alt_audio = settings.get("alternate_audio_path")
         if audio_mode == "preserve_original" and not (job.get("source", {}).get("probe") or {}).get("audio_present"):
+            job.setdefault("warnings", []).append("Preserve-audio mode requested, but source probe did not find an audio stream.")
+            job.setdefault("audio", {})["status"] = "source_audio_missing_final_copied"
+            self._save_job(job)
             shutil.copy2(stitched, output)
             return output
         ffmpeg = find_binary("ffmpeg")
@@ -807,8 +897,30 @@ class PersonaVideoService:
             job.setdefault("warnings", []).append("FFmpeg missing; audio remux skipped and stitched video copied as final output.")
             self._save_job(job)
             return output
+        if audio_mode == "replace":
+            if not alt_audio:
+                raise PersonaVideoValidationError("Replacement audio path is required for replace audio mode")
+            alt_path = self._resolve_media_path(str(alt_audio))
+            if alt_path.suffix.lower() not in SUPPORTED_AUDIO_EXTENSIONS or not alt_path.exists():
+                raise PersonaVideoValidationError("Replacement audio must be an existing supported audio file")
+            alt_audio = str(alt_path)
         cmd = build_remux_command(stitched, source, output, audio_mode, alternate_audio_path=Path(alt_audio) if alt_audio else None)
         run_command(cmd, timeout=600)
+        final_probe = probe_video(output) if output.exists() else {}
+        stitched_probe = probe_video(stitched) if stitched.exists() else {}
+        duration_diff = abs(float(final_probe.get("duration_s") or 0) - float(stitched_probe.get("duration_s") or 0))
+        job.setdefault("audio", {})["status"] = "remuxed"
+        job["audio"].update({
+            "mode": audio_mode,
+            "source_audio_present": (job.get("source", {}).get("probe") or {}).get("audio_present"),
+            "final_audio_present": final_probe.get("audio_present"),
+            "duration_diff_s": round(duration_diff, 3),
+            "ffmpeg_command": sanitize_command_for_report(cmd),
+        })
+        if duration_diff > float((self.config.get("qc_thresholds") or {}).get("audio_duration_tolerance_s", 0.75)):
+            job.setdefault("warnings", []).append(f"Audio/video duration mismatch after remux: {duration_diff:.3f}s")
+            job["audio"]["warning"] = "audio_desync_possible"
+        self._save_job(job)
         return output
 
     def _write_outputs(self, job_id: str, final_video: Path) -> None:
@@ -831,8 +943,57 @@ class PersonaVideoService:
         })
         job["updated_at"] = _utc_now()
         self._save_job(job)
+        self._update_global_job(job, outputs=[str(final_video), str(report_path), str(qc_path)])
 
     # ── state helpers ─────────────────────────────────────────────────
+
+    def _register_global_job(self, job: Dict[str, Any]) -> None:
+        try:
+            from .job_store import JobStore
+
+            JobStore.get_instance().create_job(
+                "persona_video",
+                prompt=job.get("project", {}).get("title", ""),
+                params={
+                    "title": job.get("project", {}).get("title"),
+                    "summary": job.get("project", {}).get("description"),
+                    "persona_job_id": job.get("job_id"),
+                    "stage": (job.get("pipeline") or {}).get("current_stage"),
+                    "progress": (job.get("pipeline") or {}).get("overall_progress", 0.0),
+                },
+                provenance={"source": job.get("source"), "persona": job.get("persona"), "settings": job.get("settings")},
+                correlation_id=job.get("job_id"),
+                job_id=job.get("job_id"),
+                title=job.get("project", {}).get("title"),
+                summary=job.get("project", {}).get("description"),
+            )
+        except Exception as exc:
+            logger.debug("Global job registration skipped for %s: %s", job.get("job_id"), exc)
+
+    def _update_global_job(self, job: Dict[str, Any], status: Optional[str] = None, outputs: Optional[List[str]] = None) -> None:
+        try:
+            from .job_store import JobStore, normalize_status_for_store
+
+            store = JobStore.get_instance()
+            store.update_status(
+                job.get("job_id"),
+                normalize_status_for_store(status or job.get("status") or "queued"),
+                outputs=outputs,
+                provenance={
+                    "persona_video": {
+                        "status": job.get("status"),
+                        "pipeline": job.get("pipeline"),
+                        "qc_summary": job.get("qc_summary"),
+                    }
+                },
+            )
+            store.set_progress(
+                job.get("job_id"),
+                progress=float((job.get("pipeline") or {}).get("overall_progress") or 0.0),
+                stage=(job.get("pipeline") or {}).get("current_stage") or status or job.get("status"),
+            )
+        except Exception as exc:
+            logger.debug("Global job update skipped for %s: %s", job.get("job_id"), exc)
 
     def _start_thread(self, job_id: str, target: Any, *args: Any) -> None:
         with self._lock:
@@ -874,6 +1035,7 @@ class PersonaVideoService:
         job = self._require_job(job_id)
         job["status"] = status
         self._save_job(job)
+        self._update_global_job(job, status=status)
 
     def _stage(self, job_id: str, stage_id: str, status: str, progress: float) -> None:
         job = self._require_job(job_id)
@@ -1079,6 +1241,73 @@ def build_segments(duration_s: float, preference: str = "auto", quality_preset: 
     return segments
 
 
+def detect_shot_boundaries(source: Path, scene_threshold: float = 0.32) -> Dict[str, Any]:
+    """Detect cut timestamps with FFmpeg scene scoring, falling back honestly."""
+
+    ffmpeg = find_binary("ffmpeg")
+    if not ffmpeg:
+        return {"method": "time_based_fallback", "cut_timestamps_s": [], "cut_count": 0, "fallback": True, "error": "ffmpeg not found"}
+    cmd = [
+        ffmpeg,
+        "-hide_banner",
+        "-i",
+        str(source),
+        "-filter:v",
+        f"select='gt(scene,{float(scene_threshold):.3f})',showinfo",
+        "-f",
+        "null",
+        "-",
+    ]
+    try:
+        result = subprocess.run(cmd, capture_output=True, text=True, timeout=180)
+    except Exception as exc:
+        return {"method": "time_based_fallback", "cut_timestamps_s": [], "cut_count": 0, "fallback": True, "error": str(exc)}
+    text = (result.stderr or "") + "\n" + (result.stdout or "")
+    cuts: List[float] = []
+    for match in re.finditer(r"pts_time:([0-9]+(?:\.[0-9]+)?)", text):
+        value = round(_safe_float(match.group(1)), 3)
+        if value > 0 and (not cuts or abs(value - cuts[-1]) > 0.3):
+            cuts.append(value)
+    return {
+        "method": "ffmpeg_scene_score",
+        "scene_threshold": scene_threshold,
+        "cut_timestamps_s": cuts,
+        "cut_count": len(cuts),
+        "fallback": False,
+        "returncode": result.returncode,
+    }
+
+
+def detect_shots_and_build_segments(
+    source: Path,
+    duration_s: float,
+    preference: str = "auto",
+    quality_preset: str = "balanced",
+) -> List[Dict[str, Any]]:
+    detection = detect_shot_boundaries(source)
+    if detection.get("cut_timestamps_s"):
+        boundaries = [0.0] + [cut for cut in detection["cut_timestamps_s"] if 0 < float(cut) < duration_s] + [duration_s]
+        segments: List[Dict[str, Any]] = []
+        for idx, (start, end) in enumerate(zip(boundaries, boundaries[1:])):
+            if end - start < 0.35:
+                continue
+            segments.append({
+                "segment_id": f"seg_{len(segments) + 1:03d}",
+                "index": len(segments),
+                "start_s": round(float(start), 3),
+                "end_s": round(float(end), 3),
+                "duration_s": round(float(end) - float(start), 3),
+                "status": "queued",
+                "shot_detection": detection,
+            })
+        if segments:
+            return segments
+    segments = build_segments(duration_s, preference=preference, quality_preset=quality_preset)
+    for segment in segments:
+        segment["shot_detection"] = detection
+    return segments
+
+
 def summarize_qc(segments: List[Dict[str, Any]]) -> Dict[str, Any]:
     scores = [float((seg.get("qc") or {}).get("score") or 0.0) for seg in segments]
     needs_review = [seg.get("segment_id") for seg in segments if (seg.get("qc") or {}).get("needs_review") or seg.get("status") in {"failed", "needs_review"}]
@@ -1176,6 +1405,17 @@ def build_concat_command(manifest_path: Path, output_path: Path) -> List[str]:
     return [ffmpeg, "-y", "-f", "concat", "-safe", "0", "-i", str(manifest_path), "-c", "copy", str(output_path)]
 
 
+def sanitize_command_for_report(cmd: List[str]) -> List[str]:
+    redacted: List[str] = []
+    for part in cmd:
+        text = str(part)
+        if re.search(r"(token|password|secret|api[_-]?key)=", text, re.I):
+            redacted.append("[REDACTED]")
+        else:
+            redacted.append(text)
+    return redacted
+
+
 def build_metadata_report(job: Dict[str, Any]) -> Dict[str, Any]:
     return {
         "schema": "edison.persona_video.report.v1",
@@ -1189,11 +1429,14 @@ def build_metadata_report(job: Dict[str, Any]) -> Dict[str, Any]:
         "source": job.get("source"),
         "persona": job.get("persona"),
         "target_selection": job.get("target_selection"),
+        "tracking_summary": job.get("tracking_summary"),
         "settings": job.get("settings"),
         "backend_capabilities": job.get("backend_capabilities"),
+        "backend_prepare": job.get("backend_prepare"),
         "pipeline": job.get("pipeline"),
         "gpu": job.get("gpu"),
         "exclusive_render": job.get("exclusive_render"),
+        "audio": job.get("audio"),
         "segment_manifest": job.get("segment_manifest"),
         "segments": job.get("segments"),
         "qc_summary": job.get("qc_summary"),
@@ -1269,11 +1512,14 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "vram_min_free_mb_by_gpu": persona_cfg.get("vram_min_free_mb_by_gpu", {"0": 18000, "1": 10000, "2": 10000}),
         "maximum_concurrent_segment_workers": persona_cfg.get("maximum_concurrent_segment_workers", 2),
         "automatic_failed_segment_rerender_threshold": persona_cfg.get("automatic_failed_segment_rerender_threshold", 0.55),
-        "qc_thresholds": persona_cfg.get("qc_thresholds", {"minimum_segment_score": 0.6}),
+        "qc_thresholds": persona_cfg.get("qc_thresholds", {"minimum_segment_score": 0.6, "duration_tolerance_s": 0.75, "audio_duration_tolerance_s": 0.75}),
         "backend": persona_cfg.get("backend", "metadata_only_passthrough"),
         "exclusive_wait_timeout_s": persona_cfg.get("exclusive_wait_timeout_s", 60),
         "exclusive_poll_interval_s": persona_cfg.get("exclusive_poll_interval_s", 2),
         "comfyui_workflows_dir": persona_cfg.get("comfyui_workflows_dir", "config/persona_video/comfyui_workflows"),
+        "comfyui_base_url": persona_cfg.get("comfyui_base_url", "http://127.0.0.1:8188"),
+        "comfyui_poll_timeout_s": persona_cfg.get("comfyui_poll_timeout_s", 900),
+        "comfyui_poll_interval_s": persona_cfg.get("comfyui_poll_interval_s", 2),
     }
 
 

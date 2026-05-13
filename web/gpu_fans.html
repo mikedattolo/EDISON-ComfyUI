@@ -3,7 +3,7 @@
 <head>
   <meta charset="UTF-8" />
   <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-  <title>EDISON GPU Fan Control</title>
+  <title>EDISON GPU Cooling Dashboard</title>
   <link rel="stylesheet" href="page-theme.css?v=1" />
   <link rel="stylesheet" href="workspace-shell.css?v=6" />
   <script src="page-theme.js?v=1" defer></script>
@@ -46,8 +46,8 @@
 <body>
   <header class="topbar">
     <div>
-      <h1>GPU Fan Control</h1>
-      <p class="subtitle">Temperature-driven fan watchdog for the RTX 3090, RTX 5060 Ti, and RTX 4060 Ti. Dry-run by default; apply mode must run on a host with NVIDIA driver tools, Xorg Coolbits, and fan-write permission.</p>
+      <h1>GPU Cooling Dashboard</h1>
+      <p class="subtitle">Temperature, fan, VRAM, power, and cooling-health telemetry for the RTX 3090, RTX 5060 Ti, and RTX 4060 Ti. Dry-run by default; apply mode must run on a host with NVIDIA driver tools, Xorg Coolbits, and fan-write permission.</p>
     </div>
     <div class="actions">
       <a class="btn" href="/">Main Chat</a>
@@ -58,7 +58,7 @@
 
   <main class="shell">
     <section class="panel">
-      <div class="panel-head"><h2>Live GPU Fan Decisions</h2><span id="runState" class="pill">loading</span></div>
+      <div class="panel-head"><h2>Live GPU Cooling Health</h2><span id="runState" class="pill">loading</span></div>
       <div class="panel-body">
         <div class="grid" id="gpuCards"></div>
         <div class="status" id="statusBox">Loading status…</div>
@@ -103,21 +103,36 @@
 
     function render(data) {
       const decisions = data.decisions || [];
+      const readings = data.readings || [];
       byId('runState').textContent = data.running ? `running · apply=${data.apply_requested ?? data.apply}` : `stopped · apply=${data.apply_requested ?? data.apply}`;
-      byId('gpuCards').innerHTML = decisions.length ? decisions.map((d) => {
-        const temp = d.temperature_c ?? 'n/a';
-        const current = d.current_fan_percent ?? 'n/a';
+      const decisionByIndex = new Map(decisions.map((d) => [Number(d.index), d]));
+      const cards = readings.length ? readings.map((r) => {
+        const d = decisionByIndex.get(Number(r.index)) || r;
+        const health = r.cooling_health || {};
+        const state = health.state || 'telemetry_unavailable';
+        const severity = health.severity || 'info';
+        const temp = r.temperature_c ?? d.temperature_c ?? 'n/a';
+        const current = r.fan_speed_percent ?? d.current_fan_percent ?? 'n/a';
+        const rpm = r.fan_rpm ?? 'n/a';
         const target = d.target_fan_percent ?? 'n/a';
-        const tone = d.error ? 'bad' : d.applied ? 'good' : (d.warnings || []).length ? 'warn' : '';
-        return `<div class="card ${tone}"><span class="metric">GPU ${d.index}</span><strong>${esc(d.name)}</strong><span class="value">${esc(temp)}°C</span><div class="small">Current fan: ${esc(current)}%<br>Target fan: ${esc(target)}%<br>Backend: ${esc(d.backend)}<br>Reason: ${esc(d.reason)}</div>${(d.warnings||[]).map(w => `<span class="pill warn">${esc(w)}</span>`).join('')}${d.error ? `<div class="status err">${esc(d.error)}</div>` : ''}</div>`;
+        const memUsed = r.memory_used_mb ?? 'n/a';
+        const memTotal = r.memory_total_mb ?? 'n/a';
+        const power = r.power_watts ?? 'n/a';
+        const util = r.utilization_percent ?? 'n/a';
+        const tone = severity === 'critical' ? 'bad' : severity === 'warning' ? 'warn' : d.error ? 'bad' : d.applied ? 'good' : (d.warnings || []).length ? 'warn' : '';
+        return `<div class="card ${tone}"><span class="metric">GPU ${r.index ?? d.index}</span><strong>${esc(r.name || d.name)}</strong><span class="value">${esc(temp)}°C</span><div class="small">Cooling state: ${esc(state)}<br>Current fan: ${esc(current)}% / ${esc(rpm)} RPM<br>Target fan: ${esc(target)}%<br>Utilization: ${esc(util)}%<br>VRAM: ${esc(memUsed)} / ${esc(memTotal)} MB<br>Power: ${esc(power)} W<br>Bus: ${esc(r.bus_id || 'n/a')}</div><span class="pill ${severity === 'ok' ? 'good' : severity === 'warning' || severity === 'critical' ? 'warn' : ''}">${esc(state)}</span>${(health.messages||[]).map(w => `<span class="pill warn">${esc(w)}</span>`).join('')}${(d.warnings||[]).map(w => `<span class="pill warn">${esc(w)}</span>`).join('')}${d.error ? `<div class="status err">${esc(d.error)}</div>` : ''}</div>`;
       }).join('') : '<div class="status err">No GPU readings available from this environment.</div>';
+      byId('gpuCards').innerHTML = cards;
       const diag = data.diagnostics || {};
       byId('diagJson').textContent = JSON.stringify(diag, null, 2);
       byId('diagSummary').innerHTML = [
         ['GPU access', diag.container_or_host_has_gpu_access], ['Fan writes ready', diag.fan_control_ready], ['nvidia-smi', diag.nvidia_smi_path || 'missing'], ['nvidia-settings', diag.nvidia_settings_path || 'missing'], ['DISPLAY', diag.display || 'missing']
       ].map(([k,v]) => `<span class="pill ${v === true ? 'good' : v === false || v === 'missing' ? 'warn' : ''}">${esc(k)}: ${esc(v)}</span>`).join('');
       const errors = data.telemetry_errors || [];
-      setStatus(errors.length ? `Telemetry warnings:\n${errors.join('\n')}` : 'Fan controller status refreshed.', errors.length ? 'err' : 'ok');
+      const cooling = data.cooling || {};
+      const severity = cooling.overall_severity || cooling.severity || 'info';
+      const healthLine = `Cooling health: ${severity}`;
+      setStatus(errors.length ? `${healthLine}\nTelemetry warnings:\n${errors.join('\n')}` : `${healthLine}\nFan controller status refreshed.`, errors.length || severity === 'critical' ? 'err' : 'ok');
     }
 
     async function refresh(apply = false) {
