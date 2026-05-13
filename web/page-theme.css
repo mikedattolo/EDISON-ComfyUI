@@ -18,51 +18,56 @@
  */
 
 :root {
-  /* Default DARK palette. Mirrors styles.css. */
-  --background:     #07111a;
-  --surface:        #0d1824;
-  --surface-alt:    #111f2d;
-  --surface-hover:  #182739;
-  --border:         #23384a;
-  --text-primary:   #eef4fa;
-  --text-secondary: #a7b8c8;
-  --text-tertiary:  #708295;
-  --primary:        #18b58f;
-  --primary-dark:   #0e9473;
-  --primary-light:  #4ed8b3;
-  --text-muted:     #708295;
-  --secondary:      #ff9a44;
+  --background:     #ffffff;
+  --surface:        #ffffff;
+  --surface-alt:    #f6f8fc;
+  --surface-hover:  #edf2ff;
+  --border:         #d7deef;
+  --text-primary:   #111111;
+  --text-secondary: #2a2a2a;
+  --text-tertiary:  #555555;
+  --primary:        #2563eb;
+  --primary-dark:   #1d4ed8;
+  --primary-light:  #60a5fa;
+  --text-muted:     #444444;
+  --secondary:      #1e3a8a;
   --success:        #16c38f;
   --warning:        #f5a44c;
   --error:          #ff6b6b;
-  --shadow-soft:    0 24px 60px rgba(0, 0, 0, 0.28);
+  --shadow-soft:    0 10px 26px rgba(17, 24, 39, 0.08);
 }
 
 /* Light mode tokens (opt-in via body.light-theme). */
 body.light-theme {
-  --background:     #f5f5f7;
+  --background:     #ffffff;
   --surface:        #ffffff;
-  --surface-alt:    #f6f8fb;
-  --surface-hover:  #f0f0f0;
-  --border:         #e5e5e5;
-  --text-primary:   #1a1a1a;
-  --text-secondary: #555a63;
-  --text-tertiary:  #999999;
-  --text-muted:     #999999;
-  --primary-light:  #5dd5b3;
+  --surface-alt:    #f6f8fc;
+  --surface-hover:  #edf2ff;
+  --border:         #d7deef;
+  --text-primary:   #111111;
+  --text-secondary: #2a2a2a;
+  --text-tertiary:  #555555;
+  --text-muted:     #444444;
+  --primary:        #2563eb;
+  --primary-dark:   #1d4ed8;
+  --primary-light:  #60a5fa;
 }
 
 /* Color accents (mirror the main app). */
-body.color-blue    { --primary: #3b82f6; --primary-dark: #2563eb; --secondary: #1e40af; }
-body.color-purple  { --primary: #a855f7; --primary-dark: #9333ea; --secondary: #7e22ce; }
-body.color-cyan    { --primary: #06b6d4; --primary-dark: #0891b2; --secondary: #0e7490; }
-body.color-emerald { --primary: #10b981; --primary-dark: #059669; --secondary: #047857; }
-body.color-rose    { --primary: #f43f5e; --primary-dark: #e11d48; --secondary: #be184d; }
-body.color-orange  { --primary: #f97316; --primary-dark: #ea580c; --secondary: #c2410c; }
-body.color-pink    { --primary: #ec4899; --primary-dark: #db2777; --secondary: #be185d; }
-body.color-red     { --primary: #ef4444; --primary-dark: #dc2626; --secondary: #b91c1c; }
-body.color-green   { --primary: #22c55e; --primary-dark: #16a34a; --secondary: #15803d; }
-body.color-yellow  { --primary: #eab308; --primary-dark: #ca8a04; --secondary: #a16207; }
+body.color-blue,
+body.color-purple,
+body.color-cyan,
+body.color-emerald,
+body.color-rose,
+body.color-orange,
+body.color-pink,
+body.color-red,
+body.color-green,
+body.color-yellow {
+  --primary: #2563eb;
+  --primary-dark: #1d4ed8;
+  --secondary: #1e3a8a;
+}
 
 /* Remap every legacy local var to the global theme tokens with
  * !important. Custom properties DO honor !important, so this beats the
@@ -114,14 +119,15 @@ html, body {
 /* Buttons */
 .btn,
 button.btn {
-  background: linear-gradient(180deg, var(--surface), var(--surface-alt)) !important;
-  color: var(--text-primary) !important;
-  border: 1px solid var(--border) !important;
+  background: var(--primary) !important;
+  color: #ffffff !important;
+  border: 1px solid var(--primary) !important;
 }
 .btn:hover,
 button.btn:hover {
-  border-color: var(--primary) !important;
-  color: var(--text-primary) !important;
+  background: var(--primary-dark) !important;
+  border-color: var(--primary-dark) !important;
+  color: #ffffff !important;
 }
 .btn.primary,
 .btn--primary,
@@ -153,9 +159,24 @@ textarea::placeholder { color: var(--text-tertiary) !important; }
  * legacy --bg/--ink combo. */
 body.light-theme .btn,
 body.light-theme button.btn {
-  background: linear-gradient(180deg, #ffffff, var(--surface-alt)) !important;
+  background: var(--primary) !important;
 }
 body.light-theme .btn.active,
 body.light-theme .btn[aria-pressed="true"] {
-  background: rgba(24, 181, 143, 0.10) !important;
+  background: var(--primary-dark) !important;
+  color: #ffffff !important;
+}
+
+/* Simplified workspace layout: remove sticky page top bars and keep natural page scroll. */
+.topbar {
+  display: none !important;
+}
+
+body {
+  overflow-y: auto !important;
+}
+
+.shell {
+  min-height: 100vh !important;
+  padding-top: 14px !important;
 }

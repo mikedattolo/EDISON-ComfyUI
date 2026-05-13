@@ -8,8 +8,8 @@ console.log('🎨 theme-device.js loading...');
 class ThemeManager {
     constructor() {
         this.isMobile = this.detectDevice();
-        this.currentTheme = this.loadTheme();
-        this.currentColor = this.loadColor();
+        this.currentTheme = 'light';
+        this.currentColor = 'blue';
         this.init();
     }
 
@@ -85,23 +85,7 @@ class ThemeManager {
      * Setup all event listeners
      */
     setupEventListeners() {
-        // Theme buttons
-        const darkBtn = document.getElementById('darkThemeBtn');
-        const lightBtn = document.getElementById('lightThemeBtn');
-        if (darkBtn) darkBtn.addEventListener('click', () => this.setTheme('dark'));
-        if (lightBtn) lightBtn.addEventListener('click', () => this.setTheme('light'));
-
-        // Color buttons
-        document.querySelectorAll('.color-btn').forEach(btn => {
-            btn.addEventListener('click', () => {
-                const color = btn.dataset.color;
-                this.setColor(color);
-            });
-        });
-
-        // Theme controls are now in the main settings modal
-        // The theme buttons will be handled by event delegation since they're in the modal
-        // Mobile settings button no longer needed for theme panel
+        // Theme/color customization is intentionally disabled in simplified UI mode.
         
         // Mobile menu
         const mobileMenuBtn = document.getElementById('mobileMenuBtn');
@@ -181,40 +165,26 @@ class ThemeManager {
      */
     applyTheme(theme) {
         document.body.classList.remove('dark-theme', 'light-theme');
-        if (theme === 'light') {
-            document.body.classList.add('light-theme');
-        }
-        console.log(`🎨 Theme applied: ${theme}`);
+        document.body.classList.add('light-theme');
+        console.log('🎨 Theme applied: light');
     }
 
     /**
      * Set and save theme
      */
     setTheme(theme) {
-        this.currentTheme = theme;
-        this.applyTheme(theme);
-        localStorage.setItem('edison-theme', theme);
-
-        // Update button states
-        document.querySelectorAll('.theme-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.theme === theme);
-        });
-
-        console.log(`✅ Theme saved: ${theme}`);
+        this.currentTheme = 'light';
+        this.applyTheme('light');
+        localStorage.setItem('edison-theme', 'light');
+        localStorage.setItem('edison_theme', 'light');
+        console.log('✅ Theme saved: light');
     }
 
     /**
      * Load theme from localStorage or system preference
      */
     loadTheme() {
-        const saved = localStorage.getItem('edison-theme');
-        if (saved) return saved;
-
-        // Check system preference
-        if (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches) {
-            return 'light';
-        }
-        return 'dark';
+        return 'light';
     }
 
     /**
@@ -226,34 +196,26 @@ class ThemeManager {
             'color-default', 'color-blue', 'color-purple', 
             'color-cyan', 'color-emerald', 'color-rose'
         );
-
-        if (color !== 'default') {
-            document.body.classList.add(`color-${color}`);
-        }
-        console.log(`🎨 Color applied: ${color}`);
+        document.body.classList.add('color-blue');
+        console.log('🎨 Color applied: blue');
     }
 
     /**
      * Set and save color scheme
      */
     setColor(color) {
-        this.currentColor = color;
-        this.applyColor(color);
-        localStorage.setItem('edison-color', color);
-
-        // Update button states
-        document.querySelectorAll('.color-btn').forEach(btn => {
-            btn.classList.toggle('active', btn.dataset.color === color);
-        });
-
-        console.log(`✅ Color saved: ${color}`);
+        this.currentColor = 'blue';
+        this.applyColor('blue');
+        localStorage.setItem('edison-color', 'blue');
+        localStorage.setItem('edison_color_theme', 'blue');
+        console.log('✅ Color saved: blue');
     }
 
     /**
      * Load color from localStorage
      */
     loadColor() {
-        return localStorage.getItem('edison-color') || 'default';
+        return 'blue';
     }
 
     /**
