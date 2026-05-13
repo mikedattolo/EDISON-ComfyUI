@@ -1,4 +1,4 @@
-from services.edison_core.nodes import NodeManager
+from services.edison_core.nodes import NodeManager, should_keep_task_local
 
 
 def test_dispatch_command_falls_back_to_queue(tmp_path, monkeypatch):
@@ -94,3 +94,57 @@ def test_delegate_respects_node_accepted_job_types(tmp_path):
 
     assert result["ok"] is False
     assert "does not accept" in result["error"]
+
+
+def test_auto_delegate_keeps_software_code_tasks_local(tmp_path):
+    manager = NodeManager(tmp_path / "nodes.json")
+    manager.register_node({
+        "id": "cad-laptop",
+        "name": "CAD Laptop",
+        "host": "192.168.1.50",
+        "capabilities": ["cad", "rhino", "gpu-render"],
+        "software": {"rhino": "7"},
+    })
+
+    result = manager.delegate_task(
+        "Fix the FastAPI endpoint bug and add pytest coverage",
+        "code",
+        {},
+    )
+
+    assert result["ok"] is False
+    assert result["routing_guard"] == "software_code_local"
+    assert result["local_recommended"] is True
+
+
+def test_auto_delegate_allows_explicit_cad_tasks(tmp_path):
+    manager = NodeManager(tmp_path / "nodes.json")
+    manager.register_node({
+        "id": "cad-laptop",
+        "name": "CAD Laptop",
+        "host": "192.168.1.50",
+        "capabilities": ["cad", "rhino"],
+        "software": {"rhino": "7"},
+        "accepted_job_types": ["rhino_script"],
+    })
+
+    result = manager.delegate_task(
+        "Run this Rhino Python script to export a 3dm model",
+        "rhino_script",
+        {"script_content": "print('ok')"},
+    )
+
+    assert result["ok"] is True
+    assert result["node"]["id"] == "cad-laptop"
+
+
+def test_node_routing_guard_classification():
+    keep_local, reason = should_keep_task_local("Refactor the React component", "code")
+    assert keep_local is True
+    assert "local-software" in reason or "software/code" in reason
+
+    keep_local, _ = should_keep_task_local(
+        "Export the SolidWorks assembly to STEP on the CAD node",
+        "solidworks_export",
+    )
+    assert keep_local is False

@@ -44,6 +44,11 @@ from .vision_reliability import (
     vision_grounding_system_prompt,
 )
 from .comfyui_workers import ComfyUIWorkerRegistry, normalize_base_url
+from .response_guard import (
+    StreamingResponseGuard,
+    assistant_stop_sequences,
+    sanitize_assistant_response,
+)
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -573,7 +578,10 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 "python", "javascript", "typescript", "html", "css", "sql", "bash",
                 "regex", "algorithm", "method", "class", "function", "unit test",
                 "debug", "fix this bug", "syntax error", "stack trace", "traceback",
-                "refactor", "code review", "endpoint", "schema", "component"
+                "refactor", "code review", "endpoint", "schema", "component",
+                "repo", "repository", "pytest", "test suite", "compile error",
+                "fastapi", "uvicorn", "api endpoint", "frontend", "backend",
+                "bug fix", "implementation", "edit the file", "patch"
             ]
 
             agent_patterns = ["search", "internet", "web", "find on", "lookup", "google",
@@ -607,6 +615,18 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                              "sing me", "beat for", "instrumental",
                              "background music", "soundtrack"]
 
+            video_patterns = [
+                "make a video", "create a video", "generate a video",
+                "text to video", "image to video", "video of", "video from",
+                "animate this", "animation clip", "short clip", "b-roll",
+            ]
+
+            mesh_patterns = [
+                "3d model", "3d mesh", "make a mesh", "create a mesh",
+                "generate a mesh", "text to 3d", "image to 3d", "make a 3d",
+                "create a 3d", "stl", "obj file", "glb", "cad model",
+            ]
+
             reasoning_patterns = ["explain", "why", "how does", "what is", "analyze", "detail",
                                  "understand", "break down", "elaborate", "clarify", "reasoning",
                                  "think through", "step by step", "logic", "rationale"]
@@ -619,13 +639,15 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
             has_agent_patterns = any(pattern in msg_lower for pattern in agent_patterns)
             has_realtime = any(pattern in msg_lower for pattern in realtime_patterns)
             has_music = any(pattern in msg_lower for pattern in music_patterns)
+            has_video = any(pattern in msg_lower for pattern in video_patterns)
+            has_mesh = any(pattern in msg_lower for pattern in mesh_patterns)
 
             has_code_patterns = any(pattern in msg_lower for pattern in code_patterns)
             has_work_patterns = any(pattern in msg_lower for pattern in work_patterns)
             has_safety_risk = any(pattern in msg_lower for pattern in safety_patterns)
 
             # Sticky follow-ups should preserve the prior mode unless the user clearly changes direction.
-            if is_followup and sticky_mode and not has_realtime and not has_music and not has_agent_patterns and not has_code_patterns and not has_work_patterns:
+            if is_followup and sticky_mode and not has_realtime and not has_music and not has_video and not has_mesh and not has_agent_patterns and not has_code_patterns and not has_work_patterns:
                 mode = sticky_mode
                 tools_allowed = sticky_mode == "agent"
                 reasons.append(f"Follow-up detected → preserving prior context as {sticky_mode} mode")
@@ -640,10 +662,18 @@ def route_mode(user_message: str, requested_mode: str, has_image: bool,
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Real-time data query detected → agent mode with tools")
+            elif has_video:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("Video generation request detected -> agent mode with tools")
             elif has_music:
                 mode = "agent"
                 tools_allowed = True
                 reasons.append("Music generation request detected → agent mode with tools")
+            elif has_mesh:
+                mode = "agent"
+                tools_allowed = True
+                reasons.append("3D/mesh generation request detected -> agent mode with tools")
             elif has_work_patterns:
                 mode = "work"
                 tools_allowed = True  # Work mode can use tools
@@ -6210,10 +6240,10 @@ Provide working, complete code. Include comments explaining key parts."""
                     code_prompt,
                     max_tokens=800,
                     temperature=0.4,
-                    stop=["\nUser:", "\nHuman:", "\nAssistant:", "User:", "Human:", "\n\n\n"],
+                    stop=assistant_stop_sequences(["\n\n\n"]),
                     echo=False
                 )
-            step["result"] = response["choices"][0]["text"].strip()
+            step["result"] = sanitize_assistant_response(response["choices"][0]["text"])
             step["status"] = "completed"
 
         elif kind == "artifact":
@@ -6235,10 +6265,10 @@ Generate the complete content. Use appropriate formatting (markdown for docs, JS
                     artifact_prompt,
                     max_tokens=1000,
                     temperature=0.5,
-                    stop=["\nUser:", "\nHuman:", "\nAssistant:", "User:", "Human:", "\n\n\n"],
+                    stop=assistant_stop_sequences(["\n\n\n"]),
                     echo=False
                 )
-            result_text = response["choices"][0]["text"].strip()
+            result_text = sanitize_assistant_response(response["choices"][0]["text"])
             step["result"] = result_text
 
             # Try to save as file artifact
@@ -6283,10 +6313,10 @@ Provide a thorough, detailed response for this step. Be specific and actionable.
                     llm_prompt,
                     max_tokens=600,
                     temperature=0.5,
-                    stop=["\nUser:", "\nHuman:", "\nAssistant:", "User:", "Human:", "\n\n\n"],
+                    stop=assistant_stop_sequences(["\n\n\n"]),
                     echo=False
                 )
-            step["result"] = response["choices"][0]["text"].strip()
+            step["result"] = sanitize_assistant_response(response["choices"][0]["text"])
             step["status"] = "completed"
 
     except Exception as e:
@@ -6356,7 +6386,7 @@ async def chat(request: ChatRequest):
 
     automation_result = _maybe_execute_automation(request.message)
     if automation_result:
-        assistant_response = automation_result.get("response", "")
+        assistant_response = sanitize_assistant_response(automation_result.get("response", ""))
         store_conversation_exchange(request, assistant_response, automation_result.get("mode_used", "automation"), remember)
         return ChatResponse(
             response=assistant_response,
@@ -6367,7 +6397,7 @@ async def chat(request: ChatRequest):
 
     business_result = _maybe_execute_business_action(request.message)
     if business_result:
-        assistant_response = business_result.get("response", "")
+        assistant_response = sanitize_assistant_response(business_result.get("response", ""))
         store_conversation_exchange(request, assistant_response, business_result.get("mode_used", "business"), remember)
         return ChatResponse(
             response=assistant_response,
@@ -7035,7 +7065,7 @@ async def chat(request: ChatRequest):
                             max_tokens=2048,
                             temperature=0.1
                         )
-                    assistant_response = response["choices"][0]["message"]["content"]
+                    assistant_response = sanitize_assistant_response(response["choices"][0]["message"]["content"])
                     logger.info(f"Vision response generated: {assistant_response[:100]}...")
                 except Exception as e:
                     logger.error(f"Vision model inference error: {e}", exc_info=True)
@@ -7071,15 +7101,15 @@ async def chat(request: ChatRequest):
                         frequency_penalty=0.5,
                         presence_penalty=0.4,
                         repeat_penalty=1.3,
-                        stop=["\nUser:", "\nHuman:", "\nAssistant:", "User:", "Human:", "\n\n\n",
-                              "Would you like", "Please specify",
+                        stop=assistant_stop_sequences([
+                              "\n\n\n", "Would you like", "Please specify",
                               "Let me know if", "Do let me know",
                               "Please provide direction", "Please confirm",
-                              "Your feedback will", "Your guidance will"],
+                              "Your feedback will", "Your guidance will"]),
                         echo=False
                     )
                 
-                assistant_response = response["choices"][0]["text"].strip()
+                assistant_response = sanitize_assistant_response(response["choices"][0]["text"])
 
                 assistant_response = _maybe_repair_code_response(
                     llm,
@@ -7089,6 +7119,8 @@ async def chat(request: ChatRequest):
                     assistant_response,
                     conversation_history=request.conversation_history,
                 )
+
+            assistant_response = sanitize_assistant_response(assistant_response)
         
         # Store in memory if auto-detected or requested
         store_conversation_exchange(request, assistant_response, original_mode, remember)
@@ -7183,7 +7215,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     automation_result = _maybe_execute_automation(request.message)
     if automation_result:
-        assistant_response = automation_result.get("response", "")
+        assistant_response = sanitize_assistant_response(automation_result.get("response", ""))
         store_conversation_exchange(request, assistant_response, automation_result.get("mode_used", "automation"), remember)
 
         async def _automation_sse():
@@ -7210,7 +7242,7 @@ async def chat_stream(raw_request: Request, request: ChatRequest):
 
     business_result = _maybe_execute_business_action(request.message)
     if business_result:
-        assistant_response = business_result.get("response", "")
+        assistant_response = sanitize_assistant_response(business_result.get("response", ""))
         store_conversation_exchange(request, assistant_response, business_result.get("mode_used", "business"), remember)
 
         async def _business_sse():
@@ -7921,9 +7953,9 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                         yield f"event: browser_view\ndata: {json.dumps(bv_evt)}\n\n"
 
             # Stream the pre-computed answer token by token
-            assistant_response = agent_tool_answer.strip()
+            assistant_response = sanitize_assistant_response(agent_tool_answer)
             # Clean up repetitive output from tool loop
-            assistant_response = _dedupe_repeated_lines(assistant_response)
+            assistant_response = sanitize_assistant_response(_dedupe_repeated_lines(assistant_response))
             for token_chunk in _chunk_text(assistant_response, chunk_size=12):
                 yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
 
@@ -8069,6 +8101,7 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             full_prompt = build_full_prompt(system_prompt, request.message, context_chunks, search_results, request.conversation_history, wiki_chunks=wiki_chunks)
         
         assistant_response = ""
+        stream_guard = StreamingResponseGuard()
         client_disconnected = False
         stream_started_at = time.monotonic()
         try:
@@ -8147,17 +8180,23 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                 break
                             token, finished = _extract_stream_token_and_finished(chunk, vision=True)
                             if token:
-                                assistant_response += token
+                                token_chunk, guard_stopped = stream_guard.push(token)
+                                assistant_response = stream_guard.text
                                 empty_chunks = 0
                                 if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
                                     logger.warning(f"Vision stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
-                                    yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                    if token_chunk:
+                                        yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
                                     break
                                 # Check for repetition loop in vision output
                                 if _detect_repetition(assistant_response):
                                     logger.warning("Repetition detected in vision output, stopping generation")
                                     break
-                                yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                if token_chunk:
+                                    yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
+                                if guard_stopped:
+                                    logger.warning("Vision stream guard stopped fabricated dialogue: %s", stream_guard.stop_reason)
+                                    break
                             else:
                                 empty_chunks += 1
 
@@ -8228,16 +8267,22 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                     active_requests[request_id]["cancelled"] = True
                             client_disconnected = True
                             break
-                        assistant_response += token
+                        token_chunk, guard_stopped = stream_guard.push(token)
+                        assistant_response = stream_guard.text
                         if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
                             logger.warning(f"vLLM stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
-                            yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                            if token_chunk:
+                                yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
                             break
                         # Check for repetition loop
                         if _detect_repetition(assistant_response):
                             logger.warning("Repetition detected in vLLM output, stopping generation")
                             break
-                        yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                        if token_chunk:
+                            yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
+                        if guard_stopped:
+                            logger.warning("vLLM stream guard stopped fabricated dialogue: %s", stream_guard.stop_reason)
+                            break
                 else:
                     empty_chunks = 0
                     max_empty_chunks = 256
@@ -8251,11 +8296,11 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             frequency_penalty=0.5,
                             presence_penalty=0.4,
                             repeat_penalty=1.3,
-                            stop=["\nUser:", "\nHuman:", "\nAssistant:", "User:", "Human:", "\n\n\n",
-                                  "Would you like", "Please specify",
+                            stop=assistant_stop_sequences([
+                                  "\n\n\n", "Would you like", "Please specify",
                                   "Let me know if", "Do let me know",
                                   "Please provide direction", "Please confirm",
-                                  "Your feedback will", "Your guidance will"],
+                                  "Your feedback will", "Your guidance will"]),
                             echo=False,
                             stream=True
                         )
@@ -8280,17 +8325,23 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                                 break
                             token, finished = _extract_stream_token_and_finished(chunk)
                             if token:
-                                assistant_response += token
+                                token_chunk, guard_stopped = stream_guard.push(token)
+                                assistant_response = stream_guard.text
                                 empty_chunks = 0
                                 if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
                                     logger.warning(f"LLM stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); stopping generation")
-                                    yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                    if token_chunk:
+                                        yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
                                     break
                                 # Check for repetition loop
                                 if _detect_repetition(assistant_response):
                                     logger.warning("Repetition detected in LLM output, stopping generation")
                                     break
-                                yield f"event: token\ndata: {json.dumps({'t': token})}\n\n"
+                                if token_chunk:
+                                    yield f"event: token\ndata: {json.dumps({'t': token_chunk})}\n\n"
+                                if guard_stopped:
+                                    logger.warning("LLM stream guard stopped fabricated dialogue: %s", stream_guard.stop_reason)
+                                    break
                             else:
                                 empty_chunks += 1
 
@@ -8332,6 +8383,12 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             yield f"event: done\ndata: {json.dumps({'ok': False, 'stopped': True})}\n\n"
             return
 
+        tail_chunk = stream_guard.flush()
+        if tail_chunk:
+            yield f"event: token\ndata: {json.dumps({'t': tail_chunk})}\n\n"
+        if stream_guard.raw_text:
+            assistant_response = stream_guard.text
+
         # Parse and write file artifacts if requested in response
         file_entries = _parse_files_from_response(assistant_response)
         if file_entries:
@@ -8342,7 +8399,7 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
         generated_files = _write_artifacts(file_entries) if file_entries else []
         cleaned_response = _strip_file_blocks(assistant_response)
         # Always deduplicate repeated lines (fixes looping output)
-        cleaned_response = _dedupe_repeated_lines(cleaned_response)
+        cleaned_response = sanitize_assistant_response(_dedupe_repeated_lines(cleaned_response))
 
         cleaned_response = _maybe_repair_code_response(
             llm,
@@ -8352,6 +8409,7 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
             cleaned_response,
             conversation_history=request.conversation_history,
         )
+        cleaned_response = sanitize_assistant_response(cleaned_response)
 
         store_conversation_exchange(request, cleaned_response, original_mode, remember)
         
@@ -8751,7 +8809,7 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
 
     business_result = _maybe_execute_business_action(user_message)
     if business_result:
-        assistant_response = business_result.get("response", "")
+        assistant_response = sanitize_assistant_response(business_result.get("response", ""))
         completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
         created_time = int(time.time())
         prompt_tokens = len(user_message.split())
@@ -8838,9 +8896,11 @@ async def openai_stream_completions(
             prompt_tokens = len((full_prompt or "").split())
         completion_tokens = 0
         assistant_response = ""
+        stream_guard = StreamingResponseGuard()
         empty_chunks = 0
         max_empty_chunks = 256
         stream_started_at = time.monotonic()
+        sent_role = False
         
         try:
             lock = get_lock_for_model(llm)
@@ -8859,6 +8919,7 @@ async def openai_stream_completions(
                         max_tokens=request.max_tokens or 2048,
                         temperature=request.temperature or 0.7,
                         top_p=request.top_p or 0.9,
+                        stop=assistant_stop_sequences(),
                         echo=False,
                         stream=True
                     )
@@ -8884,43 +8945,51 @@ async def openai_stream_completions(
                     
                     token, finished = _extract_stream_token_and_finished(chunk, vision=is_vision_chat)
                     if token:
-                        assistant_response += token
-                        completion_tokens += 1
+                        token_delta, guard_stopped = stream_guard.push(token)
+                        assistant_response = stream_guard.text
+                        if token_delta:
+                            completion_tokens += max(1, len(token_delta.split()))
                         empty_chunks = 0
 
                         if len(assistant_response) >= STREAM_MAX_OUTPUT_CHARS:
                             logger.warning(
                                 f"OpenAI stream exceeded output cap ({STREAM_MAX_OUTPUT_CHARS} chars); ending request {request_id}"
                             )
-                            # Send the token that crossed the cap, then stop
+                            if token_delta:
+                                stream_response = OpenAIStreamResponse(
+                                    id=completion_id,
+                                    created=created_time,
+                                    model=f"qwen2.5-{model_name}",
+                                    choices=[OpenAIChoice(
+                                        index=0,
+                                        delta={"role": "assistant" if not sent_role else None, "content": token_delta},
+                                        finish_reason=None
+                                    )]
+                                )
+                                sent_role = True
+                                response_dict = stream_response.dict(exclude_none=True)
+                                yield f"data: {json.dumps(response_dict)}\n\n"
+                            break
+
+                        # Stream chunk in OpenAI format
+                        if token_delta:
                             stream_response = OpenAIStreamResponse(
                                 id=completion_id,
                                 created=created_time,
                                 model=f"qwen2.5-{model_name}",
                                 choices=[OpenAIChoice(
                                     index=0,
-                                    delta={"role": "assistant" if len(assistant_response) == len(token) else None, "content": token},
+                                    delta={"role": "assistant" if not sent_role else None, "content": token_delta},
                                     finish_reason=None
                                 )]
                             )
+                            sent_role = True
+                            # Clean up None values
                             response_dict = stream_response.dict(exclude_none=True)
                             yield f"data: {json.dumps(response_dict)}\n\n"
+                        if guard_stopped:
+                            logger.warning("OpenAI stream guard stopped fabricated dialogue: %s", stream_guard.stop_reason)
                             break
-                        
-                        # Stream chunk in OpenAI format
-                        stream_response = OpenAIStreamResponse(
-                            id=completion_id,
-                            created=created_time,
-                            model=f"qwen2.5-{model_name}",
-                            choices=[OpenAIChoice(
-                                index=0,
-                                delta={"role": "assistant" if len(assistant_response) == len(token) else None, "content": token},
-                                finish_reason=None
-                            )]
-                        )
-                        # Clean up None values
-                        response_dict = stream_response.dict(exclude_none=True)
-                        yield f"data: {json.dumps(response_dict)}\n\n"
                     else:
                         empty_chunks += 1
 
@@ -8947,6 +9016,21 @@ async def openai_stream_completions(
                     _finalize_vision_request()
                 except Exception:
                     pass
+
+        tail_delta = stream_guard.flush()
+        if tail_delta:
+            stream_response = OpenAIStreamResponse(
+                id=completion_id,
+                created=created_time,
+                model=f"qwen2.5-{model_name}",
+                choices=[OpenAIChoice(
+                    index=0,
+                    delta={"role": "assistant" if not sent_role else None, "content": tail_delta},
+                    finish_reason=None
+                )]
+            )
+            response_dict = stream_response.dict(exclude_none=True)
+            yield f"data: {json.dumps(response_dict)}\n\n"
         
         # Send [DONE] sentinel
         yield "data: [DONE]\n\n"
@@ -8985,9 +9069,9 @@ async def openai_non_stream_completions(
                 )
                 message = response["choices"][0]["message"]["content"]
                 if isinstance(message, list):
-                    assistant_response = _flatten_openai_content(message)
+                    assistant_response = sanitize_assistant_response(_flatten_openai_content(message))
                 else:
-                    assistant_response = str(message or "").strip()
+                    assistant_response = sanitize_assistant_response(str(message or ""))
                 prompt_blob = []
                 for msg in chat_messages:
                     prompt_blob.append(_flatten_openai_content(msg.get("content", "")))
@@ -8998,9 +9082,10 @@ async def openai_non_stream_completions(
                     max_tokens=request.max_tokens or 2048,
                     temperature=request.temperature or 0.7,
                     top_p=request.top_p or 0.9,
+                    stop=assistant_stop_sequences(),
                     echo=False
                 )
-                assistant_response = response["choices"][0]["text"].strip()
+                assistant_response = sanitize_assistant_response(response["choices"][0]["text"])
                 prompt_tokens = len((full_prompt or "").split())
 
         completion_tokens = len(assistant_response.split())
@@ -10668,7 +10753,7 @@ def _retrieve_repo_code_context(user_message: str, conversation_history: Optiona
             if snippet_term == term and lowered_candidate in lowered_text:
                 snippet_term = candidate_term
         matches.append({
-            "path": str(path.relative_to(REPO_ROOT)),
+            "path": path.relative_to(REPO_ROOT).as_posix(),
             "score": 100,
             "snippet": _extract_code_snippet(text, snippet_term)
         })
@@ -10696,7 +10781,7 @@ def _retrieve_repo_code_context(user_message: str, conversation_history: Optiona
         if score <= 0:
             continue
         matches.append({
-            "path": str(path.relative_to(REPO_ROOT)),
+            "path": path.relative_to(REPO_ROOT).as_posix(),
             "score": score,
             "snippet": _extract_code_snippet(text, best_term or lowered_terms[0])
         })
@@ -10887,7 +10972,7 @@ def _repair_renderable_code_response(
                 top_p=0.9,
             )
             if repaired:
-                return repaired.strip()
+                return sanitize_assistant_response(repaired)
     except Exception as e:
         logger.warning(f"vLLM repair pass failed: {e}")
 
@@ -10902,10 +10987,10 @@ def _repair_renderable_code_response(
                 repeat_penalty=1.15,
                 frequency_penalty=0.2,
                 presence_penalty=0.0,
-                stop=["\nUser:", "\nHuman:", "\nAssistant:", "User:", "Human:"],
+                stop=assistant_stop_sequences(),
                 echo=False,
             )
-        return response["choices"][0]["text"].strip()
+        return sanitize_assistant_response(response["choices"][0]["text"])
     except Exception as e:
         logger.warning(f"LLM repair pass failed: {e}")
         return assistant_response
@@ -17043,7 +17128,12 @@ async def delegate_node_task(request: dict):
         node_id=node_id,
     )
     if not result.get("ok"):
-        raise HTTPException(status_code=422, detail=result.get("error", "Delegation failed"))
+        detail = {
+            "error": result.get("error", "Delegation failed"),
+            "routing_guard": result.get("routing_guard"),
+            "local_recommended": result.get("local_recommended", False),
+        }
+        raise HTTPException(status_code=422, detail=detail)
     return {"success": True, **result}
 
 

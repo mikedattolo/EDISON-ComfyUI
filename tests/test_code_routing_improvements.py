@@ -41,6 +41,17 @@ def test_followup_does_not_override_explicit_realtime_switch():
     assert result["tools_allowed"] is True
 
 
+def test_repo_bugfix_routes_to_code_mode():
+    result = route_mode(
+        "Fix the FastAPI repo bug and add pytest tests for the endpoint",
+        "auto",
+        False,
+    )
+
+    assert result["mode"] == "code"
+    assert result["model_target"] == "deep"
+
+
 def test_renderable_code_quality_heuristics_are_narrow():
     assert _is_renderable_code_request("Build a self-contained HTML analytics dashboard") is True
     assert _response_looks_non_renderable("Here's a basic structure:\nimport App from './App'") is True

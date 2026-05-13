@@ -70,6 +70,9 @@ CODE_PATTERNS = [
     "debug", "fix this bug", "syntax error", "stack trace", "traceback",
     "refactor", "code review", "endpoint", "schema", "component",
     "implement", "binary tree", "data structure", "linked list",
+    "repo", "repository", "pytest", "test suite", "compile error",
+    "fastapi", "uvicorn", "api endpoint", "frontend", "backend",
+    "bug fix", "implementation", "edit the file", "patch",
 ]
 
 AGENT_PATTERNS = [
@@ -105,6 +108,18 @@ MUSIC_PATTERNS = [
     "generate song", "generate beat", "play me",
     "sing me", "beat for", "instrumental",
     "background music", "soundtrack",
+]
+
+VIDEO_PATTERNS = [
+    "make a video", "create a video", "generate a video",
+    "text to video", "image to video", "video of", "video from",
+    "animate this", "animation clip", "short clip", "b-roll",
+]
+
+MESH_PATTERNS = [
+    "3d model", "3d mesh", "make a mesh", "create a mesh",
+    "generate a mesh", "text to 3d", "image to 3d", "make a 3d",
+    "create a 3d", "stl", "obj file", "glb", "cad model",
 ]
 
 REASONING_PATTERNS = [
@@ -291,6 +306,8 @@ def route(
     has_agent = _match_any(msg_lower, AGENT_PATTERNS)
     has_realtime = _match_any(msg_lower, REALTIME_PATTERNS)
     has_music = _match_any(msg_lower, MUSIC_PATTERNS)
+    has_video = _match_any(msg_lower, VIDEO_PATTERNS)
+    has_mesh = _match_any(msg_lower, MESH_PATTERNS)
     has_code = _match_any(msg_lower, CODE_PATTERNS)
     has_work = _match_any(msg_lower, WORK_PATTERNS)
     has_browser = _match_any(msg_lower, BROWSER_PATTERNS)
@@ -302,7 +319,7 @@ def route(
     d.search_needed = has_agent or has_realtime
 
     # Sticky follow-ups
-    if is_fu and sticky_mode and not any([has_realtime, has_music, has_agent, has_code, has_work]):
+    if is_fu and sticky_mode and not any([has_realtime, has_music, has_video, has_mesh, has_agent, has_code, has_work]):
         d.mode = sticky_mode
         d.tools_allowed = sticky_mode == "agent"
         d.confidence = 0.65
@@ -317,11 +334,21 @@ def route(
         d.model_target = "medium"
         d.confidence = 0.85
         d.reasons.append("Business/project/branding request → agent mode")
+    elif has_video:
+        d.mode, d.tools_allowed = "agent", True
+        d.model_target = "medium"
+        d.confidence = 0.8
+        d.reasons.append("Video request -> agent mode")
     elif has_music:
         d.mode, d.tools_allowed = "agent", True
         d.model_target = "medium"
         d.confidence = 0.8
         d.reasons.append("Music request → agent mode")
+    elif has_mesh:
+        d.mode, d.tools_allowed = "agent", True
+        d.model_target = "medium"
+        d.confidence = 0.8
+        d.reasons.append("3D/mesh request -> agent mode")
     elif has_work:
         d.mode, d.tools_allowed = "work", True
         d.model_target = "deep"

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 import socket
 import time
 import uuid
@@ -20,6 +21,93 @@ import requests
 from .safe_io import atomic_write_json
 
 logger = logging.getLogger(__name__)
+
+LOCAL_SOFTWARE_TASK_TYPES = {
+    "code",
+    "software_code",
+    "python",
+    "javascript",
+    "typescript",
+    "repo_edit",
+    "test",
+    "pytest",
+    "npm",
+    "shell",
+    "bash",
+}
+
+CAD_REMOTE_TASK_PREFIXES = ("rhino_", "solidworks_", "blender_")
+CAD_REMOTE_KEYWORDS = (
+    "cad",
+    "rhino",
+    "grasshopper",
+    "solidworks",
+    "blender",
+    "3d model",
+    "3d-model",
+    "3dm",
+    ".3dm",
+    ".sldprt",
+    ".sldasm",
+    ".blend",
+    "step file",
+    ".step",
+    ".stp",
+    "iges",
+)
+REMOTE_DISPATCH_KEYWORDS = (
+    "cad node",
+    "remote node",
+    "worker node",
+    "windows node",
+    "workstation",
+    "node agent",
+    "send to node",
+    "delegate to node",
+    "run on node",
+    "run on the node",
+    "offload",
+)
+SOFTWARE_CODE_RE = re.compile(
+    r"\b("
+    r"python|javascript|typescript|node\.js|react|fastapi|api route|endpoint|pytest|"
+    r"unit test|repo|repository|git|bug|stack trace|traceback|refactor|function|class|"
+    r"component|frontend|backend|compile|package\.json|npm|pip|uvicorn"
+    r")\b",
+    re.IGNORECASE,
+)
+
+
+def should_keep_task_local(
+    task_description: str,
+    task_type: str = "",
+    required_capabilities: Optional[List[str]] = None,
+    preferred_software: Optional[List[str]] = None,
+) -> tuple[bool, str]:
+    """Return True when auto-node dispatch should not steal a local code task."""
+    desc = (task_description or "").lower()
+    ttype = (task_type or "").lower()
+    required = {str(cap).lower() for cap in (required_capabilities or [])}
+    preferred = {str(sw).lower() for sw in (preferred_software or [])}
+
+    explicit_cad = (
+        ttype.startswith(CAD_REMOTE_TASK_PREFIXES)
+        or any(word in desc for word in CAD_REMOTE_KEYWORDS)
+        or bool(required.intersection({"cad", "3d-modeling", "rhino", "solidworks", "blender"}))
+        or bool(preferred.intersection({"rhino", "grasshopper", "solidworks", "blender"}))
+    )
+    explicit_remote = any(word in desc for word in REMOTE_DISPATCH_KEYWORDS)
+
+    if explicit_cad or explicit_remote:
+        return False, ""
+
+    if ttype in LOCAL_SOFTWARE_TASK_TYPES:
+        return True, f"job type '{ttype}' is local-software work unless a target node is explicit"
+
+    if SOFTWARE_CODE_RE.search(desc):
+        return True, "description looks like a software/code task, not a CAD or remote-worker job"
+
+    return False, ""
 
 
 # ── Data Models ──────────────────────────────────────────────────────────
@@ -432,6 +520,15 @@ class NodeManager:
         if not nodes:
             return None
 
+        keep_local, reason = should_keep_task_local(
+            task_description,
+            required_capabilities=required_capabilities,
+            preferred_software=preferred_software,
+        )
+        if keep_local:
+            logger.info("Node auto-selection skipped: %s", reason)
+            return None
+
         # Build a set of required capabilities from the description
         required = set(required_capabilities or [])
         preferred = set(sw.lower() for sw in (preferred_software or []))
@@ -485,6 +582,23 @@ class NodeManager:
         if node_id:
             target_node = self.get_node(node_id)
         else:
+            keep_local, reason = should_keep_task_local(
+                task_description,
+                task_type=task_type,
+                required_capabilities=required_capabilities,
+                preferred_software=preferred_software,
+            )
+            if keep_local:
+                return {
+                    "ok": False,
+                    "error": (
+                        "This looks like a local software/code task, so Edison did not send it "
+                        f"to a CAD or worker node automatically ({reason}). Choose a specific "
+                        "node only when you really want remote execution."
+                    ),
+                    "routing_guard": "software_code_local",
+                    "local_recommended": True,
+                }
             target_node = self.find_best_node_for_task(
                 task_description,
                 required_capabilities=required_capabilities,

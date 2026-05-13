@@ -131,6 +131,17 @@ body.ws-shell-enabled .ws-page-hero {
     line-height: 1.65;
 }
 
+.ws-page-guidance {
+    margin-top: 14px;
+    padding: 11px 12px;
+    border: 1px solid rgba(24, 181, 143, 0.24);
+    border-radius: 12px;
+    background: rgba(24, 181, 143, 0.1);
+    color: var(--text-primary, var(--ws-shell-text));
+    font-size: 13px;
+    line-height: 1.45;
+}
+
 .ws-page-highlights {
     display: flex;
     flex-wrap: wrap;
@@ -373,6 +384,37 @@ body.ws-shell-enabled .ws-page-hero {
     font: inherit;
 }
 
+.ws-shell-jump-wrap {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid rgba(166, 188, 212, 0.16);
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.03);
+    color: var(--ws-shell-muted);
+    font-size: 11px;
+    font-weight: 800;
+    white-space: nowrap;
+}
+
+.ws-shell-jump {
+    min-width: 130px;
+    border: 0;
+    border-radius: 999px;
+    padding: 7px 28px 7px 10px;
+    background: rgba(255, 255, 255, 0.12);
+    color: var(--ws-shell-text);
+    font: inherit;
+    font-size: 12px;
+    cursor: pointer;
+}
+
+.ws-shell-jump:focus {
+    outline: 2px solid rgba(24, 181, 143, 0.55);
+    outline-offset: 2px;
+}
+
 .ws-shell-tool.primary {
     color: #04111a;
     border-color: transparent;
@@ -405,6 +447,10 @@ body.ws-shell-enabled .mobile-header {
 }
 
 @media (max-width: 1100px) {
+    :root {
+        --ws-shell-height: 170px;
+    }
+
     .ws-shell-inner {
         grid-template-columns: 1fr;
         gap: 12px;
@@ -430,7 +476,7 @@ body.ws-shell-enabled .mobile-header {
 
 @media (max-width: 768px) {
     :root {
-        --ws-shell-height: 88px;
+        --ws-shell-height: 190px;
     }
 
     body.ws-shell-enabled {
@@ -456,6 +502,11 @@ body.ws-shell-enabled .mobile-header {
 
     .ws-shell-nav {
         padding-bottom: 2px;
+    }
+
+    .ws-shell-jump-wrap,
+    .ws-shell-jump {
+        width: 100%;
     }
 
     .ws-shell-link,

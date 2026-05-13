@@ -186,8 +186,9 @@
                 { label: 'Focus', value: 'Remote execution' },
                 { label: 'Supports', value: 'Printing + CAD tasks' }
             ],
-            prompt: 'Review the nodes workspace and recommend UI improvements for node status, health, and distributed job control.',
-            mode: 'code',
+            guidance: 'Auto-dispatch is for explicit remote CAD, render, fabrication, or worker-node jobs. Software coding stays local unless you pick a node on purpose.',
+            prompt: 'Review the nodes workspace and help me inspect remote worker health, CAD readiness, and queued node tasks without dispatching any software coding work.',
+            mode: 'work',
             secondaryHref: '/printing',
             secondaryLabel: 'Open Printing'
         },
@@ -226,11 +227,18 @@
         return pages.map((page) => {
             const active = page.key === activeKey ? ' active' : '';
             return [
-                '<a class="ws-shell-link', active, '" href="', page.href, '">',
+                '<a class="ws-shell-link', active, '" href="', page.href, '" title="Open ', page.label, ' workspace">',
                 '<span class="ws-shell-link-icon">', page.icon, '</span>',
                 '<span>', page.label, '</span>',
                 '</a>'
             ].join('');
+        }).join('');
+    }
+
+    function renderWorkspaceOptions(activeKey) {
+        return pages.map((page) => {
+            const active = page.key === activeKey ? ' selected' : '';
+            return ['<option value="', page.href, '"', active, '>', page.label, '</option>'].join('');
         }).join('');
     }
 
@@ -249,6 +257,33 @@
                 '</div>'
             ].join('');
         }).join('');
+    }
+
+    function renderGuidance(page) {
+        if (!page || !page.guidance) {
+            return '';
+        }
+        return ['<div class="ws-page-guidance">', page.guidance, '</div>'].join('');
+    }
+
+    function renderShellRail(page) {
+        const current = page || pages[0];
+        return [
+            '<nav class="ws-shell-rail" aria-label="EDISON workspace navigation">',
+            '<div class="ws-shell-inner">',
+            '<a class="ws-shell-brand" href="/" title="Open EDISON chat">',
+            '<span class="ws-shell-brand-mark">E</span>',
+            '<span class="ws-shell-brand-copy"><strong>EDISON</strong><span>', current.label, ' workspace</span></span>',
+            '</a>',
+            '<div class="ws-shell-nav" aria-label="Workspace links">', renderNav(current.key), '</div>',
+            '<div class="ws-shell-tools">',
+            '<label class="ws-shell-jump-wrap"><span>Workspace</span><select class="ws-shell-jump" aria-label="Jump to workspace">', renderWorkspaceOptions(current.key), '</select></label>',
+            '<a class="ws-shell-tool" href="/?panel=file-manager" title="Open file manager"><span class="ws-shell-tool-icon">F</span><span>Files</span></a>',
+            '<a class="ws-shell-tool primary" href="/?new=1" title="Start a new chat"><span class="ws-shell-tool-icon">+</span><span>New Chat</span></a>',
+            '</div>',
+            '</div>',
+            '</nav>'
+        ].join('');
     }
 
     function buildChatHref(prompt, mode) {
@@ -273,10 +308,11 @@
             '<span class="ws-page-kicker">', page.heroKicker || page.label, '</span>',
             '<h2>', page.heroTitle || page.label, '</h2>',
             '<p>', page.heroDescription || '', '</p>',
+            renderGuidance(page),
             '<div class="ws-page-highlights">', renderHeroHighlights(page), '</div>',
             '<div class="ws-page-actions">',
-            '<a class="ws-page-btn primary" href="', buildChatHref(page.prompt, page.mode), '">Ask In Chat</a>',
-            '<a class="ws-page-btn" href="/?panel=file-manager">Open Files</a>',
+            '<a class="ws-page-btn primary" href="', buildChatHref(page.prompt, page.mode), '" title="Prefill chat with this workspace context">Ask Edison</a>',
+            '<a class="ws-page-btn" href="/?panel=file-manager" title="Open the workspace file browser">Open Files</a>',
             page.secondaryHref && page.secondaryLabel
                 ? ['<a class="ws-page-btn subtle" href="', page.secondaryHref, '">', page.secondaryLabel, '</a>'].join('')
                 : '',
@@ -303,10 +339,10 @@
             '<div class="ws-workspace-ribbon-main">',
             '<span class="ws-workspace-ribbon-kicker">EDISON Workspace Layer <b>v3</b></span>',
             '<h2>', page.label, ' workspace is active</h2>',
-            '<p>Launch actions directly from this page or jump back to chat with a prefilled prompt.</p>',
+            '<p>', page.guidance || 'Launch actions directly from this page or jump back to chat with a prefilled prompt.', '</p>',
             '</div>',
             '<div class="ws-workspace-ribbon-actions">',
-            '<a class="ws-page-btn primary" href="', buildChatHref(page.prompt, page.mode), '">Ask In Chat</a>',
+            '<a class="ws-page-btn primary" href="', buildChatHref(page.prompt, page.mode), '">Ask Edison</a>',
             '<a class="ws-page-btn" href="/?panel=file-manager">Open Files</a>',
             '<a class="ws-page-btn subtle" href="/?new=1">Start New Chat</a>',
             '</div>',
@@ -451,6 +487,18 @@
         }
     }
 
+    function wireShellRailActions() {
+        const jump = document.querySelector('.ws-shell-jump');
+        if (jump && !jump.dataset.bound) {
+            jump.dataset.bound = '1';
+            jump.addEventListener('change', function () {
+                if (jump.value) {
+                    window.location.href = jump.value;
+                }
+            });
+        }
+    }
+
     function initShell() {
         if (!document.body || document.body.dataset.workspaceShell === 'off' || document.querySelector('.ws-shell-rail')) {
             return;
@@ -459,7 +507,10 @@
         const currentPath = normalizePath(window.location.pathname);
         const currentPage = resolvePage(currentPath);
 
+        document.body.classList.add('ws-shell-enabled');
         document.body.dataset.wsPage = currentPage.key;
+        document.body.insertAdjacentHTML('afterbegin', renderShellRail(currentPage));
+        wireShellRailActions();
         if (currentPage.key !== 'chat') {
             const topbar = document.querySelector('.topbar');
             if (topbar && !document.querySelector('.ws-workspace-ribbon')) {

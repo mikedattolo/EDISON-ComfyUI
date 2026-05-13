@@ -11,6 +11,8 @@ import re
 from dataclasses import dataclass, field
 from typing import List, Optional
 
+from ..response_guard import sanitize_assistant_response
+
 logger = logging.getLogger(__name__)
 
 
@@ -121,7 +123,7 @@ def clean_response(response: str) -> str:
     - Close unclosed code blocks
     - Strip trailing whitespace
     """
-    cleaned = response.strip()
+    cleaned = sanitize_assistant_response(response)
 
     # Remove leaked tool call JSON at the start
     if cleaned.startswith('{"tool":'):

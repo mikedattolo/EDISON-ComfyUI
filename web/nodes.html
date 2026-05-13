@@ -85,6 +85,16 @@
     }
     .delegate-form input:focus, .delegate-form select:focus, .delegate-form textarea:focus { outline:none; border-color:var(--accent); }
     .delegate-form textarea { min-height:60px; resize:vertical; }
+    .route-note {
+      border:1px solid rgba(36,154,107,.22);
+      background:rgba(36,154,107,.08);
+      color:var(--ok);
+      border-radius:10px;
+      padding:9px 10px;
+      font-size:12px;
+      line-height:1.4;
+      margin-bottom:12px;
+    }
     .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,.35); z-index:100; justify-content:center; align-items:center; }
     .modal-overlay.active { display:flex; }
     .modal { background:var(--panel); border-radius:16px; box-shadow:0 20px 60px rgba(0,0,0,.2); padding:24px; width:540px; max-width:90vw; max-height:85vh; overflow-y:auto; position:relative; }
@@ -189,7 +199,8 @@ python edison_node_agent.py --server 192.168.1.X --name "CAD-Laptop" --role cad<
 
     <div class="card">
       <h2>&#9889; Quick Delegate</h2>
-      <p style="font-size:12px;color:var(--muted);margin:0 0 12px;">Describe what you need &mdash; EDISON picks the best available node automatically.</p>
+      <p style="font-size:12px;color:var(--muted);margin:0 0 8px;">Describe a CAD, fabrication, render, or remote-worker job. Normal coding and repo fixes stay local in chat/code mode.</p>
+      <div class="route-note">Auto-select only dispatches clear remote work. Pick a specific node when you intentionally want a machine to run it.</div>
       <div class="delegate-form">
         <div>
           <label>What do you need done?</label>
@@ -257,6 +268,7 @@ python edison_node_agent.py --server 192.168.1.X --name "CAD-Laptop" --role cad<
   <div class="modal">
     <button class="close-btn" onclick="closeDelegateModal()">&#10005;</button>
     <h2>&#9889; Delegate Task to Node</h2>
+    <div class="route-note" style="margin-bottom:12px;">Use this for Rhino, SolidWorks, Blender, CAD export, or explicit remote node tasks. Software coding requests are guarded from accidental CAD dispatch.</div>
     <div class="delegate-form" style="margin-top:4px;">
       <div>
         <label>Task Description (used for auto-routing)</label>
@@ -314,6 +326,11 @@ python edison_node_agent.py --server 192.168.1.X --name "CAD-Laptop" --role cad<
 const API = window.location.origin;
 async function fetchJSON(url,opts={}){ const r=await fetch(API+url,{headers:{'Content-Type':'application/json'},...opts}); return r.json(); }
 function esc(s){ const d=document.createElement('div'); d.textContent=String(s??''); return d.innerHTML; }
+function apiMessage(d){
+  const detail=d?.detail;
+  if(detail && typeof detail==='object') return detail.error||JSON.stringify(detail);
+  return detail||d?.error||'Unknown error';
+}
 function toast(msg,type='ok'){
   const el=document.getElementById('toast');
   el.textContent=msg; el.className='show '+type;
@@ -461,8 +478,9 @@ async function submitDelegate(){
       document.getElementById('dlResult').innerHTML=`<span style="color:var(--ok);">&#10003; Dispatched to <strong>${esc(n.name||'node')}</strong></span><br><span style="color:var(--muted);font-size:10px;">Task ID: ${esc(d.task?.id)}</span>`;
       toast('Task sent to '+(n.name||'node'),'ok'); refreshTasks();
     } else {
-      document.getElementById('dlResult').innerHTML=`<span style="color:var(--bad);">&#10007; ${esc(d.detail||'Delegation failed')}</span>`;
-      toast(d.detail||'Delegation failed','err');
+      const msg=apiMessage(d);
+      document.getElementById('dlResult').innerHTML=`<span style="color:var(--bad);">&#10007; ${esc(msg)}</span>`;
+      toast(msg,'err');
     }
   }catch(e){ toast('Error: '+e.message,'err'); }
   btn.disabled=false; btn.textContent='&#9889; Delegate Task';
@@ -480,7 +498,7 @@ async function quickDelegate(){
   try{
     const d=await fetchJSON('/nodes/delegate',{method:'POST',body:JSON.stringify({task_description:desc||type,task_type:type,payload,node_id:nodeId||null})});
     if(d.success){ toast('Task sent to '+(d.node?.name||'node'),'ok'); document.getElementById('qdDesc').value=''; document.getElementById('qdPayload').value=''; refreshTasks(); }
-    else { toast(d.detail||'Delegation failed','err'); }
+    else { toast(apiMessage(d),'err'); }
   }catch(e){ toast('Error: '+e.message,'err'); }
   btn.disabled=false; btn.textContent='&#9889; Send Task';
 }
