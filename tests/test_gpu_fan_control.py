@@ -80,6 +80,46 @@ def test_apply_once_uses_control_backend(tmp_path):
     assert controller.applied_targets[0][0] == 1
 
 
+def test_nvidia_settings_supports_multiple_fans_per_gpu(monkeypatch, tmp_path):
+    import services.edison_core.gpu_fan_control as fans
+
+    captured = {}
+
+    class Result:
+        returncode = 0
+        stdout = ""
+        stderr = ""
+
+    def fake_run(command, **kwargs):
+        captured["command"] = command
+        captured["env"] = kwargs.get("env", {})
+        return Result()
+
+    monkeypatch.setattr(fans, "_find_binary", lambda name: "/usr/bin/nvidia-settings")
+    monkeypatch.setattr(fans.subprocess, "run", fake_run)
+
+    controller = fans.GpuFanController(
+        tmp_path,
+        {
+            "edison": {
+                "gpu_fan_control": {
+                    "display": ":0",
+                    "fan_index_map": {"2": [2, 3, 4]},
+                }
+            }
+        },
+    )
+
+    command = controller._apply_nvidia_settings(2, 45)
+
+    assert command == captured["command"]
+    assert captured["env"]["DISPLAY"] == ":0"
+    assert "[gpu:2]/GPUFanControlState=1" in command
+    assert "[fan:2]/GPUTargetFanSpeed=45" in command
+    assert "[fan:3]/GPUTargetFanSpeed=45" in command
+    assert "[fan:4]/GPUTargetFanSpeed=45" in command
+
+
 def test_diagnostics_explain_missing_container_gpu(monkeypatch, tmp_path):
     import services.edison_core.gpu_fan_control as fans
 

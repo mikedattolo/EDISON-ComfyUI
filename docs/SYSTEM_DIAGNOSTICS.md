@@ -26,7 +26,7 @@ After repair, `nvidia-smi` detected:
 - index 1: RTX 4060 Ti 16GB
 - index 2: RTX 3090 24GB
 
-PyTorch `2.6.0+cu124` can use the RTX 3090 and RTX 4060 Ti, but the RTX 5060 Ti reports `sm_120`, which is not supported by that PyTorch wheel family. Until Edison is upgraded to a PyTorch/CUDA build that supports `sm_120`, mask PyTorch services to the 3090 and 4060 Ti with `CUDA_VISIBLE_DEVICES` or equivalent service overrides.
+PyTorch `2.6.0+cu124` can use the RTX 3090 and RTX 4060 Ti, but the RTX 5060 Ti reports `sm_120`, which is not supported by that PyTorch wheel family. Until Edison is upgraded to a PyTorch/CUDA build that supports `sm_120`, mask PyTorch services to the 3090 and 4060 Ti with `CUDA_VISIBLE_DEVICES` or equivalent service overrides. When the CUDA allocation check is enabled, System Doctor treats a successful allocation as stronger evidence than the static architecture list, which avoids false alarms on cards that run correctly even if their architecture is not listed by `torch.cuda.get_arch_list()`.
 
 ## What Edison Can Fix Automatically
 

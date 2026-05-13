@@ -133,8 +133,8 @@ Key settings:
 - `poll_interval_s`: loop interval.
 - `telemetry_preference`: `nvml`, `nvidia-smi`, `sysfs`.
 - `control_preference`: `nvidia-settings`, `nvml`.
-- `fan_index_map`: maps GPU index to fan index.
 - `curve`: temperature-to-fan-percent points.
+- `fan_index_map`: maps each GPU index to one fan index or a list of fan indices. On the live Edison host, GPU 2 / RTX 3090 maps to fans `[2, 3, 4]`.
 - `gpu_overrides.4060`: zero-RPM spin-up guard for the 4060 Ti.
 - `zero_rpm_idle_temp_c`: below this, 0% fan can be treated as likely idle behavior.
 - `elevated_temp_c`: temperature where 0% fan becomes suspicious.

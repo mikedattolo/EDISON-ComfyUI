@@ -194,7 +194,7 @@ edison:
     fan_index_map:
       "0": 0
       "1": 1
-      "2": 2
+      "2": [2, 3, 4]
     deadband_percent: 3
     minimum_change_interval_s: 8
     min_fan_percent: 30

@@ -256,10 +256,6 @@ def collect_torch_cuda(run_allocation: bool = False) -> DiagnosticCheck:
                     "torch_arch_supported": arch_supported,
                 }
             )
-            if arch_supported is False:
-                warnings.append(
-                    f"cuda:{idx} {props.name} reports {arch}, which is not in this PyTorch build's supported CUDA architectures."
-                )
         except Exception as exc:
             device["properties_error"] = str(exc)
         if run_allocation:
@@ -271,6 +267,14 @@ def collect_torch_cuda(run_allocation: bool = False) -> DiagnosticCheck:
             except Exception as exc:
                 device["allocation_error"] = str(exc)
                 warnings.append(f"cuda:{idx} allocation failed: {exc}")
+        if device.get("torch_arch_supported") is False:
+            if device.get("allocation_test") is not None:
+                device["torch_arch_note"] = "Architecture is not listed by torch, but a CUDA allocation test succeeded."
+            else:
+                warnings.append(
+                    f"cuda:{idx} {device.get('name', 'GPU')} reports {device.get('torch_arch')}, "
+                    "which is not in this PyTorch build's supported CUDA architectures."
+                )
         details["devices"].append(device)
     expected_names = " ".join(str(d.get("name", "")) for d in details["devices"]).lower()
     for expected in ("3090", "5060", "4060"):

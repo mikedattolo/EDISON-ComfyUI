@@ -36,9 +36,9 @@ DEFAULT_CURVE = [
 ]
 
 DEFAULT_EXPECTED_GPUS = [
-    {"index": 0, "name_contains": "3090", "label": "RTX 3090 24GB"},
-    {"index": 1, "name_contains": "5060", "label": "RTX 5060 Ti 16GB"},
-    {"index": 2, "name_contains": "4060", "label": "RTX 4060 Ti 16GB"},
+    {"index": 0, "name_contains": "5060", "label": "RTX 5060 Ti 16GB"},
+    {"index": 1, "name_contains": "4060", "label": "RTX 4060 Ti 16GB"},
+    {"index": 2, "name_contains": "3090", "label": "RTX 3090 24GB"},
 ]
 
 
@@ -112,6 +112,16 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(float(str(value).strip()))
     except Exception:
         return default
+
+
+def _safe_int_list(value: Any, default: int = 0) -> List[int]:
+    if isinstance(value, (list, tuple, set)):
+        result = [_safe_int(item, default) for item in value]
+        return list(dict.fromkeys(result))
+    if isinstance(value, str) and "," in value:
+        result = [_safe_int(item, default) for item in value.split(",")]
+        return list(dict.fromkeys(result))
+    return [_safe_int(value, default)]
 
 
 def _clamp(value: float, lower: float, upper: float) -> float:
@@ -476,16 +486,16 @@ class GpuFanController:
         if not display:
             raise GpuFanControlError("DISPLAY is not set; nvidia-settings fan writes require Xorg")
         fan_map = self.config.get("fan_index_map") or {}
-        fan_index = _safe_int(fan_map.get(str(gpu_index), fan_map.get(gpu_index, gpu_index)), gpu_index)
+        fan_indices = _safe_int_list(fan_map.get(str(gpu_index), fan_map.get(gpu_index, gpu_index)), gpu_index)
         command = [
             binary,
             "-c",
             str(display),
             "-a",
             f"[gpu:{gpu_index}]/GPUFanControlState=1",
-            "-a",
-            f"[fan:{fan_index}]/GPUTargetFanSpeed={int(fan_percent)}",
         ]
+        for fan_index in fan_indices:
+            command.extend(["-a", f"[fan:{fan_index}]/GPUTargetFanSpeed={int(fan_percent)}"])
         env = os.environ.copy()
         env["DISPLAY"] = str(display)
         xauthority = self.config.get("xauthority") or os.environ.get("XAUTHORITY")
