@@ -20,6 +20,7 @@ from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional
 
 from .comfyui_integration import ComfyUIExecutionService, discover_workflow_templates, inject_workflow_variables
+from .comfyui_workers import ComfyUIWorkerRegistry
 
 
 @dataclass(frozen=True)
@@ -297,9 +298,25 @@ class ComfyUITemplatePersonaBackend(PersonaTransformBackend):
         }
         workflow = inject_workflow_variables(template.workflow, variables)
         comfy_cfg = (self.config.get("comfyui") or self.config.get("comfyui_backend") or {})
-        base_url = str(comfy_cfg.get("base_url") or self.config.get("comfyui_base_url") or "http://127.0.0.1:8188")
+        worker_selection = None
+        if comfy_cfg.get("workers_enabled"):
+            worker_selection = ComfyUIWorkerRegistry.from_config({"edison": {"comfyui": comfy_cfg}}).select(
+                job_type="persona_video",
+                params={"estimated_vram_mb": template.capability_metadata.get("estimated_vram_mb", 12000)},
+                gpu_assignment=gpu_assignment,
+            )
+            base_url = worker_selection.base_url
+        else:
+            base_url = str(comfy_cfg.get("base_url") or self.config.get("comfyui_base_url") or "http://127.0.0.1:8188")
         service = ComfyUIExecutionService(base_url=base_url, timeout_s=float(self.config.get("comfyui_timeout_s", 10)))
-        submit = service.submit(workflow, extra_data={"edison_job_id": job.get("job_id"), "segment_id": segment.get("segment_id")})
+        submit = service.submit(
+            workflow,
+            extra_data={
+                "edison_job_id": job.get("job_id"),
+                "segment_id": segment.get("segment_id"),
+                "comfyui_worker": worker_selection.to_dict() if worker_selection else None,
+            },
+        )
         if not submit.get("ok"):
             return {
                 "ok": False,
@@ -319,6 +336,7 @@ class ComfyUITemplatePersonaBackend(PersonaTransformBackend):
                 "backend": self.backend_id,
                 "workflow_template": template.to_dict(),
                 "prompt_id": submit.get("prompt_id"),
+                "comfyui_worker": worker_selection.to_dict() if worker_selection else None,
                 "poll": poll,
                 "error": "ComfyUI completed or returned state, but the expected output_path was not created.",
             }
@@ -327,6 +345,7 @@ class ComfyUITemplatePersonaBackend(PersonaTransformBackend):
             "backend": self.backend_id,
             "workflow_template": template.to_dict(),
             "prompt_id": submit.get("prompt_id"),
+            "comfyui_worker": worker_selection.to_dict() if worker_selection else None,
             "output_path": str(output_segment),
             "poll": poll,
             "gpu_assignment": gpu_assignment or {},

@@ -1,0 +1,6 @@
+[Unit]
+Description=EDISON auxiliary per-GPU ComfyUI workers
+Documentation=file:/opt/edison/docs/COMFYUI_GPU_WORKERS.md
+
+[Install]
+WantedBy=multi-user.target

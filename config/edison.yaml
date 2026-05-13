@@ -135,6 +135,51 @@ edison:
     host: "127.0.0.1"
     port: 8188
     auto_start: true
+    # Per-GPU workers keep VRAM pools honest. They do not pool the cards into
+    # one 56GB device; Edison dispatches separate jobs/segments to separate
+    # ComfyUI processes.
+    workers_enabled: true
+    worker_selection_strategy: "least_busy_weighted"
+    workers:
+      - id: "rtx3090-primary"
+        display_name: "RTX 3090 primary ComfyUI worker"
+        host: "127.0.0.1"
+        port: 8188
+        gpu_index: 2
+        gpu_uuid: "GPU-e797f13e-d3aa-c5e8-259e-6db5a3d9218a"
+        gpu_name: "NVIDIA GeForce RTX 3090"
+        cuda_visible_devices: "GPU-e797f13e-d3aa-c5e8-259e-6db5a3d9218a"
+        role: "primary"
+        total_vram_mb: 24576
+        usable_vram_mb: 22000
+        max_parallel_jobs: 1
+        preferred_for: ["image", "mesh", "video", "persona_video"]
+      - id: "rtx5060ti-aux"
+        display_name: "RTX 5060 Ti auxiliary ComfyUI worker"
+        host: "127.0.0.1"
+        port: 8189
+        gpu_index: 0
+        gpu_uuid: "GPU-e8afa8d5-5fa4-ef1e-256c-9bfd5e18b3ff"
+        gpu_name: "NVIDIA GeForce RTX 5060 Ti"
+        cuda_visible_devices: "GPU-e8afa8d5-5fa4-ef1e-256c-9bfd5e18b3ff"
+        role: "auxiliary"
+        total_vram_mb: 16311
+        usable_vram_mb: 14500
+        max_parallel_jobs: 1
+        preferred_for: ["image", "persona_video"]
+      - id: "rtx4060ti-aux"
+        display_name: "RTX 4060 Ti auxiliary ComfyUI worker"
+        host: "127.0.0.1"
+        port: 8190
+        gpu_index: 1
+        gpu_uuid: "GPU-96756604-4e43-2827-974b-4eb399be933f"
+        gpu_name: "NVIDIA GeForce RTX 4060 Ti"
+        cuda_visible_devices: "GPU-96756604-4e43-2827-974b-4eb399be933f"
+        role: "auxiliary"
+        total_vram_mb: 16380
+        usable_vram_mb: 14500
+        max_parallel_jobs: 1
+        preferred_for: ["image", "persona_video"]
   
   video:
     # CogVideoX via HuggingFace diffusers (primary backend)
@@ -170,7 +215,7 @@ edison:
       "0": 10000
       "1": 10000
       "2": 18000
-    maximum_concurrent_segment_workers: 2
+    maximum_concurrent_segment_workers: 3
     automatic_failed_segment_rerender_threshold: 0.55
     qc_thresholds:
       minimum_segment_score: 0.60

@@ -10,7 +10,7 @@ The report includes:
 - Python executable and AI package versions
 - PyTorch import, CUDA availability, CUDA runtime version, GPU count, device names, supported CUDA architectures, and optional per-device allocation
 - FFmpeg/FFprobe/Whisper binary readiness
-- ComfyUI queue reachability and Persona workflow template library status
+- ComfyUI queue reachability, per-GPU worker health, and Persona workflow template library status
 - output/upload/temp path writability
 - GPU cooling/fan-health summary
 
@@ -26,7 +26,9 @@ After repair, `nvidia-smi` detected:
 - index 1: RTX 4060 Ti 16GB
 - index 2: RTX 3090 24GB
 
-PyTorch `2.6.0+cu124` can use the RTX 3090 and RTX 4060 Ti, but the RTX 5060 Ti reports `sm_120`, which is not supported by that PyTorch wheel family. Until Edison is upgraded to a PyTorch/CUDA build that supports `sm_120`, mask PyTorch services to the 3090 and 4060 Ti with `CUDA_VISIBLE_DEVICES` or equivalent service overrides. When the CUDA allocation check is enabled, System Doctor treats a successful allocation as stronger evidence than the static architecture list, which avoids false alarms on cards that run correctly even if their architecture is not listed by `torch.cuda.get_arch_list()`.
+Edison core and ComfyUI were upgraded to PyTorch `2.11.0+cu130`. CUDA allocation was validated on all three cards, including the RTX 5060 Ti `sm_120`. When the CUDA allocation check is enabled, System Doctor treats a successful allocation as stronger evidence than the static architecture list, which avoids false alarms on cards that run correctly even if their architecture is not listed by `torch.cuda.get_arch_list()`.
+
+ComfyUI worker routing is now the preferred multi-GPU strategy. The doctor report includes worker-pool health so it can show whether `8188`, `8189`, and `8190` are reachable.
 
 ## What Edison Can Fix Automatically
 

@@ -1,0 +1,20 @@
+[Unit]
+Description=EDISON ComfyUI GPU Worker %i
+Documentation=file:/opt/edison/docs/COMFYUI_GPU_WORKERS.md
+After=network.target nvidia-persistenced.service
+PartOf=edison-comfyui-workers.target
+
+[Service]
+Type=simple
+User=edison
+WorkingDirectory=/opt/edison/ComfyUI
+Environment="PATH=/opt/edison/ComfyUI/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
+Environment="PYTHONUNBUFFERED=1"
+Environment="CUDA_DEVICE_ORDER=PCI_BUS_ID"
+EnvironmentFile=/etc/edison/comfyui-workers/%i.env
+ExecStart=/opt/edison/ComfyUI/venv/bin/python main.py --listen ${EDISON_COMFYUI_LISTEN} --port ${EDISON_COMFYUI_PORT}
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

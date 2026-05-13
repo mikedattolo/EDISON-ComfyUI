@@ -1520,6 +1520,7 @@ def _normalize_config(config: Dict[str, Any]) -> Dict[str, Any]:
         "comfyui_base_url": persona_cfg.get("comfyui_base_url", "http://127.0.0.1:8188"),
         "comfyui_poll_timeout_s": persona_cfg.get("comfyui_poll_timeout_s", 900),
         "comfyui_poll_interval_s": persona_cfg.get("comfyui_poll_interval_s", 2),
+        "comfyui": edison_cfg.get("comfyui", {}),
     }
 
 

@@ -18,6 +18,7 @@ from typing import Any, Dict, Iterable, List, Optional
 import requests
 
 from .comfyui_integration import discover_workflow_templates, summarize_template_library
+from .comfyui_workers import ComfyUIWorkerRegistry
 from .cooling_diagnostics import aggregate_cooling_health, classify_cooling_health
 from .gpu_fan_control import GpuFanController, load_yaml_config
 
@@ -323,6 +324,13 @@ def collect_comfyui(repo_root: Path, config: Dict[str, Any]) -> DiagnosticCheck:
         reachable = bool(response.ok)
     except Exception as exc:
         detail["error"] = str(exc)
+    try:
+        worker_health = ComfyUIWorkerRegistry.from_config(config).health()
+        detail["worker_pool"] = worker_health
+        if worker_health.get("workers_enabled"):
+            reachable = int(worker_health.get("reachable_count") or 0) > 0
+    except Exception as exc:
+        detail["worker_pool_error"] = str(exc)
     workflow_dir = repo_root / "config" / "persona_video" / "comfyui_workflows"
     templates = discover_workflow_templates(workflow_dir)
     detail["workflow_library"] = summarize_template_library(templates)
@@ -331,9 +339,9 @@ def collect_comfyui(repo_root: Path, config: Dict[str, Any]) -> DiagnosticCheck:
         key="comfyui",
         title="ComfyUI",
         status=status,
-        summary="ComfyUI queue endpoint is reachable." if reachable else "ComfyUI is not reachable from Edison.",
+        summary="At least one ComfyUI queue endpoint is reachable." if reachable else "ComfyUI is not reachable from Edison.",
         details=detail,
-        recommended_fix="Start ComfyUI and verify edison.comfyui host/port. Install required custom nodes/models for workflow templates."
+        recommended_fix="Start ComfyUI workers and verify edison.comfyui host/port. Install required custom nodes/models for workflow templates."
         if not reachable or not templates
         else "",
     )

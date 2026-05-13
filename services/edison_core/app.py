@@ -43,6 +43,7 @@ from .vision_reliability import (
     prepare_vision_image,
     vision_grounding_system_prompt,
 )
+from .comfyui_workers import ComfyUIWorkerRegistry, normalize_base_url
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -1473,21 +1474,20 @@ def _comfyui_base_url(override: Optional[str] = None) -> str:
         raw = str(override).strip()
         if not raw:
             return _comfyui_base_url(None)
-        if "://" not in raw:
-            raw = f"http://{raw}"
-        parsed = urllib.parse.urlparse(raw)
+        parsed = urllib.parse.urlparse(raw if "://" in raw else f"http://{raw}")
         scheme = (parsed.scheme or "http").lower()
         host = parsed.hostname or "127.0.0.1"
         if host in {"0.0.0.0", "::"}:
             host = "127.0.0.1"
         port = f":{parsed.port}" if parsed.port else ""
         return f"{scheme}://{host}{port}"
-    comfyui_config = config.get("edison", {}).get("comfyui", {})
+    cfg = config if isinstance(config, dict) else {}
+    comfyui_config = cfg.get("edison", {}).get("comfyui", {})
     comfyui_host = comfyui_config.get("host", "127.0.0.1")
     if comfyui_host == "0.0.0.0":
         comfyui_host = "127.0.0.1"
     comfyui_port = comfyui_config.get("port", 8188)
-    return f"http://{comfyui_host}:{comfyui_port}"
+    return normalize_base_url(None, host=comfyui_host, port=int(comfyui_port))
 
 
 def _comfyui_http_fallback_url(base_url: str, exc: Exception) -> Optional[str]:
@@ -1903,6 +1903,8 @@ _browser_cleanup_task = None
 _resource_cleanup_task = None
 _active_image_prompts: Dict[str, float] = {}
 _active_image_prompts_lock = threading.Lock()
+_comfyui_prompt_routes: Dict[str, Dict[str, Any]] = {}
+_comfyui_prompt_routes_lock = threading.Lock()
 _resource_manager = IdleResourceManager(idle_seconds=45.0) if IdleResourceManager else None
 
 
@@ -1973,7 +1975,66 @@ def _comfyui_queue_snapshot(comfyui_url: Optional[str] = None) -> Dict[str, Any]
         return {"reachable": False, "running": 0, "pending": 0, "idle": False}
 
 
-def _track_image_prompt(prompt_id: str) -> None:
+def _get_comfyui_worker_registry() -> ComfyUIWorkerRegistry:
+    return ComfyUIWorkerRegistry.from_config(config if isinstance(config, dict) else {})
+
+
+def _select_comfyui_worker(
+    *,
+    job_type: str = "image",
+    params: Optional[Dict[str, Any]] = None,
+    requested_worker: Optional[str] = None,
+    gpu_assignment: Optional[Dict[str, Any]] = None,
+) -> Any:
+    registry = _get_comfyui_worker_registry()
+    return registry.select(
+        job_type=job_type,
+        params=params or {},
+        requested_worker=requested_worker,
+        gpu_assignment=gpu_assignment,
+    )
+
+
+def _remember_comfyui_prompt(
+    prompt_id: str,
+    *,
+    comfyui_url: str,
+    job_type: str = "image",
+    worker_selection: Optional[Any] = None,
+) -> None:
+    if not prompt_id:
+        return
+    payload: Dict[str, Any] = {
+        "base_url": _comfyui_base_url(comfyui_url),
+        "job_type": job_type,
+        "created_at": time.time(),
+    }
+    if worker_selection is not None and hasattr(worker_selection, "to_dict"):
+        payload["worker_selection"] = worker_selection.to_dict()
+    with _comfyui_prompt_routes_lock:
+        _comfyui_prompt_routes[prompt_id] = payload
+
+
+def _comfyui_url_for_prompt(prompt_id: str, fallback: Optional[str] = None) -> str:
+    with _comfyui_prompt_routes_lock:
+        route = dict(_comfyui_prompt_routes.get(prompt_id) or {})
+    return _comfyui_base_url(route.get("base_url") or fallback)
+
+
+def _comfyui_prompt_route(prompt_id: str) -> Dict[str, Any]:
+    with _comfyui_prompt_routes_lock:
+        return dict(_comfyui_prompt_routes.get(prompt_id) or {})
+
+
+def _track_image_prompt(
+    prompt_id: str,
+    *,
+    comfyui_url: Optional[str] = None,
+    worker_selection: Optional[Any] = None,
+    job_type: str = "image",
+) -> None:
+    if comfyui_url:
+        _remember_comfyui_prompt(prompt_id, comfyui_url=comfyui_url, job_type=job_type, worker_selection=worker_selection)
     if _resource_manager is None:
         return
     with _active_image_prompts_lock:
@@ -1984,6 +2045,12 @@ def _track_image_prompt(prompt_id: str) -> None:
 def _complete_image_prompt(prompt_id: Optional[str] = None, mark_all: bool = False) -> int:
     completed = 0
     if _resource_manager is None:
+        if mark_all:
+            with _comfyui_prompt_routes_lock:
+                _comfyui_prompt_routes.clear()
+        elif prompt_id:
+            with _comfyui_prompt_routes_lock:
+                _comfyui_prompt_routes.pop(prompt_id, None)
         return completed
     with _active_image_prompts_lock:
         if mark_all:
@@ -1994,6 +2061,12 @@ def _complete_image_prompt(prompt_id: Optional[str] = None, mark_all: bool = Fal
             _active_image_prompts.pop(prompt_id, None)
         else:
             prompt_ids = []
+    if mark_all:
+        with _comfyui_prompt_routes_lock:
+            _comfyui_prompt_routes.clear()
+    elif prompt_id:
+        with _comfyui_prompt_routes_lock:
+            _comfyui_prompt_routes.pop(prompt_id, None)
     for _ in prompt_ids:
         _resource_manager.end_task("image_generation")
         completed += 1
@@ -5472,6 +5545,13 @@ except Exception as e:
         logger.info("✓ System diagnostics routes registered (direct import)")
     except Exception:
         logger.warning(f"⚠ System diagnostics routes not available: {e}")
+
+@app.get("/comfyui/workers")
+async def comfyui_workers_status():
+    """Return configured per-GPU ComfyUI workers and queue health."""
+
+    return {"ok": True, **_get_comfyui_worker_registry().health()}
+
 
 try:
     from .routes.phase1 import router as phase1_router
@@ -9007,6 +9087,7 @@ async def generate_image(request: dict):
         - ckpt_name (str): Checkpoint model filename
         - style_preset (str): auto|photo|cinematic|illustration|anime|concept_art
         - comfyui_url (str): Optional ComfyUI server URL
+        - comfyui_worker (str): Optional configured ComfyUI worker id
     """
     prompt_id = None
     try:
@@ -9022,6 +9103,7 @@ async def generate_image(request: dict):
         ckpt_name = request.get('ckpt_name', 'sd_xl_base_1.0.safetensors')
         style_preset = request.get('style_preset', 'auto')
         comfyui_url_override = request.get('comfyui_url')
+        comfyui_worker_override = request.get('comfyui_worker') or request.get('worker_id')
         
         if not prompt:
             raise HTTPException(status_code=400, detail="Prompt is required")
@@ -9078,10 +9160,33 @@ async def generate_image(request: dict):
             if unloaded_globals:
                 logger.info("Image generation preflight released global models: %s", ", ".join(unloaded_globals))
         
-        # Use provided ComfyUI URL or fall back to config
-        comfyui_url = _comfyui_base_url(comfyui_url_override)
+        worker_selection = None
+        worker_params = {
+            "width": width,
+            "height": height,
+            "steps": steps,
+            "style_preset": style_preset,
+            "ckpt_name": ckpt_name,
+        }
+        # Use provided ComfyUI URL, an explicitly requested worker, or the GPU-aware worker pool.
+        if comfyui_url_override:
+            comfyui_url = _comfyui_base_url(comfyui_url_override)
+        else:
+            worker_selection = _select_comfyui_worker(
+                job_type="image",
+                params=worker_params,
+                requested_worker=comfyui_worker_override,
+            )
+            comfyui_url = worker_selection.base_url
         if comfyui_url_override:
             logger.info(f"Using provided ComfyUI URL: {comfyui_url}")
+        elif worker_selection:
+            logger.info(
+                "Selected ComfyUI worker %s at %s for image generation (%s)",
+                worker_selection.worker.id,
+                comfyui_url,
+                worker_selection.reason,
+            )
         
         logger.info(f"Connecting to ComfyUI at: {comfyui_url}")
         
@@ -9117,13 +9222,19 @@ async def generate_image(request: dict):
             raise HTTPException(status_code=500, detail="No prompt_id returned from ComfyUI")
         
         logger.info(f"Image generation started, prompt_id: {prompt_id}")
-        _track_image_prompt(prompt_id)
+        _track_image_prompt(
+            prompt_id,
+            comfyui_url=comfyui_url,
+            worker_selection=worker_selection,
+            job_type="image",
+        )
         
         return {
             "status": "generating",
             "prompt_id": prompt_id,
             "message": "Image generation started. Check status with /image-status endpoint.",
             "comfyui_url": comfyui_url,
+            "comfyui_worker": worker_selection.to_dict() if worker_selection else None,
             "settings": {
                 "seed": workflow["3"]["inputs"]["seed"],
                 "steps": steps,
@@ -9169,13 +9280,8 @@ async def generate_image(request: dict):
 async def image_status(prompt_id: str, auto_save: bool = True):
     """Check the status of an image generation and optionally auto-save to gallery"""
     try:
-        comfyui_config = config.get("edison", {}).get("comfyui", {})
-        comfyui_host = comfyui_config.get("host", "127.0.0.1")
-        # Never use 0.0.0.0 for client connections
-        if comfyui_host == "0.0.0.0":
-            comfyui_host = "127.0.0.1"
-        comfyui_port = comfyui_config.get("port", 8188)
-        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        comfyui_url = _comfyui_url_for_prompt(prompt_id)
+        prompt_route = _comfyui_prompt_route(prompt_id)
         
         # Check history for this prompt
         response = requests.get(f"{comfyui_url}/history/{prompt_id}", timeout=5)
@@ -9219,7 +9325,9 @@ async def image_status(prompt_id: str, auto_save: bool = True):
                         "status": "completed",
                         "image_url": image_url,
                         "filename": filename,
-                        "message": "Image generated successfully"
+                        "message": "Image generated successfully",
+                        "comfyui_url": comfyui_url,
+                        "comfyui_worker": prompt_route.get("worker_selection"),
                     }
                     
                     # Auto-save to gallery if requested (default=True)
@@ -13181,7 +13289,20 @@ async def edit_image(request: Request):
         auto_mask = bool(params.get("auto_mask", True))
         auto_refine = bool(params.get("auto_refine", True))
         auto_save_gallery = bool(params.get("auto_save_gallery", True))
-        comfyui_url = params.get("comfyui_url", "http://127.0.0.1:8188")
+        if params.get("comfyui_url"):
+            comfyui_url = _comfyui_base_url(params.get("comfyui_url"))
+        else:
+            edit_worker = _select_comfyui_worker(
+                job_type="image",
+                params={
+                    "width": params.get("width", 1024),
+                    "height": params.get("height", 1024),
+                    "steps": params.get("steps", 22),
+                    "refine": bool(auto_refine),
+                },
+                requested_worker=params.get("comfyui_worker") or params.get("worker_id"),
+            )
+            comfyui_url = edit_worker.base_url
         route = _route_image_edit(edit_type, prompt, bool(mask_path))
 
         # Resolve file_id to path
@@ -13546,12 +13667,12 @@ async def mc_generate_texture(request: Request):
 
     # ── AI path (via ComfyUI) ─────────────────────────────────
     try:
-        comfyui_config = config.get("edison", {}).get("comfyui", {})
-        comfyui_host = comfyui_config.get("host", "127.0.0.1")
-        if comfyui_host == "0.0.0.0":
-            comfyui_host = "127.0.0.1"
-        comfyui_port = comfyui_config.get("port", 8188)
-        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        mc_worker = _select_comfyui_worker(
+            job_type="image",
+            params={"width": 512, "height": 512, "steps": 20},
+            requested_worker=body.get("comfyui_worker") or body.get("worker_id"),
+        )
+        comfyui_url = mc_worker.base_url
 
         pos_prompt, neg_prompt = build_minecraft_prompt(prompt, texture_type, style, size)
         # Use 512×512 for AI gen regardless of target — will be post-processed down
@@ -13572,6 +13693,8 @@ async def mc_generate_texture(request: Request):
             "make_tileable": make_tile,
             "dither": dither,
             "prompt": prompt,
+            "comfyui_url": comfyui_url,
+            "comfyui_worker": mc_worker.to_dict(),
         }
         logger.info(f"Minecraft AI texture queued: prompt_id={prompt_id}")
         return {"status": "generating", "prompt_id": prompt_id}
@@ -13607,12 +13730,7 @@ async def mc_texture_status(prompt_id: str):
         return {"status": "not_found", "detail": "Unknown prompt_id"}
 
     try:
-        comfyui_config = config.get("edison", {}).get("comfyui", {})
-        comfyui_host = comfyui_config.get("host", "127.0.0.1")
-        if comfyui_host == "0.0.0.0":
-            comfyui_host = "127.0.0.1"
-        comfyui_port = comfyui_config.get("port", 8188)
-        comfyui_url = f"http://{comfyui_host}:{comfyui_port}"
+        comfyui_url = _comfyui_base_url(meta.get("comfyui_url"))
 
         history_resp = requests.get(f"{comfyui_url}/history/{prompt_id}", timeout=5)
         if not history_resp.ok:

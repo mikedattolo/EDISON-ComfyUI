@@ -88,6 +88,7 @@
       if (details.python) detailBits.push(`Python: ${details.python}`);
       if (details.path) detailBits.push(`Path: ${details.path}`);
       if (Array.isArray(details.gpus)) detailBits.push(`GPUs: ${details.gpus.length}`);
+      if (details.worker_pool) detailBits.push(`ComfyUI workers: ${details.worker_pool.reachable_count || 0}/${details.worker_pool.worker_count || 0} reachable`);
       if (details.cuda_available !== undefined) detailBits.push(`CUDA available: ${details.cuda_available}`);
       if (details.torch_cuda_version) detailBits.push(`Torch CUDA: ${details.torch_cuda_version}`);
       return `<article class="check-card ${tone}">

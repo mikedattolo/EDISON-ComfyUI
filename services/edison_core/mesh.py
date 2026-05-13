@@ -13,6 +13,8 @@ import uuid
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from .comfyui_workers import ComfyUIWorkerRegistry
+
 logger = logging.getLogger(__name__)
 
 REPO_ROOT = Path(__file__).parent.parent.parent.resolve()
@@ -28,8 +30,10 @@ class MeshGenerationService:
     """
 
     def __init__(self, config: Dict[str, Any]):
+        self.config = config
         mesh_cfg = config.get("edison", {}).get("mesh", {})
         comfyui_cfg = config.get("edison", {}).get("comfyui", {})
+        self.worker_registry = ComfyUIWorkerRegistry.from_config(config)
 
         host = comfyui_cfg.get("host", "127.0.0.1")
         if host == "0.0.0.0":
@@ -47,6 +51,10 @@ class MeshGenerationService:
         """Check if 3D generation backend is available."""
         try:
             import requests
+            health = self.worker_registry.health()
+            if int(health.get("reachable_count") or 0) > 0:
+                self._available = True
+                return
             resp = requests.get(f"{self.comfyui_url}/system_stats", timeout=3)
             self._available = resp.status_code == 200
         except Exception:
@@ -108,10 +116,12 @@ class MeshGenerationService:
 
             # Build ComfyUI 3D workflow
             workflow = self._build_workflow(prompt, output_format, params)
+            worker = self.worker_registry.select(job_type="mesh", params=params)
+            comfyui_url = worker.base_url
 
             import requests
             resp = requests.post(
-                f"{self.comfyui_url}/prompt",
+                f"{comfyui_url}/prompt",
                 json={"prompt": workflow},
                 timeout=30,
             )
@@ -120,6 +130,8 @@ class MeshGenerationService:
 
             prompt_id = comfy_result.get("prompt_id", "")
             result["prompt_id"] = prompt_id
+            result["comfyui_url"] = comfyui_url
+            result["comfyui_worker"] = worker.to_dict()
             result["status"] = "generating"
             return result
 
