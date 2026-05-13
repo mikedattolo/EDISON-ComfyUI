@@ -2,11 +2,22 @@
 """Unit tests for OpenAI multimodal message parsing and routing."""
 
 import asyncio
+import base64
+import io
 import sys
 
+import pytest
 from pydantic import ValidationError
 
 sys.path.insert(0, ".")
+
+
+def _tiny_png_data_uri():
+    from PIL import Image
+
+    buf = io.BytesIO()
+    Image.new("RGB", (2, 2), (255, 0, 0)).save(buf, format="PNG")
+    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
 
 
 class _FakeRawRequest:
@@ -37,7 +48,7 @@ def test_openai_message_accepts_multimodal_user_content():
     msg = OpenAIMessage(
         role="user",
         content=[
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+            {"type": "image_url", "image_url": {"url": _tiny_png_data_uri()}},
             {"type": "text", "text": "describe it"},
         ],
     )
@@ -85,7 +96,7 @@ def test_openai_chat_completion_preserves_multimodal_blocks_for_vision():
                 {
                     "role": "user",
                     "content": [
-                        {"type": "image_url", "image_url": {"url": "data:image/png;base64,ZmFrZQ=="}},
+                        {"type": "image_url", "image_url": {"url": _tiny_png_data_uri()}},
                         {"type": "text", "text": "describe it"},
                     ],
                 }
@@ -95,8 +106,10 @@ def test_openai_chat_completion_preserves_multimodal_blocks_for_vision():
         resp = asyncio.run(openai_chat_completions(_FakeRawRequest(), req))
 
         assert fake_vision.last_messages is not None
-        assert isinstance(fake_vision.last_messages[0]["content"], list)
-        assert fake_vision.last_messages[0]["content"][0]["type"] == "image_url"
+        user_msg = next(msg for msg in fake_vision.last_messages if msg["role"] == "user")
+        assert isinstance(user_msg["content"], list)
+        assert user_msg["content"][0]["type"] == "image_url"
+        assert fake_vision.last_messages[0]["role"] == "system"
         assert resp.choices[0].message["content"]
         assert resp.model.endswith("vision")
     finally:
@@ -150,8 +163,10 @@ def test_openai_chat_completion_stream_routes_to_vision_stream():
         assert captured["full_prompt"] is None
         assert captured["is_vision_chat"] is True
         assert isinstance(captured["chat_messages"], list)
-        assert isinstance(captured["chat_messages"][0]["content"], list)
-        assert captured["chat_messages"][0]["content"][0]["type"] == "image_url"
+        user_msg = next(msg for msg in captured["chat_messages"] if msg["role"] == "user")
+        assert isinstance(user_msg["content"], list)
+        assert user_msg["content"][0]["type"] == "image_url"
+        assert captured["chat_messages"][0]["role"] == "system"
     finally:
         app_mod.llm_vision = old_vision
         app_mod.llm_vision_code = old_vision_code
@@ -161,6 +176,7 @@ def test_openai_chat_completion_stream_routes_to_vision_stream():
 def test_vision_chat_handler_selection():
     """Verify _create_vision_chat_handler picks the correct handler class."""
     from services.edison_core.app import _create_vision_chat_handler
+    pytest.importorskip("llama_cpp")
     from llama_cpp.llama_chat_format import Llava15ChatHandler, Llava16ChatHandler
 
     # We can't actually instantiate handlers without a real CLIP file,

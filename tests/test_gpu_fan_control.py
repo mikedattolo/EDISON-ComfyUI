@@ -10,6 +10,7 @@ class FakeFanControllerMixin:
         self.applied_targets = []
 
     def read_gpus(self):
+        self._annotate_cooling_health(self.fake_readings)
         return self.fake_readings, []
 
     def _apply_nvidia_settings(self, gpu_index, fan_percent):
@@ -56,6 +57,8 @@ def test_dry_run_does_not_apply(tmp_path):
     result = controller.evaluate_once(apply=False)
 
     assert result["decisions"][0]["backend"] == "dry_run"
+    assert result["readings"][0]["cooling_health"]["state"] in {"normal", "manual_control_unavailable"}
+    assert result["cooling"]["gpu_count"] == 1
     assert controller.applied_targets == []
 
 

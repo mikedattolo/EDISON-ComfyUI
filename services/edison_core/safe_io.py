@@ -82,4 +82,21 @@ def read_json(path: PathLike, default: Any = None) -> Any:
         return default
 
 
-__all__ = ["atomic_write_text", "atomic_write_json", "read_json"]
+def resolve_safe_path(root: PathLike, user_path: PathLike, *, must_exist: bool = False) -> Path:
+    """Resolve ``user_path`` under ``root`` and reject traversal/outside paths."""
+    base = Path(root).resolve(strict=False)
+    candidate = Path(user_path)
+    if candidate.is_absolute():
+        resolved = candidate.resolve(strict=False)
+    else:
+        resolved = (base / candidate).resolve(strict=False)
+    try:
+        resolved.relative_to(base)
+    except ValueError as exc:
+        raise ValueError(f"Path traversal not allowed: {user_path}") from exc
+    if must_exist and not resolved.exists():
+        raise FileNotFoundError(str(resolved))
+    return resolved
+
+
+__all__ = ["atomic_write_text", "atomic_write_json", "read_json", "resolve_safe_path"]

@@ -43,6 +43,8 @@ Persona packs are registered in `config/integrations/persona_packs.json` and sup
 - notes
 - preferred backend compatibility
 - optional thumbnail/preview image
+- schema/version metadata, timestamps, tags, description, recommended scopes
+- validation badges for valid packs, missing files, or untested backend compatibility
 
 Register packs from the Persona Video Studio UI or `POST /api/persona-video/personas` through the web proxy.
 
@@ -80,7 +82,19 @@ A backend must implement:
 
 The included `metadata_only_passthrough` backend validates the pipeline without altering pixels. It is useful for smoke tests and report generation, but it is not a production identity transform.
 
-The `comfyui_persona_workflow` adapter becomes available when curated workflow JSON templates are placed under `config/persona_video/comfyui_workflows/`. Future templates should support variable injection for source segment/frame paths, persona reference/model paths, output paths, and device hints where supported.
+The `comfyui_persona_workflow` adapter discovers curated workflow JSON templates under `config/persona_video/comfyui_workflows/`. Edison validates template metadata, required placeholders, required nodes/models, and injects variables for source segment/frame paths, persona pack paths, output paths, quality preset, transformation scope, segment ID, and optional GPU hints. If ComfyUI or required templates/models are missing, the backend reports an unavailable state instead of pretending to render.
+
+ComfyUI workflow execution is now wired through a shared `ComfyUIExecutionService` that can submit, poll history, cancel, and translate connection/workflow errors. Actual identity transformation still depends on installing compatible ComfyUI custom nodes, checkpoints, LoRAs/adapters, and workflow templates.
+
+## Shot detection, tracking, QC, and recovery
+
+Shot segmentation now attempts FFmpeg scene-score detection first and records the method, cut timestamps, cut count, and fallback status. Time-based segmentation remains the fallback when FFmpeg is unavailable or no usable cuts are found.
+
+Target tracking is a provider layer. The default metadata-only provider records target labels, track IDs, segment coverage, confidence, and honest fallback notes. A detector-backed provider can be added later without changing the job schema.
+
+QC checks now cover missing/empty outputs, backend failure responses, duration/fps mismatches when measurable, expected audio absence, and future visual scoring hooks. Segment statuses include `pass`, `warning`, `failed`, and `needs_review`, and failed/needs-review segments can be retried.
+
+On service startup, stale `validating`, `running`, or `paused` jobs are marked `needs_review` with recovery metadata rather than left as permanently active. Existing segment outputs that pass basic QC are reused to avoid unnecessary rerenders.
 
 ## Exclusive GPU Render Mode
 
@@ -139,10 +153,13 @@ Through the web reverse proxy, use `/api/persona-video/*`:
 - `GET /api/persona-video/gpus`
 - `GET /api/persona-video/backends`
 - `GET/POST/DELETE /api/persona-video/personas`
+- `PUT /api/persona-video/personas/{persona_id}`
 - `POST /api/persona-video/upload-source`
 - `POST /api/persona-video/probe`
+- `POST /api/persona-video/jobs/recover`
 - `GET/POST /api/persona-video/jobs`
 - `GET /api/persona-video/jobs/{job_id}`
+- `GET /api/persona-video/jobs/{job_id}/events`
 - `POST /api/persona-video/jobs/{job_id}/cancel`
 - `POST /api/persona-video/jobs/{job_id}/pause`
 - `POST /api/persona-video/jobs/{job_id}/resume`
@@ -181,13 +198,11 @@ The output video should match the source pixels while still producing job metada
 - **Missing FFmpeg/FFprobe**: install FFmpeg. Without FFprobe, metadata is limited; without FFmpeg, multi-segment splitting/remuxing is unavailable.
 - **Backend unavailable**: inspect `/api/persona-video/backends`; setup-required items list missing workflows/assets.
 - **Unsupported persona pack**: verify paths exist and the selected backend supports the pack type.
-- **Job fails midway**: inspect job logs and segment QC; retry failed segments if intermediates were retained.
+- **Job fails midway**: inspect job logs and segment QC; retry failed segments if intermediates were retained. Stale active jobs are recovered as `needs_review` on restart.
 - **Missing/desynced audio**: use preserve mode for source audio, replace mode with a known audio file, or strip mode for silent export.
 
 ## Roadmap
 
 - Detector-backed subject tracks and mask-editing UI.
-- Real ComfyUI workflow submission bridge with explicit variable mapping.
 - ML-based identity, flicker, and temporal stability QC adapters.
-- Segment-level resume from retained intermediate manifests.
 - Project workspace linkage for deliverables and approvals.

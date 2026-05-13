@@ -79,6 +79,31 @@ class TestSwarmSessionArtifacts:
         assert art["path"] == "src/main.py"
         assert len(session.artifacts) == 1
 
+
+@pytest.mark.asyncio
+async def test_swarm_execute_prompts_continues_after_agent_failure():
+    if not _DIRECT_IMPORT:
+        pytest.skip("SwarmEngine import unavailable")
+
+    engine = SwarmEngine(lambda: [], lambda model: None)
+
+    async def failing_prompt(agent, prompt, temperature, max_tokens=300):
+        if agent["name"] == "Analyst":
+            raise RuntimeError("boom")
+        return {"agent": agent["name"], "icon": agent.get("icon", ""), "model": "fake", "response": "ok"}
+
+    engine._run_agent_prompt = failing_prompt
+    prompts = [
+        ({"name": "Analyst", "icon": "A", "model_name": "fake"}, "prompt"),
+        ({"name": "Implementer", "icon": "I", "model_name": "fake"}, "prompt"),
+    ]
+
+    results = await engine._execute_prompts(prompts, parallel=True, temperature=0.5)
+
+    assert len(results) == 2
+    assert any(result.get("status") == "failed" for result in results)
+    assert any(result["response"] == "ok" for result in results)
+
     def test_to_dict_includes_tasks_and_artifacts(self, session):
         session.add_task("Write tests")
         session.add_artifact("tests/test_api.py")

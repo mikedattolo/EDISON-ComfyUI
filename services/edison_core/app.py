@@ -37,6 +37,12 @@ import mimetypes
 import urllib.parse
 
 from .safe_io import atomic_write_json, atomic_write_text
+from .vision_reliability import (
+    assess_vision_response_confidence,
+    new_vision_trace_id,
+    prepare_vision_image,
+    vision_grounding_system_prompt,
+)
 
 # ── Playwright headless browser (lazy-initialized, dedicated thread) ──────────
 # Playwright sync API uses greenlets and requires ALL calls from the same thread.
@@ -955,41 +961,16 @@ def _preprocess_vision_image(raw_image: str, max_dim: int = 1024) -> Optional[st
 
     If PIL is unavailable the function falls back to plain normalisation.
     """
-    normalised = _normalize_image_data_uri(raw_image)
-    if not normalised:
+    info = prepare_vision_image(raw_image, max_dim=max_dim)
+    if not info.ok:
+        logger.warning("Vision image rejected: %s", info.error)
         return None
+    return info.data_uri
 
-    try:
-        import base64
-        import io
-        from PIL import Image
 
-        # Decode
-        if "," in normalised:
-            _, b64_data = normalised.split(",", 1)
-        else:
-            b64_data = normalised
-        img_bytes = base64.b64decode(b64_data)
-        img = Image.open(io.BytesIO(img_bytes)).convert("RGB")
-
-        # Resize if needed
-        w, h = img.size
-        if max(w, h) > max_dim:
-            scale = max_dim / max(w, h)
-            new_w, new_h = max(1, int(w * scale)), max(1, int(h * scale))
-            img = img.resize((new_w, new_h), Image.LANCZOS)
-            logger.debug(f"Vision image resized {w}×{h} → {new_w}×{new_h}")
-        else:
-            logger.debug(f"Vision image size OK: {w}×{h}")
-
-        # Re-encode as JPEG
-        buf = io.BytesIO()
-        img.save(buf, format="JPEG", quality=85, optimize=True)
-        encoded = base64.b64encode(buf.getvalue()).decode("ascii")
-        return f"data:image/jpeg;base64,{encoded}"
-    except Exception as e:
-        logger.debug(f"Vision image preprocessing skipped: {e}")
-        return normalised  # fall back to original normalised URI
+def _prepare_vision_image_with_trace(raw_image: str, max_dim: int = 1024) -> tuple[Optional[str], Dict[str, Any]]:
+    info = prepare_vision_image(raw_image, max_dim=max_dim)
+    return (info.data_uri if info.ok else None), info.to_dict()
 
 
 def detect_user_mood(text: str) -> str:
@@ -4111,6 +4092,57 @@ def _openai_messages_have_images(messages: List[OpenAIMessage]) -> bool:
                 return True
     return False
 
+
+def _build_openai_vision_messages(messages: List[OpenAIMessage], *, trace_id: str) -> tuple[List[Dict[str, Any]], Dict[str, Any]]:
+    """Validate image blocks and build llama-cpp vision chat messages."""
+
+    chat_messages: List[Dict[str, Any]] = []
+    image_traces: List[Dict[str, Any]] = []
+    image_count = 0
+    for msg in messages:
+        if isinstance(msg.content, list):
+            content: List[Dict[str, Any]] = []
+            for block in msg.content:
+                block_type = block.get("type")
+                if block_type == "text":
+                    content.append({"type": "text", "text": block.get("text", "")})
+                    continue
+                if block_type != "image_url":
+                    continue
+                image_url = block.get("image_url") or {}
+                raw_url = image_url.get("url", "")
+                if isinstance(raw_url, str) and raw_url.startswith("data:image/"):
+                    normalized, img_trace = _prepare_vision_image_with_trace(raw_url)
+                    img_trace["trace_id"] = trace_id
+                    image_traces.append(img_trace)
+                    if not normalized:
+                        raise HTTPException(status_code=400, detail={"error": "Invalid image payload", "trace_id": trace_id, "image": img_trace})
+                    content.append({"type": "image_url", "image_url": {"url": normalized}})
+                    image_count += 1
+                elif isinstance(raw_url, str) and (raw_url.startswith("http://") or raw_url.startswith("https://")):
+                    content.append({"type": "image_url", "image_url": {"url": raw_url}})
+                    image_traces.append({"ok": True, "remote_url": True, "trace_id": trace_id})
+                    image_count += 1
+                else:
+                    image_traces.append({"ok": False, "error": "image_url.url must be a data:image URI or http(s) URL", "trace_id": trace_id})
+                    raise HTTPException(status_code=400, detail={"error": "Invalid image URL", "trace_id": trace_id})
+            if msg.role not in {"user", "system"}:
+                content = [{"type": "text", "text": _flatten_openai_content(content)}]
+            chat_messages.append({"role": msg.role, "content": content})
+        else:
+            chat_messages.append({"role": msg.role, "content": msg.content})
+    if image_count <= 0:
+        raise HTTPException(status_code=400, detail={"error": "No valid image payloads were present", "trace_id": trace_id})
+    has_system = any(item.get("role") == "system" for item in chat_messages)
+    if not has_system:
+        chat_messages.insert(0, {"role": "system", "content": vision_grounding_system_prompt()})
+    else:
+        for item in chat_messages:
+            if item.get("role") == "system":
+                item["content"] = f"{vision_grounding_system_prompt()}\n\n{_flatten_openai_content(item.get('content', ''))}".strip()
+                break
+    return chat_messages, {"trace_id": trace_id, "image_count": image_count, "images": image_traces}
+
 class OpenAIChoice(BaseModel):
     index: int = Field(description="Choice index")
     message: Optional[dict] = Field(default=None, description="Message content (for non-streaming)")
@@ -5430,6 +5462,18 @@ except Exception as e:
         logger.warning(f"⚠ GPU fan control routes not available: {e}")
 
 try:
+    from .routes.system_diagnostics import router as system_diagnostics_router
+    app.include_router(system_diagnostics_router)
+    logger.info("✓ System diagnostics routes registered")
+except Exception as e:
+    try:
+        from routes.system_diagnostics import router as system_diagnostics_router
+        app.include_router(system_diagnostics_router)
+        logger.info("✓ System diagnostics routes registered (direct import)")
+    except Exception:
+        logger.warning(f"⚠ System diagnostics routes not available: {e}")
+
+try:
     from .routes.phase1 import router as phase1_router
     app.include_router(phase1_router)
     logger.info("✓ Phase 1 routes registered (scheduler/citations/artifact streams)")
@@ -5711,6 +5755,59 @@ async def models_status():
         "configured_models": configured_models,
         "slots": slot_details,
     }
+
+
+@app.get("/v1/models")
+async def openai_compatible_models():
+    """Return OpenAI-compatible model metadata for external clients."""
+    core_config = _get_core_config()
+    slot_refs = {
+        "fast": llm_fast,
+        "medium": llm_medium,
+        "deep": llm_deep,
+        "reasoning": llm_reasoning,
+        "vision": llm_vision,
+        "vision_code": llm_vision_code,
+    }
+    configured = {
+        "fast": core_config.get("fast_model"),
+        "medium": core_config.get("medium_model"),
+        "deep": core_config.get("deep_model"),
+        "reasoning": core_config.get("reasoning_model"),
+        "vision": core_config.get("vision_model"),
+        "vision_code": core_config.get("vision_code_model"),
+    }
+    data = []
+    aliases = {
+        "fast": ["fast", "gpt-3.5-turbo"],
+        "medium": ["medium"],
+        "deep": ["deep", "gpt-4"],
+        "reasoning": ["reasoning"],
+        "vision": ["vision", "gpt-4-vision-preview"],
+        "vision_code": ["vision_code"],
+    }
+    created = int(time.time())
+    for slot, ids in aliases.items():
+        for model_id in ids:
+            data.append(
+                {
+                    "id": model_id,
+                    "object": "model",
+                    "created": created,
+                    "owned_by": "edison-local",
+                    "permission": [],
+                    "root": configured.get(slot) or model_id,
+                    "parent": None,
+                    "metadata": {
+                        "slot": slot,
+                        "configured_model": configured.get(slot),
+                        "loaded": slot_refs.get(slot) is not None,
+                        "multimodal": slot in {"vision", "vision_code"},
+                    },
+                }
+            )
+    return {"object": "list", "data": data}
+
 
 def get_lock_for_model(model) -> threading.Lock:
     """Get the appropriate lock for a given model instance"""
@@ -6826,7 +6923,8 @@ async def chat(request: ChatRequest):
             
             # LLaVA format: images FIRST, then the text question.
             # Putting text first causes the model to ignore the image and hallucinate.
-            vision_sys = (
+            vision_sys = vision_grounding_system_prompt()
+            _legacy_vision_sys = (
                 "You are a precise visual assistant. Look carefully at the provided image(s) "
                 "and describe exactly what you observe. Include all visible objects, characters, "
                 "artistic style, text, colors, and context. Be specific and accurate — never "
@@ -7900,7 +7998,8 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                 # LLaVA format: images FIRST, then the text question.
                 # Putting text first causes the model to ignore the image and hallucinate.
                 vision_question = (request.message or "").strip() or "Describe in detail what you see in this image."
-                vision_sys = (
+                vision_sys = vision_grounding_system_prompt()
+                _legacy_vision_sys = (
                     "You are a precise visual assistant. Look carefully at the provided image(s) "
                     "and describe exactly what you observe. Include all visible objects, characters, "
                     "artistic style, text, colors, and context. Be specific and accurate — never "
@@ -8375,13 +8474,16 @@ async def vision_chat(image: UploadFile = File(...), prompt: str = "Describe thi
     if not normalized_img:
         raise HTTPException(status_code=400, detail={"success": False, "error": "Invalid image payload"})
 
-    chat_messages = [{
-        "role": "user",
-        "content": [
-            {"type": "image_url", "image_url": {"url": normalized_img}},
-            {"type": "text", "text": prompt or "Describe this image"},
-        ],
-    }]
+    chat_messages = [
+        {"role": "system", "content": vision_grounding_system_prompt()},
+        {
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": normalized_img}},
+                {"type": "text", "text": prompt or "Describe this image"},
+            ],
+        },
+    ]
 
     async def _sse():
         yield "event: start\ndata: {\"success\": true, \"mode\": \"vision\"}\n\n"
@@ -8470,6 +8572,7 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
 
     # Vision path for true multimodal requests
     if has_images:
+        trace_id = new_vision_trace_id()
         model_text = (request.model or "").lower()
         prefer_vision_code = "code" in model_text
 
@@ -8489,16 +8592,14 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
         if not ok_vram:
             raise HTTPException(status_code=503, detail=f"Vision temporarily unavailable: {vram_reason}")
 
-        chat_messages: List[Dict[str, Any]] = []
-        for msg in request.messages:
-            if isinstance(msg.content, list):
-                content = _normalize_openai_multimodal_content(msg.content)
-                # Keep multimodal blocks on user/system messages only.
-                if msg.role not in {"user", "system"}:
-                    content = _flatten_openai_content(content)
-            else:
-                content = msg.content
-            chat_messages.append({"role": msg.role, "content": content})
+        chat_messages, vision_trace = _build_openai_vision_messages(request.messages, trace_id=trace_id)
+        logger.info(
+            "OpenAI vision request trace=%s model=%s image_count=%s images=%s",
+            trace_id,
+            model_name,
+            vision_trace.get("image_count"),
+            vision_trace.get("images"),
+        )
 
         if request.stream:
             return await openai_stream_completions(
@@ -8823,6 +8924,21 @@ async def openai_non_stream_completions(
                 prompt_tokens = len((full_prompt or "").split())
 
         completion_tokens = len(assistant_response.split())
+        if is_vision_chat:
+            image_count = 0
+            for msg in chat_messages or []:
+                content = msg.get("content", "")
+                if isinstance(content, list):
+                    image_count += sum(1 for block in content if isinstance(block, dict) and block.get("type") == "image_url")
+            confidence = assess_vision_response_confidence(assistant_response, image_count=image_count)
+            if confidence.get("confidence") == "low":
+                logger.warning("Low-confidence vision response flags=%s", confidence.get("flags"))
+                assistant_response = (
+                    assistant_response.rstrip()
+                    + "\n\n[Vision confidence warning: response may be under-grounded; "
+                    + ", ".join(confidence.get("flags") or ["low_confidence"])
+                    + "]"
+                )
 
         return OpenAIChatCompletionResponse(
             id=completion_id,

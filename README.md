@@ -21,6 +21,14 @@
 
 ## 🔥 What's New (v1.4.0)
 
+### Platform Production Upgrade Branch
+- Persona Video Studio now has FFmpeg shot detection fallback logic, tracking provider scaffolding, ComfyUI workflow template plumbing, QC/retry/resume metadata, richer persona pack validation, SSE progress, and unified JobStore registration.
+- Vision requests now validate real image bytes, trace image dimensions/hash/model routing, use a grounding prompt, and flag generic low-confidence responses.
+- System Doctor adds CUDA/PyTorch/NVIDIA/ComfyUI/path/cooling diagnostics at `/system-diagnostics` and `/api/system/doctor`.
+- GPU Cooling Dashboard classifies zero-RPM idle vs suspicious fan behavior and surfaces fan percent/RPM, bus IDs, VRAM, power, thermal warnings, and manual-control availability.
+- Node, Agent Live, Swarm, JobStore, memory scoping, OpenAI-compatible model listing, and safe path helpers received additive hardening.
+- New docs: `docs/SYSTEM_DIAGNOSTICS.md`, `docs/VISION_TROUBLESHOOTING.md`, `docs/COMFYUI_WORKFLOWS.md`, `docs/GPU_MODEL_ORCHESTRATION.md`, `docs/NODE_ARCHITECTURE.md`, `docs/OPENAI_COMPAT_API.md`, and `docs/AGENT_AND_SWARM_MODE.md`.
+
 ### 🔧 **Model Loading Unification (ModelManager v2)**
 - **Single source of truth**: All model acquisition goes through `ModelManager.resolve_model(target)` with automatic fallback chains (e.g., deep → medium → fast)
 - **Heavy-slot policy**: Only one large model loaded at a time; loading a new one evicts the previous

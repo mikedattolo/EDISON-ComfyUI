@@ -47,14 +47,20 @@ def test_job_store_crud():
         assert job is not None, "Job should be retrievable"
         assert job["job_type"] == "image"
         assert job["status"] == "queued"
+        assert job["progress"] == 0
         assert job["prompt"] == "a sunset over mountains"
         assert job["params"]["steps"] == 30
 
         # Update status
         store.update_status(job_id, "generating")
+        store.set_progress(job_id, 0.42, stage="rendering")
+        store.append_log(job_id, "render started")
         job = store.get_job(job_id)
         assert job["status"] == "generating"
         assert job["started_at"] is not None
+        assert job["stage"] == "rendering"
+        assert job["progress"] == 0.42
+        assert job["logs"][-1]["message"] == "render started"
 
         # Complete
         store.update_status(job_id, "complete", outputs=["/outputs/images/test.png"])

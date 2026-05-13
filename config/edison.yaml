@@ -174,8 +174,13 @@ edison:
     automatic_failed_segment_rerender_threshold: 0.55
     qc_thresholds:
       minimum_segment_score: 0.60
+      duration_tolerance_s: 0.75
+      audio_duration_tolerance_s: 0.75
     backend: "metadata_only_passthrough"
     comfyui_workflows_dir: "config/persona_video/comfyui_workflows"
+    comfyui_base_url: "http://127.0.0.1:8188"
+    comfyui_poll_timeout_s: 3600
+    comfyui_poll_interval_s: 2.0
 
   gpu_fan_control:
     enabled: true
@@ -194,6 +199,12 @@ edison:
     minimum_change_interval_s: 8
     min_fan_percent: 30
     max_fan_percent: 100
+    zero_rpm_idle_temp_c: 45
+    elevated_temp_c: 62
+    temperature_warning_c: 78
+    temperature_critical_c: 84
+    fan_anomaly_warnings_enabled: true
+    dashboard_refresh_interval_s: 5
     critical_temp_c: 84
     critical_fan_percent: 100
     expected_gpus:

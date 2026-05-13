@@ -36,8 +36,13 @@ class NodeProfile:
     ram_gb: int = 0
     gpu: str = ""
     gpu_vram_gb: int = 0
+    gpus: List[Dict[str, Any]] = field(default_factory=list)
     capabilities: List[str] = field(default_factory=list)  # rhino, blender, comfyui…
+    allowed_tools: List[str] = field(default_factory=list)
+    accepted_job_types: List[str] = field(default_factory=list)
     software: Dict[str, str] = field(default_factory=dict)  # {"rhino": "7", …}
+    installed_apps: Dict[str, str] = field(default_factory=dict)
+    health: Dict[str, Any] = field(default_factory=dict)
     enabled: bool = True
     status: str = "offline"          # online | offline | busy | error
     last_seen: float = 0.0          # epoch timestamp
@@ -121,8 +126,13 @@ class NodeManager:
             ram_gb=int(payload.get("ram_gb", 0)),
             gpu=str(payload.get("gpu") or ""),
             gpu_vram_gb=int(payload.get("gpu_vram_gb", 0)),
+            gpus=list(payload.get("gpus") or []),
             capabilities=list(payload.get("capabilities") or []),
+            allowed_tools=list(payload.get("allowed_tools") or []),
+            accepted_job_types=list(payload.get("accepted_job_types") or payload.get("job_types") or []),
             software=dict(payload.get("software") or {}),
+            installed_apps=dict(payload.get("installed_apps") or payload.get("apps") or {}),
+            health=dict(payload.get("health") or {}),
             enabled=bool(payload.get("enabled", True)),
             status="online",
             last_seen=time.time(),
@@ -149,9 +159,11 @@ class NodeManager:
         node["last_seen"] = time.time()
         node["status"] = "online"
         if status_info:
-            for k in ("cpu_usage", "ram_usage", "gpu_usage"):
+            for k in ("cpu_usage", "ram_usage", "gpu_usage", "health", "gpus", "installed_apps", "accepted_job_types"):
                 if k in status_info:
                     node[k] = status_info[k]
+            if status_info.get("status") in {"online", "busy", "error"}:
+                node["status"] = status_info["status"]
         self._save(db)
         return {"ok": True, "node_id": node_id}
 
@@ -395,7 +407,7 @@ class NodeManager:
             if node.get("status") != "online":
                 continue
             node_caps = set(node.get("capabilities", []))
-            node_sw   = set((node.get("software") or {}).keys())
+            node_sw   = set((node.get("software") or {}).keys()) | set((node.get("installed_apps") or {}).keys())
             combined  = node_caps | node_sw
             if all(cap in combined for cap in capabilities):
                 result.append(node)
@@ -431,7 +443,7 @@ class NodeManager:
 
         def score(node: Dict[str, Any]) -> int:
             node_caps = set(node.get("capabilities", []))
-            node_sw   = set((node.get("software") or {}).keys())
+            node_sw   = set((node.get("software") or {}).keys()) | set((node.get("installed_apps") or {}).keys())
             combined  = node_caps | node_sw
             s = sum(1 for r in required if r in combined)
             s += sum(2 for p in preferred if p in combined)   # bonus for preferred SW
@@ -447,7 +459,7 @@ class NodeManager:
         # Require at least minimal match when requirements were derived
         if required:
             node_caps = set(best.get("capabilities", []))
-            node_sw = set((best.get("software") or {}).keys())
+            node_sw = set((best.get("software") or {}).keys()) | set((best.get("installed_apps") or {}).keys())
             combined = node_caps | node_sw
             if not any(r in combined for r in required):
                 return None
@@ -486,6 +498,10 @@ class NodeManager:
                          "Make sure the node agent is running on your remote machine.",
             }
 
+        accepted = set(target_node.get("accepted_job_types") or [])
+        if accepted and task_type not in accepted:
+            return {"ok": False, "error": f"Node '{target_node.get('id')}' does not accept job type '{task_type}'"}
+
         try:
             task = self.submit_task(target_node["id"], task_type, payload)
         except ValueError as e:
@@ -499,8 +515,38 @@ class NodeManager:
                 "host": target_node.get("host"),
                 "capabilities": target_node.get("capabilities", []),
                 "software": target_node.get("software", {}),
+                "installed_apps": target_node.get("installed_apps", {}),
+                "accepted_job_types": target_node.get("accepted_job_types", []),
             },
             "task": task,
+        }
+
+    def build_dispatch_request(self, task: Dict[str, Any], node: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+        """Build the stable request envelope a node agent receives for queued work."""
+        node_info = node or self.get_node(str(task.get("node_id")))
+        return {
+            "schema_version": 1,
+            "task_id": task.get("id"),
+            "node_id": task.get("node_id"),
+            "task_type": task.get("task_type"),
+            "payload": task.get("payload") or {},
+            "created": task.get("created"),
+            "expected_result": {
+                "status": "done|failed",
+                "artifacts": [],
+                "logs": [],
+                "metrics": {},
+            },
+            "node_capabilities": {
+                "os": node_info.get("os"),
+                "cpu": node_info.get("cpu"),
+                "ram_gb": node_info.get("ram_gb"),
+                "gpus": node_info.get("gpus") or [],
+                "capabilities": node_info.get("capabilities") or [],
+                "software": node_info.get("software") or {},
+                "installed_apps": node_info.get("installed_apps") or {},
+                "allowed_tools": node_info.get("allowed_tools") or [],
+            },
         }
 
     def list_tasks(

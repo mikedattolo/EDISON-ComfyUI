@@ -21,6 +21,8 @@ from dataclasses import asdict, dataclass, field
 from pathlib import Path
 from typing import Any, Dict, Iterable, List, Optional, Tuple
 
+from .cooling_diagnostics import CoolingPolicy, aggregate_cooling_health, classify_cooling_health
+
 logger = logging.getLogger(__name__)
 
 DEFAULT_CURVE = [
@@ -46,12 +48,16 @@ class GpuFanReading:
     name: str
     temperature_c: Optional[float] = None
     fan_speed_percent: Optional[float] = None
+    fan_rpm: Optional[float] = None
     utilization_percent: Optional[float] = None
     power_watts: Optional[float] = None
     memory_used_mb: Optional[float] = None
     memory_total_mb: Optional[float] = None
+    bus_id: Optional[str] = None
+    uuid: Optional[str] = None
     source: str = "unknown"
     warnings: List[str] = field(default_factory=list)
+    cooling_health: Dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, Any]:
         return asdict(self)
@@ -151,6 +157,12 @@ def default_config() -> Dict[str, Any]:
         "max_fan_percent": 100,
         "critical_temp_c": 84,
         "critical_fan_percent": 100,
+        "zero_rpm_idle_temp_c": 45,
+        "elevated_temp_c": 55,
+        "gpu_temperature_warning_threshold_c": 72,
+        "gpu_temperature_critical_threshold_c": 84,
+        "fan_anomaly_warnings_enabled": True,
+        "dashboard_refresh_interval_s": 5,
         "stale_reading_timeout_s": 20,
         "curve": list(DEFAULT_CURVE),
         "expected_gpus": list(DEFAULT_EXPECTED_GPUS),
@@ -239,6 +251,9 @@ class GpuFanController:
         checks["recommendations"] = recommendations
         return checks
 
+    def cooling_policy(self) -> CoolingPolicy:
+        return CoolingPolicy.from_config(self.config)
+
     def read_gpus(self) -> Tuple[List[GpuFanReading], List[str]]:
         errors: List[str] = []
         for source in self.config.get("telemetry_preference", ["nvml", "nvidia-smi", "sysfs"]):
@@ -252,6 +267,7 @@ class GpuFanController:
                 else:
                     continue
                 if readings:
+                    self._annotate_cooling_health(readings)
                     with self._lock:
                         self._last_readings = readings
                     return readings, errors
@@ -260,6 +276,24 @@ class GpuFanController:
                 errors.append(f"{source}: {exc}")
         with self._lock:
             return list(self._last_readings), errors
+
+    def _annotate_cooling_health(self, readings: List[GpuFanReading]) -> None:
+        diagnostics = self.diagnostics()
+        manual_ready = bool(diagnostics.get("fan_control_ready"))
+        policy = self.cooling_policy()
+        for reading in readings:
+            health = classify_cooling_health(
+                temperature_c=reading.temperature_c,
+                utilization_percent=reading.utilization_percent,
+                fan_speed_percent=reading.fan_speed_percent,
+                fan_rpm=reading.fan_rpm,
+                telemetry_available=True,
+                manual_control_available=manual_ready,
+                policy=policy,
+            )
+            reading.cooling_health = health.to_dict()
+            if bool(self.config.get("fan_anomaly_warnings_enabled", True)) and health.severity in {"warning", "critical"}:
+                reading.warnings.append(health.summary)
 
     def evaluate_once(self, apply: Optional[bool] = None) -> Dict[str, Any]:
         readings, telemetry_errors = self.read_gpus()
@@ -284,6 +318,7 @@ class GpuFanController:
             "running": self.is_running(),
             "readings": [item.to_dict() for item in readings],
             "decisions": [item.to_dict() for item in applied],
+            "cooling": aggregate_cooling_health([item.cooling_health for item in readings if item.cooling_health]),
             "telemetry_errors": telemetry_errors,
             "diagnostics": self.diagnostics(),
             "timestamp": time.time(),
@@ -366,6 +401,7 @@ class GpuFanController:
             "config": self.public_config(),
             "readings": readings,
             "decisions": decisions,
+            "cooling": aggregate_cooling_health([item.get("cooling_health", {}) for item in readings if item.get("cooling_health")]),
             "diagnostics": self.diagnostics(),
         }
 
@@ -488,7 +524,7 @@ class GpuFanController:
         result = subprocess.run(
             [
                 binary,
-                "--query-gpu=index,name,temperature.gpu,fan.speed,utilization.gpu,power.draw,memory.used,memory.total",
+                "--query-gpu=index,name,pci.bus_id,uuid,temperature.gpu,fan.speed,utilization.gpu,power.draw,memory.used,memory.total",
                 "--format=csv,noheader,nounits",
             ],
             capture_output=True,
@@ -500,18 +536,20 @@ class GpuFanController:
         readings: List[GpuFanReading] = []
         for line in result.stdout.strip().splitlines():
             parts = [part.strip() for part in line.split(",")]
-            if len(parts) < 4:
+            if len(parts) < 8:
                 continue
             readings.append(
                 GpuFanReading(
                     index=_safe_int(parts[0]),
                     name=parts[1],
-                    temperature_c=_safe_float(parts[2]),
-                    fan_speed_percent=_safe_float(parts[3]),
-                    utilization_percent=_safe_float(parts[4]) if len(parts) > 4 else None,
-                    power_watts=_safe_float(parts[5]) if len(parts) > 5 else None,
-                    memory_used_mb=_safe_float(parts[6]) if len(parts) > 6 else None,
-                    memory_total_mb=_safe_float(parts[7]) if len(parts) > 7 else None,
+                    bus_id=parts[2],
+                    uuid=parts[3],
+                    temperature_c=_safe_float(parts[4]),
+                    fan_speed_percent=_safe_float(parts[5]),
+                    utilization_percent=_safe_float(parts[6]) if len(parts) > 6 else None,
+                    power_watts=_safe_float(parts[7]) if len(parts) > 7 else None,
+                    memory_used_mb=_safe_float(parts[8]) if len(parts) > 8 else None,
+                    memory_total_mb=_safe_float(parts[9]) if len(parts) > 9 else None,
                     source="nvidia-smi",
                 )
             )
@@ -536,6 +574,9 @@ class GpuFanController:
                 power = None
                 mem_used = None
                 mem_total = None
+                fan_rpm = None
+                bus_id = None
+                uuid = None
                 warnings: List[str] = []
                 try:
                     temp = float(pynvml.nvmlDeviceGetTemperature(handle, pynvml.NVML_TEMPERATURE_GPU))
@@ -545,6 +586,11 @@ class GpuFanController:
                     fan = float(pynvml.nvmlDeviceGetFanSpeed(handle))
                 except Exception as exc:  # noqa: BLE001
                     warnings.append(f"fan speed unavailable: {exc}")
+                try:
+                    if hasattr(pynvml, "nvmlDeviceGetFanSpeedRPM"):
+                        fan_rpm = float(pynvml.nvmlDeviceGetFanSpeedRPM(handle))
+                except Exception as exc:  # noqa: BLE001
+                    warnings.append(f"fan RPM unavailable: {exc}")
                 try:
                     u = pynvml.nvmlDeviceGetUtilizationRates(handle)
                     util = float(u.gpu)
@@ -560,16 +606,30 @@ class GpuFanController:
                     mem_total = round(float(mem.total) / (1024**2), 1)
                 except Exception:
                     pass
+                try:
+                    pci = pynvml.nvmlDeviceGetPciInfo(handle)
+                    raw_bus = getattr(pci, "busId", None)
+                    bus_id = raw_bus.decode("utf-8") if isinstance(raw_bus, bytes) else str(raw_bus) if raw_bus else None
+                except Exception:
+                    pass
+                try:
+                    raw_uuid = pynvml.nvmlDeviceGetUUID(handle)
+                    uuid = raw_uuid.decode("utf-8") if isinstance(raw_uuid, bytes) else str(raw_uuid)
+                except Exception:
+                    pass
                 readings.append(
                     GpuFanReading(
                         index=index,
                         name=name,
                         temperature_c=temp,
                         fan_speed_percent=fan,
+                        fan_rpm=fan_rpm,
                         utilization_percent=util,
                         power_watts=power,
                         memory_used_mb=mem_used,
                         memory_total_mb=mem_total,
+                        bus_id=bus_id,
+                        uuid=uuid,
                         source="nvml",
                         warnings=warnings,
                     )

@@ -970,10 +970,21 @@ Instructions:
     ) -> List[Dict[str, Any]]:
         """Run a batch of agent prompts (parallel or sequential), with optional tool use."""
         async def _run_one(agent, prompt):
-            defn = next((d for d in AGENT_CATALOG_DEFINITIONS if d["name"] == agent["name"]), {})
-            if defn.get("can_use_tools") and self._execute_tool and session:
-                return await self._run_agent_with_tools(agent, prompt, session, chat_id=chat_id)
-            return await self._run_agent_prompt(agent, prompt, temperature)
+            try:
+                defn = next((d for d in AGENT_CATALOG_DEFINITIONS if d["name"] == agent["name"]), {})
+                if defn.get("can_use_tools") and self._execute_tool and session:
+                    return await self._run_agent_with_tools(agent, prompt, session, chat_id=chat_id)
+                return await self._run_agent_prompt(agent, prompt, temperature)
+            except Exception as exc:
+                logger.exception("Swarm agent %s failed", agent.get("name"))
+                return {
+                    "agent": agent.get("name", "Unknown"),
+                    "icon": agent.get("icon", ""),
+                    "model": agent.get("model_name", "Unknown"),
+                    "status": "failed",
+                    "response": f"(Agent failed and the swarm continued with partial results: {exc})",
+                    "error": str(exc),
+                }
 
         if parallel:
             effective_parallel = max(1, int(getattr(session, "max_parallel_agents", self._max_parallel_agents)))

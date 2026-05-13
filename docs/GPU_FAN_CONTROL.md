@@ -1,4 +1,4 @@
-# GPU Fan Control
+# GPU Cooling Diagnostics and Fan Control
 
 EDISON includes a conservative NVIDIA GPU fan watchdog for the three-card workstation target:
 
@@ -6,7 +6,7 @@ EDISON includes a conservative NVIDIA GPU fan watchdog for the three-card workst
 - RTX 5060 Ti 16GB
 - RTX 4060 Ti 16GB
 
-It monitors GPU temperature telemetry, computes fan targets from a safe curve, and can apply those targets on a properly configured Linux host. The API/UI dry-run by default so you can diagnose driver access before writing fan speeds.
+It monitors GPU temperature, utilization, VRAM, power, fan percent, optional RPM telemetry, and cooling-health classification. It computes fan targets from a safe curve and can apply those targets on a properly configured Linux host. The API/UI dry-run by default so you can diagnose driver access before writing fan speeds.
 
 ## Important safety notes
 
@@ -14,6 +14,7 @@ It monitors GPU temperature telemetry, computes fan targets from a safe curve, a
 - NVIDIA fan writes normally require `nvidia-settings`, a running Xorg display, and Coolbits fan-control enabled.
 - EDISON does not disable thermal protections. The curve clamps to a minimum fan percent and forces 100% near critical temperature.
 - The 4060 Ti may stop its fans at low temperature because of zero-RPM mode. This is normal when cool; it is suspicious only when temperature rises and the fan stays at 0%.
+- Edison cannot repair a physical fan, cable, shroud, or card failure in software. It can only classify symptoms, warn, and safely command fans when the driver stack permits it.
 
 ## What the service does
 
@@ -21,13 +22,15 @@ It monitors GPU temperature telemetry, computes fan targets from a safe curve, a
 2. Applies a configured fan curve.
 3. Adds a 4060 Ti guard: if the card reports fan `0%` above `42°C`, target at least `60%`.
 4. Applies targets through `nvidia-settings` or NVML fan APIs when available.
-5. Reports diagnostics if `nvidia-smi` is missing or cannot communicate with the driver.
+5. Classifies cooling state as `normal`, `zero_rpm_idle_probably_normal`, `telemetry_unavailable`, `manual_control_unavailable`, `suspect_fan_not_spinning`, or `over_temp_warning`.
+6. Reports diagnostics if `nvidia-smi` is missing or cannot communicate with the driver.
 
 ## UI and API
 
 Open:
 
 - `/gpu-fans`
+- `/system-diagnostics` for CUDA/PyTorch/ComfyUI/path/cooling rollup
 
 API routes through the web proxy:
 
@@ -131,10 +134,26 @@ Key settings:
 - `fan_index_map`: maps GPU index to fan index.
 - `curve`: temperature-to-fan-percent points.
 - `gpu_overrides.4060`: zero-RPM spin-up guard for the 4060 Ti.
+- `zero_rpm_idle_temp_c`: below this, 0% fan can be treated as likely idle behavior.
+- `elevated_temp_c`: temperature where 0% fan becomes suspicious.
+- `temperature_warning_c` / `temperature_critical_c`: UI/report thresholds for heavy-job warnings.
+- `fan_anomaly_warnings_enabled`: include suspicious fan classifications in readings.
+- `dashboard_refresh_interval_s`: suggested UI polling interval.
+
+## Interpreting cooling states
+
+- `normal`: telemetry is present and no fan/temperature anomaly is detected.
+- `zero_rpm_idle_probably_normal`: fan reads 0% while the GPU is cool and not meaningfully loaded.
+- `telemetry_unavailable`: Edison cannot read enough fan/temperature data from the current environment.
+- `manual_control_unavailable`: telemetry is readable, but writes are not available through current Linux/NVIDIA settings.
+- `suspect_fan_not_spinning`: fan reads 0% or 0 RPM while temperature/utilization is elevated or sustained.
+- `over_temp_warning`: temperature is at or above the configured critical threshold.
+
+If one GPU stays at 0%/0 RPM while temperature climbs under real load, physically inspect the fans, fan cable, shroud clearance, PCIe power, and driver/Xorg fan-control state. Do not run long renders until the card cools normally.
 
 ## Known limitations
 
 - Some NVIDIA consumer cards expose fan control only through Xorg/Coolbits.
 - Wayland-only sessions may need an Xorg session or vendor-specific fan tooling.
 - NVML fan-set support varies by driver/GPU and may require elevated permissions.
-- The dev container used for development currently has no `nvidia-smi`, no `/dev/nvidia*`, and no `nvidia-settings`, so actual fan writes must be performed on the host.
+- The Windows/dev environment used for this implementation cannot read the Edison host's GPU fans. Actual fan diagnosis must be performed on the Ubuntu Edison host after SSH access is verified.

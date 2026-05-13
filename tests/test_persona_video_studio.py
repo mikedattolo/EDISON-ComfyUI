@@ -57,6 +57,9 @@ def test_persona_pack_schema_and_registry(tmp_path):
     })
     assert pack["persona_id"].startswith("persona_")
     assert pack["pack_type"] == "lora"
+    assert pack["schema_version"] == "1.1"
+    assert pack["validation_state"] == "missing_files"
+    assert pack["missing_paths"] == ["models/personas/synthetic-a.safetensors"]
     assert service.registry.get_pack(pack["persona_id"])["name"] == "Synthetic Performer A"
 
 
@@ -138,6 +141,52 @@ def test_segment_queue_scheduling():
     assigned = scheduler.assign_segments(build_segments(120, preference="short"))
     assert {seg["gpu_assignment"]["gpu_index"] for seg in assigned}.issubset({0, 1, 2})
     assert any("Segment seg_001" in line for line in scheduler.stage_assignment_log(assigned))
+
+
+def test_shot_detection_builds_real_cut_segments(monkeypatch, tmp_path):
+    import services.edison_core.persona_video as pvs
+
+    monkeypatch.setattr(
+        pvs,
+        "detect_shot_boundaries",
+        lambda source: {
+            "method": "ffmpeg_scene_score",
+            "cut_timestamps_s": [4.0, 9.0],
+            "cut_count": 2,
+            "fallback": False,
+        },
+    )
+
+    segments = pvs.detect_shots_and_build_segments(tmp_path / "source.mp4", 12.0)
+
+    assert [segment["duration_s"] for segment in segments] == [4.0, 5.0, 3.0]
+    assert segments[0]["shot_detection"]["method"] == "ffmpeg_scene_score"
+
+
+def test_tracking_metadata_fallback_provider(tmp_path):
+    from services.edison_core.persona_tracking import TrackingService
+
+    service = TrackingService(providers=[])
+    result = service.track(
+        {"target_selection": {"mode": "manual", "subject_label": "performer A"}},
+        [{"segment_id": "seg_001"}, {"segment_id": "seg_002"}],
+        tmp_path,
+    )
+
+    assert result["fallback"] is True
+    assert result["candidate_count"] == 1
+    assert result["tracks"][0]["subject_label"] == "performer A"
+    assert result["tracks"][0]["per_segment_coverage"]["seg_002"] == 1.0
+
+
+def test_basic_segment_qc_flags_missing_output(tmp_path):
+    from services.edison_core.persona_qc import basic_segment_qc
+
+    qc = basic_segment_qc(output_path=tmp_path / "missing.mp4", segment={"duration_s": 2.0})
+
+    assert qc.status == "failed"
+    assert qc.needs_review is True
+    assert "missing_output_file" in qc.warning_flags
 
 
 def test_exclusive_render_snapshot_restore_with_mocked_services(monkeypatch):

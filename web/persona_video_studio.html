@@ -279,7 +279,7 @@
 
   <script>
     const API = '/api/persona-video';
-    const state = { personas: [], backends: [], selectedPersona: '', sourcePath: '', activeJobId: '', poll: null };
+    const state = { personas: [], backends: [], selectedPersona: '', sourcePath: '', activeJobId: '', poll: null, events: null };
     const byId = (id) => document.getElementById(id);
     const esc = (v) => String(v ?? '').replace(/[&<>"]/g, (c) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
     const baseName = (p) => String(p || '').split(/[\\/]/).pop();
@@ -461,7 +461,32 @@
       };
       const data = await api('/jobs', { method: 'POST', headers: {'Content-Type':'application/json'}, body: JSON.stringify(payload) });
       state.activeJobId = data.job.job_id; byId('cancelJobBtn').disabled = false; byId('refreshJobBtn').disabled = false;
-      setStatus(`Job started: ${state.activeJobId}`, 'ok'); renderJob(data.job); startPolling();
+      setStatus(`Job started: ${state.activeJobId}`, 'ok'); renderJob(data.job); startLiveEvents(); startPolling();
+    }
+
+    function startLiveEvents() {
+      if (state.events) { state.events.close(); state.events = null; }
+      if (!window.EventSource || !state.activeJobId) return startPolling();
+      const source = new EventSource(`${API}/jobs/${encodeURIComponent(state.activeJobId)}/events`);
+      state.events = source;
+      source.onmessage = (event) => {
+        try {
+          const payload = JSON.parse(event.data || '{}');
+          if (payload.job) {
+            renderJob(payload.job);
+            if (['completed','failed','needs_review','cancelled'].includes(payload.job.status)) {
+              source.close(); state.events = null;
+              if (state.poll) { clearInterval(state.poll); state.poll = null; }
+            }
+          }
+        } catch (err) {
+          console.warn('Persona event parse failed', err);
+        }
+      };
+      source.onerror = () => {
+        if (state.events) { state.events.close(); state.events = null; }
+        startPolling();
+      };
     }
 
     function startPolling() {
@@ -472,17 +497,23 @@
     async function refreshJob() {
       if (!state.activeJobId) return;
       const data = await api(`/jobs/${state.activeJobId}`); renderJob(data.job);
-      if (['completed','failed','needs_review','cancelled'].includes(data.job.status)) { clearInterval(state.poll); state.poll = null; }
+      if (['completed','failed','needs_review','cancelled'].includes(data.job.status)) {
+        if (state.poll) { clearInterval(state.poll); state.poll = null; }
+        if (state.events) { state.events.close(); state.events = null; }
+      }
     }
 
     function renderJob(job) {
       const progress = Math.round(((job.pipeline && job.pipeline.overall_progress) || 0) * 100);
       byId('progressFill').style.width = `${progress}%`;
-      byId('jobPills').innerHTML = `<span class="pill ${job.status === 'completed' ? 'ok' : job.status === 'failed' ? 'warn' : ''}">${esc(job.status)}</span><span class="pill">${progress}%</span><span class="pill">${esc((job.pipeline||{}).current_stage || 'queued')}</span>`;
+      const audio = job.audio || {};
+      const tracking = job.tracking_summary || {};
+      byId('jobPills').innerHTML = `<span class="pill ${job.status === 'completed' ? 'ok' : job.status === 'failed' ? 'warn' : ''}">${esc(job.status)}</span><span class="pill">${progress}%</span><span class="pill">${esc((job.pipeline||{}).current_stage || 'queued')}</span><span class="pill">Audio: ${esc(audio.status || 'pending')}</span><span class="pill">Tracking: ${esc(tracking.provider_id || 'pending')}</span>`;
       byId('stageList').innerHTML = ((job.pipeline && job.pipeline.stages) || []).map((s) => `<div class="stage ${esc(s.status)}"><span class="dot"></span><span>${esc(s.id.replaceAll('_',' '))}</span><span>${Math.round((s.progress||0)*100)}%</span></div>`).join('');
       byId('segmentList').innerHTML = (job.segments || []).map((s) => {
         const qc = s.qc || {}; const retry = (s.status === 'failed' || s.status === 'needs_review') ? `<button class="btn" data-retry="${esc(s.segment_id)}">Retry</button>` : '';
-        return `<div class="segment-card"><strong>${esc(s.segment_id)} · ${esc(s.status)}</strong><div class="small">${s.start_s}s → ${s.end_s}s · GPU ${(s.gpu_assignment||{}).gpu_index ?? 'n/a'} ${(s.gpu_assignment||{}).gpu_name || ''}<br>QC score: ${qc.score ?? 'pending'} · warnings: ${esc((qc.warning_flags||[]).join(', '))}</div>${retry}</div>`;
+        const track = s.tracking || {};
+        return `<div class="segment-card"><strong>${esc(s.segment_id)} · ${esc(s.status)}</strong><div class="small">${s.start_s}s → ${s.end_s}s · GPU ${(s.gpu_assignment||{}).gpu_index ?? 'n/a'} ${(s.gpu_assignment||{}).gpu_name || ''}<br>QC: ${esc(qc.status || 'pending')} / ${qc.score ?? 'pending'} · warnings: ${esc((qc.warning_flags||[]).join(', '))}<br>Track: ${esc(track.track_id || 'pending')} ${track.confidence ? `(${Math.round(track.confidence * 100)}%)` : ''}</div>${retry}</div>`;
       }).join('') || '<div class="status">Segments will appear after source inspection.</div>';
       byId('segmentList').querySelectorAll('[data-retry]').forEach((btn) => btn.addEventListener('click', () => retrySegment(btn.dataset.retry)));
       const logs = (job.logs || []).slice(-80).map((l) => `[${l.timestamp}] ${l.message}`).join('\n');
