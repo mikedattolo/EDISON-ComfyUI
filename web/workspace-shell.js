@@ -116,6 +116,26 @@
             secondaryLabel: 'Open GPU Cooling'
         },
         {
+            key: 'model-lab',
+            label: 'Model Lab',
+            href: '/model-lab',
+            icon: 'ML',
+            matches: ['/model-lab', '/model_lab.html'],
+            heroKicker: 'Local Model Upgrade Bench',
+            heroTitle: 'Plan larger local models, rerankers, and agent tools against Edison hardware.',
+            heroDescription: 'Model Lab scans installed GGUFs, summarizes RAM/GPU fit, and gives safe install plans for Hugging Face and GitHub additions that match the 3090 plus auxiliary GPUs.',
+            highlights: ['128 GB RAM planning', 'HF install plans', 'Tool guardrails stay active'],
+            stats: [
+                { label: 'Best for', value: 'Model upgrades' },
+                { label: 'Policy', value: 'Advanced, not unguarded' }
+            ],
+            guidance: 'You can bring advanced local models into Edison, but file, node, tool, and confirmation guardrails remain active.',
+            prompt: 'Open Model Lab context and recommend the best local LLM, reranker, ComfyUI, and agent-tool upgrades for my 128GB RAM, RTX 3090, RTX 5060 Ti, and RTX 4060 Ti Edison PC.',
+            mode: 'work',
+            secondaryHref: '/system-diagnostics',
+            secondaryLabel: 'Open Doctor'
+        },
+        {
             key: 'printing',
             label: 'Print',
             href: '/printing',

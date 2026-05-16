@@ -44,6 +44,8 @@ from .vision_reliability import (
     vision_grounding_system_prompt,
 )
 from .comfyui_workers import ComfyUIWorkerRegistry, normalize_base_url
+from .model_lab import install_plan as build_model_lab_install_plan
+from .model_lab import summarize_model_lab
 from .response_guard import (
     StreamingResponseGuard,
     assistant_stop_sequences,
@@ -5779,6 +5781,22 @@ async def list_models():
             "vision_code": config.get("edison", {}).get("core", {}).get("vision_code_model")
         }
     }
+
+
+@app.get("/model-lab/summary")
+async def model_lab_summary():
+    """Hardware-aware model/tool recommendations for the Model Lab workspace."""
+    return summarize_model_lab(REPO_ROOT, config or {})
+
+
+@app.get("/model-lab/install-plan/{profile_id}")
+async def model_lab_install_plan(profile_id: str):
+    """Return safe shell commands for downloading a recommended model profile."""
+    try:
+        return build_model_lab_install_plan(profile_id, REPO_ROOT, config or {})
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"Unknown model profile '{profile_id}'")
+
 
 @app.post("/models/load")
 async def load_model(request: dict):

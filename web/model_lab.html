@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>EDISON Model Lab</title>
+  <link rel="stylesheet" href="page-theme.css?v=1" />
+  <link rel="stylesheet" href="workspace-shell.css?v=6" />
+  <script src="page-theme.js?v=1" defer></script>
+  <script src="workspace-shell.js?v=6" defer></script>
+  <style>
+    * { box-sizing: border-box; }
+    body { margin:0; min-height:100vh; color:var(--ink); background:var(--background); font-family:"Segoe UI", sans-serif; }
+    .topbar {
+      position: sticky; top: 0; z-index: 10; border-bottom:1px solid var(--line);
+      background:rgba(248,251,253,.92); backdrop-filter:blur(10px);
+      display:flex; justify-content:space-between; align-items:center; gap:12px; padding:14px 18px;
+    }
+    .title h1 { margin:0; font-size:22px; }
+    .title p { margin:2px 0 0; color:var(--muted); font-size:12px; }
+    .shell { display:grid; grid-template-columns:minmax(0,1fr) 360px; gap:16px; padding:16px; }
+    .stack { display:flex; flex-direction:column; gap:16px; }
+    .card { background:var(--panel); border:1px solid var(--line); border-radius:14px; box-shadow:var(--shadow); padding:18px; }
+    .card h2 { margin:0 0 12px; font-size:16px; }
+    .btn {
+      border:1px solid var(--line); border-radius:10px; background:linear-gradient(180deg,var(--surface),var(--surface-alt));
+      color:var(--ink); padding:9px 13px; font:inherit; font-size:13px; cursor:pointer; text-decoration:none;
+      display:inline-flex; align-items:center; justify-content:center; gap:7px;
+    }
+    .btn.primary { border-color:transparent; background:linear-gradient(120deg,var(--primary),var(--primary-dark)); color:var(--surface); font-weight:700; }
+    .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(240px,1fr)); gap:12px; }
+    .metric { border:1px solid var(--line); border-radius:12px; padding:14px; background:var(--surface-alt); }
+    .metric span { display:block; color:var(--muted); font-size:11px; font-weight:700; text-transform:uppercase; letter-spacing:.05em; }
+    .metric strong { display:block; margin-top:5px; font-size:20px; }
+    .model-card { border:1px solid var(--line); border-radius:12px; padding:14px; background:var(--surface-alt); display:flex; flex-direction:column; gap:10px; }
+    .model-card header { display:flex; justify-content:space-between; gap:10px; align-items:flex-start; }
+    .model-card h3 { margin:0; font-size:15px; }
+    .model-card p { margin:0; color:var(--muted); font-size:12px; line-height:1.45; }
+    .badge { display:inline-flex; align-items:center; border-radius:999px; padding:4px 8px; font-size:10px; font-weight:800; text-transform:uppercase; background:rgba(44,123,229,.1); color:var(--accent); }
+    .badge.ready { background:rgba(36,154,107,.12); color:var(--ok); }
+    .badge.possible_with_tradeoffs { background:rgba(184,120,26,.12); color:var(--warn); }
+    .notes { margin:0; padding-left:18px; color:var(--muted); font-size:12px; line-height:1.45; }
+    pre {
+      margin:0; padding:12px; border-radius:10px; background:#111827; color:#e5eef8;
+      overflow:auto; font-size:11px; line-height:1.45;
+    }
+    .policy { border:1px solid rgba(36,154,107,.25); background:rgba(36,154,107,.08); color:var(--ok); border-radius:12px; padding:12px; font-size:12px; line-height:1.45; }
+    .tool-row { border-top:1px solid var(--line); padding:12px 0; }
+    .tool-row:first-child { border-top:0; padding-top:0; }
+    .tool-row strong { display:block; font-size:13px; }
+    .tool-row span { display:block; color:var(--muted); font-size:12px; line-height:1.4; margin-top:4px; }
+    .muted { color:var(--muted); font-size:12px; line-height:1.45; }
+    @media (max-width: 980px) { .shell { grid-template-columns:1fr; } }
+  </style>
+</head>
+<body>
+  <div class="topbar">
+    <div class="title">
+      <h1>Model Lab</h1>
+      <p>Hardware-aware local model, RAG, ComfyUI, and agent-tool upgrade planning</p>
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap;">
+      <button class="btn primary" onclick="loadLab()">Refresh</button>
+      <a class="btn" href="/system-diagnostics">Doctor</a>
+      <a class="btn" href="/">Chat</a>
+    </div>
+  </div>
+
+  <main class="shell">
+    <section class="stack">
+      <div class="card">
+        <h2>Hardware Fit</h2>
+        <div id="hardwareGrid" class="grid"></div>
+      </div>
+      <div class="card">
+        <h2>Recommended Hugging Face Profiles</h2>
+        <div id="modelList" class="grid"></div>
+      </div>
+    </section>
+    <aside class="stack">
+      <div class="card">
+        <h2>Guardrail Policy</h2>
+        <div id="policyBox" class="policy">Loading...</div>
+      </div>
+      <div class="card">
+        <h2>Installed GGUFs</h2>
+        <div id="installedModels" class="muted">Loading...</div>
+      </div>
+      <div class="card">
+        <h2>GitHub / Tool Additions</h2>
+        <div id="toolList"></div>
+      </div>
+      <div class="card">
+        <h2>Next Moves</h2>
+        <ul id="nextMoves" class="notes"></ul>
+      </div>
+    </aside>
+  </main>
+
+  <script>
+    const API = '/api';
+    function esc(value) {
+      const d = document.createElement('div');
+      d.textContent = String(value ?? '');
+      return d.innerHTML;
+    }
+    async function fetchJSON(path) {
+      const res = await fetch(API + path);
+      const data = await res.json();
+      if (!res.ok) throw new Error(data.detail || data.error || res.statusText);
+      return data;
+    }
+    function metric(label, value) {
+      return `<div class="metric"><span>${esc(label)}</span><strong>${esc(value)}</strong></div>`;
+    }
+    async function copyInstall(profileId) {
+      const plan = await fetchJSON('/model-lab/install-plan/' + encodeURIComponent(profileId));
+      await navigator.clipboard.writeText((plan.commands || []).join('\n'));
+      alert('Install commands copied for ' + plan.profile.name);
+    }
+    async function loadLab() {
+      const data = await fetchJSON('/model-lab/summary');
+      const hw = data.hardware || {};
+      const gpus = hw.gpus || [];
+      document.getElementById('hardwareGrid').innerHTML = [
+        metric('System RAM', hw.system_ram_gb ? `${hw.system_ram_gb} GB` : 'unknown'),
+        metric('Detected GPUs', gpus.length || 'none'),
+        metric('Largest VRAM', hw.largest_vram_gb ? `${hw.largest_vram_gb} GB` : 'unknown'),
+        metric('128GB-class RAM', hw.ram_upgrade_detected ? 'yes' : 'not detected')
+      ].join('');
+      document.getElementById('policyBox').textContent = data.policy?.message || 'Advanced local models are supported with Edison guardrails active.';
+      const installed = data.installed_models || [];
+      document.getElementById('installedModels').innerHTML = installed.length
+        ? installed.map(m => `<div><strong>${esc(m.filename)}</strong><br><span>${esc(m.size_gb)} GB</span></div>`).join('<hr>')
+        : `No GGUF models found in ${esc(data.paths?.models_dir || 'models/llm')}.`;
+      document.getElementById('modelList').innerHTML = (data.recommendations || []).map(profile => `
+        <article class="model-card">
+          <header>
+            <div>
+              <h3>${esc(profile.name)}</h3>
+              <p>${esc(profile.role)} · ${esc(profile.recommended_quant)} · ~${esc(profile.estimated_size_gb)} GB</p>
+            </div>
+            <span class="badge ${esc(profile.fit)}">${esc(profile.installed ? 'installed' : profile.fit)}</span>
+          </header>
+          <p>${esc(profile.command_note)}</p>
+          <ul class="notes">${(profile.hardware_notes || []).map(n => `<li>${esc(n)}</li>`).join('')}</ul>
+          <pre>${esc(profile.download_command)}</pre>
+          <div style="display:flex;gap:8px;flex-wrap:wrap;">
+            <button class="btn primary" onclick="copyInstall('${esc(profile.id)}')">Copy Install</button>
+            <a class="btn" href="${esc(profile.source_url)}" target="_blank" rel="noopener">Open Source</a>
+          </div>
+        </article>
+      `).join('');
+      document.getElementById('toolList').innerHTML = (data.github_tools || []).map(tool => `
+        <div class="tool-row">
+          <strong>${esc(tool.name)}</strong>
+          <span>${esc(tool.why)}</span>
+          <span><b>Caution:</b> ${esc(tool.caution)}</span>
+          <a href="${esc(tool.source_url)}" target="_blank" rel="noopener">${esc(tool.source_url)}</a>
+        </div>
+      `).join('');
+      document.getElementById('nextMoves').innerHTML = (data.next_moves || []).map(item => `<li>${esc(item)}</li>`).join('');
+    }
+    loadLab().catch(err => {
+      document.getElementById('policyBox').textContent = err.message;
+    });
+  </script>
+</body>
+</html>

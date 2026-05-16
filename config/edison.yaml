@@ -81,6 +81,20 @@ edison:
       step_by_step: true
       model: "deep"
 
+  model_lab:
+    enabled: true
+    allow_custom_gguf_profiles: true
+    # Model Lab supports advanced local models but does not disable Edison
+    # path, node-dispatch, tool, or confirmation guardrails.
+    no_safeguard_bypass: false
+    recommended_system_ram_gb: 128
+    primary_large_model_gpu: 2
+    recommended_hf_profiles:
+      - "unsloth/Qwen3-30B-A3B-Instruct-2507-GGUF"
+      - "Qwen/Qwen2.5-Coder-32B-Instruct-GGUF"
+      - "unsloth/DeepSeek-R1-Distill-Qwen-32B-GGUF"
+      - "cstr/bge-reranker-base-GGUF"
+
   projects:
     root: "outputs"
     sandbox:

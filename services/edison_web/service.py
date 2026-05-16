@@ -299,6 +299,16 @@ async def system_diagnostics_page():
     return FileResponse(page, headers=NO_CACHE_HEADERS)
 
 
+@app.get("/model-lab")
+async def model_lab_page():
+    """Serve advanced local model and tool recommendation workspace."""
+    page = WEB_DIR / "model_lab.html"
+    if not page.exists():
+        logger.error(f"model_lab.html not found at {page}")
+        return {"error": "Model Lab UI not found"}
+    return FileResponse(page, headers=NO_CACHE_HEADERS)
+
+
 @app.get("/branding")
 async def branding_page():
     """Serve dedicated branding/file explorer page."""
