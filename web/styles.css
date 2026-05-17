@@ -1463,9 +1463,17 @@ button, input, textarea, select {
     border-radius: var(--border-radius);
     max-width: 600px;
     width: 90%;
-    max-height: 80vh;
-    overflow-y: auto;
+    max-height: min(80vh, calc(100vh - 32px));
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
     animation: slideUp 0.3s ease-out;
+}
+
+@supports (height: 100dvh) {
+    .modal-content {
+        max-height: min(80dvh, calc(100dvh - 32px));
+    }
 }
 
 @keyframes slideUp {
@@ -1510,6 +1518,13 @@ button, input, textarea, select {
 
 .modal-body {
     padding: 24px;
+    overflow-y: auto;
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
+}
+
+.modal-footer {
+    flex-shrink: 0;
 }
 
 .setting-group {
@@ -2382,6 +2397,12 @@ button, input, textarea, select {
     animation: slideInRight 0.3s ease-out;
 }
 
+@supports (height: 100dvh) {
+    .settings-panel {
+        height: 100dvh;
+    }
+}
+
 .settings-panel.open {
     display: flex;
     flex-direction: column;
@@ -2430,6 +2451,9 @@ button, input, textarea, select {
     display: flex;
     flex-direction: column;
     gap: 24px;
+    overflow-y: auto;
+    min-height: 0;
+    -webkit-overflow-scrolling: touch;
 }
 
 .settings-group {

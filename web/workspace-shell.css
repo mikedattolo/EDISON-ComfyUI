@@ -12,7 +12,7 @@
 }
 
 body.ws-shell-enabled {
-    padding-top: calc(var(--ws-shell-height) + 10px);
+    padding-top: 0;
 }
 
 .ws-workspace-ribbon {
