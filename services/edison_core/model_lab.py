@@ -162,12 +162,13 @@ def detect_system_ram_gb() -> Optional[float]:
 
 def detect_gpus() -> List[Dict[str, Any]]:
     """Read lightweight NVIDIA GPU info without failing when nvidia-smi is absent."""
-    if not shutil.which("nvidia-smi"):
+    nvidia_smi = _nvidia_smi_path()
+    if not nvidia_smi:
         return []
     query = "index,name,memory.total,memory.used,temperature.gpu,fan.speed,power.draw"
     try:
         proc = subprocess.run(
-            ["nvidia-smi", f"--query-gpu={query}", "--format=csv,noheader,nounits"],
+            [nvidia_smi, f"--query-gpu={query}", "--format=csv,noheader,nounits"],
             check=False,
             capture_output=True,
             text=True,
@@ -194,6 +195,17 @@ def detect_gpus() -> List[Dict[str, Any]]:
             }
         )
     return rows
+
+
+def _nvidia_smi_path() -> Optional[str]:
+    """Find nvidia-smi even under restricted systemd PATH values."""
+    found = shutil.which("nvidia-smi")
+    if found:
+        return found
+    for candidate in ("/usr/bin/nvidia-smi", "/usr/local/bin/nvidia-smi"):
+        if Path(candidate).exists():
+            return candidate
+    return None
 
 
 def scan_installed_gguf(paths: Iterable[Path]) -> List[Dict[str, Any]]:
@@ -337,13 +349,17 @@ def _next_moves(ram_gb: Optional[float], gpus: List[Dict[str, Any]]) -> List[str
 
 def _to_int(value: str) -> Optional[int]:
     try:
-        return int(float(str(value).replace("[Not Supported]", "").strip()))
+        text = str(value).replace("[Not Supported]", "").strip()
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        return int(float(match.group(0))) if match else None
     except Exception:
         return None
 
 
 def _to_float(value: str) -> Optional[float]:
     try:
-        return float(str(value).replace("[Not Supported]", "").strip())
+        text = str(value).replace("[Not Supported]", "").strip()
+        match = re.search(r"-?\d+(?:\.\d+)?", text)
+        return float(match.group(0)) if match else None
     except Exception:
         return None

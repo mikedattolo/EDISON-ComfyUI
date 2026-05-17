@@ -42,6 +42,33 @@ def test_model_lab_install_plan_returns_hf_command(tmp_path):
     assert plan["config_hint"]["slot"] == "reasoning"
 
 
+def test_detect_gpus_uses_absolute_nvidia_smi_fallback(monkeypatch):
+    class FakePath:
+        def __init__(self, path):
+            self.path = path
+
+        def exists(self):
+            return self.path == "/usr/bin/nvidia-smi"
+
+    class FakeProc:
+        returncode = 0
+        stdout = (
+            "0, NVIDIA GeForce RTX 5060 Ti, 16311 MiB, 7817 MiB, 24, 50 %, 19.50 W\n"
+            "2, NVIDIA GeForce RTX 3090, 24576 MiB, 8789 MiB, 30, 60 %, 93.85 W\n"
+        )
+
+    monkeypatch.setattr(model_lab.shutil, "which", lambda _name: None)
+    monkeypatch.setattr(model_lab, "Path", FakePath)
+    monkeypatch.setattr(model_lab.subprocess, "run", lambda *args, **kwargs: FakeProc())
+
+    gpus = model_lab.detect_gpus()
+
+    assert [gpu["name"] for gpu in gpus] == ["NVIDIA GeForce RTX 5060 Ti", "NVIDIA GeForce RTX 3090"]
+    assert gpus[0]["vram_total_mb"] == 16311
+    assert gpus[1]["fan_speed_percent"] == 60
+    assert gpus[1]["power_draw_w"] == 93.85
+
+
 def test_unknown_model_lab_profile_raises_key_error(tmp_path):
     try:
         model_lab.install_plan("missing", tmp_path, {})
