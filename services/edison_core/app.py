@@ -35,7 +35,6 @@ import socket
 import ipaddress
 import mimetypes
 import urllib.parse
-
 from .safe_io import atomic_write_json, atomic_write_text
 from .vision_reliability import (
     assess_vision_response_confidence,
@@ -8313,7 +8312,6 @@ Present this agent's response cleanly. Do not add your own analysis — just rel
                             top_p=0.9,
                             frequency_penalty=0.5,
                             presence_penalty=0.4,
-                            repeat_penalty=1.3,
                             stop=assistant_stop_sequences([
                                   "\n\n\n", "Would you like", "Please specify",
                                   "Let me know if", "Do let me know",
@@ -8790,40 +8788,15 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
     if not llm:
         raise HTTPException(status_code=503, detail="No suitable model available")
 
-    # Convert OpenAI messages to internal prompt format.
-    # IMPORTANT: preserve full conversation history. Previously this
-    # endpoint kept only the last system + last user message and dropped
-    # every assistant turn, causing the model to lose context and
-    # hallucinate prior turns / speak in the user's voice. We now build
-    # an EDISON-aware system prompt and feed the entire history.
-    user_system_prompts: list = []
-    history_pairs: list = []     # list of ("user"|"assistant", text)
+    # Convert OpenAI messages to internal prompt format
+    system_prompt = "You are a helpful assistant."
     user_message = ""
 
     for msg in request.messages:
-        text = _flatten_openai_content(msg.content)
         if msg.role == "system":
-            if text:
-                user_system_prompts.append(text)
+            system_prompt = _flatten_openai_content(msg.content)
         elif msg.role == "user":
-            user_message = text
-            history_pairs.append(("user", text))
-        elif msg.role == "assistant":
-            history_pairs.append(("assistant", text))
-
-    # Drop the trailing user turn from history_pairs — it's the current
-    # message and gets appended below as "User: ...\nAssistant:".
-    if history_pairs and history_pairs[-1][0] == "user":
-        history_pairs = history_pairs[:-1]
-
-    try:
-        edison_sys = build_system_prompt("chat")
-    except Exception:
-        edison_sys = "You are EDISON, a helpful all-in-one AI assistant."
-    if user_system_prompts:
-        system_prompt = edison_sys + "\n\n" + "\n".join(user_system_prompts)
-    else:
-        system_prompt = edison_sys
+            user_message = _flatten_openai_content(msg.content)
 
     business_result = _maybe_execute_business_action(user_message)
     if business_result:
@@ -8870,17 +8843,7 @@ async def openai_chat_completions(raw_request: Request, request: OpenAIChatCompl
             ),
         )
 
-    history_lines = []
-    for role, text in history_pairs[-10:]:  # cap to last 10 turns
-        text = (text or "").strip()
-        if not text:
-            continue
-        if role == "user":
-            history_lines.append(f"User: {text}")
-        else:
-            history_lines.append(f"Assistant: {text}")
-    history_block = ("\n".join(history_lines) + "\n") if history_lines else ""
-    full_prompt = f"{system_prompt}\n\n{history_block}User: {user_message}\nAssistant:"
+    full_prompt = f"{system_prompt}\n\nUser: {user_message}\nAssistant:"
 
     if request.stream:
         return await openai_stream_completions(raw_request, llm, model_name, full_prompt, request)
@@ -10812,13 +10775,10 @@ def build_full_prompt(system_prompt: str, user_message: str, context_chunks: lis
     """Build the complete prompt with context, search results, knowledge chunks, and conversation history"""
     parts = [system_prompt, ""]
 
-    # Add recent conversation history for context.
-    # We keep the last 10 turns (was 3) so follow-up questions, pronouns,
-    # and topic continuity have enough signal — losing this context was
-    # a major cause of hallucinations and "talks to itself" symptoms.
+    # Add recent conversation history for context
     if conversation_history and len(conversation_history) > 0:
         parts.append("RECENT CONVERSATION:")
-        for msg in conversation_history[-10:]:
+        for msg in conversation_history[-3:]:
             role = msg.get("role", "user")
             content = truncate_text(msg.get("content", ""), max_chars=400, label="history")
             if role == "user":

@@ -1,16 +1,15 @@
 :root {
-    /* Default Dark Theme */
-    --primary: #18b58f;
-    --primary-dark: #0e9473;
-    --secondary: #ff9a44;
-    --background: #07111a;
-    --surface: #0d1824;
-    --surface-alt: #111f2d;
-    --surface-hover: #182739;
-    --border: #23384a;
-    --text-primary: #eef4fa;
-    --text-secondary: #a7b8c8;
-    --text-tertiary: #708295;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #1e3a8a;
+    --background: #ffffff;
+    --surface: #ffffff;
+    --surface-alt: #f6f8fc;
+    --surface-hover: #edf2ff;
+    --border: #d7deef;
+    --text-primary: #111111;
+    --text-secondary: #2a2a2a;
+    --text-tertiary: #555555;
     --success: #16c38f;
     --error: #ff6b6b;
     --warning: #f5a44c;
@@ -20,26 +19,23 @@
     --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
     --safe-area-top: env(safe-area-inset-top, 0px);
     --safe-area-bottom: env(safe-area-inset-bottom, 0px);
-    --shadow-soft: 0 24px 60px rgba(0, 0, 0, 0.28);
+    --shadow-soft: 0 10px 26px rgba(17, 24, 39, 0.08);
 }
 
 /* Light Theme */
 body.light-theme {
-    --background: #f5f5f7;
+    --background: #ffffff;
     --surface: #ffffff;
-    --surface-alt: #f6f8fb;
-    --surface-hover: #f0f0f0;
-    --border: #e5e5e5;
-    --text-primary: #1a1a1a;
-    --text-secondary: #666666;
-    --text-tertiary: #999999;
+    --surface-alt: #f6f8fc;
+    --surface-hover: #edf2ff;
+    --border: #d7deef;
+    --text-primary: #111111;
+    --text-secondary: #2a2a2a;
+    --text-tertiary: #555555;
 }
 
 body.light-theme {
-    background:
-        radial-gradient(circle at 8% 12%, rgba(24, 181, 143, 0.10), transparent 24%),
-        radial-gradient(circle at 86% 4%, rgba(255, 154, 68, 0.10), transparent 20%),
-        linear-gradient(180deg, #f8fbff 0%, var(--background) 48%, #eef4fa 100%);
+    background: var(--background);
 }
 
 body.light-theme .workspace,
@@ -62,33 +58,33 @@ body.light-theme select {
 
 /* Color Themes */
 body.color-blue {
-    --primary: #3b82f6;
-    --primary-dark: #2563eb;
-    --secondary: #1e40af;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #1e3a8a;
 }
 
 body.color-purple {
-    --primary: #a855f7;
-    --primary-dark: #9333ea;
-    --secondary: #7e22ce;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #1e3a8a;
 }
 
 body.color-cyan {
-    --primary: #06b6d4;
-    --primary-dark: #0891b2;
-    --secondary: #0e7490;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #1e3a8a;
 }
 
 body.color-emerald {
-    --primary: #10b981;
-    --primary-dark: #059669;
-    --secondary: #047857;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #1e3a8a;
 }
 
 body.color-rose {
-    --primary: #f43f5e;
-    --primary-dark: #e11d48;
-    --secondary: #be184d;
+    --primary: #2563eb;
+    --primary-dark: #1d4ed8;
+    --secondary: #1e3a8a;
 }
 
 * {
@@ -324,7 +320,7 @@ button, input, textarea, select {
 
 /* Chat Header Bar - User Switcher */
 .chat-header-bar {
-    display: flex;
+    display: none;
     align-items: center;
     padding: 6px 16px;
     border-bottom: 1px solid var(--border);
@@ -457,6 +453,8 @@ button, input, textarea, select {
     scroll-behavior: smooth;
     min-height: 0;
     -webkit-overflow-scrolling: touch;
+    overscroll-behavior: contain;
+    scrollbar-gutter: stable;
 }
 
 .messages-container::-webkit-scrollbar {
@@ -7199,4 +7197,46 @@ details[open] > summary::after {
     .branding-explorer-layout {
         grid-template-columns: 1fr;
     }
+}
+
+/* Simplified UI mode: fixed high-contrast palette and reduced customization surface. */
+.new-chat-btn,
+.send-btn,
+.btn-primary,
+.feature-generate-btn,
+.input-footer-btn,
+.mode-btn.active,
+.sidebar-feature-btn:hover,
+.gallery-btn:hover {
+    background: var(--primary) !important;
+    border-color: var(--primary) !important;
+    color: #ffffff !important;
+}
+
+.new-chat-btn:hover,
+.send-btn:hover,
+.btn-primary:hover,
+.feature-generate-btn:hover,
+.input-footer-btn:hover,
+.mode-btn.active:hover {
+    background: var(--primary-dark) !important;
+    border-color: var(--primary-dark) !important;
+    color: #ffffff !important;
+}
+
+.color-palette,
+.theme-toggle,
+.theme-btn,
+.color-btn {
+    display: none !important;
+}
+
+.messages-container,
+.chat-history,
+.settings-panel,
+.modal-body,
+.branding-assets-table,
+.feature-panel-body {
+    scrollbar-gutter: stable;
+    overscroll-behavior: contain;
 }

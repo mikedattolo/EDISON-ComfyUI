@@ -344,6 +344,10 @@
                                             <strong>Custom AI</strong>
                                             <span>Specialized assistants, automations, and reusable flows.</span>
                                         </a>
+                                        <a class="welcome-destination-card" href="/model-lab">
+                                            <strong>Model Lab</strong>
+                                            <span>Local LLM, reranker, and tool upgrade planning for Edison hardware.</span>
+                                        </a>
                                         <a class="welcome-destination-card" href="/node-manager">
                                             <strong>Nodes</strong>
                                             <span>Remote workstations, Rhino workers, and distributed jobs.</span>
@@ -417,6 +421,11 @@
                                     <div class="capability-icon">🛰️</div>
                                     <h3>Nodes</h3>
                                     <p>Use remote hardware for CAD, Rhino, GPU tasks, and distributed work.</p>
+                                </div>
+                                <div class="capability-card">
+                                    <div class="capability-icon">ML</div>
+                                    <h3>Model Lab</h3>
+                                    <p>Plan larger local models, rerankers, and safe tool additions against live hardware.</p>
                                 </div>
                             </div>
                         </div>
@@ -611,26 +620,6 @@
                     </div>
                     
                     <div class="setting-group">
-                        <label>Theme</label>
-                        <div class="theme-toggle">
-                            <button class="theme-btn active" data-theme="dark" id="darkThemeBtn">🌙 Dark</button>
-                            <button class="theme-btn" data-theme="light" id="lightThemeBtn">☀️ Light</button>
-                        </div>
-                    </div>
-                    
-                    <div class="setting-group">
-                        <label>Color Scheme</label>
-                        <div class="color-palette">
-                            <button class="color-btn default active" data-color="default" title="Default (Indigo)"></button>
-                            <button class="color-btn blue" data-color="blue" title="Blue"></button>
-                            <button class="color-btn purple" data-color="purple" title="Purple"></button>
-                            <button class="color-btn cyan" data-color="cyan" title="Cyan"></button>
-                            <button class="color-btn emerald" data-color="emerald" title="Emerald"></button>
-                            <button class="color-btn rose" data-color="rose" title="Rose"></button>
-                        </div>
-                    </div>
-                    
-                    <div class="setting-group">
                         <label for="defaultMode">Default Mode</label>
                         <select id="defaultMode">
                             <option value="auto">Auto (Intent Detection)</option>
@@ -777,28 +766,6 @@
                 <button class="settings-close-btn" id="settingCloseBtn">×</button>
             </div>
             <div class="settings-content">
-                <!-- Theme Selection -->
-                <div class="settings-group">
-                    <label class="settings-group-label">Theme</label>
-                    <div class="theme-toggle">
-                        <button class="theme-btn active" data-theme="dark" id="darkThemeBtn">🌙 Dark</button>
-                        <button class="theme-btn" data-theme="light" id="lightThemeBtn">☀️ Light</button>
-                    </div>
-                </div>
-
-                <!-- Color Selection -->
-                <div class="settings-group">
-                    <label class="settings-group-label">Color Scheme</label>
-                    <div class="color-palette">
-                        <button class="color-btn default active" data-color="default" title="Default (Indigo)"></button>
-                        <button class="color-btn blue" data-color="blue" title="Blue"></button>
-                        <button class="color-btn purple" data-color="purple" title="Purple"></button>
-                        <button class="color-btn cyan" data-color="cyan" title="Cyan"></button>
-                        <button class="color-btn emerald" data-color="emerald" title="Emerald"></button>
-                        <button class="color-btn rose" data-color="rose" title="Rose"></button>
-                    </div>
-                </div>
-
                 <!-- Device Info -->
                 <div class="settings-group">
                     <label class="settings-group-label">Device Info</label>
@@ -1273,6 +1240,5 @@
     <script src="app_features.js?v=8"></script>
     <script src="app_new_features.js?v=7"></script>
     <script src="voice_agent_live.js?v=8"></script>
-    <script src="app_phase4.js?v=1"></script>
 </body>
 </html>

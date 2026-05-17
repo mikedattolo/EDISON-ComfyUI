@@ -529,20 +529,7 @@
 
         document.body.classList.add('ws-shell-enabled');
         document.body.dataset.wsPage = currentPage.key;
-        document.body.insertAdjacentHTML('afterbegin', renderShellRail(currentPage));
-        wireShellRailActions();
-        if (currentPage.key !== 'chat') {
-            const topbar = document.querySelector('.topbar');
-            if (topbar && !document.querySelector('.ws-workspace-ribbon')) {
-                topbar.insertAdjacentHTML('afterend', renderWorkspaceRibbon(currentPage));
-            }
-        }
-        if (currentPage.key !== 'chat') {
-            const main = document.querySelector('main.shell, main');
-            if (main && !main.querySelector('.ws-page-hero')) {
-                main.insertAdjacentHTML('afterbegin', renderPageHero(currentPage));
-            }
-        }
+        // Keep shell behavior lightweight so workspace pages stay focused.
         document.addEventListener('keydown', handleShortcut);
         handleQueryActions(currentPage);
     }
